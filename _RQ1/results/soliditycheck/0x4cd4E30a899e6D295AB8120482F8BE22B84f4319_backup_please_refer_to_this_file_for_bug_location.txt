@@ -1,0 +1,116 @@
+row number 
+1	               pragma solidity ^0.8.0;
+2	 interface IERC721Receiver {
+3	 function onERC721Received( address operator, address from, uint256 tokenId, bytes calldata data ) external returns (bytes4);
+4	 }
+5	 pragma solidity ^0.8.0;
+6	 interface IERC20 {
+7	 function totalSupply() external view returns (uint256);
+8	 function balanceOf(address account) external view returns (uint256);
+9	 function transfer(address recipient, uint256 amount) external returns (bool);
+10	 function allowance(address owner, address spender) external view returns (uint256);
+11	 function approve(address spender, uint256 amount) external returns (bool);
+12	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+13	 event Transfer(address indexed from, address indexed to, uint256 value);
+14	 event Approval(address indexed owner, address indexed spender, uint256 value);
+15	 }
+16	 pragma solidity ^0.8.0;
+17	 interface IERC165 {
+18	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+19	 }
+20	 pragma solidity ^0.8.0;
+21	 interface IERC721 is IERC165 {
+22	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+23	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+24	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+25	 function balanceOf(address owner) external view returns (uint256 balance);
+26	 function ownerOf(uint256 tokenId) external view returns (address owner);
+27	 function safeTransferFrom( address from, address to, uint256 tokenId ) external;
+28	 function transferFrom( address from, address to, uint256 tokenId ) external;
+29	 function approve(address to, uint256 tokenId) external;
+30	 function getApproved(uint256 tokenId) external view returns (address operator);
+31	 function setApprovalForAll(address operator, bool _approved) external;
+32	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+33	 function safeTransferFrom( address from, address to, uint256 tokenId, bytes calldata data ) external;
+34	 }
+35	 pragma solidity 0.8.7;
+36	 contract PrayerStake is IERC721Receiver {
+37	 IERC721 public nft_address;
+38	 IERC20 public ft_address;
+39	 uint256 public blocks_per_day = 6500;
+40	 uint256 public rewards_per_day = 11 * 10**18;
+41	 struct NFTData {
+42	 uint256 id;
+43	 uint256 stakingBlock;
+44	 }
+45	 mapping(uint256 => address) NftIdToOwner;
+46	 mapping(address => uint256[]) NftOwnerToIds;
+47	 mapping(uint256 => NFTData) NftIdToData;
+48	 mapping(uint256 => uint256) redeemedFtBalancePerNft;
+49	 mapping(address => uint256) redeemedFtBalance;
+50	 address[] stakers;
+51	 uint numStakers = 0;
+52	 constructor(address nft, address ft) {
+53	 nft_address = IERC721(nft);
+54	 ft_address = IERC20(ft);
+55	 }
+56	 function stake(uint256 id) public {
+57	 require(nft_address.ownerOf(id) == msg.sender);
+58	 nft_address.safeTransferFrom(msg.sender, address(this), id, "");
+59	 require(nft_address.ownerOf(id) == address(this), "Staking contract must own the NFT");
+60	 NFTData memory data;
+61	 data.id = id;
+62	 data.stakingBlock = block.number;
+63	 NftIdToData[id] = data;
+64	 NftIdToOwner[id] = msg.sender;
+65	 NftOwnerToIds[msg.sender].push(id);
+66	 stakers.push(msg.sender);
+67	 numStakers += 1;
+68	 }
+69	 function unstake(uint256 id) public {
+70	 require(nft_address.ownerOf(id) == address(this));
+71	 require(NftIdToOwner[id] == msg.sender);
+72	 require(NftOwnerToIds[msg.sender].length > 0);
+73	 this.withdrawTokens(id);
+74	 for (uint i =0; i < NftOwnerToIds[msg.sender].length; i++){
+75	 if (NftOwnerToIds[msg.sender][i] == id){
+76	 delete NftOwnerToIds[msg.sender][i];
+77	 }
+78	 }
+79	 delete NftIdToOwner[id];
+80	 delete NftIdToData[id];
+81	 nft_address.safeTransferFrom(address(this), msg.sender, id, "");
+82	 numStakers -= 1;
+83	 redeemedFtBalance[tx.origin] -= redeemedFtBalancePerNft[id];
+84	 redeemedFtBalancePerNft[id] = 0;
+85	 }
+86	 function getStakedNfts(address owner) public view returns( uint256[] memory ) {
+87	 return NftOwnerToIds[owner];
+88	 }
+89	 function getRedeemedFtBalance(address owner) public view returns(uint256) {
+90	 return redeemedFtBalance[owner];
+91	 }
+92	 function getStakingBlock(uint256 id) public view returns(uint256) {
+93	 return NftIdToData[id].stakingBlock;
+94	 }
+95	 function getStakers() public view returns(address[] memory) {
+96	 return stakers;
+97	 }
+98	 function getNumStakers() public view returns(uint256) {
+99	 return numStakers;
+100	 }
+101	 event withdrew(address indexed _from, uint _value);
+102	 function withdrawTokens(uint256 id) public {
+103	 require(NftIdToOwner[id] == tx.origin, "origin doesnt own nft");
+104	 uint256 totalStakedBlocks = block.number - NftIdToData[id].stakingBlock;
+105	 uint256 rewardAmount = (totalStakedBlocks * rewards_per_day) / blocks_per_day - redeemedFtBalancePerNft[id];
+106	 redeemedFtBalance[tx.origin] += rewardAmount;
+107	 redeemedFtBalancePerNft[id] += rewardAmount;
+108	 require(ft_address.balanceOf(address(this)) >= rewardAmount, "contract doesn't own enough rewards");
+109	 emit withdrew(tx.origin, rewardAmount);
+110	 ft_address.transfer(tx.origin, rewardAmount);
+111	 }
+112	 function onERC721Received( address operator, address from, uint256 tokenId, bytes calldata data ) override external returns (bytes4){
+113	 return this.onERC721Received.selector;
+114	 }
+115	 }

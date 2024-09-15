@@ -1,0 +1,292 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.6.12;
+3	 contract LockPosition {
+4	 using SafeMath for uint256;
+5	 using SafeERC20 for IERC20;
+6	 uint8 public periodCount;
+7	 address public owner;
+8	 address public recipient;
+9	 address public target;
+10	 address[] public funds;
+11	 mapping(uint256 => SalesPeriod) public salesPeriods;
+12	 mapping(address => mapping(uint256 => LockedInfo)) public investList;
+13	 event Invest(address indexed investor, uint256 period, uint256 number, uint256 amount);
+14	 event unLocked(address indexed investor, uint256 period, uint256 number);
+15	 struct LockedInfo {
+16	 uint256 purchased;
+17	 uint256 lockedAmount;
+18	 uint256 unlockedAmount;
+19	 }
+20	 struct SalesPeriod {
+21	 uint256 period;
+22	 uint256 price;
+23	 uint256 startTime;
+24	 uint256 endTime;
+25	 uint256 maximumSales;
+26	 uint256 maximumPurchase;
+27	 uint256 salesVolume;
+28	 uint256 lockTime;
+29	 uint256 fundLimit;
+30	 address pay;
+31	 }
+32	 modifier onlyOwner() {
+33	 require(owner == msg.sender, "Ownable: caller is not the owner");
+34	 _;
+35	 }
+36	 modifier onlyFundInvestor(uint256 period) {
+37	 require(isAllowInvest(msg.sender,period), "not fund investor");
+38	 _;
+39	 }
+40	 constructor (address _target, address _recipient) public {
+41	 init(_target, _recipient);
+42	 }
+43	 function init(address _target, address _recipient) public {
+44	 require(owner == address(0), 'already init');
+45	 owner = msg.sender;
+46	 target = _target;
+47	 recipient = _recipient;
+48	 }
+49	 function calcDecimal(address token) public view returns (uint256){
+50	 IERC20Metadata ioToken = IERC20Metadata(token);
+51	 return 10 ** uint256(ioToken.decimals());
+52	 }
+53	 function isAllowInvest(address account,uint256 period)public view returns(bool){
+54	 SalesPeriod memory salesPeriod = salesPeriods[period];
+55	 bool isFundInvestor = false;
+56	 for (uint256 i = 0; i < funds.length; i++) {
+57	 IFund fund = IFund(funds[i]);
+58	 uint256 balance = fund.balanceOf(account);
+59	 uint256 amount = fund.convertToCash(balance);
+60	 uint256 assets = salesPeriod.fundLimit.mul(calcDecimal(fund.ioToken()));
+61	 if (amount >= assets) {
+62	 isFundInvestor = true;
+63	 break;
+64	 }
+65	 }
+66	 return isFundInvestor;
+67	 }
+68	 function updateRecipient(address _recipient) external onlyOwner {
+69	 recipient = _recipient;
+70	 }
+71	 function transferOwnership(address newOwner) public onlyOwner {
+72	 owner = newOwner;
+73	 }
+74	 function bindFund(address[] memory _funds) external onlyOwner {
+75	 funds = _funds;
+76	 }
+77	 function saveSalesPeriod(SalesPeriod memory salesPeriod) external onlyOwner {
+78	 require(salesPeriods[salesPeriod.period].pay == address(0) || salesPeriods[salesPeriod.period].startTime >= block.timestamp, 'already active');
+79	 if (salesPeriods[salesPeriod.period].period == 0) {
+80	 periodCount++;
+81	 }
+82	 salesPeriods[salesPeriod.period] = salesPeriod;
+83	 }
+84	 function invest(uint256 period, uint256 amount) external onlyFundInvestor(period) {
+85	 require(amount > 0, 'minimumSales');
+86	 SalesPeriod storage salesPeriod = salesPeriods[period];
+87	 require(salesPeriod.startTime <= block.timestamp && salesPeriod.endTime >= block.timestamp, 'not active');
+88	 LockedInfo storage lockedInfo = investList[msg.sender][period];
+89	 uint256 surplusAmount = salesPeriod.maximumPurchase.sub(lockedInfo.purchased);
+90	 require(surplusAmount >= amount, 'maximumPurchase');
+91	 uint256 number = amount.mul(calcDecimal(target)).div(salesPeriod.price);
+92	 uint256 surplusVolume = salesPeriod.maximumSales.sub(salesPeriod.salesVolume);
+93	 require(surplusVolume >= number, 'maximumSales');
+94	 IERC20(salesPeriod.pay).safeTransferFrom(msg.sender, recipient, amount);
+95	 salesPeriod.salesVolume = salesPeriod.salesVolume.add(number);
+96	 lockedInfo.lockedAmount = lockedInfo.lockedAmount.add(number);
+97	 lockedInfo.purchased = lockedInfo.purchased.add(amount);
+98	 emit Invest(msg.sender, period, number, amount);
+99	 }
+100	 function unlock(uint256 period) external {
+101	 SalesPeriod memory salesPeriod = salesPeriods[period];
+102	 require(salesPeriod.pay != address(0), 'non-existent');
+103	 require(block.timestamp >= salesPeriod.endTime, 'not complete');
+104	 require(block.timestamp.sub(salesPeriod.endTime) >= salesPeriod.lockTime, 'locked');
+105	 LockedInfo storage lockedInfo = investList[msg.sender][period];
+106	 uint256 unlockAmount = lockedInfo.lockedAmount;
+107	 IGovToken(target).mint(msg.sender, unlockAmount);
+108	 lockedInfo.unlockedAmount = lockedInfo.unlockedAmount.add(unlockAmount);
+109	 lockedInfo.lockedAmount = 0;
+110	 emit unLocked(msg.sender, period, unlockAmount);
+111	 }
+112	 }
+113	 pragma solidity ^0.6.12;
+114	 interface IGovToken{
+115	 function decimals() external view returns (uint8);
+116	 function mint(address to,uint256 amount) external;
+117	 }
+118	 pragma solidity ^0.6.12;
+119	 interface IFund {
+120	 function convertToCash(uint256 fundAmount) external view returns (uint256);
+121	 function ioToken() external view returns (address);
+122	 function balanceOf(address account) external view returns (uint256);
+123	 }
+124	 pragma solidity ^0.6.12;
+125	 interface IERC20Metadata {
+126	 function decimals() external view returns (uint8);
+127	 }
+128	 pragma solidity >=0.6.0 <0.8.0;
+129	 library SafeERC20 {
+130	 using SafeMath for uint256;
+131	 using Address for address;
+132	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+133	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+134	 }
+135	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+136	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+137	 }
+138	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+139	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+140	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+141	 }
+142	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+143	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+144	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+145	 }
+146	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+147	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+148	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+149	 }
+150	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+151	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+152	 if (returndata.length > 0) {
+153	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+154	 }
+155	 }
+156	 }
+157	 pragma solidity >=0.6.0 <0.8.0;
+158	 library SafeMath {
+159	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+160	 uint256 c = a + b;
+161	 if (c < a) return (false, 0);
+162	 return (true, c);
+163	 }
+164	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+165	 if (b > a) return (false, 0);
+166	 return (true, a - b);
+167	 }
+168	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+169	 if (a == 0) return (true, 0);
+170	 uint256 c = a * b;
+171	 if (c / a != b) return (false, 0);
+172	 return (true, c);
+173	 }
+174	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+175	 if (b == 0) return (false, 0);
+176	 return (true, a / b);
+177	 }
+178	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+179	 if (b == 0) return (false, 0);
+180	 return (true, a % b);
+181	 }
+182	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+183	 uint256 c = a + b;
+184	 require(c >= a, "SafeMath: addition overflow");
+185	 return c;
+186	 }
+187	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+188	 require(b <= a, "SafeMath: subtraction overflow");
+189	 return a - b;
+190	 }
+191	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+192	 if (a == 0) return 0;
+193	 uint256 c = a * b;
+194	 require(c / a == b, "SafeMath: multiplication overflow");
+195	 return c;
+196	 }
+197	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+198	 require(b > 0, "SafeMath: division by zero");
+199	 return a / b;
+200	 }
+201	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+202	 require(b > 0, "SafeMath: modulo by zero");
+203	 return a % b;
+204	 }
+205	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+206	 require(b <= a, errorMessage);
+207	 return a - b;
+208	 }
+209	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+210	 require(b > 0, errorMessage);
+211	 return a / b;
+212	 }
+213	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+214	 require(b > 0, errorMessage);
+215	 return a % b;
+216	 }
+217	 }
+218	 pragma solidity >=0.6.2 <0.8.0;
+219	 library Address {
+220	 function isContract(address account) internal view returns (bool) {
+221	 uint256 size;
+222	 assembly {
+223	 size := extcodesize(account) }
+224	 return size > 0;
+225	 }
+226	 function sendValue(address payable recipient, uint256 amount) internal {
+227	 require(address(this).balance >= amount, "Address: insufficient balance");
+228	 (bool success, ) = recipient.call{
+229	 value: amount }
+230	 ("");
+231	 require(success, "Address: unable to send value, recipient may have reverted");
+232	 }
+233	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+234	 return functionCall(target, data, "Address: low-level call failed");
+235	 }
+236	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+237	 return functionCallWithValue(target, data, 0, errorMessage);
+238	 }
+239	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+240	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+241	 }
+242	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+243	 require(address(this).balance >= value, "Address: insufficient balance for call");
+244	 require(isContract(target), "Address: call to non-contract");
+245	 (bool success, bytes memory returndata) = target.call{
+246	 value: value }
+247	 (data);
+248	 return _verifyCallResult(success, returndata, errorMessage);
+249	 }
+250	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+251	 return functionStaticCall(target, data, "Address: low-level static call failed");
+252	 }
+253	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+254	 require(isContract(target), "Address: static call to non-contract");
+255	 (bool success, bytes memory returndata) = target.staticcall(data);
+256	 return _verifyCallResult(success, returndata, errorMessage);
+257	 }
+258	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+259	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+260	 }
+261	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+262	 require(isContract(target), "Address: delegate call to non-contract");
+263	 (bool success, bytes memory returndata) = target.delegatecall(data);
+264	 return _verifyCallResult(success, returndata, errorMessage);
+265	 }
+266	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+267	 if (success) {
+268	 return returndata;
+269	 }
+270	 else {
+271	 if (returndata.length > 0) {
+272	 assembly {
+273	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+274	 }
+275	 else {
+276	 revert(errorMessage);
+277	 }
+278	 }
+279	 }
+280	 }
+281	 pragma solidity >=0.6.0 <0.8.0;
+282	 interface IERC20 {
+283	 function totalSupply() external view returns (uint256);
+284	 function balanceOf(address account) external view returns (uint256);
+285	 function transfer(address recipient, uint256 amount) external returns (bool);
+286	 function allowance(address owner, address spender) external view returns (uint256);
+287	 function approve(address spender, uint256 amount) external returns (bool);
+288	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+289	 event Transfer(address indexed from, address indexed to, uint256 value);
+290	 event Approval(address indexed owner, address indexed spender, uint256 value);
+291	 }

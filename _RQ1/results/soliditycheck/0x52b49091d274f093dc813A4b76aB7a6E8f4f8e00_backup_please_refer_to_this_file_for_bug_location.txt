@@ -1,0 +1,913 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.6.0 <0.8.0;
+3	 abstract contract Context {
+4	 function _msgSender() internal view virtual returns (address payable) {
+5	 return msg.sender;
+6	 }
+7	 function _msgData() internal view virtual returns (bytes memory) {
+8	 this;
+9	 return msg.data;
+10	 }
+11	 }
+12	 pragma solidity >=0.6.0 <0.8.0;
+13	 abstract contract AccessControl is Context {
+14	 using EnumerableSet for EnumerableSet.AddressSet;
+15	 using Address for address;
+16	 struct RoleData {
+17	 EnumerableSet.AddressSet members;
+18	 bytes32 adminRole;
+19	 }
+20	 mapping (bytes32 => RoleData) private _roles;
+21	 bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
+22	 event RoleAdminChanged(bytes32 indexed role, bytes32 indexed previousAdminRole, bytes32 indexed newAdminRole);
+23	 event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
+24	 event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+25	 function hasRole(bytes32 role, address account) public view returns (bool) {
+26	 return _roles[role].members.contains(account);
+27	 }
+28	 function getRoleMemberCount(bytes32 role) public view returns (uint256) {
+29	 return _roles[role].members.length();
+30	 }
+31	 function getRoleMember(bytes32 role, uint256 index) public view returns (address) {
+32	 return _roles[role].members.at(index);
+33	 }
+34	 function getRoleAdmin(bytes32 role) public view returns (bytes32) {
+35	 return _roles[role].adminRole;
+36	 }
+37	 function grantRole(bytes32 role, address account) public virtual {
+38	 require(hasRole(_roles[role].adminRole, _msgSender()), "AccessControl: sender must be an admin to grant");
+39	 _grantRole(role, account);
+40	 }
+41	 function revokeRole(bytes32 role, address account) public virtual {
+42	 require(hasRole(_roles[role].adminRole, _msgSender()), "AccessControl: sender must be an admin to revoke");
+43	 _revokeRole(role, account);
+44	 }
+45	 function renounceRole(bytes32 role, address account) public virtual {
+46	 require(account == _msgSender(), "AccessControl: can only renounce roles for self");
+47	 _revokeRole(role, account);
+48	 }
+49	 function _setupRole(bytes32 role, address account) internal virtual {
+50	 _grantRole(role, account);
+51	 }
+52	 function _setRoleAdmin(bytes32 role, bytes32 adminRole) internal virtual {
+53	 emit RoleAdminChanged(role, _roles[role].adminRole, adminRole);
+54	 _roles[role].adminRole = adminRole;
+55	 }
+56	 function _grantRole(bytes32 role, address account) private {
+57	 if (_roles[role].members.add(account)) {
+58	 emit RoleGranted(role, account, _msgSender());
+59	 }
+60	 }
+61	 function _revokeRole(bytes32 role, address account) private {
+62	 if (_roles[role].members.remove(account)) {
+63	 emit RoleRevoked(role, account, _msgSender());
+64	 }
+65	 }
+66	 }
+67	 pragma solidity ^0.7.6;
+68	 contract AccessRoleCommon {
+69	 bytes32 public constant ADMIN_ROLE = keccak256("ADMIN");
+70	 bytes32 public constant MINTER_ROLE = keccak256("MINTER");
+71	 bytes32 public constant BURNER_ROLE = keccak256("BURNER");
+72	 }
+73	 pragma solidity ^0.7.6;
+74	 contract Stake1Storage {
+75	 address public token;
+76	 address public stakeRegistry;
+77	 address public paytoken;
+78	 address public vault;
+79	 uint256 public saleStartBlock;
+80	 uint256 public startBlock;
+81	 uint256 public endBlock;
+82	 uint256 public rewardClaimedTotal;
+83	 uint256 public totalStakedAmount;
+84	 mapping(address => LibTokenStake1.StakedAmount) public userStaked;
+85	 uint256 public totalStakers;
+86	 uint256 internal _lock;
+87	 bool public pauseProxy;
+88	 address public defiAddr;
+89	 bool public migratedL2;
+90	 function getUserStaked(address user) external view returns ( uint256 amount, uint256 claimedBlock, uint256 claimedAmount, uint256 releasedBlock, uint256 releasedAmount, uint256 releasedTOSAmount, bool released ) {
+91	 return ( userStaked[user].amount, userStaked[user].claimedBlock, userStaked[user].claimedAmount, userStaked[user].releasedBlock, userStaked[user].releasedAmount, userStaked[user].releasedTOSAmount, userStaked[user].released );
+92	 }
+93	 function infos() external view returns ( address, address, uint256[3] memory, uint256, uint256, uint256 ) {
+94	 return ( paytoken, vault, [saleStartBlock, startBlock, endBlock], rewardClaimedTotal, totalStakedAmount, totalStakers );
+95	 }
+96	 }
+97	 pragma solidity ^0.7.6;
+98	 interface ITokamakStaker {
+99	 function setTokamakLayer2(address _layer2) external;
+100	 function getUniswapInfo() external view returns ( address uniswapRouter, address npm, address ext, uint256 fee, address uniswapV2Router );
+101	 function swapTONtoWTON(uint256 amount, bool toWTON) external;
+102	 function tokamakStaking(address _layer2, uint256 stakeAmount) external;
+103	 function tokamakRequestUnStaking(address _layer2, uint256 wtonAmount) external;
+104	 function tokamakRequestUnStakingAll(address _layer2) external;
+105	 function tokamakProcessUnStaking(address _layer2) external;
+106	 function exchangeWTONtoTOS( uint256 _amountIn, uint256 _amountOutMinimum, uint256 _deadline, uint160 _sqrtPriceLimitX96, uint256 _kind ) external returns (uint256 amountOut);
+107	 }
+108	 pragma solidity ^0.7.6;
+109	 contract AccessibleCommon is AccessRoleCommon, AccessControl {
+110	 modifier onlyOwner() {
+111	 require(isAdmin(msg.sender), "Accessible: Caller is not an admin");
+112	 _;
+113	 }
+114	 function addAdmin(address account) public virtual onlyOwner {
+115	 grantRole(ADMIN_ROLE, account);
+116	 }
+117	 function removeAdmin(address account) public virtual onlyOwner {
+118	 renounceRole(ADMIN_ROLE, account);
+119	 }
+120	 function transferAdmin(address newAdmin) external virtual onlyOwner {
+121	 require(newAdmin != address(0), "Accessible: zero address");
+122	 require(msg.sender != newAdmin, "Accessible: same admin");
+123	 grantRole(ADMIN_ROLE, newAdmin);
+124	 renounceRole(ADMIN_ROLE, msg.sender);
+125	 }
+126	 function isAdmin(address account) public view virtual returns (bool) {
+127	 return hasRole(ADMIN_ROLE, account);
+128	 }
+129	 }
+130	 pragma solidity ^0.7.6;
+131	 contract StakeTONStorage is Stake1Storage {
+132	 address public ton;
+133	 address public wton;
+134	 address public seigManager;
+135	 address public depositManager;
+136	 address public swapProxy;
+137	 address public tokamakLayer2;
+138	 uint256 public toTokamak;
+139	 uint256 public fromTokamak;
+140	 uint256 public toUniswapWTON;
+141	 uint256 public swappedAmountTOS;
+142	 uint256 public finalBalanceTON;
+143	 uint256 public finalBalanceWTON;
+144	 uint256 public defiStatus;
+145	 uint256 public requestNum;
+146	 bool public withdrawFlag;
+147	 }
+148	 pragma solidity ^0.7.6;
+149	 interface IStakeTON {
+150	 function claim() external;
+151	 function withdraw() external;
+152	 function canRewardAmount(address account, uint256 specificBlock) external view returns (uint256);
+153	 }
+154	 contract TokamakStakeUpgrade is StakeTONStorage, AccessibleCommon, ITokamakStaker {
+155	 using SafeMath for uint256;
+156	 modifier nonZero(address _addr) {
+157	 require(_addr != address(0), "TokamakStaker: zero address");
+158	 _;
+159	 }
+160	 modifier sameTokamakLayer(address _addr) {
+161	 require(tokamakLayer2 == _addr, "TokamakStaker:different layer");
+162	 _;
+163	 }
+164	 modifier lock() {
+165	 require(_lock == 0, "TokamakStaker:LOCKED");
+166	 _lock = 1;
+167	 _;
+168	 _lock = 0;
+169	 }
+170	 modifier onlyClosed() {
+171	 require(IIStake1Vault(vault).saleClosed(), "TokamakStaker: not closed");
+172	 _;
+173	 }
+174	 event SetRegistry(address registry);
+175	 event SetTokamakLayer2(address layer2);
+176	 event TokamakStaked(address layer2, uint256 amount);
+177	 event TokamakRequestedUnStaking(address layer2, uint256 amount);
+178	 event TokamakProcessedUnStaking( address layer2, uint256 rn, bool receiveTON );
+179	 event TokamakRequestedUnStakingAll(address layer2);
+180	 event ExchangedWTONtoTOS( address caller, uint256 amountIn, uint256 amountOut );
+181	 function setRegistry(address _registry) external onlyOwner nonZero(_registry) {
+182	 stakeRegistry = _registry;
+183	 emit SetRegistry(stakeRegistry);
+184	 }
+185	 function setTokamakLayer2(address _layer2) external override onlyOwner {
+186	 require( _layer2 != address(0) && tokamakLayer2 != _layer2, "TokamakStaker:tokamakLayer2 zero " );
+187	 tokamakLayer2 = _layer2;
+188	 emit SetTokamakLayer2(_layer2);
+189	 }
+190	 function getUniswapInfo() external view override returns ( address uniswapRouter, address npm, address ext, uint256 fee, address uniswapRouterV2 ) {
+191	 return ITokamakRegistry1(stakeRegistry).getUniswap();
+192	 }
+193	 function swapTONtoWTON(uint256 amount, bool toWTON) external override lock {
+194	 checkTokamak();
+195	 if (toWTON) {
+196	 require( swapProxy != address(0), "TokamakStaker: swapProxy is zero" );
+197	 require( IERC20BASE1(ton).balanceOf(address(this)) >= amount, "TokamakStaker: swapTONtoWTON ton balance is insufficient" );
+198	 bytes memory data = abi.encode(swapProxy, swapProxy);
+199	 require( ITON(ton).approveAndCall(wton, amount, data), "TokamakStaker:swapTONtoWTON approveAndCall fail" );
+200	 }
+201	 else {
+202	 require( IERC20BASE1(wton).balanceOf(address(this)) >= amount, "TokamakStaker: swapTONtoWTON wton balance is insufficient" );
+203	 require( IIWTON1(wton).swapToTON(amount), "TokamakStaker:swapToTON fail" );
+204	 }
+205	 }
+206	 function checkTokamak() public {
+207	 if (ton == address(0)) {
+208	 ( address _ton, address _wton, address _depositManager, address _seigManager, address _swapProxy ) = ITokamakRegistry1(stakeRegistry).getTokamak();
+209	 ton = _ton;
+210	 wton = _wton;
+211	 depositManager = _depositManager;
+212	 seigManager = _seigManager;
+213	 swapProxy = _swapProxy;
+214	 }
+215	 require( ton != address(0) && wton != address(0) && seigManager != address(0) && depositManager != address(0) && swapProxy != address(0), "TokamakStaker:tokamak zero" );
+216	 }
+217	 function tokamakStaking(address _layer2, uint256 stakeAmount) external override lock nonZero(stakeRegistry) nonZero(_layer2) onlyClosed {
+218	 require(block.number <= endBlock, "TokamakStaker:period end");
+219	 require(stakeAmount > 0, "TokamakStaker:stakeAmount is zero");
+220	 defiStatus = uint256(LibTokenStake1.DefiStatus.DEPOSITED);
+221	 checkTokamak();
+222	 uint256 globalWithdrawalDelay = IIDepositManager(depositManager).globalWithdrawalDelay();
+223	 require( block.number < endBlock.sub(globalWithdrawalDelay), "TokamakStaker:period(withdrawalDelay) end" );
+224	 if (tokamakLayer2 == address(0)) tokamakLayer2 = _layer2;
+225	 else {
+226	 if ( IISeigManager(seigManager).stakeOf( tokamakLayer2, address(this) ) > 0 || IIDepositManager(depositManager).pendingUnstaked( tokamakLayer2, address(this) ) > 0 ) {
+227	 require( tokamakLayer2 == _layer2, "TokamakStaker:different layer" );
+228	 }
+229	 else {
+230	 if (tokamakLayer2 != _layer2) tokamakLayer2 = _layer2;
+231	 }
+232	 }
+233	 require( IERC20BASE1(ton).balanceOf(address(this)) >= stakeAmount, "TokamakStaker: ton balance is insufficient" );
+234	 toTokamak = toTokamak.add(stakeAmount);
+235	 bytes memory data = abi.encode(depositManager, _layer2);
+236	 require( ITON(ton).approveAndCall(wton, stakeAmount, data), "TokamakStaker:approveAndCall fail" );
+237	 emit TokamakStaked(_layer2, stakeAmount);
+238	 }
+239	 function version() external pure returns (string memory) {
+240	 return "upgrade.20210803";
+241	 }
+242	 function tokamakRequestUnStaking(address _layer2, uint256 wtonAmount) external override lock nonZero(stakeRegistry) nonZero(_layer2) onlyClosed sameTokamakLayer(_layer2) {
+243	 defiStatus = uint256(LibTokenStake1.DefiStatus.REQUESTWITHDRAW);
+244	 requestNum = requestNum.add(1);
+245	 checkTokamak();
+246	 uint256 stakeOf = IISeigManager(seigManager).stakeOf( _layer2, address(this) );
+247	 require(stakeOf > 0, "TokamakStaker: stakeOf is zero");
+248	 uint256 principalAmount = totalStakedAmount.mul(10**9);
+249	 uint256 availableAmount = 0;
+250	 if(principalAmount > 0 && principalAmount < stakeOf.sub(100)){
+251	 availableAmount = stakeOf.sub(principalAmount).sub(100);
+252	 }
+253	 require(availableAmount > 0, "TokamakStaker: no withdraw-able amount not yet");
+254	 IIDepositManager(depositManager).requestWithdrawal(_layer2, availableAmount);
+255	 emit TokamakRequestedUnStaking(_layer2, availableAmount);
+256	 }
+257	 function canTokamakRequestUnStaking(address _layer2) external view returns (uint256 canUnStakingAmount){
+258	 canUnStakingAmount = 0;
+259	 if(tokamakLayer2 != address(0) && tokamakLayer2 == _layer2 && seigManager != address(0)){
+260	 uint256 stakeOf = IISeigManager(seigManager).stakeOf( _layer2, address(this) );
+261	 if(stakeOf > 0 && totalStakedAmount > 0 && totalStakedAmount.mul(10**9) < stakeOf){
+262	 canUnStakingAmount = stakeOf.sub(totalStakedAmount.mul(10**9));
+263	 }
+264	 }
+265	 }
+266	 function tokamakRequestUnStakingAll(address _layer2) external override lock nonZero(stakeRegistry) nonZero(_layer2) onlyClosed sameTokamakLayer(_layer2) {
+267	 defiStatus = uint256(LibTokenStake1.DefiStatus.REQUESTWITHDRAW);
+268	 requestNum = requestNum.add(1);
+269	 checkTokamak();
+270	 uint256 globalWithdrawalDelay = IIDepositManager(depositManager).globalWithdrawalDelay();
+271	 uint256 stakeOf = IISeigManager(seigManager).stakeOf( _layer2, address(this) );
+272	 require(stakeOf > 0, "TokamakStaker: stakeOf is zero");
+273	 uint256 interval = globalWithdrawalDelay / 14;
+274	 require( block.number > endBlock.sub(globalWithdrawalDelay).sub(interval), "TokamakStaker:The executable block has not passed" );
+275	 IIDepositManager(depositManager).requestWithdrawalAll(_layer2);
+276	 emit TokamakRequestedUnStakingAll(_layer2);
+277	 }
+278	 function canTokamakRequestUnStakingAll(address _layer2) external view returns (bool can){
+279	 can = false;
+280	 if(tokamakLayer2 != address(0) && tokamakLayer2 == _layer2 && depositManager != address(0) && seigManager != address(0)){
+281	 uint256 globalWithdrawalDelay = IIDepositManager(depositManager).globalWithdrawalDelay();
+282	 uint256 interval = globalWithdrawalDelay / 14;
+283	 uint256 stakeOf = IISeigManager(seigManager).stakeOf( _layer2, address(this) );
+284	 if(stakeOf> 0 && block.number > endBlock.sub(globalWithdrawalDelay).sub(interval)) can = true;
+285	 }
+286	 }
+287	 function canTokamakRequestUnStakingAllBlock(address _layer2) external view returns (uint256 _block){
+288	 if(tokamakLayer2 != address(0) && tokamakLayer2 == _layer2 && depositManager != address(0)){
+289	 uint256 globalWithdrawalDelay = IIDepositManager(depositManager).globalWithdrawalDelay();
+290	 uint256 interval = globalWithdrawalDelay / 14;
+291	 if(endBlock > globalWithdrawalDelay.add(interval)) _block = endBlock.sub(globalWithdrawalDelay).sub(interval);
+292	 }
+293	 }
+294	 function tokamakProcessUnStaking(address _layer2) external override lock nonZero(stakeRegistry) onlyClosed sameTokamakLayer(_layer2) {
+295	 require( defiStatus != uint256(LibTokenStake1.DefiStatus.WITHDRAW), "TokamakStaker:Already ProcessUnStaking" );
+296	 defiStatus = uint256(LibTokenStake1.DefiStatus.WITHDRAW);
+297	 uint256 rn = requestNum;
+298	 requestNum = 0;
+299	 checkTokamak();
+300	 if ( IISeigManager(seigManager).stakeOf(tokamakLayer2, address(this)) == 0 ) tokamakLayer2 = address(0);
+301	 fromTokamak = fromTokamak.add( IIDepositManager(depositManager).pendingUnstaked( _layer2, address(this) ) );
+302	 IIDepositManager(depositManager).processRequests(_layer2, rn, true);
+303	 emit TokamakProcessedUnStaking(_layer2, rn, true);
+304	 }
+305	 function exchangeWTONtoTOS( uint256 _amountIn, uint256 _amountOutMinimum, uint256 _deadline, uint160 _sqrtPriceLimitX96, uint256 _kind ) external override lock onlyClosed returns (uint256 amountOut) {
+306	 require(block.number <= endBlock, "TokamakStaker: period end");
+307	 require(_kind < 2, "TokamakStaker: not available kind");
+308	 checkTokamak();
+309	 {
+310	 uint256 _amountWTON = IERC20BASE1(wton).balanceOf(address(this));
+311	 uint256 _amountTON = IERC20BASE1(ton).balanceOf(address(this));
+312	 uint256 stakeOf = 0;
+313	 if (tokamakLayer2 != address(0)) {
+314	 stakeOf = IISeigManager(seigManager).stakeOf( tokamakLayer2, address(this) );
+315	 stakeOf = stakeOf.add( IIDepositManager(depositManager).pendingUnstaked( tokamakLayer2, address(this) ) );
+316	 }
+317	 uint256 holdAmount = _amountWTON;
+318	 if (_amountTON > 0) holdAmount = holdAmount.add(_amountTON.mul(10**9));
+319	 require( holdAmount >= _amountIn, "TokamakStaker: wton insufficient" );
+320	 if (stakeOf > 0) holdAmount = holdAmount.add(stakeOf);
+321	 require( holdAmount > totalStakedAmount.mul(10**9) && holdAmount.sub(totalStakedAmount.mul(10**9)) >= _amountIn, "TokamakStaker:insufficient" );
+322	 if (_amountWTON < _amountIn) {
+323	 bytes memory data = abi.encode(swapProxy, swapProxy);
+324	 uint256 swapTON = _amountIn.sub(_amountWTON).div(10**9);
+325	 require( ITON(ton).approveAndCall(wton, swapTON, data), "TokamakStaker:exchangeWTONtoTOS approveAndCall fail" );
+326	 }
+327	 }
+328	 toUniswapWTON = toUniswapWTON.add(_amountIn);
+329	 (address uniswapRouter, , address wethAddress, uint256 _fee, ) = ITokamakRegistry1(stakeRegistry).getUniswap();
+330	 require(uniswapRouter != address(0), "TokamakStaker:uniswap zero");
+331	 require( IERC20BASE1(wton).approve(uniswapRouter, _amountIn), "TokamakStaker:can't approve uniswapRouter" );
+332	 if (_kind == 0) {
+333	 ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
+334	 tokenIn: wton, tokenOut: token, fee: uint24(_fee), recipient: address(this), deadline: _deadline, amountIn: _amountIn, amountOutMinimum: _amountOutMinimum, sqrtPriceLimitX96: _sqrtPriceLimitX96 }
+335	 );
+336	 amountOut = ISwapRouter(uniswapRouter).exactInputSingle(params);
+337	 }
+338	 else if (_kind == 1) {
+339	 ISwapRouter.ExactInputParams memory params = ISwapRouter.ExactInputParams({
+340	 path: abi.encodePacked( wton, uint24(_fee), wethAddress, uint24(_fee), token ), recipient: address(this), deadline: _deadline, amountIn: _amountIn, amountOutMinimum: _amountOutMinimum }
+341	 );
+342	 amountOut = ISwapRouter(uniswapRouter).exactInput(params);
+343	 }
+344	 emit ExchangedWTONtoTOS(msg.sender, _amountIn, amountOut);
+345	 }
+346	 }
+347	 pragma solidity >=0.5.0;
+348	 interface IUniswapV3SwapCallback {
+349	 function uniswapV3SwapCallback( int256 amount0Delta, int256 amount1Delta, bytes calldata data ) external;
+350	 }
+351	 pragma solidity ^0.7.6;
+352	 contract StakeTONUpgrade is TokamakStakeUpgrade, IStakeTON {
+353	 using SafeMath for uint256;
+354	 event Staked(address indexed to, uint256 amount);
+355	 event Claimed(address indexed to, uint256 amount, uint256 claimBlock);
+356	 event Withdrawal(address indexed to, uint256 tonAmount, uint256 tosAmount);
+357	 constructor() {
+358	 }
+359	 receive() external payable {
+360	 revert("cannot stake Ether");
+361	 }
+362	 function withdraw() external override {
+363	 require(endBlock > 0 && endBlock < block.number, "StakeTON: not end");
+364	 ( address ton, address wton, address depositManager, address seigManager, ) = ITokamakRegistry1(stakeRegistry).getTokamak();
+365	 require( ton != address(0) && wton != address(0) && depositManager != address(0) && seigManager != address(0), "StakeTON: ITokamakRegistry zero" );
+366	 if (tokamakLayer2 != address(0)) {
+367	 require( IISeigManager(seigManager).stakeOf( tokamakLayer2, address(this) ) == 0 && IIDepositManager(depositManager).pendingUnstaked( tokamakLayer2, address(this) ) == 0, "StakeTON: remain amount in tokamak" );
+368	 }
+369	 LibTokenStake1.StakedAmount storage staked = userStaked[msg.sender];
+370	 require(!staked.released, "StakeTON: Already withdraw");
+371	 if (!withdrawFlag) {
+372	 withdrawFlag = true;
+373	 if (paytoken == ton) {
+374	 swappedAmountTOS = IIERC20(token).balanceOf(address(this));
+375	 finalBalanceWTON = IIERC20(wton).balanceOf(address(this));
+376	 finalBalanceTON = IIERC20(ton).balanceOf(address(this));
+377	 require( finalBalanceWTON.div(10**9).add(finalBalanceTON) >= totalStakedAmount, "StakeTON: finalBalance is lack" );
+378	 }
+379	 }
+380	 uint256 amount = staked.amount;
+381	 require(amount > 0, "StakeTON: Amount wrong");
+382	 staked.releasedBlock = block.number;
+383	 staked.released = true;
+384	 if (paytoken == ton) {
+385	 uint256 tonAmount = 0;
+386	 uint256 wtonAmount = 0;
+387	 uint256 tosAmount = 0;
+388	 if (finalBalanceTON > 0) tonAmount = finalBalanceTON.mul(amount).div(totalStakedAmount);
+389	 if (finalBalanceWTON > 0) wtonAmount = finalBalanceWTON.mul(amount).div( totalStakedAmount );
+390	 if (swappedAmountTOS > 0) tosAmount = swappedAmountTOS.mul(amount).div(totalStakedAmount);
+391	 staked.releasedTOSAmount = tosAmount;
+392	 if (wtonAmount > 0) staked.releasedAmount = wtonAmount.div(10**9).add(tonAmount);
+393	 else staked.releasedAmount = tonAmount;
+394	 tonWithdraw(ton, wton, tonAmount, wtonAmount, tosAmount);
+395	 }
+396	 else if (paytoken == address(0)) {
+397	 require(staked.releasedAmount <= amount, "StakeTON: Amount wrong");
+398	 staked.releasedAmount = amount;
+399	 address payable self = address(uint160(address(this)));
+400	 require(self.balance >= amount, "StakeTON: insuffient ETH");
+401	 (bool success, ) = msg.sender.call{
+402	 value: amount}
+403	 ("");
+404	 require(success, "StakeTON: withdraw failed.");
+405	 }
+406	 else {
+407	 require(staked.releasedAmount <= amount, "StakeTON: Amount wrong");
+408	 staked.releasedAmount = amount;
+409	 require( IIERC20(paytoken).transfer(msg.sender, amount), "StakeTON: transfer fail" );
+410	 }
+411	 emit Withdrawal( msg.sender, staked.releasedAmount, staked.releasedTOSAmount );
+412	 }
+413	 function tonWithdraw( address ton, address wton, uint256 tonAmount, uint256 wtonAmount, uint256 tosAmount ) internal {
+414	 if (tonAmount > 0) {
+415	 require( IIERC20(ton).balanceOf(address(this)) >= tonAmount, "StakeTON: ton balance is lack" );
+416	 require( IIERC20(ton).transfer(msg.sender, tonAmount), "StakeTON: transfer ton fail" );
+417	 }
+418	 if (wtonAmount > 0) {
+419	 require( IIERC20(wton).balanceOf(address(this)) >= wtonAmount, "StakeTON: wton balance is lack" );
+420	 require( IWTON(wton).swapToTONAndTransfer(msg.sender, wtonAmount), "StakeTON: transfer wton fail" );
+421	 }
+422	 if (tosAmount > 0) {
+423	 require( IIERC20(token).balanceOf(address(this)) >= tosAmount, "StakeTON: tos balance is lack" );
+424	 require( IIERC20(token).transfer(msg.sender, tosAmount), "StakeTON: transfer tos fail" );
+425	 }
+426	 }
+427	 function claim() external override lock {
+428	 require(IIStake1Vault(vault).saleClosed(), "StakeTON: not closed");
+429	 uint256 rewardClaim = 0;
+430	 LibTokenStake1.StakedAmount storage staked = userStaked[msg.sender];
+431	 require(staked.claimedBlock < endBlock, "StakeTON: claimed");
+432	 rewardClaim = canRewardAmount(msg.sender, block.number);
+433	 require(rewardClaim > 0, "StakeTON: reward is zero");
+434	 uint256 rewardTotal = IIStake1Vault(vault).totalRewardAmount(address(this));
+435	 require( rewardClaimedTotal.add(rewardClaim) <= rewardTotal, "StakeTON: total reward exceeds" );
+436	 staked.claimedBlock = block.number;
+437	 staked.claimedAmount = staked.claimedAmount.add(rewardClaim);
+438	 rewardClaimedTotal = rewardClaimedTotal.add(rewardClaim);
+439	 require( IIStake1Vault(vault).claim(msg.sender, rewardClaim), "StakeTON: fail claim from vault" );
+440	 emit Claimed(msg.sender, rewardClaim, block.number);
+441	 }
+442	 function canRewardAmount(address account, uint256 specificBlock) public view override returns (uint256) {
+443	 uint256 reward = 0;
+444	 if (specificBlock > endBlock) specificBlock = endBlock;
+445	 if ( specificBlock < startBlock || userStaked[account].amount == 0 || userStaked[account].claimedBlock > endBlock || userStaked[account].claimedBlock > specificBlock ) {
+446	 reward = 0;
+447	 }
+448	 else {
+449	 uint256 startR = startBlock;
+450	 uint256 endR = endBlock;
+451	 if (startR < userStaked[account].claimedBlock) startR = userStaked[account].claimedBlock;
+452	 if (specificBlock < endR) endR = specificBlock;
+453	 uint256[] memory orderedEndBlocks = IIStake1Vault(vault).orderedEndBlocksAll();
+454	 if (orderedEndBlocks.length > 0) {
+455	 uint256 _end = 0;
+456	 uint256 _start = startR;
+457	 uint256 _total = 0;
+458	 uint256 blockTotalReward = 0;
+459	 blockTotalReward = IIStake1Vault(vault).blockTotalReward();
+460	 address user = account;
+461	 uint256 amount = userStaked[user].amount;
+462	 for (uint256 i = 0; i < orderedEndBlocks.length; i++) {
+463	 _end = orderedEndBlocks[i];
+464	 _total = IIStake1Vault(vault).stakeEndBlockTotal(_end);
+465	 if (_start > _end) {
+466	 }
+467	 else if (endR <= _end) {
+468	 if (_total > 0) {
+469	 uint256 _period1 = endR.sub(startR);
+470	 reward = reward.add( blockTotalReward.mul(_period1).mul(amount).div( _total ) );
+471	 }
+472	 break;
+473	 }
+474	 else {
+475	 if (_total > 0) {
+476	 uint256 _period2 = _end.sub(startR);
+477	 reward = reward.add( blockTotalReward.mul(_period2).mul(amount).div( _total ) );
+478	 }
+479	 startR = _end;
+480	 }
+481	 }
+482	 }
+483	 }
+484	 return reward;
+485	 }
+486	 }
+487	 pragma solidity ^0.7.6;
+488	 interface IIStake1Vault {
+489	 function closeSale() external;
+490	 function totalRewardAmount(address _account) external view returns (uint256);
+491	 function claim(address _to, uint256 _amount) external returns (bool);
+492	 function orderedEndBlocksAll() external view returns (uint256[] memory);
+493	 function blockTotalReward() external view returns (uint256);
+494	 function stakeEndBlockTotal(uint256 endblock) external view returns (uint256 totalStakedAmount);
+495	 function saleClosed() external view returns (bool);
+496	 }
+497	 pragma solidity ^0.7.6;
+498	 interface IIERC20 {
+499	 event Approval( address indexed owner, address indexed spender, uint256 value );
+500	 event Transfer(address indexed from, address indexed to, uint256 value);
+501	 function name() external view returns (string memory);
+502	 function symbol() external view returns (string memory);
+503	 function decimals() external view returns (uint8);
+504	 function totalSupply() external view returns (uint256);
+505	 function balanceOf(address owner) external view returns (uint256);
+506	 function allowance(address owner, address spender) external view returns (uint256);
+507	 function approve(address spender, uint256 value) external returns (bool);
+508	 function transfer(address to, uint256 value) external returns (bool);
+509	 function transferFrom( address from, address to, uint256 value ) external returns (bool);
+510	 }
+511	 pragma solidity ^0.7.6;
+512	 interface IWTON {
+513	 function balanceOf(address account) external view returns (uint256);
+514	 function onApprove( address owner, address spender, uint256 tonAmount, bytes calldata data ) external returns (bool);
+515	 function burnFrom(address account, uint256 amount) external;
+516	 function swapToTON(uint256 wtonAmount) external returns (bool);
+517	 function swapFromTON(uint256 tonAmount) external returns (bool);
+518	 function swapToTONAndTransfer(address to, uint256 wtonAmount) external returns (bool);
+519	 function swapFromTONAndTransfer(address to, uint256 tonAmount) external returns (bool);
+520	 function renounceTonMinter() external;
+521	 function approve(address spender, uint256 amount) external returns (bool);
+522	 }
+523	 pragma solidity ^0.7.6;
+524	 library LibTokenStake1 {
+525	 enum DefiStatus {
+526	 NONE, APPROVE, DEPOSITED, REQUESTWITHDRAW, REQUESTWITHDRAWALL, WITHDRAW, END }
+527	 struct DefiInfo {
+528	 string name;
+529	 address router;
+530	 address ext1;
+531	 address ext2;
+532	 uint256 fee;
+533	 address routerV2;
+534	 }
+535	 struct StakeInfo {
+536	 string name;
+537	 uint256 startBlock;
+538	 uint256 endBlock;
+539	 uint256 balance;
+540	 uint256 totalRewardAmount;
+541	 uint256 claimRewardAmount;
+542	 }
+543	 struct StakedAmount {
+544	 uint256 amount;
+545	 uint256 claimedBlock;
+546	 uint256 claimedAmount;
+547	 uint256 releasedBlock;
+548	 uint256 releasedAmount;
+549	 uint256 releasedTOSAmount;
+550	 bool released;
+551	 }
+552	 struct StakedAmountForSTOS {
+553	 uint256 amount;
+554	 uint256 startBlock;
+555	 uint256 periodBlock;
+556	 uint256 rewardPerBlock;
+557	 uint256 claimedBlock;
+558	 uint256 claimedAmount;
+559	 uint256 releasedBlock;
+560	 uint256 releasedAmount;
+561	 }
+562	 }
+563	 pragma solidity >=0.6.0 <0.8.0;
+564	 library SafeMath {
+565	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+566	 uint256 c = a + b;
+567	 require(c >= a, "SafeMath: addition overflow");
+568	 return c;
+569	 }
+570	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+571	 return sub(a, b, "SafeMath: subtraction overflow");
+572	 }
+573	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+574	 require(b <= a, errorMessage);
+575	 uint256 c = a - b;
+576	 return c;
+577	 }
+578	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+579	 if (a == 0) {
+580	 return 0;
+581	 }
+582	 uint256 c = a * b;
+583	 require(c / a == b, "SafeMath: multiplication overflow");
+584	 return c;
+585	 }
+586	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+587	 return div(a, b, "SafeMath: division by zero");
+588	 }
+589	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+590	 require(b > 0, errorMessage);
+591	 uint256 c = a / b;
+592	 return c;
+593	 }
+594	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+595	 return mod(a, b, "SafeMath: modulo by zero");
+596	 }
+597	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+598	 require(b != 0, errorMessage);
+599	 return a % b;
+600	 }
+601	 }
+602	 pragma solidity ^0.7.6;
+603	 interface IERC20BASE1 {
+604	 function totalSupply() external view returns (uint256);
+605	 function balanceOf(address owner) external view returns (uint256);
+606	 function approve(address spender, uint256 value) external returns (bool);
+607	 function transfer(address to, uint256 value) external returns (bool);
+608	 function transferFrom( address from, address to, uint256 value ) external returns (bool);
+609	 }
+610	 interface IIWTON1 {
+611	 function swapToTON(uint256 wtonAmount) external returns (bool);
+612	 }
+613	 interface ITokamakRegistry1 {
+614	 function getTokamak() external view returns ( address, address, address, address, address );
+615	 function getUniswap() external view returns ( address, address, address, uint256, address );
+616	 }
+617	 pragma solidity >=0.6.2 <0.8.0;
+618	 library ERC165Checker {
+619	 bytes4 private constant _INTERFACE_ID_INVALID = 0xffffffff;
+620	 bytes4 private constant _INTERFACE_ID_ERC165 = 0x01ffc9a7;
+621	 function supportsERC165(address account) internal view returns (bool) {
+622	 return _supportsERC165Interface(account, _INTERFACE_ID_ERC165) && !_supportsERC165Interface(account, _INTERFACE_ID_INVALID);
+623	 }
+624	 function supportsInterface(address account, bytes4 interfaceId) internal view returns (bool) {
+625	 return supportsERC165(account) && _supportsERC165Interface(account, interfaceId);
+626	 }
+627	 function supportsAllInterfaces(address account, bytes4[] memory interfaceIds) internal view returns (bool) {
+628	 if (!supportsERC165(account)) {
+629	 return false;
+630	 }
+631	 for (uint256 i = 0; i < interfaceIds.length; i++) {
+632	 if (!_supportsERC165Interface(account, interfaceIds[i])) {
+633	 return false;
+634	 }
+635	 }
+636	 return true;
+637	 }
+638	 function _supportsERC165Interface(address account, bytes4 interfaceId) private view returns (bool) {
+639	 (bool success, bool result) = _callERC165SupportsInterface(account, interfaceId);
+640	 return (success && result);
+641	 }
+642	 function _callERC165SupportsInterface(address account, bytes4 interfaceId) private view returns (bool, bool) {
+643	 bytes memory encodedParams = abi.encodeWithSelector(_INTERFACE_ID_ERC165, interfaceId);
+644	 (bool success, bytes memory result) = account.staticcall{
+645	 gas: 30000 }
+646	 (encodedParams);
+647	 if (result.length < 32) return (false, false);
+648	 return (success, abi.decode(result, (bool)));
+649	 }
+650	 }
+651	 pragma solidity >=0.6.0 <0.8.0;
+652	 library SafeERC20 {
+653	 using SafeMath for uint256;
+654	 using Address for address;
+655	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+656	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+657	 }
+658	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+659	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+660	 }
+661	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+662	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+663	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+664	 }
+665	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+666	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+667	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+668	 }
+669	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+670	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+671	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+672	 }
+673	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+674	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+675	 if (returndata.length > 0) {
+676	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+677	 }
+678	 }
+679	 }
+680	 pragma solidity ^0.7.6;
+681	 interface ITON {
+682	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+683	 function approveAndCall( address spender, uint256 amount, bytes memory data ) external returns (bool);
+684	 function balanceOf(address account) external view returns (uint256);
+685	 function onApprove( address owner, address spender, uint256 tonAmount, bytes calldata data ) external returns (bool);
+686	 function burnFrom(address account, uint256 amount) external;
+687	 function swapToTON(uint256 wtonAmount) external returns (bool);
+688	 function swapFromTON(uint256 tonAmount) external returns (bool);
+689	 function swapToTONAndTransfer(address to, uint256 wtonAmount) external returns (bool);
+690	 function swapFromTONAndTransfer(address to, uint256 tonAmount) external returns (bool);
+691	 function renounceTonMinter() external;
+692	 }
+693	 pragma solidity ^0.7.6;
+694	 interface IIDepositManager {
+695	 function globalWithdrawalDelay() external view returns (uint256 withdrawalDelay);
+696	 function accStaked(address layer2, address account) external view returns (uint256 wtonAmount);
+697	 function pendingUnstaked(address layer2, address account) external view returns (uint256 wtonAmount);
+698	 function accUnstaked(address layer2, address account) external view returns (uint256 wtonAmount);
+699	 function deposit(address layer2, uint256 amount) external returns (bool);
+700	 function requestWithdrawal(address layer2, uint256 amount) external returns (bool);
+701	 function processRequest(address layer2, bool receiveTON) external returns (bool);
+702	 function requestWithdrawalAll(address layer2) external returns (bool);
+703	 function processRequests( address layer2, uint256 n, bool receiveTON ) external returns (bool);
+704	 }
+705	 pragma solidity ^0.7.6;
+706	 interface IISeigManager {
+707	 function stakeOf(address layer2, address account) external view returns (uint256);
+708	 }
+709	 pragma solidity >=0.7.5;
+710	 interface ISwapRouter is IUniswapV3SwapCallback {
+711	 struct ExactInputSingleParams {
+712	 address tokenIn;
+713	 address tokenOut;
+714	 uint24 fee;
+715	 address recipient;
+716	 uint256 deadline;
+717	 uint256 amountIn;
+718	 uint256 amountOutMinimum;
+719	 uint160 sqrtPriceLimitX96;
+720	 }
+721	 function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+722	 struct ExactInputParams {
+723	 bytes path;
+724	 address recipient;
+725	 uint256 deadline;
+726	 uint256 amountIn;
+727	 uint256 amountOutMinimum;
+728	 }
+729	 function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
+730	 struct ExactOutputSingleParams {
+731	 address tokenIn;
+732	 address tokenOut;
+733	 uint24 fee;
+734	 address recipient;
+735	 uint256 deadline;
+736	 uint256 amountOut;
+737	 uint256 amountInMaximum;
+738	 uint160 sqrtPriceLimitX96;
+739	 }
+740	 function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
+741	 struct ExactOutputParams {
+742	 bytes path;
+743	 address recipient;
+744	 uint256 deadline;
+745	 uint256 amountOut;
+746	 uint256 amountInMaximum;
+747	 }
+748	 function exactOutput(ExactOutputParams calldata params) external payable returns (uint256 amountIn);
+749	 }
+750	 pragma solidity >=0.6.0 <0.8.0;
+751	 library EnumerableSet {
+752	 struct Set {
+753	 bytes32[] _values;
+754	 mapping (bytes32 => uint256) _indexes;
+755	 }
+756	 function _add(Set storage set, bytes32 value) private returns (bool) {
+757	 if (!_contains(set, value)) {
+758	 set._values.push(value);
+759	 set._indexes[value] = set._values.length;
+760	 return true;
+761	 }
+762	 else {
+763	 return false;
+764	 }
+765	 }
+766	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+767	 uint256 valueIndex = set._indexes[value];
+768	 if (valueIndex != 0) {
+769	 uint256 toDeleteIndex = valueIndex - 1;
+770	 uint256 lastIndex = set._values.length - 1;
+771	 bytes32 lastvalue = set._values[lastIndex];
+772	 set._values[toDeleteIndex] = lastvalue;
+773	 set._indexes[lastvalue] = toDeleteIndex + 1;
+774	 set._values.pop();
+775	 delete set._indexes[value];
+776	 return true;
+777	 }
+778	 else {
+779	 return false;
+780	 }
+781	 }
+782	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+783	 return set._indexes[value] != 0;
+784	 }
+785	 function _length(Set storage set) private view returns (uint256) {
+786	 return set._values.length;
+787	 }
+788	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+789	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+790	 return set._values[index];
+791	 }
+792	 struct Bytes32Set {
+793	 Set _inner;
+794	 }
+795	 function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+796	 return _add(set._inner, value);
+797	 }
+798	 function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+799	 return _remove(set._inner, value);
+800	 }
+801	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+802	 return _contains(set._inner, value);
+803	 }
+804	 function length(Bytes32Set storage set) internal view returns (uint256) {
+805	 return _length(set._inner);
+806	 }
+807	 function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+808	 return _at(set._inner, index);
+809	 }
+810	 struct AddressSet {
+811	 Set _inner;
+812	 }
+813	 function add(AddressSet storage set, address value) internal returns (bool) {
+814	 return _add(set._inner, bytes32(uint256(value)));
+815	 }
+816	 function remove(AddressSet storage set, address value) internal returns (bool) {
+817	 return _remove(set._inner, bytes32(uint256(value)));
+818	 }
+819	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+820	 return _contains(set._inner, bytes32(uint256(value)));
+821	 }
+822	 function length(AddressSet storage set) internal view returns (uint256) {
+823	 return _length(set._inner);
+824	 }
+825	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+826	 return address(uint256(_at(set._inner, index)));
+827	 }
+828	 struct UintSet {
+829	 Set _inner;
+830	 }
+831	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+832	 return _add(set._inner, bytes32(value));
+833	 }
+834	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+835	 return _remove(set._inner, bytes32(value));
+836	 }
+837	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+838	 return _contains(set._inner, bytes32(value));
+839	 }
+840	 function length(UintSet storage set) internal view returns (uint256) {
+841	 return _length(set._inner);
+842	 }
+843	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+844	 return uint256(_at(set._inner, index));
+845	 }
+846	 }
+847	 pragma solidity >=0.6.2 <0.8.0;
+848	 library Address {
+849	 function isContract(address account) internal view returns (bool) {
+850	 uint256 size;
+851	 assembly {
+852	 size := extcodesize(account) }
+853	 return size > 0;
+854	 }
+855	 function sendValue(address payable recipient, uint256 amount) internal {
+856	 require(address(this).balance >= amount, "Address: insufficient balance");
+857	 (bool success, ) = recipient.call{
+858	 value: amount }
+859	 ("");
+860	 require(success, "Address: unable to send value, recipient may have reverted");
+861	 }
+862	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+863	 return functionCall(target, data, "Address: low-level call failed");
+864	 }
+865	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+866	 return functionCallWithValue(target, data, 0, errorMessage);
+867	 }
+868	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+869	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+870	 }
+871	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+872	 require(address(this).balance >= value, "Address: insufficient balance for call");
+873	 require(isContract(target), "Address: call to non-contract");
+874	 (bool success, bytes memory returndata) = target.call{
+875	 value: value }
+876	 (data);
+877	 return _verifyCallResult(success, returndata, errorMessage);
+878	 }
+879	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+880	 return functionStaticCall(target, data, "Address: low-level static call failed");
+881	 }
+882	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+883	 require(isContract(target), "Address: static call to non-contract");
+884	 (bool success, bytes memory returndata) = target.staticcall(data);
+885	 return _verifyCallResult(success, returndata, errorMessage);
+886	 }
+887	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+888	 if (success) {
+889	 return returndata;
+890	 }
+891	 else {
+892	 if (returndata.length > 0) {
+893	 assembly {
+894	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+895	 }
+896	 else {
+897	 revert(errorMessage);
+898	 }
+899	 }
+900	 }
+901	 }
+902	 pragma solidity >=0.6.0 <0.8.0;
+903	 interface IERC20 {
+904	 function totalSupply() external view returns (uint256);
+905	 function balanceOf(address account) external view returns (uint256);
+906	 function transfer(address recipient, uint256 amount) external returns (bool);
+907	 function allowance(address owner, address spender) external view returns (uint256);
+908	 function approve(address spender, uint256 amount) external returns (bool);
+909	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+910	 event Transfer(address indexed from, address indexed to, uint256 value);
+911	 event Approval(address indexed owner, address indexed spender, uint256 value);
+912	 }

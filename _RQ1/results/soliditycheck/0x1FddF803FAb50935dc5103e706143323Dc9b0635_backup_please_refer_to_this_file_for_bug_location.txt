@@ -1,0 +1,302 @@
+row number 
+1	         pragma solidity =0.6.12;
+2	 contract UniswapV2ERC20 {
+3	 using SafeMathUniswap for uint;
+4	 string public constant name = 'SwipeSwap LP Token';
+5	 string public constant symbol = 'SLP';
+6	 uint8 public constant decimals = 18;
+7	 uint public totalSupply;
+8	 mapping(address => uint) public balanceOf;
+9	 mapping(address => mapping(address => uint)) public allowance;
+10	 bytes32 public DOMAIN_SEPARATOR;
+11	 bytes32 public constant PERMIT_TYPEHASH = 0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9;
+12	 mapping(address => uint) public nonces;
+13	 event Approval(address indexed owner, address indexed spender, uint value);
+14	 event Transfer(address indexed from, address indexed to, uint value);
+15	 constructor() public {
+16	 uint chainId;
+17	 assembly {
+18	 chainId := chainid() }
+19	 DOMAIN_SEPARATOR = keccak256( abi.encode( keccak256('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)'), keccak256(bytes(name)), keccak256(bytes('1')), chainId, address(this) ) );
+20	 }
+21	 function _mint(address to, uint value) internal {
+22	 totalSupply = totalSupply.add(value);
+23	 balanceOf[to] = balanceOf[to].add(value);
+24	 emit Transfer(address(0), to, value);
+25	 }
+26	 function _burn(address from, uint value) internal {
+27	 balanceOf[from] = balanceOf[from].sub(value);
+28	 totalSupply = totalSupply.sub(value);
+29	 emit Transfer(from, address(0), value);
+30	 }
+31	 function _approve(address owner, address spender, uint value) private {
+32	 allowance[owner][spender] = value;
+33	 emit Approval(owner, spender, value);
+34	 }
+35	 function _transfer(address from, address to, uint value) private {
+36	 balanceOf[from] = balanceOf[from].sub(value);
+37	 balanceOf[to] = balanceOf[to].add(value);
+38	 emit Transfer(from, to, value);
+39	 }
+40	 function approve(address spender, uint value) external returns (bool) {
+41	 _approve(msg.sender, spender, value);
+42	 return true;
+43	 }
+44	 function transfer(address to, uint value) external returns (bool) {
+45	 _transfer(msg.sender, to, value);
+46	 return true;
+47	 }
+48	 function transferFrom(address from, address to, uint value) external returns (bool) {
+49	 if (allowance[from][msg.sender] != uint(-1)) {
+50	 allowance[from][msg.sender] = allowance[from][msg.sender].sub(value);
+51	 }
+52	 _transfer(from, to, value);
+53	 return true;
+54	 }
+55	 function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external {
+56	 require(deadline >= block.timestamp, 'SwipeswapV2: EXPIRED');
+57	 bytes32 digest = keccak256( abi.encodePacked( '\x19\x01', DOMAIN_SEPARATOR, keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline)) ) );
+58	 address recoveredAddress = ecrecover(digest, v, r, s);
+59	 require(recoveredAddress != address(0) && recoveredAddress == owner, 'SwipeswapV2: INVALID_SIGNATURE');
+60	 _approve(owner, spender, value);
+61	 }
+62	 }
+63	 pragma solidity =0.6.12;
+64	 interface IMigrator {
+65	 function desiredLiquidity() external view returns (uint256);
+66	 }
+67	 contract UniswapV2Pair is UniswapV2ERC20 {
+68	 using SafeMathUniswap for uint;
+69	 using UQ112x112 for uint224;
+70	 uint public constant MINIMUM_LIQUIDITY = 10**3;
+71	 bytes4 private constant SELECTOR = bytes4(keccak256(bytes('transfer(address,uint256)')));
+72	 address public factory;
+73	 address public token0;
+74	 address public token1;
+75	 uint112 private reserve0;
+76	 uint112 private reserve1;
+77	 uint32 private blockTimestampLast;
+78	 uint public price0CumulativeLast;
+79	 uint public price1CumulativeLast;
+80	 uint public kLast;
+81	 uint private unlocked = 1;
+82	 modifier lock() {
+83	 require(unlocked == 1, 'SwipeswapV2: LOCKED');
+84	 unlocked = 0;
+85	 _;
+86	 unlocked = 1;
+87	 }
+88	 function getReserves() public view returns (uint112 _reserve0, uint112 _reserve1, uint32 _blockTimestampLast) {
+89	 _reserve0 = reserve0;
+90	 _reserve1 = reserve1;
+91	 _blockTimestampLast = blockTimestampLast;
+92	 }
+93	 function _safeTransfer(address token, address to, uint value) private {
+94	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(SELECTOR, to, value));
+95	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'SwipeswapV2: TRANSFER_FAILED');
+96	 }
+97	 event Mint(address indexed sender, uint amount0, uint amount1);
+98	 event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+99	 event Swap( address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to );
+100	 event Sync(uint112 reserve0, uint112 reserve1);
+101	 constructor() public {
+102	 factory = msg.sender;
+103	 }
+104	 function initialize(address _token0, address _token1) external {
+105	 require(msg.sender == factory, 'SwipeswapV2: FORBIDDEN');
+106	 token0 = _token0;
+107	 token1 = _token1;
+108	 }
+109	 function _update(uint balance0, uint balance1, uint112 _reserve0, uint112 _reserve1) private {
+110	 require(balance0 <= uint112(-1) && balance1 <= uint112(-1), 'SwipeswapV2: OVERFLOW');
+111	 uint32 blockTimestamp = uint32(block.timestamp % 2**32);
+112	 uint32 timeElapsed = blockTimestamp - blockTimestampLast;
+113	 if (timeElapsed > 0 && _reserve0 != 0 && _reserve1 != 0) {
+114	 price0CumulativeLast += uint(UQ112x112.encode(_reserve1).uqdiv(_reserve0)) * timeElapsed;
+115	 price1CumulativeLast += uint(UQ112x112.encode(_reserve0).uqdiv(_reserve1)) * timeElapsed;
+116	 }
+117	 reserve0 = uint112(balance0);
+118	 reserve1 = uint112(balance1);
+119	 blockTimestampLast = blockTimestamp;
+120	 emit Sync(reserve0, reserve1);
+121	 }
+122	 function _mintFee(uint112 _reserve0, uint112 _reserve1) private returns (bool feeOn) {
+123	 address feeTo = IUniswapV2Factory(factory).feeTo();
+124	 feeOn = feeTo != address(0);
+125	 uint _kLast = kLast;
+126	 if (feeOn) {
+127	 if (_kLast != 0) {
+128	 uint rootK = Math.sqrt(uint(_reserve0).mul(_reserve1));
+129	 uint rootKLast = Math.sqrt(_kLast);
+130	 if (rootK > rootKLast) {
+131	 uint numerator = totalSupply.mul(rootK.sub(rootKLast));
+132	 uint denominator = rootK.mul(5).add(rootKLast);
+133	 uint liquidity = numerator / denominator;
+134	 if (liquidity > 0) _mint(feeTo, liquidity);
+135	 }
+136	 }
+137	 }
+138	 else if (_kLast != 0) {
+139	 kLast = 0;
+140	 }
+141	 }
+142	 function mint(address to) external lock returns (uint liquidity) {
+143	 (uint112 _reserve0, uint112 _reserve1,) = getReserves();
+144	 uint balance0 = IERC20Uniswap(token0).balanceOf(address(this));
+145	 uint balance1 = IERC20Uniswap(token1).balanceOf(address(this));
+146	 uint amount0 = balance0.sub(_reserve0);
+147	 uint amount1 = balance1.sub(_reserve1);
+148	 bool feeOn = _mintFee(_reserve0, _reserve1);
+149	 uint _totalSupply = totalSupply;
+150	 if (_totalSupply == 0) {
+151	 address migrator = IUniswapV2Factory(factory).migrator();
+152	 if (msg.sender == migrator) {
+153	 liquidity = IMigrator(migrator).desiredLiquidity();
+154	 require(liquidity > 0 && liquidity != uint256(-1), "Bad desired liquidity");
+155	 }
+156	 else {
+157	 require(migrator == address(0), "Must not have migrator");
+158	 liquidity = Math.sqrt(amount0.mul(amount1)).sub(MINIMUM_LIQUIDITY);
+159	 _mint(address(0), MINIMUM_LIQUIDITY);
+160	 }
+161	 }
+162	 else {
+163	 liquidity = Math.min(amount0.mul(_totalSupply) / _reserve0, amount1.mul(_totalSupply) / _reserve1);
+164	 }
+165	 require(liquidity > 0, 'SwipeswapV2: INSUFFICIENT_LIQUIDITY_MINTED');
+166	 _mint(to, liquidity);
+167	 _update(balance0, balance1, _reserve0, _reserve1);
+168	 if (feeOn) kLast = uint(reserve0).mul(reserve1);
+169	 emit Mint(msg.sender, amount0, amount1);
+170	 }
+171	 function burn(address to) external lock returns (uint amount0, uint amount1) {
+172	 (uint112 _reserve0, uint112 _reserve1,) = getReserves();
+173	 address _token0 = token0;
+174	 address _token1 = token1;
+175	 uint balance0 = IERC20Uniswap(_token0).balanceOf(address(this));
+176	 uint balance1 = IERC20Uniswap(_token1).balanceOf(address(this));
+177	 uint liquidity = balanceOf[address(this)];
+178	 bool feeOn = _mintFee(_reserve0, _reserve1);
+179	 uint _totalSupply = totalSupply;
+180	 amount0 = liquidity.mul(balance0) / _totalSupply;
+181	 amount1 = liquidity.mul(balance1) / _totalSupply;
+182	 require(amount0 > 0 && amount1 > 0, 'SwipeswapV2: INSUFFICIENT_LIQUIDITY_BURNED');
+183	 _burn(address(this), liquidity);
+184	 _safeTransfer(_token0, to, amount0);
+185	 _safeTransfer(_token1, to, amount1);
+186	 balance0 = IERC20Uniswap(_token0).balanceOf(address(this));
+187	 balance1 = IERC20Uniswap(_token1).balanceOf(address(this));
+188	 _update(balance0, balance1, _reserve0, _reserve1);
+189	 if (feeOn) kLast = uint(reserve0).mul(reserve1);
+190	 emit Burn(msg.sender, amount0, amount1, to);
+191	 }
+192	 function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external lock {
+193	 require(amount0Out > 0 || amount1Out > 0, 'SwipeswapV2: INSUFFICIENT_OUTPUT_AMOUNT');
+194	 (uint112 _reserve0, uint112 _reserve1,) = getReserves();
+195	 require(amount0Out < _reserve0 && amount1Out < _reserve1, 'SwipeswapV2: INSUFFICIENT_LIQUIDITY');
+196	 uint balance0;
+197	 uint balance1;
+198	 {
+199	 address _token0 = token0;
+200	 address _token1 = token1;
+201	 require(to != _token0 && to != _token1, 'SwipeswapV2: INVALID_TO');
+202	 if (amount0Out > 0) _safeTransfer(_token0, to, amount0Out);
+203	 if (amount1Out > 0) _safeTransfer(_token1, to, amount1Out);
+204	 if (data.length > 0) IUniswapV2Callee(to).uniswapV2Call(msg.sender, amount0Out, amount1Out, data);
+205	 balance0 = IERC20Uniswap(_token0).balanceOf(address(this));
+206	 balance1 = IERC20Uniswap(_token1).balanceOf(address(this));
+207	 }
+208	 uint amount0In = balance0 > _reserve0 - amount0Out ? balance0 - (_reserve0 - amount0Out) : 0;
+209	 uint amount1In = balance1 > _reserve1 - amount1Out ? balance1 - (_reserve1 - amount1Out) : 0;
+210	 require(amount0In > 0 || amount1In > 0, 'SwipeswapV2: INSUFFICIENT_INPUT_AMOUNT');
+211	 {
+212	 uint balance0Adjusted = balance0.mul(1000).sub(amount0In.mul(3));
+213	 uint balance1Adjusted = balance1.mul(1000).sub(amount1In.mul(3));
+214	 require(balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(1000**2), 'SwipeswapV2: K');
+215	 }
+216	 _update(balance0, balance1, _reserve0, _reserve1);
+217	 emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, to);
+218	 }
+219	 function skim(address to) external lock {
+220	 address _token0 = token0;
+221	 address _token1 = token1;
+222	 _safeTransfer(_token0, to, IERC20Uniswap(_token0).balanceOf(address(this)).sub(reserve0));
+223	 _safeTransfer(_token1, to, IERC20Uniswap(_token1).balanceOf(address(this)).sub(reserve1));
+224	 }
+225	 function sync() external lock {
+226	 _update(IERC20Uniswap(token0).balanceOf(address(this)), IERC20Uniswap(token1).balanceOf(address(this)), reserve0, reserve1);
+227	 }
+228	 }
+229	 pragma solidity =0.6.12;
+230	 library Math {
+231	 function min(uint x, uint y) internal pure returns (uint z) {
+232	 z = x < y ? x : y;
+233	 }
+234	 function sqrt(uint y) internal pure returns (uint z) {
+235	 if (y > 3) {
+236	 z = y;
+237	 uint x = y / 2 + 1;
+238	 while (x < z) {
+239	 z = x;
+240	 x = (y / x + x) / 2;
+241	 }
+242	 }
+243	 else if (y != 0) {
+244	 z = 1;
+245	 }
+246	 }
+247	 }
+248	 pragma solidity =0.6.12;
+249	 library UQ112x112 {
+250	 uint224 constant Q112 = 2**112;
+251	 function encode(uint112 y) internal pure returns (uint224 z) {
+252	 z = uint224(y) * Q112;
+253	 }
+254	 function uqdiv(uint224 x, uint112 y) internal pure returns (uint224 z) {
+255	 z = x / uint224(y);
+256	 }
+257	 }
+258	 pragma solidity >=0.5.0;
+259	 interface IERC20Uniswap {
+260	 event Approval(address indexed owner, address indexed spender, uint value);
+261	 event Transfer(address indexed from, address indexed to, uint value);
+262	 function name() external view returns (string memory);
+263	 function symbol() external view returns (string memory);
+264	 function decimals() external view returns (uint8);
+265	 function totalSupply() external view returns (uint);
+266	 function balanceOf(address owner) external view returns (uint);
+267	 function allowance(address owner, address spender) external view returns (uint);
+268	 function approve(address spender, uint value) external returns (bool);
+269	 function transfer(address to, uint value) external returns (bool);
+270	 function transferFrom(address from, address to, uint value) external returns (bool);
+271	 }
+272	 pragma solidity >=0.5.0;
+273	 interface IUniswapV2Factory {
+274	 event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+275	 function feeTo() external view returns (address);
+276	 function feeToSetter() external view returns (address);
+277	 function migrator() external view returns (address);
+278	 function getPair(address tokenA, address tokenB) external view returns (address pair);
+279	 function allPairs(uint) external view returns (address pair);
+280	 function allPairsLength() external view returns (uint);
+281	 function createPair(address tokenA, address tokenB) external returns (address pair);
+282	 function setFeeTo(address) external;
+283	 function setFeeToSetter(address) external;
+284	 function setMigrator(address) external;
+285	 }
+286	 pragma solidity >=0.5.0;
+287	 interface IUniswapV2Callee {
+288	 function uniswapV2Call(address sender, uint amount0, uint amount1, bytes calldata data) external;
+289	 }
+290	 pragma solidity =0.6.12;
+291	 library SafeMathUniswap {
+292	 function add(uint x, uint y) internal pure returns (uint z) {
+293	 require((z = x + y) >= x, 'ds-math-add-overflow');
+294	 }
+295	 function sub(uint x, uint y) internal pure returns (uint z) {
+296	 require((z = x - y) <= x, 'ds-math-sub-underflow');
+297	 }
+298	 function mul(uint x, uint y) internal pure returns (uint z) {
+299	 require(y == 0 || (z = x * y) / y == x, 'ds-math-mul-overflow');
+300	 }
+301	 }

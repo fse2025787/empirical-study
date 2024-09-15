@@ -1,0 +1,487 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 interface IERC165 {
+3	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+4	 }
+5	 pragma solidity >=0.6.2 <0.8.0;
+6	 interface IERC721 is IERC165 {
+7	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+8	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+9	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+10	 function balanceOf(address owner) external view returns (uint256 balance);
+11	 function ownerOf(uint256 tokenId) external view returns (address owner);
+12	 function safeTransferFrom(address from, address to, uint256 tokenId) external;
+13	 function transferFrom(address from, address to, uint256 tokenId) external;
+14	 function approve(address to, uint256 tokenId) external;
+15	 function getApproved(uint256 tokenId) external view returns (address operator);
+16	 function setApprovalForAll(address operator, bool _approved) external;
+17	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+18	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;
+19	 }
+20	 pragma solidity >=0.6.2 <0.8.0;
+21	 interface IERC721Metadata is IERC721 {
+22	 function name() external view returns (string memory);
+23	 function symbol() external view returns (string memory);
+24	 function tokenURI(uint256 tokenId) external view returns (string memory);
+25	 }
+26	 pragma solidity >=0.6.2 <0.8.0;
+27	 interface IERC721Enumerable is IERC721 {
+28	 function totalSupply() external view returns (uint256);
+29	 function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256 tokenId);
+30	 function tokenByIndex(uint256 index) external view returns (uint256);
+31	 }
+32	 pragma solidity >=0.6.0 <0.8.0;
+33	 abstract contract Context {
+34	 function _msgSender() internal view virtual returns (address payable) {
+35	 return msg.sender;
+36	 }
+37	 function _msgData() internal view virtual returns (bytes memory) {
+38	 this;
+39	 return msg.data;
+40	 }
+41	 }
+42	 pragma solidity >=0.6.0 <0.8.0;
+43	 abstract contract ERC165 is IERC165 {
+44	 bytes4 private constant _INTERFACE_ID_ERC165 = 0x01ffc9a7;
+45	 mapping(bytes4 => bool) private _supportedInterfaces;
+46	 constructor () internal {
+47	 _registerInterface(_INTERFACE_ID_ERC165);
+48	 }
+49	 function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+50	 return _supportedInterfaces[interfaceId];
+51	 }
+52	 function _registerInterface(bytes4 interfaceId) internal virtual {
+53	 require(interfaceId != 0xffffffff, "ERC165: invalid interface id");
+54	 _supportedInterfaces[interfaceId] = true;
+55	 }
+56	 }
+57	 pragma solidity >=0.6.0 <0.8.0;
+58	 contract ERC721A is Context, ERC165, IERC721, IERC721Metadata, IERC721Enumerable {
+59	 using Address for address;
+60	 using Strings for uint256;
+61	 struct TokenOwnership {
+62	 address addr;
+63	 uint64 startTimestamp;
+64	 }
+65	 struct AddressData {
+66	 uint128 balance;
+67	 uint128 numberMinted;
+68	 }
+69	 uint256 private currentIndex = 0;
+70	 uint256 internal immutable collectionSize;
+71	 uint256 internal immutable maxBatchSize;
+72	 string private _name;
+73	 string private _symbol;
+74	 mapping(uint256 => TokenOwnership) private _ownerships;
+75	 mapping(address => AddressData) private _addressData;
+76	 mapping(uint256 => address) private _tokenApprovals;
+77	 mapping(address => mapping(address => bool)) private _operatorApprovals;
+78	 constructor( string memory name_, string memory symbol_, uint256 maxBatchSize_, uint256 collectionSize_ ) public {
+79	 require( collectionSize_ > 0, "ERC721A: collection must have a nonzero supply" );
+80	 require(maxBatchSize_ > 0, "ERC721A: max batch size must be nonzero");
+81	 _name = name_;
+82	 _symbol = symbol_;
+83	 maxBatchSize = maxBatchSize_;
+84	 collectionSize = collectionSize_;
+85	 }
+86	 function totalSupply() public view override returns (uint256) {
+87	 return currentIndex;
+88	 }
+89	 function tokenByIndex(uint256 index) public view override returns (uint256) {
+90	 require(index < totalSupply(), "ERC721A: global index out of bounds");
+91	 return index;
+92	 }
+93	 function tokenOfOwnerByIndex(address owner, uint256 index) public view override returns (uint256) {
+94	 require(index < balanceOf(owner), "ERC721A: owner index out of bounds");
+95	 uint256 numMintedSoFar = totalSupply();
+96	 uint256 tokenIdsIdx = 0;
+97	 address currOwnershipAddr = address(0);
+98	 for (uint256 i = 0; i < numMintedSoFar; i++) {
+99	 TokenOwnership memory ownership = _ownerships[i];
+100	 if (ownership.addr != address(0)) {
+101	 currOwnershipAddr = ownership.addr;
+102	 }
+103	 if (currOwnershipAddr == owner) {
+104	 if (tokenIdsIdx == index) {
+105	 return i;
+106	 }
+107	 tokenIdsIdx++;
+108	 }
+109	 }
+110	 revert("ERC721A: unable to get token of owner by index");
+111	 }
+112	 function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, IERC165) returns (bool) {
+113	 return interfaceId == type(IERC721).interfaceId || interfaceId == type(IERC721Metadata).interfaceId || interfaceId == type(IERC721Enumerable).interfaceId || super.supportsInterface(interfaceId);
+114	 }
+115	 function balanceOf(address owner) public view override returns (uint256) {
+116	 require( owner != address(0), "ERC721A: balance query for the zero address" );
+117	 return uint256(_addressData[owner].balance);
+118	 }
+119	 function _numberMinted(address owner) internal view returns (uint256) {
+120	 require( owner != address(0), "ERC721A: number minted query for the zero address" );
+121	 return uint256(_addressData[owner].numberMinted);
+122	 }
+123	 function ownershipOf(uint256 tokenId) internal view returns (TokenOwnership memory) {
+124	 require(_exists(tokenId), "ERC721A: owner query for nonexistent token");
+125	 uint256 lowestTokenToCheck;
+126	 if (tokenId >= maxBatchSize) {
+127	 lowestTokenToCheck = tokenId - maxBatchSize + 1;
+128	 }
+129	 for (uint256 curr = tokenId; curr >= lowestTokenToCheck; curr--) {
+130	 TokenOwnership memory ownership = _ownerships[curr];
+131	 if (ownership.addr != address(0)) {
+132	 return ownership;
+133	 }
+134	 }
+135	 revert("ERC721A: unable to determine the owner of token");
+136	 }
+137	 function ownerOf(uint256 tokenId) public view override returns (address) {
+138	 return ownershipOf(tokenId).addr;
+139	 }
+140	 function name() public view virtual override returns (string memory) {
+141	 return _name;
+142	 }
+143	 function symbol() public view virtual override returns (string memory) {
+144	 return _symbol;
+145	 }
+146	 function tokenURI(uint256 tokenId) public view virtual override returns (string memory) {
+147	 require( _exists(tokenId), "ERC721Metadata: URI query for nonexistent token" );
+148	 string memory baseURI = _baseURI();
+149	 return bytes(baseURI).length > 0 ? string(abi.encodePacked(baseURI, tokenId.toString())) : "";
+150	 }
+151	 function _baseURI() internal view virtual returns (string memory) {
+152	 return "";
+153	 }
+154	 function approve(address to, uint256 tokenId) public override {
+155	 address owner = ERC721A.ownerOf(tokenId);
+156	 require(to != owner, "ERC721A: approval to current owner");
+157	 require( _msgSender() == owner || isApprovedForAll(owner, _msgSender()), "ERC721A: approve caller is not owner nor approved for all" );
+158	 _approve(to, tokenId, owner);
+159	 }
+160	 function getApproved(uint256 tokenId) public view override returns (address) {
+161	 require( _exists(tokenId), "ERC721A: approved query for nonexistent token" );
+162	 return _tokenApprovals[tokenId];
+163	 }
+164	 function setApprovalForAll(address operator, bool approved) public override {
+165	 require(operator != _msgSender(), "ERC721A: approve to caller");
+166	 _operatorApprovals[_msgSender()][operator] = approved;
+167	 emit ApprovalForAll(_msgSender(), operator, approved);
+168	 }
+169	 function isApprovedForAll(address owner, address operator) public view virtual override returns (bool) {
+170	 return _operatorApprovals[owner][operator];
+171	 }
+172	 function transferFrom( address from, address to, uint256 tokenId ) public override {
+173	 _transfer(from, to, tokenId);
+174	 }
+175	 function safeTransferFrom( address from, address to, uint256 tokenId ) public override {
+176	 safeTransferFrom(from, to, tokenId, "");
+177	 }
+178	 function safeTransferFrom( address from, address to, uint256 tokenId, bytes memory _data ) public override {
+179	 _transfer(from, to, tokenId);
+180	 require( _checkOnERC721Received(from, to, tokenId, _data), "ERC721A: transfer to non ERC721Receiver implementer" );
+181	 }
+182	 function _exists(uint256 tokenId) internal view returns (bool) {
+183	 return tokenId < currentIndex;
+184	 }
+185	 function _safeMint(address to, uint256 quantity) internal {
+186	 _safeMint(to, quantity, "");
+187	 }
+188	 function _safeMint( address to, uint256 quantity, bytes memory _data ) internal {
+189	 uint256 startTokenId = currentIndex;
+190	 require(to != address(0), "ERC721A: mint to the zero address");
+191	 require(!_exists(startTokenId), "ERC721A: token already minted");
+192	 require(quantity <= maxBatchSize, "ERC721A: quantity to mint too high");
+193	 _beforeTokenTransfers(address(0), to, startTokenId, quantity);
+194	 AddressData memory addressData = _addressData[to];
+195	 _addressData[to] = AddressData( addressData.balance + uint128(quantity), addressData.numberMinted + uint128(quantity) );
+196	 _ownerships[startTokenId] = TokenOwnership(to, uint64(block.timestamp));
+197	 uint256 updatedIndex = startTokenId;
+198	 for (uint256 i = 0; i < quantity; i++) {
+199	 emit Transfer(address(0), to, updatedIndex);
+200	 require( _checkOnERC721Received(address(0), to, updatedIndex, _data), "ERC721A: transfer to non ERC721Receiver implementer" );
+201	 updatedIndex++;
+202	 }
+203	 currentIndex = updatedIndex;
+204	 _afterTokenTransfers(address(0), to, startTokenId, quantity);
+205	 }
+206	 function _transfer( address from, address to, uint256 tokenId ) private {
+207	 TokenOwnership memory prevOwnership = ownershipOf(tokenId);
+208	 bool isApprovedOrOwner = (_msgSender() == prevOwnership.addr || getApproved(tokenId) == _msgSender() || isApprovedForAll(prevOwnership.addr, _msgSender()));
+209	 require( isApprovedOrOwner, "ERC721A: transfer caller is not owner nor approved" );
+210	 require( prevOwnership.addr == from, "ERC721A: transfer from incorrect owner" );
+211	 require(to != address(0), "ERC721A: transfer to the zero address");
+212	 _beforeTokenTransfers(from, to, tokenId, 1);
+213	 _approve(address(0), tokenId, prevOwnership.addr);
+214	 _addressData[from].balance -= 1;
+215	 _addressData[to].balance += 1;
+216	 _ownerships[tokenId] = TokenOwnership(to, uint64(block.timestamp));
+217	 uint256 nextTokenId = tokenId + 1;
+218	 if (_ownerships[nextTokenId].addr == address(0)) {
+219	 if (_exists(nextTokenId)) {
+220	 _ownerships[nextTokenId] = TokenOwnership( prevOwnership.addr, prevOwnership.startTimestamp );
+221	 }
+222	 }
+223	 emit Transfer(from, to, tokenId);
+224	 _afterTokenTransfers(from, to, tokenId, 1);
+225	 }
+226	 function _approve( address to, uint256 tokenId, address owner ) private {
+227	 _tokenApprovals[tokenId] = to;
+228	 emit Approval(owner, to, tokenId);
+229	 }
+230	 uint256 public nextOwnerToExplicitlySet = 0;
+231	 function _setOwnersExplicit(uint256 quantity) internal {
+232	 uint256 oldNextOwnerToSet = nextOwnerToExplicitlySet;
+233	 require(quantity > 0, "quantity must be nonzero");
+234	 uint256 endIndex = oldNextOwnerToSet + quantity - 1;
+235	 if (endIndex > collectionSize - 1) {
+236	 endIndex = collectionSize - 1;
+237	 }
+238	 require(_exists(endIndex), "not enough minted yet for this cleanup");
+239	 for (uint256 i = oldNextOwnerToSet; i <= endIndex; i++) {
+240	 if (_ownerships[i].addr == address(0)) {
+241	 TokenOwnership memory ownership = ownershipOf(i);
+242	 _ownerships[i] = TokenOwnership( ownership.addr, ownership.startTimestamp );
+243	 }
+244	 }
+245	 nextOwnerToExplicitlySet = endIndex + 1;
+246	 }
+247	 function _checkOnERC721Received( address from, address to, uint256 tokenId, bytes memory _data ) private returns (bool) {
+248	 if (to.isContract()) {
+249	 try IERC721Receiver(to).onERC721Received( _msgSender(), from, tokenId, _data ) returns (bytes4 retval) {
+250	 return retval == IERC721Receiver(to).onERC721Received.selector;
+251	 }
+252	 catch (bytes memory reason) {
+253	 if (reason.length == 0) {
+254	 revert( "ERC721A: transfer to non ERC721Receiver implementer" );
+255	 }
+256	 else {
+257	 assembly {
+258	 revert(add(32, reason), mload(reason)) }
+259	 }
+260	 }
+261	 }
+262	 else {
+263	 return true;
+264	 }
+265	 }
+266	 function _beforeTokenTransfers( address from, address to, uint256 startTokenId, uint256 quantity ) internal virtual {
+267	 }
+268	 function _afterTokenTransfers( address from, address to, uint256 startTokenId, uint256 quantity ) internal virtual {
+269	 }
+270	 }
+271	 pragma solidity >=0.6.0 <0.8.0;
+272	 abstract contract Ownable is Context {
+273	 address private _owner;
+274	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+275	 constructor () internal {
+276	 address msgSender = _msgSender();
+277	 _owner = msgSender;
+278	 emit OwnershipTransferred(address(0), msgSender);
+279	 }
+280	 function owner() public view virtual returns (address) {
+281	 return _owner;
+282	 }
+283	 modifier onlyOwner() {
+284	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+285	 _;
+286	 }
+287	 function renounceOwnership() public virtual onlyOwner {
+288	 emit OwnershipTransferred(_owner, address(0));
+289	 _owner = address(0);
+290	 }
+291	 function transferOwnership(address newOwner) public virtual onlyOwner {
+292	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+293	 emit OwnershipTransferred(_owner, newOwner);
+294	 _owner = newOwner;
+295	 }
+296	 }
+297	 pragma solidity >=0.6.0 <0.8.0;
+298	 abstract contract ReentrancyGuard {
+299	 uint256 private constant _NOT_ENTERED = 1;
+300	 uint256 private constant _ENTERED = 2;
+301	 uint256 private _status;
+302	 constructor () internal {
+303	 _status = _NOT_ENTERED;
+304	 }
+305	 modifier nonReentrant() {
+306	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+307	 _status = _ENTERED;
+308	 _;
+309	 _status = _NOT_ENTERED;
+310	 }
+311	 }
+312	 pragma solidity ^0.6.6;
+313	 contract GodsOfYesterday is Ownable, ERC721A, ReentrancyGuard {
+314	 uint256 public maxSupply = 999;
+315	 uint256 public maxMintPerTx = 10;
+316	 uint256 public price = 0.01 * 10**18;
+317	 bytes32 public whitelistMerkleRoot = 0x6d159ad8102637df815b097913faa5e0b8eb5d2abb0988c1167c8b303d11b039;
+318	 bool public publicPaused = true;
+319	 bool public revealed = false;
+320	 string public baseURI;
+321	 string public hiddenMetadataUri = "ipfs: constructor() public ERC721A("Gods of Yesterday", "GODS", 999, 999) {
+322	 }
+323	 function whitelistMint(uint256 amount, bytes32[] calldata _merkleProof) public payable {
+324	 bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+325	 uint256 ts = totalSupply();
+326	 require(ts + amount <= maxSupply, "Purchase would exceed max tokens");
+327	 require( MerkleProof.verify(_merkleProof, whitelistMerkleRoot, leaf), "Invalid proof!" );
+328	 {
+329	 _safeMint(msg.sender, amount);
+330	 }
+331	 }
+332	 function mint(uint256 amount) external payable {
+333	 uint256 ts = totalSupply();
+334	 require(publicPaused == false, "Mint not open for public");
+335	 require(ts + amount <= maxSupply, "Purchase would exceed max tokens");
+336	 require( amount <= maxMintPerTx, "Amount should not exceed max mint number" );
+337	 require(msg.value >= price * amount, "Please send the exact amount.");
+338	 _safeMint(msg.sender, amount);
+339	 }
+340	 function setPublicPaused(bool paused) external onlyOwner {
+341	 publicPaused = paused;
+342	 }
+343	 function setWhitelistMerkleRoot(bytes32 _merkleRoot) external onlyOwner {
+344	 whitelistMerkleRoot = _merkleRoot;
+345	 }
+346	 function setPrice(uint256 _price) external onlyOwner {
+347	 price = _price;
+348	 }
+349	 function whitelistStop(uint256 _maxSupply) external onlyOwner {
+350	 maxSupply = _maxSupply;
+351	 }
+352	 function setMaxPerTx(uint256 _maxMintPerTx) external onlyOwner {
+353	 maxMintPerTx = _maxMintPerTx;
+354	 }
+355	 function setRevealed(bool _state) public onlyOwner {
+356	 revealed = _state;
+357	 }
+358	 function setBaseURI(string calldata newBaseURI) external onlyOwner {
+359	 baseURI = newBaseURI;
+360	 }
+361	 function _baseURI() internal view override returns (string memory) {
+362	 return baseURI;
+363	 }
+364	 function setHiddenMetadataUri(string memory _hiddenMetadataUri) public onlyOwner {
+365	 hiddenMetadataUri = _hiddenMetadataUri;
+366	 }
+367	 function tokenURI(uint256 _tokenId) public view virtual override returns (string memory) {
+368	 require( _exists(_tokenId), "ERC721Metadata: URI query for nonexistent token" );
+369	 if (revealed == false) {
+370	 return hiddenMetadataUri;
+371	 }
+372	 string memory currentBaseURI = _baseURI();
+373	 return bytes(currentBaseURI).length > 0 ? string(abi.encodePacked(currentBaseURI, _tokenId.toString())) : "";
+374	 }
+375	 function withdraw() external onlyOwner nonReentrant {
+376	 (bool success, ) = msg.sender.call{
+377	 value: address(this).balance}
+378	 ("");
+379	 require(success, "Transfer failed.");
+380	 }
+381	 }
+382	 pragma solidity >=0.6.0 <0.8.0;
+383	 interface IERC721Receiver {
+384	 function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) external returns (bytes4);
+385	 }
+386	 pragma solidity >=0.6.2 <0.8.0;
+387	 library Address {
+388	 function isContract(address account) internal view returns (bool) {
+389	 uint256 size;
+390	 assembly {
+391	 size := extcodesize(account) }
+392	 return size > 0;
+393	 }
+394	 function sendValue(address payable recipient, uint256 amount) internal {
+395	 require(address(this).balance >= amount, "Address: insufficient balance");
+396	 (bool success, ) = recipient.call{
+397	 value: amount }
+398	 ("");
+399	 require(success, "Address: unable to send value, recipient may have reverted");
+400	 }
+401	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+402	 return functionCall(target, data, "Address: low-level call failed");
+403	 }
+404	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+405	 return functionCallWithValue(target, data, 0, errorMessage);
+406	 }
+407	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+408	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+409	 }
+410	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+411	 require(address(this).balance >= value, "Address: insufficient balance for call");
+412	 require(isContract(target), "Address: call to non-contract");
+413	 (bool success, bytes memory returndata) = target.call{
+414	 value: value }
+415	 (data);
+416	 return _verifyCallResult(success, returndata, errorMessage);
+417	 }
+418	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+419	 return functionStaticCall(target, data, "Address: low-level static call failed");
+420	 }
+421	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+422	 require(isContract(target), "Address: static call to non-contract");
+423	 (bool success, bytes memory returndata) = target.staticcall(data);
+424	 return _verifyCallResult(success, returndata, errorMessage);
+425	 }
+426	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+427	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+428	 }
+429	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+430	 require(isContract(target), "Address: delegate call to non-contract");
+431	 (bool success, bytes memory returndata) = target.delegatecall(data);
+432	 return _verifyCallResult(success, returndata, errorMessage);
+433	 }
+434	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+435	 if (success) {
+436	 return returndata;
+437	 }
+438	 else {
+439	 if (returndata.length > 0) {
+440	 assembly {
+441	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+442	 }
+443	 else {
+444	 revert(errorMessage);
+445	 }
+446	 }
+447	 }
+448	 }
+449	 pragma solidity >=0.6.0 <0.8.0;
+450	 library Strings {
+451	 function toString(uint256 value) internal pure returns (string memory) {
+452	 if (value == 0) {
+453	 return "0";
+454	 }
+455	 uint256 temp = value;
+456	 uint256 digits;
+457	 while (temp != 0) {
+458	 digits++;
+459	 temp /= 10;
+460	 }
+461	 bytes memory buffer = new bytes(digits);
+462	 uint256 index = digits - 1;
+463	 temp = value;
+464	 while (temp != 0) {
+465	 buffer[index--] = bytes1(uint8(48 + temp % 10));
+466	 temp /= 10;
+467	 }
+468	 return string(buffer);
+469	 }
+470	 }
+471	 pragma solidity >=0.6.0 <0.8.0;
+472	 library MerkleProof {
+473	 function verify(bytes32[] memory proof, bytes32 root, bytes32 leaf) internal pure returns (bool) {
+474	 bytes32 computedHash = leaf;
+475	 for (uint256 i = 0; i < proof.length; i++) {
+476	 bytes32 proofElement = proof[i];
+477	 if (computedHash <= proofElement) {
+478	 computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
+479	 }
+480	 else {
+481	 computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
+482	 }
+483	 }
+484	 return computedHash == root;
+485	 }
+486	 }

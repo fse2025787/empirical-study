@@ -1,0 +1,786 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity >=0.6.0 <0.8.0;
+3	 interface IERC20 {
+4	 function totalSupply() external view returns (uint256);
+5	 function balanceOf(address account) external view returns (uint256);
+6	 function transfer(address recipient, uint256 amount) external returns (bool);
+7	 function allowance(address owner, address spender) external view returns (uint256);
+8	 function approve(address spender, uint256 amount) external returns (bool);
+9	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+10	 event Transfer(address indexed from, address indexed to, uint256 value);
+11	 event Approval(address indexed owner, address indexed spender, uint256 value);
+12	 }
+13	 pragma solidity >=0.6.2;
+14	 interface IUniswapV2Router01 {
+15	 function factory() external pure returns (address);
+16	 function WETH() external pure returns (address);
+17	 function addLiquidity( address tokenA, address tokenB, uint amountADesired, uint amountBDesired, uint amountAMin, uint amountBMin, address to, uint deadline ) external returns (uint amountA, uint amountB, uint liquidity);
+18	 function addLiquidityETH( address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+19	 function removeLiquidity( address tokenA, address tokenB, uint liquidity, uint amountAMin, uint amountBMin, address to, uint deadline ) external returns (uint amountA, uint amountB);
+20	 function removeLiquidityETH( address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external returns (uint amountToken, uint amountETH);
+21	 function removeLiquidityWithPermit( address tokenA, address tokenB, uint liquidity, uint amountAMin, uint amountBMin, address to, uint deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s ) external returns (uint amountA, uint amountB);
+22	 function removeLiquidityETHWithPermit( address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s ) external returns (uint amountToken, uint amountETH);
+23	 function swapExactTokensForTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external returns (uint[] memory amounts);
+24	 function swapTokensForExactTokens( uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline ) external returns (uint[] memory amounts);
+25	 function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts);
+26	 function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+27	 function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+28	 function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts);
+29	 function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+30	 function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+31	 function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+32	 function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+33	 function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+34	 }
+35	 pragma solidity ^0.7.6;
+36	 contract ClaimFacet {
+37	 event BeanClaim(address indexed account, uint32[] withdrawals, uint256 beans);
+38	 event LPClaim(address indexed account, uint32[] withdrawals, uint256 lp);
+39	 event EtherClaim(address indexed account, uint256 ethereum);
+40	 event Harvest(address indexed account, uint256[] plots, uint256 beans);
+41	 event BeanAllocation(address indexed account, uint256 beans);
+42	 using SafeMath for uint256;
+43	 AppStorage internal s;
+44	 function claim(LibClaim.Claim calldata c) public payable returns (uint256 beansClaimed) {
+45	 beansClaimed = LibClaim.claim(c);
+46	 LibCheck.balanceCheck();
+47	 }
+48	 function claimAndUnwrapBeans(LibClaim.Claim calldata c, uint256 amount) public payable returns (uint256 beansClaimed) {
+49	 beansClaimed = LibClaim.claim(c);
+50	 beansClaimed = beansClaimed.add(unwrapBeans(amount));
+51	 LibCheck.balanceCheck();
+52	 }
+53	 function claimBeans(uint32[] calldata withdrawals) public {
+54	 uint256 beansClaimed = LibClaim.claimBeans(withdrawals);
+55	 IBean(s.c.bean).transfer(msg.sender, beansClaimed);
+56	 LibCheck.beanBalanceCheck();
+57	 }
+58	 function claimLP(uint32[] calldata withdrawals) public {
+59	 LibClaim.claimLP(withdrawals);
+60	 LibCheck.lpBalanceCheck();
+61	 }
+62	 function removeAndClaimLP( uint32[] calldata withdrawals, uint256 minBeanAmount, uint256 minEthAmount ) public {
+63	 LibClaim.removeAndClaimLP(withdrawals, minBeanAmount, minEthAmount);
+64	 LibCheck.balanceCheck();
+65	 }
+66	 function harvest(uint256[] calldata plots) public {
+67	 uint256 beansHarvested = LibClaim.harvest(plots);
+68	 IBean(s.c.bean).transfer(msg.sender, beansHarvested);
+69	 LibCheck.beanBalanceCheck();
+70	 }
+71	 function claimEth() public {
+72	 LibClaim.claimEth();
+73	 }
+74	 function unwrapBeans(uint amount) public returns (uint256 beansToWallet) {
+75	 if (amount == 0) return beansToWallet;
+76	 uint256 wBeans = s.a[msg.sender].wrappedBeans;
+77	 if (amount > wBeans) {
+78	 IBean(s.c.bean).transfer(msg.sender, wBeans);
+79	 beansToWallet = s.a[msg.sender].wrappedBeans;
+80	 s.a[msg.sender].wrappedBeans = 0;
+81	 }
+82	 else {
+83	 IBean(s.c.bean).transfer(msg.sender, amount);
+84	 s.a[msg.sender].wrappedBeans = wBeans.sub(amount);
+85	 beansToWallet = amount;
+86	 }
+87	 }
+88	 function wrapBeans(uint amount) public {
+89	 IBean(s.c.bean).transferFrom(msg.sender, address(this), amount);
+90	 s.a[msg.sender].wrappedBeans = s.a[msg.sender].wrappedBeans.add(amount);
+91	 }
+92	 function wrappedBeans(address user) public view returns (uint256) {
+93	 return s.a[user].wrappedBeans;
+94	 }
+95	 }
+96	 pragma solidity >=0.6.0 <0.8.0;
+97	 library SafeMath {
+98	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+99	 uint256 c = a + b;
+100	 if (c < a) return (false, 0);
+101	 return (true, c);
+102	 }
+103	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+104	 if (b > a) return (false, 0);
+105	 return (true, a - b);
+106	 }
+107	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+108	 if (a == 0) return (true, 0);
+109	 uint256 c = a * b;
+110	 if (c / a != b) return (false, 0);
+111	 return (true, c);
+112	 }
+113	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+114	 if (b == 0) return (false, 0);
+115	 return (true, a / b);
+116	 }
+117	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+118	 if (b == 0) return (false, 0);
+119	 return (true, a % b);
+120	 }
+121	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+122	 uint256 c = a + b;
+123	 require(c >= a, "SafeMath: addition overflow");
+124	 return c;
+125	 }
+126	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+127	 require(b <= a, "SafeMath: subtraction overflow");
+128	 return a - b;
+129	 }
+130	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+131	 if (a == 0) return 0;
+132	 uint256 c = a * b;
+133	 require(c / a == b, "SafeMath: multiplication overflow");
+134	 return c;
+135	 }
+136	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+137	 require(b > 0, "SafeMath: division by zero");
+138	 return a / b;
+139	 }
+140	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+141	 require(b > 0, "SafeMath: modulo by zero");
+142	 return a % b;
+143	 }
+144	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+145	 require(b <= a, errorMessage);
+146	 return a - b;
+147	 }
+148	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+149	 require(b > 0, errorMessage);
+150	 return a / b;
+151	 }
+152	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+153	 require(b > 0, errorMessage);
+154	 return a % b;
+155	 }
+156	 }
+157	 pragma solidity ^0.7.6;
+158	 contract Account {
+159	 struct Field {
+160	 mapping(uint256 => uint256) plots;
+161	 mapping(address => uint256) podAllowances;
+162	 }
+163	 struct AssetSilo {
+164	 mapping(uint32 => uint256) withdrawals;
+165	 mapping(uint32 => uint256) deposits;
+166	 mapping(uint32 => uint256) depositSeeds;
+167	 }
+168	 struct Silo {
+169	 uint256 stalk;
+170	 uint256 seeds;
+171	 }
+172	 struct SeasonOfPlenty {
+173	 uint256 base;
+174	 uint256 roots;
+175	 uint256 basePerRoot;
+176	 }
+177	 struct State {
+178	 Field field;
+179	 AssetSilo bean;
+180	 AssetSilo lp;
+181	 Silo s;
+182	 uint32 votedUntil;
+183	 uint32 lastUpdate;
+184	 uint32 lastSop;
+185	 uint32 lastRain;
+186	 uint32 lastSIs;
+187	 uint32 proposedUntil;
+188	 SeasonOfPlenty sop;
+189	 uint256 roots;
+190	 uint256 wrappedBeans;
+191	 }
+192	 }
+193	 contract Storage {
+194	 struct Contracts {
+195	 address bean;
+196	 address pair;
+197	 address pegPair;
+198	 address weth;
+199	 }
+200	 struct Field {
+201	 uint256 soil;
+202	 uint256 pods;
+203	 uint256 harvested;
+204	 uint256 harvestable;
+205	 }
+206	 struct Bip {
+207	 address proposer;
+208	 uint32 start;
+209	 uint32 period;
+210	 bool executed;
+211	 int pauseOrUnpause;
+212	 uint128 timestamp;
+213	 uint256 roots;
+214	 uint256 endTotalRoots;
+215	 }
+216	 struct DiamondCut {
+217	 IDiamondCut.FacetCut[] diamondCut;
+218	 address initAddress;
+219	 bytes initData;
+220	 }
+221	 struct Governance {
+222	 uint32[] activeBips;
+223	 uint32 bipIndex;
+224	 mapping(uint32 => DiamondCut) diamondCuts;
+225	 mapping(uint32 => mapping(address => bool)) voted;
+226	 mapping(uint32 => Bip) bips;
+227	 }
+228	 struct AssetSilo {
+229	 uint256 deposited;
+230	 uint256 withdrawn;
+231	 }
+232	 struct IncreaseSilo {
+233	 uint256 beans;
+234	 uint256 stalk;
+235	 }
+236	 struct V1IncreaseSilo {
+237	 uint256 beans;
+238	 uint256 stalk;
+239	 uint256 roots;
+240	 }
+241	 struct SeasonOfPlenty {
+242	 uint256 weth;
+243	 uint256 base;
+244	 uint32 last;
+245	 }
+246	 struct Silo {
+247	 uint256 stalk;
+248	 uint256 seeds;
+249	 uint256 roots;
+250	 }
+251	 struct Oracle {
+252	 bool initialized;
+253	 uint256 cumulative;
+254	 uint256 pegCumulative;
+255	 uint32 timestamp;
+256	 uint32 pegTimestamp;
+257	 }
+258	 struct Rain {
+259	 uint32 start;
+260	 bool raining;
+261	 uint256 pods;
+262	 uint256 roots;
+263	 }
+264	 struct Season {
+265	 uint32 current;
+266	 uint32 sis;
+267	 uint8 withdrawSeasons;
+268	 uint256 start;
+269	 uint256 period;
+270	 uint256 timestamp;
+271	 }
+272	 struct Weather {
+273	 uint256 startSoil;
+274	 uint256 lastDSoil;
+275	 uint96 lastSoilPercent;
+276	 uint32 lastSowTime;
+277	 uint32 nextSowTime;
+278	 uint32 yield;
+279	 bool didSowBelowMin;
+280	 bool didSowFaster;
+281	 }
+282	 struct Fundraiser {
+283	 address payee;
+284	 address token;
+285	 uint256 total;
+286	 uint256 remaining;
+287	 }
+288	 }
+289	 struct AppStorage {
+290	 uint8 index;
+291	 int8[32] cases;
+292	 bool paused;
+293	 uint128 pausedAt;
+294	 Storage.Season season;
+295	 Storage.Contracts c;
+296	 Storage.Field f;
+297	 Storage.Governance g;
+298	 Storage.Oracle o;
+299	 Storage.Rain r;
+300	 Storage.Silo s;
+301	 uint256 depreciated1;
+302	 Storage.Weather w;
+303	 Storage.AssetSilo bean;
+304	 Storage.AssetSilo lp;
+305	 Storage.IncreaseSilo si;
+306	 Storage.SeasonOfPlenty sop;
+307	 Storage.V1IncreaseSilo v1SI;
+308	 uint256 unclaimedRoots;
+309	 uint256 v2SIBeans;
+310	 mapping (uint32 => uint256) sops;
+311	 mapping (address => Account.State) a;
+312	 uint32 bip0Start;
+313	 uint32 hotFix3Start;
+314	 mapping (uint32 => Storage.Fundraiser) fundraisers;
+315	 uint32 fundraiserIndex;
+316	 mapping (address => bool) isBudget;
+317	 }
+318	 pragma solidity ^0.7.6;
+319	 library LibCheck {
+320	 using SafeMath for uint256;
+321	 function beanBalanceCheck() internal view {
+322	 AppStorage storage s = LibAppStorage.diamondStorage();
+323	 require( IBean(s.c.bean).balanceOf(address(this)) >= s.f.harvestable.sub(s.f.harvested).add(s.bean.deposited).add(s.bean.withdrawn), "Check: Bean balance fail." );
+324	 }
+325	 function lpBalanceCheck() internal view {
+326	 AppStorage storage s = LibAppStorage.diamondStorage();
+327	 require( IUniswapV2Pair(s.c.pair).balanceOf(address(this)) >= s.lp.deposited.add(s.lp.withdrawn), "Check: LP balance fail." );
+328	 }
+329	 function balanceCheck() internal view {
+330	 AppStorage storage s = LibAppStorage.diamondStorage();
+331	 require( IBean(s.c.bean).balanceOf(address(this)) >= s.f.harvestable.sub(s.f.harvested).add(s.bean.deposited).add(s.bean.withdrawn), "Check: Bean balance fail." );
+332	 require( IUniswapV2Pair(s.c.pair).balanceOf(address(this)) >= s.lp.deposited.add(s.lp.withdrawn), "Check: LP balance fail." );
+333	 }
+334	 }
+335	 pragma solidity ^0.7.6;
+336	 library LibInternal {
+337	 bytes32 constant DIAMOND_STORAGE_POSITION = keccak256("diamond.standard.diamond.storage");
+338	 struct FacetAddressAndPosition {
+339	 address facetAddress;
+340	 uint16 functionSelectorPosition;
+341	 }
+342	 struct FacetFunctionSelectors {
+343	 bytes4[] functionSelectors;
+344	 uint16 facetAddressPosition;
+345	 }
+346	 struct DiamondStorage {
+347	 mapping(bytes4 => FacetAddressAndPosition) selectorToFacetAndPosition;
+348	 mapping(address => FacetFunctionSelectors) facetFunctionSelectors;
+349	 address[] facetAddresses;
+350	 mapping(bytes4 => bool) supportedInterfaces;
+351	 address contractOwner;
+352	 }
+353	 function diamondStorage() internal pure returns (DiamondStorage storage ds) {
+354	 bytes32 position = DIAMOND_STORAGE_POSITION;
+355	 assembly {
+356	 ds.slot := position }
+357	 }
+358	 struct Claim {
+359	 uint32[] beanWithdrawals;
+360	 uint32[] lpWithdrawals;
+361	 uint256[] plots;
+362	 bool claimEth;
+363	 bool convertLP;
+364	 uint256 minBeanAmount;
+365	 uint256 minEthAmount;
+366	 }
+367	 function updateSilo(address account) internal {
+368	 DiamondStorage storage ds = diamondStorage();
+369	 bytes4 functionSelector = bytes4(keccak256("updateSilo(address)"));
+370	 address facet = ds.selectorToFacetAndPosition[functionSelector].facetAddress;
+371	 bytes memory myFunctionCall = abi.encodeWithSelector(functionSelector, account);
+372	 (bool success,) = address(facet).delegatecall(myFunctionCall);
+373	 require(success, "Silo: updateSilo failed.");
+374	 }
+375	 function updateBip(uint32 bip) internal {
+376	 DiamondStorage storage ds = diamondStorage();
+377	 bytes4 functionSelector = bytes4(keccak256("updateBip(uint32)"));
+378	 address facet = ds.selectorToFacetAndPosition[functionSelector].facetAddress;
+379	 bytes memory myFunctionCall = abi.encodeWithSelector(functionSelector, bip);
+380	 (bool success,) = address(facet).delegatecall(myFunctionCall);
+381	 require(success, "Silo: updateBip failed.");
+382	 }
+383	 function stalkFor(uint32 bip) internal returns (uint256 stalk) {
+384	 DiamondStorage storage ds = diamondStorage();
+385	 bytes4 functionSelector = bytes4(keccak256("stalkFor(uint32)"));
+386	 address facet = ds.selectorToFacetAndPosition[functionSelector].facetAddress;
+387	 bytes memory myFunctionCall = abi.encodeWithSelector(functionSelector, bip);
+388	 (bool success, bytes memory data) = address(facet).delegatecall(myFunctionCall);
+389	 require(success, "Governance: stalkFor failed.");
+390	 assembly {
+391	 stalk := mload(add(data, add(0x20, 0))) }
+392	 }
+393	 }
+394	 pragma solidity ^0.7.6;
+395	 library LibMarket {
+396	 event BeanAllocation(address indexed account, uint256 beans);
+397	 struct DiamondStorage {
+398	 address bean;
+399	 address weth;
+400	 address router;
+401	 }
+402	 struct AddLiquidity {
+403	 uint256 beanAmount;
+404	 uint256 minBeanAmount;
+405	 uint256 minEthAmount;
+406	 }
+407	 using SafeMath for uint256;
+408	 bytes32 private constant MARKET_STORAGE_POSITION = keccak256("diamond.standard.market.storage");
+409	 function diamondStorage() internal pure returns (DiamondStorage storage ds) {
+410	 bytes32 position = MARKET_STORAGE_POSITION;
+411	 assembly {
+412	 ds.slot := position }
+413	 }
+414	 function initMarket(address bean, address weth, address router) internal {
+415	 DiamondStorage storage ds = diamondStorage();
+416	 ds.bean = bean;
+417	 ds.weth = weth;
+418	 ds.router = router;
+419	 }
+420	 function buy(uint256 buyBeanAmount) internal returns (uint256 amount) {
+421	 (uint256 ethAmount, uint256 beanAmount) = _buy(buyBeanAmount, msg.value, msg.sender);
+422	 (bool success,) = msg.sender.call{
+423	 value: msg.value.sub(ethAmount) }
+424	 ("");
+425	 require(success, "Market: Refund failed.");
+426	 return beanAmount;
+427	 }
+428	 function buyAndDeposit(uint256 buyBeanAmount) internal returns (uint256 amount) {
+429	 (uint256 ethAmount, uint256 beanAmount) = _buy(buyBeanAmount, msg.value, address(this));
+430	 (bool success,) = msg.sender.call{
+431	 value: msg.value.sub(ethAmount) }
+432	 ("");
+433	 require(success, "Market: Refund failed.");
+434	 return beanAmount;
+435	 }
+436	 function sellToWETH(uint256 sellBeanAmount, uint256 minBuyEthAmount) internal returns (uint256 amount) {
+437	 (,uint256 outAmount) = _sell(sellBeanAmount, minBuyEthAmount, address(this));
+438	 return outAmount;
+439	 }
+440	 function addLiquidity(AddLiquidity calldata al) internal returns (uint256, uint256) {
+441	 (uint256 beansDeposited, uint256 ethDeposited, uint256 liquidity) = _addLiquidity( msg.value, al.beanAmount, al.minEthAmount, al.minBeanAmount );
+442	 (bool success,) = msg.sender.call{
+443	 value: msg.value.sub(ethDeposited) }
+444	 ("");
+445	 require(success, "Market: Refund failed.");
+446	 return (beansDeposited, liquidity);
+447	 }
+448	 function removeLiquidity(uint256 liqudity, uint256 minBeanAmount,uint256 minEthAmount) internal returns (uint256 beanAmount, uint256 ethAmount) {
+449	 DiamondStorage storage ds = diamondStorage();
+450	 return IUniswapV2Router02(ds.router).removeLiquidityETH( ds.bean, liqudity, minBeanAmount, minEthAmount, msg.sender, block.timestamp.add(1) );
+451	 }
+452	 function removeLiquidityWithBeanAllocation(uint256 liqudity, uint256 minBeanAmount,uint256 minEthAmount) internal returns (uint256 beanAmount, uint256 ethAmount) {
+453	 DiamondStorage storage ds = diamondStorage();
+454	 (beanAmount, ethAmount) = IUniswapV2Router02(ds.router).removeLiquidity( ds.bean, ds.weth, liqudity, minBeanAmount, minEthAmount, address(this), block.timestamp.add(1) );
+455	 IWETH(ds.weth).withdraw(ethAmount);
+456	 (bool success, ) = msg.sender.call{
+457	 value: ethAmount}
+458	 ("");
+459	 require(success, "WETH: ETH transfer failed");
+460	 }
+461	 function addAndDepositLiquidity(AddLiquidity calldata al) internal returns (uint256) {
+462	 DiamondStorage storage ds = diamondStorage();
+463	 allocatedBeans(al.beanAmount);
+464	 (uint256 beans, uint256 liquidity) = addLiquidity(al);
+465	 if (al.beanAmount > beans) IBean(ds.bean).transfer(msg.sender, al.beanAmount.sub(beans));
+466	 return liquidity;
+467	 }
+468	 function swapAndAddLiquidity( uint256 buyBeanAmount, uint256 buyEthAmount, LibMarket.AddLiquidity calldata al ) internal returns (uint256) {
+469	 uint256 boughtLP;
+470	 if (buyBeanAmount > 0) boughtLP = LibMarket.buyBeansAndAddLiquidity(buyBeanAmount, al);
+471	 else if (buyEthAmount > 0) boughtLP = LibMarket.buyEthAndAddLiquidity(buyEthAmount, al);
+472	 else boughtLP = LibMarket.addAndDepositLiquidity(al);
+473	 return boughtLP;
+474	 }
+475	 function buyBeansAndAddLiquidity(uint256 buyBeanAmount, AddLiquidity calldata al) internal returns (uint256) {
+476	 DiamondStorage storage ds = diamondStorage();
+477	 IWETH(ds.weth).deposit{
+478	 value: msg.value}
+479	 ();
+480	 address[] memory path = new address[](2);
+481	 path[0] = ds.weth;
+482	 path[1] = ds.bean;
+483	 uint256[] memory amounts = IUniswapV2Router02(ds.router).getAmountsIn(buyBeanAmount, path);
+484	 (uint256 ethSold, uint256 beans) = _buyWithWETH(buyBeanAmount, amounts[0], address(this));
+485	 if (al.beanAmount > buyBeanAmount) {
+486	 allocatedBeans(al.beanAmount.sub(buyBeanAmount));
+487	 beans = beans.add(al.beanAmount.sub(buyBeanAmount));
+488	 }
+489	 uint256 liquidity;
+490	 uint256 ethAdded;
+491	 (beans, ethAdded, liquidity) = _addLiquidityWETH( msg.value.sub(ethSold), beans, al.minEthAmount, al.minBeanAmount );
+492	 if (al.beanAmount > beans) IBean(ds.bean).transfer(msg.sender, al.beanAmount.sub(beans));
+493	 if (msg.value > ethAdded.add(ethSold)) {
+494	 uint256 returnETH = msg.value.sub(ethAdded).sub(ethSold);
+495	 IWETH(ds.weth).withdraw(returnETH);
+496	 (bool success,) = msg.sender.call{
+497	 value: returnETH }
+498	 ("");
+499	 require(success, "Market: Refund failed.");
+500	 }
+501	 return liquidity;
+502	 }
+503	 function buyEthAndAddLiquidity(uint256 buyWethAmount, AddLiquidity calldata al) internal returns (uint256) {
+504	 DiamondStorage storage ds = diamondStorage();
+505	 uint256 sellBeans = _amountIn(buyWethAmount);
+506	 allocatedBeans(al.beanAmount.add(sellBeans));
+507	 (uint256 beansSold, uint256 wethBought) = _sell(sellBeans, buyWethAmount, address(this));
+508	 if (msg.value > 0) IWETH(ds.weth).deposit{
+509	 value: msg.value}
+510	 ();
+511	 (uint256 beans, uint256 ethAdded, uint256 liquidity) = _addLiquidityWETH( msg.value.add(wethBought), al.beanAmount, al.minEthAmount, al.minBeanAmount );
+512	 if (al.beanAmount.add(sellBeans) > beans.add(beansSold)) {
+513	 uint256 toTransfer = al.beanAmount.add(sellBeans).sub(beans.add(beansSold));
+514	 IBean(ds.bean).transfer( msg.sender, toTransfer );
+515	 }
+516	 if (ethAdded < wethBought.add(msg.value)) {
+517	 uint256 eth = wethBought.add(msg.value).sub(ethAdded);
+518	 IWETH(ds.weth).withdraw(eth);
+519	 (bool success, ) = msg.sender.call{
+520	 value: eth}
+521	 ("");
+522	 require(success, "Market: Ether transfer failed.");
+523	 }
+524	 return liquidity;
+525	 }
+526	 function _sell(uint256 sellBeanAmount, uint256 minBuyEthAmount, address to) internal returns (uint256 inAmount, uint256 outAmount) {
+527	 DiamondStorage storage ds = diamondStorage();
+528	 address[] memory path = new address[](2);
+529	 path[0] = ds.bean;
+530	 path[1] = ds.weth;
+531	 uint[] memory amounts = IUniswapV2Router02(ds.router).swapExactTokensForTokens( sellBeanAmount, minBuyEthAmount, path, to, block.timestamp.add(1) );
+532	 return (amounts[0], amounts[1]);
+533	 }
+534	 function _buy(uint256 beanAmount, uint256 ethAmount, address to) private returns (uint256 inAmount, uint256 outAmount) {
+535	 DiamondStorage storage ds = diamondStorage();
+536	 address[] memory path = new address[](2);
+537	 path[0] = ds.weth;
+538	 path[1] = ds.bean;
+539	 uint[] memory amounts = IUniswapV2Router02(ds.router).swapExactETHForTokens{
+540	 value: ethAmount}
+541	 ( beanAmount, path, to, block.timestamp.add(1) );
+542	 return (amounts[0], amounts[1]);
+543	 }
+544	 function _buyWithWETH(uint256 beanAmount, uint256 ethAmount, address to) internal returns (uint256 inAmount, uint256 outAmount) {
+545	 DiamondStorage storage ds = diamondStorage();
+546	 address[] memory path = new address[](2);
+547	 path[0] = ds.weth;
+548	 path[1] = ds.bean;
+549	 uint[] memory amounts = IUniswapV2Router02(ds.router).swapExactTokensForTokens( ethAmount, beanAmount, path, to, block.timestamp.add(1) );
+550	 return (amounts[0], amounts[1]);
+551	 }
+552	 function _addLiquidity(uint256 ethAmount, uint256 beanAmount, uint256 minEthAmount, uint256 minBeanAmount) private returns (uint256, uint256, uint256) {
+553	 DiamondStorage storage ds = diamondStorage();
+554	 return IUniswapV2Router02(ds.router).addLiquidityETH{
+555	 value: ethAmount}
+556	 ( ds.bean, beanAmount, minBeanAmount, minEthAmount, address(this), block.timestamp.add(1));
+557	 }
+558	 function _addLiquidityWETH(uint256 wethAmount, uint256 beanAmount, uint256 minWethAmount, uint256 minBeanAmount) internal returns (uint256, uint256, uint256) {
+559	 DiamondStorage storage ds = diamondStorage();
+560	 return IUniswapV2Router02(ds.router).addLiquidity( ds.bean, ds.weth, beanAmount, wethAmount, minBeanAmount, minWethAmount, address(this), block.timestamp.add(1));
+561	 }
+562	 function _amountIn(uint256 buyWethAmount) internal view returns (uint256) {
+563	 DiamondStorage storage ds = diamondStorage();
+564	 address[] memory path = new address[](2);
+565	 path[0] = ds.bean;
+566	 path[1] = ds.weth;
+567	 uint256[] memory amounts = IUniswapV2Router02(ds.router).getAmountsIn(buyWethAmount, path);
+568	 return amounts[0];
+569	 }
+570	 function allocatedBeans(uint256 transferBeans) internal {
+571	 AppStorage storage s = LibAppStorage.diamondStorage();
+572	 uint wrappedBeans = s.a[msg.sender].wrappedBeans;
+573	 uint remainingBeans = transferBeans;
+574	 if (wrappedBeans > 0) {
+575	 if (remainingBeans > wrappedBeans) {
+576	 remainingBeans = transferBeans.sub(wrappedBeans);
+577	 s.a[msg.sender].wrappedBeans = 0;
+578	 }
+579	 else {
+580	 remainingBeans = 0;
+581	 s.a[msg.sender].wrappedBeans = wrappedBeans.sub(transferBeans);
+582	 }
+583	 emit BeanAllocation(msg.sender, transferBeans.sub(remainingBeans));
+584	 }
+585	 if (remainingBeans > 0) IBean(s.c.bean).transferFrom(msg.sender, address(this), remainingBeans);
+586	 }
+587	 }
+588	 pragma solidity ^0.7.6;
+589	 library LibClaim {
+590	 using SafeMath for uint256;
+591	 using SafeMath for uint32;
+592	 event BeanClaim(address indexed account, uint32[] withdrawals, uint256 beans);
+593	 event LPClaim(address indexed account, uint32[] withdrawals, uint256 lp);
+594	 event EtherClaim(address indexed account, uint256 ethereum);
+595	 event Harvest(address indexed account, uint256[] plots, uint256 beans);
+596	 struct Claim {
+597	 uint32[] beanWithdrawals;
+598	 uint32[] lpWithdrawals;
+599	 uint256[] plots;
+600	 bool claimEth;
+601	 bool convertLP;
+602	 uint256 minBeanAmount;
+603	 uint256 minEthAmount;
+604	 bool toWallet;
+605	 }
+606	 function claim(Claim calldata c) public returns (uint256 beansClaimed) {
+607	 AppStorage storage s = LibAppStorage.diamondStorage();
+608	 if (c.beanWithdrawals.length > 0) beansClaimed = beansClaimed.add(claimBeans(c.beanWithdrawals));
+609	 if (c.plots.length > 0) beansClaimed = beansClaimed.add(harvest(c.plots));
+610	 if (c.lpWithdrawals.length > 0) {
+611	 if (c.convertLP) {
+612	 if (!c.toWallet) beansClaimed = beansClaimed.add(removeClaimLPAndWrapBeans(c.lpWithdrawals, c.minBeanAmount, c.minEthAmount));
+613	 else removeAndClaimLP(c.lpWithdrawals, c.minBeanAmount, c.minEthAmount);
+614	 }
+615	 else claimLP(c.lpWithdrawals);
+616	 }
+617	 if (c.claimEth) claimEth();
+618	 if (beansClaimed > 0) {
+619	 if (c.toWallet) IBean(s.c.bean).transfer(msg.sender, beansClaimed);
+620	 else s.a[msg.sender].wrappedBeans = s.a[msg.sender].wrappedBeans.add(beansClaimed);
+621	 }
+622	 }
+623	 function claimBeans(uint32[] calldata withdrawals) public returns (uint256 beansClaimed) {
+624	 AppStorage storage s = LibAppStorage.diamondStorage();
+625	 for (uint256 i = 0; i < withdrawals.length; i++) {
+626	 require(withdrawals[i] <= s.season.current, "Claim: Withdrawal not recievable.");
+627	 beansClaimed = beansClaimed.add(claimBeanWithdrawal(msg.sender, withdrawals[i]));
+628	 }
+629	 emit BeanClaim(msg.sender, withdrawals, beansClaimed);
+630	 }
+631	 function claimBeanWithdrawal(address account, uint32 _s) private returns (uint256) {
+632	 AppStorage storage s = LibAppStorage.diamondStorage();
+633	 uint256 amount = s.a[account].bean.withdrawals[_s];
+634	 require(amount > 0, "Claim: Bean withdrawal is empty.");
+635	 delete s.a[account].bean.withdrawals[_s];
+636	 s.bean.withdrawn = s.bean.withdrawn.sub(amount);
+637	 return amount;
+638	 }
+639	 function claimLP(uint32[] calldata withdrawals) public {
+640	 AppStorage storage s = LibAppStorage.diamondStorage();
+641	 uint256 lpClaimed = _claimLP(withdrawals);
+642	 IUniswapV2Pair(s.c.pair).transfer(msg.sender, lpClaimed);
+643	 }
+644	 function removeAndClaimLP( uint32[] calldata withdrawals, uint256 minBeanAmount, uint256 minEthAmount ) public returns (uint256 beans) {
+645	 uint256 lpClaimd = _claimLP(withdrawals);
+646	 (beans,) = LibMarket.removeLiquidity(lpClaimd, minBeanAmount, minEthAmount);
+647	 }
+648	 function removeClaimLPAndWrapBeans( uint32[] calldata withdrawals, uint256 minBeanAmount, uint256 minEthAmount ) private returns (uint256 beans) {
+649	 uint256 lpClaimd = _claimLP(withdrawals);
+650	 (beans,) = LibMarket.removeLiquidityWithBeanAllocation(lpClaimd, minBeanAmount, minEthAmount);
+651	 }
+652	 function _claimLP(uint32[] calldata withdrawals) private returns (uint256) {
+653	 AppStorage storage s = LibAppStorage.diamondStorage();
+654	 uint256 lpClaimd = 0;
+655	 for(uint256 i = 0; i < withdrawals.length; i++) {
+656	 require(withdrawals[i] <= s.season.current, "Claim: Withdrawal not recievable.");
+657	 lpClaimd = lpClaimd.add(claimLPWithdrawal(msg.sender, withdrawals[i]));
+658	 }
+659	 emit LPClaim(msg.sender, withdrawals, lpClaimd);
+660	 return lpClaimd;
+661	 }
+662	 function claimLPWithdrawal(address account, uint32 _s) private returns (uint256) {
+663	 AppStorage storage s = LibAppStorage.diamondStorage();
+664	 uint256 amount = s.a[account].lp.withdrawals[_s];
+665	 require(amount > 0, "Claim: LP withdrawal is empty.");
+666	 delete s.a[account].lp.withdrawals[_s];
+667	 s.lp.withdrawn = s.lp.withdrawn.sub(amount);
+668	 return amount;
+669	 }
+670	 function claimEth() public {
+671	 LibInternal.updateSilo(msg.sender);
+672	 uint256 eth = claimPlenty(msg.sender);
+673	 emit EtherClaim(msg.sender, eth);
+674	 }
+675	 function claimPlenty(address account) private returns (uint256) {
+676	 AppStorage storage s = LibAppStorage.diamondStorage();
+677	 if (s.sop.base == 0) return 0;
+678	 uint256 eth = s.a[account].sop.base.mul(s.sop.weth).div(s.sop.base);
+679	 s.sop.weth = s.sop.weth.sub(eth);
+680	 s.sop.base = s.sop.base.sub(s.a[account].sop.base);
+681	 s.a[account].sop.base = 0;
+682	 IWETH(s.c.weth).withdraw(eth);
+683	 (bool success, ) = account.call{
+684	 value: eth}
+685	 ("");
+686	 require(success, "WETH: ETH transfer failed");
+687	 return eth;
+688	 }
+689	 function harvest(uint256[] calldata plots) public returns (uint256 beansHarvested) {
+690	 AppStorage storage s = LibAppStorage.diamondStorage();
+691	 for (uint256 i = 0; i < plots.length; i++) {
+692	 require(plots[i] < s.f.harvestable, "Claim: Plot not harvestable.");
+693	 require(s.a[msg.sender].field.plots[plots[i]] > 0, "Claim: Plot not harvestable.");
+694	 uint256 harvested = harvestPlot(msg.sender, plots[i]);
+695	 beansHarvested = beansHarvested.add(harvested);
+696	 }
+697	 require(s.f.harvestable.sub(s.f.harvested) >= beansHarvested, "Claim: Not enough Harvestable.");
+698	 s.f.harvested = s.f.harvested.add(beansHarvested);
+699	 emit Harvest(msg.sender, plots, beansHarvested);
+700	 }
+701	 function harvestPlot(address account, uint256 plotId) private returns (uint256) {
+702	 AppStorage storage s = LibAppStorage.diamondStorage();
+703	 uint256 pods = s.a[account].field.plots[plotId];
+704	 require(pods > 0, "Claim: Plot is empty.");
+705	 uint256 harvestablePods = s.f.harvestable.sub(plotId);
+706	 delete s.a[account].field.plots[plotId];
+707	 if (harvestablePods >= pods) return pods;
+708	 s.a[account].field.plots[plotId.add(harvestablePods)] = pods.sub(harvestablePods);
+709	 return harvestablePods;
+710	 }
+711	 }
+712	 pragma solidity ^0.7.6;
+713	 interface IDiamondCut {
+714	 enum FacetCutAction {
+715	 Add, Replace, Remove}
+716	 struct FacetCut {
+717	 address facetAddress;
+718	 FacetCutAction action;
+719	 bytes4[] functionSelectors;
+720	 }
+721	 function diamondCut( FacetCut[] calldata _diamondCut, address _init, bytes calldata _calldata ) external;
+722	 event DiamondCut(FacetCut[] _diamondCut, address _init, bytes _calldata);
+723	 }
+724	 pragma solidity >=0.5.0;
+725	 interface IUniswapV2Pair {
+726	 event Approval(address indexed owner, address indexed spender, uint value);
+727	 event Transfer(address indexed from, address indexed to, uint value);
+728	 function name() external pure returns (string memory);
+729	 function symbol() external pure returns (string memory);
+730	 function decimals() external pure returns (uint8);
+731	 function totalSupply() external view returns (uint);
+732	 function balanceOf(address owner) external view returns (uint);
+733	 function allowance(address owner, address spender) external view returns (uint);
+734	 function approve(address spender, uint value) external returns (bool);
+735	 function transfer(address to, uint value) external returns (bool);
+736	 function transferFrom(address from, address to, uint value) external returns (bool);
+737	 function DOMAIN_SEPARATOR() external view returns (bytes32);
+738	 function PERMIT_TYPEHASH() external pure returns (bytes32);
+739	 function nonces(address owner) external view returns (uint);
+740	 function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+741	 event Mint(address indexed sender, uint amount0, uint amount1);
+742	 event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+743	 event Swap( address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to );
+744	 event Sync(uint112 reserve0, uint112 reserve1);
+745	 function MINIMUM_LIQUIDITY() external pure returns (uint);
+746	 function factory() external view returns (address);
+747	 function token0() external view returns (address);
+748	 function token1() external view returns (address);
+749	 function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+750	 function price0CumulativeLast() external view returns (uint);
+751	 function price1CumulativeLast() external view returns (uint);
+752	 function kLast() external view returns (uint);
+753	 function mint(address to) external returns (uint liquidity);
+754	 function burn(address to) external returns (uint amount0, uint amount1);
+755	 function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+756	 function skim(address to) external;
+757	 function sync() external;
+758	 function initialize(address, address) external;
+759	 }
+760	 pragma solidity ^0.7.6;
+761	 library LibAppStorage {
+762	 function diamondStorage() internal pure returns (AppStorage storage ds) {
+763	 assembly {
+764	 ds.slot := 0 }
+765	 }
+766	 }
+767	 pragma solidity ^0.7.6;
+768	 abstract contract IBean is IERC20 {
+769	 function burn(uint256 amount) public virtual;
+770	 function burnFrom(address account, uint256 amount) public virtual;
+771	 function mint(address account, uint256 amount) public virtual returns (bool);
+772	 }
+773	 pragma solidity >=0.6.2;
+774	 interface IUniswapV2Router02 is IUniswapV2Router01 {
+775	 function removeLiquidityETHSupportingFeeOnTransferTokens( address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external returns (uint amountETH);
+776	 function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens( address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s ) external returns (uint amountETH);
+777	 function swapExactTokensForTokensSupportingFeeOnTransferTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external;
+778	 function swapExactETHForTokensSupportingFeeOnTransferTokens( uint amountOutMin, address[] calldata path, address to, uint deadline ) external payable;
+779	 function swapExactTokensForETHSupportingFeeOnTransferTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external;
+780	 }
+781	 pragma solidity ^0.7.6;
+782	 interface IWETH is IERC20 {
+783	 function deposit() external payable;
+784	 function withdraw(uint) external;
+785	 }

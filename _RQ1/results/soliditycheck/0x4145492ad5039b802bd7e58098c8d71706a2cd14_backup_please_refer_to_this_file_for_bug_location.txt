@@ -1,0 +1,367 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 if (a == 0) {
+5	 return 0;
+6	 }
+7	 uint256 c = a * b;
+8	 assert(c / a == b);
+9	 return c;
+10	 }
+11	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+12	 uint256 c = a / b;
+13	 return c;
+14	 }
+15	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+16	 assert(b <= a);
+17	 return a - b;
+18	 }
+19	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+20	 uint256 c = a + b;
+21	 assert(c >= a);
+22	 return c;
+23	 }
+24	 }
+25	 interface token {
+26	 function mint(address _to, uint256 _amount) public returns (bool);
+27	 function transferFrom(address _from, address _to, uint256 _value) public returns (bool);
+28	 function transferOwnership(address newOwner) public;
+29	 }
+30	 contract Ownable {
+31	 address public owner;
+32	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+33	 function Ownable() public {
+34	 owner = msg.sender;
+35	 }
+36	 modifier onlyOwner() {
+37	 require(msg.sender == owner);
+38	 _;
+39	 }
+40	 function transferOwnership(address newOwner) public onlyOwner {
+41	 require(newOwner != address(0));
+42	 emit OwnershipTransferred(owner, newOwner);
+43	 owner = newOwner;
+44	 }
+45	 }
+46	 contract Crowdsale {
+47	 using SafeMath for uint256;
+48	 token public tokenReward;
+49	 uint256 public startTime;
+50	 uint256 public endTime;
+51	 address public wallet;
+52	 uint256 public rate;
+53	 uint256 public weiRaised;
+54	 event TokenPurchase(address indexed purchaser, address indexed beneficiary, uint256 value, uint256 amount);
+55	 function Crowdsale(uint256 _startTime, uint256 _endTime, uint256 _rate, address _wallet, address _token) public {
+56	 require(_endTime >= _startTime);
+57	 require(_rate > 0);
+58	 require(_wallet != address(0));
+59	 tokenReward = token(_token);
+60	 startTime = _startTime;
+61	 endTime = _endTime;
+62	 rate = _rate;
+63	 wallet = _wallet;
+64	 }
+65	 function forwardFunds() internal {
+66	 wallet.transfer(msg.value);
+67	 }
+68	 function validPurchase() internal view returns (bool) {
+69	 bool withinPeriod = now >= startTime && now <= endTime;
+70	 bool nonZeroPurchase = msg.value != 0;
+71	 return withinPeriod && nonZeroPurchase;
+72	 }
+73	 function hasEnded() public view returns (bool) {
+74	 return now > endTime;
+75	 }
+76	 }
+77	 contract RefundVault is Ownable {
+78	 using SafeMath for uint256;
+79	 enum State {
+80	 Active, Refunding, Closed }
+81	 mapping (address => uint256) public deposited;
+82	 address public wallet;
+83	 State public state;
+84	 event Closed();
+85	 event RefundsEnabled();
+86	 event Refunded(address indexed beneficiary, uint256 weiAmount);
+87	 function RefundVault(address _wallet) public {
+88	 require(_wallet != address(0));
+89	 wallet = _wallet;
+90	 state = State.Active;
+91	 }
+92	 function deposit(address investor) onlyOwner public payable {
+93	 require(state == State.Active);
+94	 deposited[investor] = deposited[investor].add(msg.value);
+95	 }
+96	 function close() onlyOwner public {
+97	 require(state == State.Active);
+98	 state = State.Closed;
+99	 emit Closed();
+100	 wallet.transfer(this.balance);
+101	 }
+102	 function enableRefunds() onlyOwner public {
+103	 require(state == State.Active);
+104	 state = State.Refunding;
+105	 emit RefundsEnabled();
+106	 }
+107	 function refund(address investor) public {
+108	 require(state == State.Refunding);
+109	 uint256 depositedValue = deposited[investor];
+110	 deposited[investor] = 0;
+111	 investor.transfer(depositedValue);
+112	 emit Refunded(investor, depositedValue);
+113	 }
+114	 }
+115	 contract FinalizableCrowdsale is Crowdsale, Ownable {
+116	 using SafeMath for uint256;
+117	 bool public isFinalized = false;
+118	 event Finalized();
+119	 function finalize() onlyOwner public {
+120	 require(!isFinalized);
+121	 require(hasEnded());
+122	 finalization();
+123	 emit Finalized();
+124	 isFinalized = true;
+125	 }
+126	 function finalization() internal {
+127	 }
+128	 }
+129	 contract RefundableCrowdsale is FinalizableCrowdsale {
+130	 using SafeMath for uint256;
+131	 uint256 public goal;
+132	 RefundVault public vault;
+133	 function RefundableCrowdsale(uint256 _goal) public {
+134	 require(_goal > 0);
+135	 vault = new RefundVault(wallet);
+136	 goal = _goal;
+137	 }
+138	 function forwardFunds() internal {
+139	 vault.deposit.value(msg.value)(msg.sender);
+140	 }
+141	 function claimRefund() public {
+142	 require(isFinalized);
+143	 require(!goalReached());
+144	 vault.refund(msg.sender);
+145	 }
+146	 function finalization() internal {
+147	 if (!goalReached()) {
+148	 vault.enableRefunds();
+149	 }
+150	 super.finalization();
+151	 }
+152	 function goalReached() public view returns (bool) {
+153	 return weiRaised >= goal;
+154	 }
+155	 }
+156	 contract CappedCrowdsale is Crowdsale {
+157	 using SafeMath for uint256;
+158	 uint256 public cap;
+159	 function CappedCrowdsale(uint256 _cap) public {
+160	 require(_cap > 0);
+161	 cap = _cap;
+162	 }
+163	 function hasEnded() public view returns (bool) {
+164	 bool capReached = weiRaised >= cap;
+165	 return super.hasEnded() || capReached;
+166	 }
+167	 }
+168	 contract ControlledAccess is Ownable {
+169	 address public signer;
+170	 event SignerTransferred(address indexed previousSigner, address indexed newSigner);
+171	 modifier onlySigner() {
+172	 require(msg.sender == signer);
+173	 _;
+174	 }
+175	 function transferSigner(address newSigner) public onlyOwner {
+176	 require(newSigner != address(0));
+177	 emit SignerTransferred(signer, newSigner);
+178	 signer = newSigner;
+179	 }
+180	 modifier onlyValidAccess(uint8 _v, bytes32 _r, bytes32 _s) {
+181	 require(isValidAccessMessage(msg.sender,_v,_r,_s) );
+182	 _;
+183	 }
+184	 function isValidAccessMessage( address _add, uint8 _v, bytes32 _r, bytes32 _s) view public returns (bool) {
+185	 bytes32 hash = keccak256(this, _add);
+186	 return signer == ecrecover( keccak256("\x19Ethereum Signed Message:\n32", hash), _v, _r, _s );
+187	 }
+188	 }
+189	 contract ElepigCrowdsale is CappedCrowdsale, RefundableCrowdsale, ControlledAccess {
+190	 using SafeMath for uint256;
+191	 enum CrowdsaleStage {
+192	 PreICO, ICO1, ICO2, ICO3, ICO4 }
+193	 CrowdsaleStage public stage = CrowdsaleStage.PreICO;
+194	 address public community;
+195	 uint256 public totalTokensForSale = 150000000000000000000000000;
+196	 uint256 public totalTokensForSaleDuringPreICO = 30000000000000000000000000;
+197	 uint256 public totalTokensForSaleDuringICO1 = 37500000000000000000000000;
+198	 uint256 public totalTokensForSaleDuringICO2 = 37500000000000000000000000;
+199	 uint256 public totalTokensForSaleDuringICO3 = 30000000000000000000000000;
+200	 uint256 public totalTokensForSaleDuringICO4 = 15000000000000000000000000;
+201	 uint256 public totalWeiRaisedDuringPreICO;
+202	 uint256 public totalWeiRaisedDuringICO1;
+203	 uint256 public totalWeiRaisedDuringICO2;
+204	 uint256 public totalWeiRaisedDuringICO3;
+205	 uint256 public totalWeiRaisedDuringICO4;
+206	 uint256 public totalWeiRaised;
+207	 uint256 public totalTokensPreICO;
+208	 uint256 public totalTokensICO1;
+209	 uint256 public totalTokensICO2;
+210	 uint256 public totalTokensICO3;
+211	 uint256 public totalTokensICO4;
+212	 uint256 public tokensMinted;
+213	 uint256 public airDropsClaimed = 0;
+214	 mapping (address => bool) public airdrops;
+215	 mapping (address => bool) public blacklist;
+216	 event EthTransferred(string text);
+217	 event EthRefunded(string text);
+218	 function ElepigCrowdsale( uint256 _startTime, uint256 _endTime, uint256 _rate, address _wallet, uint256 _goal, uint256 _cap, address _communityAddress, address _token, address _signer ) CappedCrowdsale(_cap) FinalizableCrowdsale() RefundableCrowdsale(_goal) Crowdsale( _startTime, _endTime, _rate, _wallet, _token) public {
+219	 require(_goal <= _cap);
+220	 require(_signer != address(0));
+221	 require(_communityAddress != address(0));
+222	 require(_token != address(0));
+223	 community = _communityAddress;
+224	 signer = _signer;
+225	 }
+226	 function setCrowdsaleStage(uint value) public onlyOwner {
+227	 require(value <= 4);
+228	 if (uint(CrowdsaleStage.PreICO) == value) {
+229	 rate = 2380;
+230	 stage = CrowdsaleStage.PreICO;
+231	 }
+232	 else if (uint(CrowdsaleStage.ICO1) == value) {
+233	 rate = 2040;
+234	 stage = CrowdsaleStage.ICO1;
+235	 }
+236	 else if (uint(CrowdsaleStage.ICO2) == value) {
+237	 rate = 1785;
+238	 stage = CrowdsaleStage.ICO2;
+239	 }
+240	 else if (uint(CrowdsaleStage.ICO3) == value) {
+241	 rate = 1587;
+242	 stage = CrowdsaleStage.ICO3;
+243	 }
+244	 else if (uint(CrowdsaleStage.ICO4) == value) {
+245	 rate = 1503;
+246	 stage = CrowdsaleStage.ICO4;
+247	 }
+248	 }
+249	 function setCurrentRate(uint256 _rate) private {
+250	 rate = _rate;
+251	 }
+252	 function addBlacklistAddress (address _address) public onlyOwner {
+253	 blacklist[_address] = true;
+254	 }
+255	 function removeBlacklistAddress (address _address) public onlyOwner {
+256	 blacklist[_address] = false;
+257	 }
+258	 function donate(uint8 _v, bytes32 _r, bytes32 _s) onlyValidAccess(_v,_r,_s) public payable{
+259	 require(msg.value >= 150000000000000000);
+260	 require(blacklist[msg.sender] == false);
+261	 require(validPurchase());
+262	 uint256 tokensThatWillBeMintedAfterPurchase = msg.value.mul(rate);
+263	 if ((stage == CrowdsaleStage.PreICO) && (totalTokensPreICO + tokensThatWillBeMintedAfterPurchase > totalTokensForSaleDuringPreICO)) {
+264	 msg.sender.transfer(msg.value);
+265	 emit EthRefunded("PreICO Limit Hit");
+266	 return;
+267	 }
+268	 if ((stage == CrowdsaleStage.ICO1) && (totalTokensICO1 + tokensThatWillBeMintedAfterPurchase > totalTokensForSaleDuringICO1)) {
+269	 msg.sender.transfer(msg.value);
+270	 emit EthRefunded("ICO1 Limit Hit");
+271	 return;
+272	 }
+273	 if ((stage == CrowdsaleStage.ICO2) && (totalTokensICO2 + tokensThatWillBeMintedAfterPurchase > totalTokensForSaleDuringICO2)) {
+274	 msg.sender.transfer(msg.value);
+275	 emit EthRefunded("ICO2 Limit Hit");
+276	 return;
+277	 }
+278	 if ((stage == CrowdsaleStage.ICO3) && (totalTokensICO3 + tokensThatWillBeMintedAfterPurchase > totalTokensForSaleDuringICO3)) {
+279	 msg.sender.transfer(msg.value);
+280	 emit EthRefunded("ICO3 Limit Hit");
+281	 return;
+282	 }
+283	 if ((stage == CrowdsaleStage.ICO4) && (totalTokensICO4 + tokensThatWillBeMintedAfterPurchase > totalTokensForSaleDuringICO4)) {
+284	 msg.sender.transfer(msg.value);
+285	 emit EthRefunded("ICO4 Limit Hit");
+286	 return;
+287	 }
+288	 else {
+289	 uint256 tokens = msg.value.mul(rate);
+290	 weiRaised = weiRaised.add(msg.value);
+291	 tokenReward.mint(msg.sender, tokens);
+292	 emit TokenPurchase(msg.sender, msg.sender, msg.value, tokens);
+293	 forwardFunds();
+294	 if (stage == CrowdsaleStage.PreICO) {
+295	 totalWeiRaisedDuringPreICO = totalWeiRaisedDuringPreICO.add(msg.value);
+296	 totalTokensPreICO = totalTokensPreICO.add(tokensThatWillBeMintedAfterPurchase);
+297	 }
+298	 else if (stage == CrowdsaleStage.ICO1) {
+299	 totalWeiRaisedDuringICO1 = totalWeiRaisedDuringICO1.add(msg.value);
+300	 totalTokensICO1 = totalTokensICO1.add(tokensThatWillBeMintedAfterPurchase);
+301	 }
+302	 else if (stage == CrowdsaleStage.ICO2) {
+303	 totalWeiRaisedDuringICO2 = totalWeiRaisedDuringICO2.add(msg.value);
+304	 totalTokensICO2 = totalTokensICO2.add(tokensThatWillBeMintedAfterPurchase);
+305	 }
+306	 else if (stage == CrowdsaleStage.ICO3) {
+307	 totalWeiRaisedDuringICO3 = totalWeiRaisedDuringICO3.add(msg.value);
+308	 totalTokensICO3 = totalTokensICO3.add(tokensThatWillBeMintedAfterPurchase);
+309	 }
+310	 else if (stage == CrowdsaleStage.ICO4) {
+311	 totalWeiRaisedDuringICO4 = totalWeiRaisedDuringICO4.add(msg.value);
+312	 totalTokensICO4 = totalTokensICO4.add(tokensThatWillBeMintedAfterPurchase);
+313	 }
+314	 }
+315	 tokensMinted = tokensMinted.add(tokensThatWillBeMintedAfterPurchase);
+316	 }
+317	 function () external payable {
+318	 revert();
+319	 }
+320	 function forwardFunds() internal {
+321	 if (goalReached()) {
+322	 wallet.transfer(msg.value);
+323	 emit EthTransferred("forwarding funds to wallet");
+324	 }
+325	 else {
+326	 emit EthTransferred("forwarding funds to refundable vault");
+327	 super.forwardFunds();
+328	 }
+329	 }
+330	 function airdropTokens(address _from, address[] _recipient, bool _premium) public onlyOwner {
+331	 uint airdropped;
+332	 uint tokens;
+333	 if(_premium == true) {
+334	 tokens = 500000000000000000000;
+335	 }
+336	 else {
+337	 tokens = 50000000000000000000;
+338	 }
+339	 for(uint256 i = 0; i < _recipient.length; i++) {
+340	 if (!airdrops[_recipient[i]]) {
+341	 airdrops[_recipient[i]] = true;
+342	 require(tokenReward.transferFrom(_from, _recipient[i], tokens));
+343	 airdropped = airdropped.add(tokens);
+344	 }
+345	 }
+346	 airDropsClaimed = airDropsClaimed.add(airdropped);
+347	 }
+348	 function finish() public onlyOwner {
+349	 require(!isFinalized);
+350	 if(tokensMinted < totalTokensForSale) {
+351	 uint256 unsoldTokens = totalTokensForSale - tokensMinted;
+352	 tokenReward.mint(community, unsoldTokens);
+353	 }
+354	 finalize();
+355	 }
+356	 function releaseVault() public onlyOwner {
+357	 require(goalReached());
+358	 vault.close();
+359	 }
+360	 function transferTokenOwnership(address _newOwner) public onlyOwner {
+361	 tokenReward.transferOwnership(_newOwner);
+362	 }
+363	 function forwardEndTime(uint256 _endTime) public {
+364	 endTime = _endTime;
+365	 }
+366	 }

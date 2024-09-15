@@ -1,0 +1,1097 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract Base {
+3	 uint8 constant HEROLEVEL_MIN = 1;
+4	 uint8 constant HEROLEVEL_MAX = 5;
+5	 uint8 constant LIMITCHIP_MINLEVEL = 3;
+6	 uint constant PARTWEIGHT_NORMAL = 100;
+7	 uint constant PARTWEIGHT_LIMIT = 40;
+8	 address creator;
+9	 constructor() public {
+10	 creator = msg.sender;
+11	 }
+12	 modifier MasterAble() {
+13	 require(msg.sender == creator);
+14	 _;
+15	 }
+16	 function IsLimitPart(uint8 level, uint part) internal pure returns(bool) {
+17	 if (level < LIMITCHIP_MINLEVEL) return false;
+18	 if (part < GetPartNum(level)) return false;
+19	 return true;
+20	 }
+21	 function GetPartWeight(uint8 level, uint part) internal pure returns(uint) {
+22	 if (IsLimitPart(level, part)) return PARTWEIGHT_LIMIT;
+23	 return PARTWEIGHT_NORMAL;
+24	 }
+25	 function GetPartNum(uint8 level) internal pure returns(uint) {
+26	 if (level <= 2) return 3;
+27	 else if (level <= 4) return 4;
+28	 return 5;
+29	 }
+30	 }
+31	 contract BasicTime {
+32	 uint constant DAY_SECONDS = 60 * 60 * 24;
+33	 function GetDayCount(uint timestamp) pure internal returns(uint) {
+34	 return timestamp/DAY_SECONDS;
+35	 }
+36	 function GetExpireTime(uint timestamp, uint dayCnt) pure internal returns(uint) {
+37	 uint dayEnd = GetDayCount(timestamp) + dayCnt;
+38	 return dayEnd * DAY_SECONDS;
+39	 }
+40	 }
+41	 contract BasicAuth is Base {
+42	 address master;
+43	 mapping(address => bool) auth_list;
+44	 function InitMaster(address acc) internal {
+45	 require(address(0) != acc);
+46	 master = acc;
+47	 }
+48	 modifier MasterAble() {
+49	 require(msg.sender == creator || msg.sender == master);
+50	 _;
+51	 }
+52	 modifier OwnerAble(address acc) {
+53	 require(acc == tx.origin);
+54	 _;
+55	 }
+56	 modifier AuthAble() {
+57	 require(auth_list[msg.sender]);
+58	 _;
+59	 }
+60	 function CanHandleAuth(address from) internal view returns(bool) {
+61	 return from == creator || from == master;
+62	 }
+63	 function SetAuth(address target) external {
+64	 require(CanHandleAuth(tx.origin) || CanHandleAuth(msg.sender));
+65	 auth_list[target] = true;
+66	 }
+67	 function ClearAuth(address target) external {
+68	 require(CanHandleAuth(tx.origin) || CanHandleAuth(msg.sender));
+69	 delete auth_list[target];
+70	 }
+71	 }
+72	 contract MainBase is Base {
+73	 modifier ValidLevel(uint8 level) {
+74	 require(level<=HEROLEVEL_MAX && level>=HEROLEVEL_MIN);
+75	 _;
+76	 }
+77	 modifier ValidParts(uint8 level, uint32[] parts) {
+78	 require(GetPartNum(level) == parts.length);
+79	 _;
+80	 }
+81	 modifier ValidPart(uint8 level, uint part) {
+82	 require(part > 0);
+83	 require(GetPartNum(level) >= part);
+84	 _;
+85	 }
+86	 }
+87	 library IndexList {
+88	 function insert(uint32[] storage self, uint32 index, uint pos) external {
+89	 require(self.length >= pos);
+90	 self.length++;
+91	 for (uint i=self.length; i>pos; i++) {
+92	 self[i+1] = self[i];
+93	 }
+94	 self[pos] = index;
+95	 }
+96	 function remove(uint32[] storage self, uint32 index) external returns(bool) {
+97	 return remove(self,index,0);
+98	 }
+99	 function remove(uint32[] storage self, uint32 index, uint startPos) public returns(bool) {
+100	 for (uint i=startPos; i<self.length; i++) {
+101	 if (self[i] != index) continue;
+102	 for (uint j=i; j<self.length-1; j++) {
+103	 self[j] = self[j+1];
+104	 }
+105	 delete self[self.length-1];
+106	 self.length--;
+107	 return true;
+108	 }
+109	 return false;
+110	 }
+111	 }
+112	 library ItemList {
+113	 using IndexList for uint32[];
+114	 struct Data {
+115	 uint32[] m_List;
+116	 mapping(uint32 => uint) m_Maps;
+117	 }
+118	 function _insert(Data storage self, uint32 key, uint val) internal {
+119	 self.m_List.push(key);
+120	 self.m_Maps[key] = val;
+121	 }
+122	 function _delete(Data storage self, uint32 key) internal {
+123	 self.m_List.remove(key);
+124	 delete self.m_Maps[key];
+125	 }
+126	 function set(Data storage self, uint32 key, uint num) public {
+127	 if (!has(self,key)) {
+128	 if (num == 0) return;
+129	 _insert(self,key,num);
+130	 }
+131	 else if (num == 0) {
+132	 _delete(self,key);
+133	 }
+134	 else {
+135	 uint old = self.m_Maps[key];
+136	 if (old == num) return;
+137	 self.m_Maps[key] = num;
+138	 }
+139	 }
+140	 function add(Data storage self, uint32 key, uint num) external {
+141	 uint iOld = get(self,key);
+142	 uint iNow = iOld+num;
+143	 require(iNow >= iOld);
+144	 set(self,key,iNow);
+145	 }
+146	 function sub(Data storage self, uint32 key, uint num) external {
+147	 uint iOld = get(self,key);
+148	 require(iOld >= num);
+149	 set(self,key,iOld-num);
+150	 }
+151	 function has(Data storage self, uint32 key) public view returns(bool) {
+152	 return self.m_Maps[key] > 0;
+153	 }
+154	 function get(Data storage self, uint32 key) public view returns(uint) {
+155	 return self.m_Maps[key];
+156	 }
+157	 function list(Data storage self) view external returns(uint32[],uint[]) {
+158	 uint len = self.m_List.length;
+159	 uint[] memory values = new uint[](len);
+160	 for (uint i=0; i<len; i++) {
+161	 uint32 key = self.m_List[i];
+162	 values[i] = self.m_Maps[key];
+163	 }
+164	 return (self.m_List,values);
+165	 }
+166	 function isEmpty(Data storage self) view external returns(bool) {
+167	 return self.m_List.length == 0;
+168	 }
+169	 function keys(Data storage self) view external returns(uint32[]) {
+170	 return self.m_List;
+171	 }
+172	 }
+173	 contract MainCard is BasicAuth,MainBase {
+174	 struct Card {
+175	 uint32 m_Index;
+176	 uint32 m_Duration;
+177	 uint8 m_Level;
+178	 uint16 m_DP;
+179	 uint16 m_DPK;
+180	 uint16 m_SP;
+181	 uint16 m_IP;
+182	 uint32[] m_Parts;
+183	 }
+184	 struct CardLib {
+185	 uint32[] m_List;
+186	 mapping(uint32 => Card) m_Lib;
+187	 }
+188	 CardLib g_CardLib;
+189	 function AddNewCard(uint32 iCard, uint32 duration, uint8 level, uint16 dp, uint16 dpk, uint16 sp, uint16 ip, uint32[] parts) external MasterAble ValidLevel(level) ValidParts(level,parts) {
+190	 require(!CardExists(iCard));
+191	 g_CardLib.m_List.push(iCard);
+192	 g_CardLib.m_Lib[iCard] = Card({
+193	 m_Index : iCard, m_Duration: duration, m_Level : level, m_DP : dp, m_DPK : dpk, m_SP : sp, m_IP : ip, m_Parts : parts }
+194	 );
+195	 }
+196	 function CardExists(uint32 iCard) public view returns(bool) {
+197	 Card storage obj = g_CardLib.m_Lib[iCard];
+198	 return obj.m_Index == iCard;
+199	 }
+200	 function GetCard(uint32 iCard) internal view returns(Card storage) {
+201	 return g_CardLib.m_Lib[iCard];
+202	 }
+203	 function GetCardInfo(uint32 iCard) external view returns(uint32, uint32, uint8, uint16, uint16, uint16, uint16, uint32[]) {
+204	 Card storage obj = GetCard(iCard);
+205	 return (obj.m_Index, obj.m_Duration, obj.m_Level, obj.m_DP, obj.m_DPK, obj.m_SP, obj.m_IP, obj.m_Parts);
+206	 }
+207	 function GetExistsCardList() external view returns(uint32[]) {
+208	 return g_CardLib.m_List;
+209	 }
+210	 }
+211	 contract MainChip is BasicAuth,MainBase {
+212	 using IndexList for uint32[];
+213	 struct Chip {
+214	 uint8 m_Level;
+215	 uint8 m_LimitNum;
+216	 uint8 m_Part;
+217	 uint32 m_Index;
+218	 uint256 m_UsedNum;
+219	 }
+220	 struct PartManager {
+221	 uint32[] m_IndexList;
+222	 uint32[] m_UnableList;
+223	 }
+224	 struct ChipLib {
+225	 uint32[] m_List;
+226	 mapping(uint32 => Chip) m_Lib;
+227	 mapping(uint32 => uint[]) m_TempList;
+228	 mapping(uint8 => mapping(uint => PartManager)) m_PartMap;
+229	 }
+230	 ChipLib g_ChipLib;
+231	 function AddNewChip(uint32 iChip, uint8 lv, uint8 limit, uint8 part) external MasterAble ValidLevel(lv) ValidPart(lv,part) {
+232	 require(!ChipExists(iChip));
+233	 g_ChipLib.m_List.push(iChip);
+234	 g_ChipLib.m_Lib[iChip] = Chip({
+235	 m_Index : iChip, m_Level : lv, m_LimitNum : limit, m_Part : part, m_UsedNum : 0 }
+236	 );
+237	 PartManager storage pm = GetPartManager(lv,part);
+238	 pm.m_IndexList.push(iChip);
+239	 }
+240	 function GetChip(uint32 iChip) internal view returns(Chip storage) {
+241	 return g_ChipLib.m_Lib[iChip];
+242	 }
+243	 function GetPartManager(uint8 level, uint iPart) internal view returns(PartManager storage) {
+244	 return g_ChipLib.m_PartMap[level][iPart];
+245	 }
+246	 function ChipExists(uint32 iChip) public view returns(bool) {
+247	 Chip storage obj = GetChip(iChip);
+248	 return obj.m_Index == iChip;
+249	 }
+250	 function GetChipUsedNum(uint32 iChip) internal view returns(uint) {
+251	 Chip storage obj = GetChip(iChip);
+252	 uint[] memory tempList = g_ChipLib.m_TempList[iChip];
+253	 uint num = tempList.length;
+254	 for (uint i=num; i>0; i--) {
+255	 if(tempList[i-1]<=now) {
+256	 num -= i;
+257	 break;
+258	 }
+259	 }
+260	 return obj.m_UsedNum + num;
+261	 }
+262	 function CanObtainChip(uint32 iChip) internal view returns(bool) {
+263	 Chip storage obj = GetChip(iChip);
+264	 if (obj.m_LimitNum == 0) return true;
+265	 if (GetChipUsedNum(iChip) < obj.m_LimitNum) return true;
+266	 return false;
+267	 }
+268	 function CostChip(uint32 iChip) internal {
+269	 BeforeChipCost(iChip);
+270	 Chip storage obj = GetChip(iChip);
+271	 obj.m_UsedNum--;
+272	 }
+273	 function ObtainChip(uint32 iChip) internal {
+274	 BeforeChipObtain(iChip);
+275	 Chip storage obj = GetChip(iChip);
+276	 obj.m_UsedNum++;
+277	 }
+278	 function BeforeChipObtain(uint32 iChip) internal {
+279	 Chip storage obj = GetChip(iChip);
+280	 if (obj.m_LimitNum == 0) return;
+281	 uint usedNum = GetChipUsedNum(iChip);
+282	 require(obj.m_LimitNum >= usedNum+1);
+283	 if (obj.m_LimitNum == usedNum+1) {
+284	 PartManager storage pm = GetPartManager(obj.m_Level,obj.m_Part);
+285	 if (pm.m_IndexList.remove(iChip)){
+286	 pm.m_UnableList.push(iChip);
+287	 }
+288	 }
+289	 }
+290	 function BeforeChipCost(uint32 iChip) internal {
+291	 Chip storage obj = GetChip(iChip);
+292	 if (obj.m_LimitNum == 0) return;
+293	 uint usedNum = GetChipUsedNum(iChip);
+294	 require(obj.m_LimitNum >= usedNum);
+295	 if (obj.m_LimitNum == usedNum) {
+296	 PartManager storage pm = GetPartManager(obj.m_Level,obj.m_Part);
+297	 if (pm.m_UnableList.remove(iChip)) {
+298	 pm.m_IndexList.push(iChip);
+299	 }
+300	 }
+301	 }
+302	 function AddChipTempTime(uint32 iChip, uint expireTime) internal {
+303	 uint[] storage list = g_ChipLib.m_TempList[iChip];
+304	 require(list.length==0 || expireTime>=list[list.length-1]);
+305	 BeforeChipObtain(iChip);
+306	 list.push(expireTime);
+307	 }
+308	 function RefreshChipUnableList(uint8 level) internal {
+309	 uint partNum = GetPartNum(level);
+310	 for (uint iPart=1; iPart<=partNum; iPart++) {
+311	 PartManager storage pm = GetPartManager(level,iPart);
+312	 for (uint i=pm.m_UnableList.length; i>0; i--) {
+313	 uint32 iChip = pm.m_UnableList[i-1];
+314	 if (CanObtainChip(iChip)) {
+315	 pm.m_IndexList.push(iChip);
+316	 pm.m_UnableList.remove(iChip,i-1);
+317	 }
+318	 }
+319	 }
+320	 }
+321	 function GenChipByWeight(uint random, uint8 level, uint[] extWeight) internal view returns(uint32) {
+322	 uint partNum = GetPartNum(level);
+323	 uint allWeight;
+324	 uint[] memory newWeight = new uint[](partNum+1);
+325	 uint[] memory realWeight = new uint[](partNum+1);
+326	 for (uint iPart=1; iPart<=partNum; iPart++) {
+327	 PartManager storage pm = GetPartManager(level,iPart);
+328	 uint curWeight = extWeight[iPart-1]+GetPartWeight(level,iPart);
+329	 allWeight += pm.m_IndexList.length*curWeight;
+330	 newWeight[iPart] = allWeight;
+331	 realWeight[iPart] = curWeight;
+332	 }
+333	 uint weight = random % allWeight;
+334	 for (iPart=1; iPart<=partNum; iPart++) {
+335	 if (weight >= newWeight[iPart]) continue;
+336	 pm = GetPartManager(level,iPart);
+337	 uint idx = (weight-newWeight[iPart-1])/realWeight[iPart];
+338	 return pm.m_IndexList[idx];
+339	 }
+340	 }
+341	 function GetChipInfo(uint32 iChip) external view returns(uint32, uint8, uint8, uint, uint8, uint) {
+342	 Chip storage obj = GetChip(iChip);
+343	 return (obj.m_Index, obj.m_Level, obj.m_LimitNum, GetPartWeight(obj.m_Level,obj.m_Part), obj.m_Part, GetChipUsedNum(iChip));
+344	 }
+345	 function GetExistsChipList() external view returns(uint32[]) {
+346	 return g_ChipLib.m_List;
+347	 }
+348	 }
+349	 contract MainBonus is BasicTime,BasicAuth,MainBase,MainCard {
+350	 uint constant BASERATIO = 10000;
+351	 struct PlayerBonus {
+352	 uint m_DrawedDay;
+353	 uint16 m_DDPermanent;
+354	 mapping(uint => uint16) m_DayStatic;
+355	 mapping(uint => uint16) m_DayPermanent;
+356	 mapping(uint => uint32[]) m_DayDynamic;
+357	 }
+358	 struct DayRatio {
+359	 uint16 m_Static;
+360	 uint16 m_Permanent;
+361	 uint32[] m_DynamicCard;
+362	 mapping(uint32 => uint) m_CardNum;
+363	 }
+364	 struct BonusData {
+365	 uint m_RewardBonus;
+366	 uint m_RecordDay;
+367	 uint m_RecordBonus;
+368	 uint m_RecordPR;
+369	 mapping(uint => DayRatio) m_DayRatio;
+370	 mapping(uint => uint) m_DayBonus;
+371	 mapping(address => PlayerBonus) m_PlayerBonus;
+372	 }
+373	 BonusData g_Bonus;
+374	 constructor() public {
+375	 g_Bonus.m_RecordDay = GetDayCount(now);
+376	 }
+377	 function() external payable {
+378	 }
+379	 function NeedRefresh(uint dayNo) internal view returns(bool) {
+380	 if (g_Bonus.m_RecordBonus == 0) return false;
+381	 if (g_Bonus.m_RecordDay == dayNo) return false;
+382	 return true;
+383	 }
+384	 function PlayerNeedRefresh(address acc, uint dayNo) internal view returns(bool) {
+385	 if (g_Bonus.m_RecordBonus == 0) return false;
+386	 PlayerBonus storage pb = g_Bonus.m_PlayerBonus[acc];
+387	 if (pb.m_DrawedDay == dayNo) return false;
+388	 return true;
+389	 }
+390	 function GetDynamicRatio(uint dayNo) internal view returns(uint tempRatio) {
+391	 DayRatio storage dr = g_Bonus.m_DayRatio[dayNo];
+392	 for (uint i=0; i<dr.m_DynamicCard.length; i++) {
+393	 uint32 iCard = dr.m_DynamicCard[i];
+394	 uint num = dr.m_CardNum[iCard];
+395	 Card storage oCard = GetCard(iCard);
+396	 tempRatio += num*oCard.m_DP*oCard.m_DPK/(oCard.m_DPK+num);
+397	 }
+398	 }
+399	 function GenDayRatio(uint dayNo) internal view returns(uint iDR) {
+400	 DayRatio storage dr = g_Bonus.m_DayRatio[dayNo];
+401	 iDR += dr.m_Permanent;
+402	 iDR += dr.m_Static;
+403	 iDR += GetDynamicRatio(dayNo);
+404	 }
+405	 function GetDynamicCardNum(uint32 iCard, uint dayNo) internal view returns(uint num) {
+406	 DayRatio storage dr = g_Bonus.m_DayRatio[dayNo];
+407	 num = dr.m_CardNum[iCard];
+408	 }
+409	 function GetPlayerDynamicRatio(address acc, uint dayNo) internal view returns(uint tempRatio) {
+410	 PlayerBonus storage pb = g_Bonus.m_PlayerBonus[acc];
+411	 DayRatio storage dr = g_Bonus.m_DayRatio[dayNo];
+412	 uint32[] storage cards = pb.m_DayDynamic[dayNo];
+413	 for (uint idx=0; idx<cards.length; idx++) {
+414	 uint32 iCard = cards[idx];
+415	 uint num = dr.m_CardNum[iCard];
+416	 Card storage oCard = GetCard(iCard);
+417	 tempRatio += oCard.m_DP*oCard.m_DPK/(oCard.m_DPK+num);
+418	 }
+419	 }
+420	 function GenPlayerRatio(address acc, uint dayNo) internal view returns(uint tempRatio) {
+421	 PlayerBonus storage pb = g_Bonus.m_PlayerBonus[acc];
+422	 tempRatio += pb.m_DayPermanent[dayNo];
+423	 tempRatio += pb.m_DayStatic[dayNo];
+424	 tempRatio += GetPlayerDynamicRatio(acc,dayNo);
+425	 }
+426	 function RefreshDayBonus() internal {
+427	 uint todayNo = GetDayCount(now);
+428	 if (!NeedRefresh(todayNo)) return;
+429	 uint tempBonus = g_Bonus.m_RecordBonus;
+430	 uint tempPR = g_Bonus.m_RecordPR;
+431	 uint tempRatio;
+432	 for (uint dayNo=g_Bonus.m_RecordDay; dayNo<todayNo; dayNo++) {
+433	 tempRatio = tempPR+GenDayRatio(dayNo);
+434	 if (tempRatio == 0) continue;
+435	 DayRatio storage dr = g_Bonus.m_DayRatio[dayNo];
+436	 tempPR += dr.m_Permanent;
+437	 g_Bonus.m_DayBonus[dayNo] = tempBonus;
+438	 tempBonus -= tempBonus*tempRatio/BASERATIO;
+439	 }
+440	 g_Bonus.m_RecordPR = tempPR;
+441	 g_Bonus.m_RecordDay = todayNo;
+442	 g_Bonus.m_RecordBonus = tempBonus;
+443	 }
+444	 function QueryPlayerBonus(address acc, uint todayNo) view internal returns(uint accBonus,uint16 accPR) {
+445	 PlayerBonus storage pb = g_Bonus.m_PlayerBonus[acc];
+446	 accPR = pb.m_DDPermanent;
+447	 if (!PlayerNeedRefresh(acc, todayNo)) return;
+448	 uint tempBonus = g_Bonus.m_RecordBonus;
+449	 uint tempPR = g_Bonus.m_RecordPR;
+450	 uint dayNo = pb.m_DrawedDay;
+451	 if (dayNo == 0) return;
+452	 for (; dayNo<todayNo; dayNo++) {
+453	 uint tempRatio = tempPR+GenDayRatio(dayNo);
+454	 if (tempRatio == 0) continue;
+455	 uint accRatio = accPR+GenPlayerRatio(acc,dayNo);
+456	 accPR += pb.m_DayPermanent[dayNo];
+457	 DayRatio storage dr = g_Bonus.m_DayRatio[dayNo];
+458	 if (dayNo >= g_Bonus.m_RecordDay) {
+459	 tempPR += dr.m_Permanent;
+460	 accBonus += tempBonus*accRatio/BASERATIO;
+461	 tempBonus -= tempBonus*tempRatio/BASERATIO;
+462	 }
+463	 else {
+464	 if (accRatio == 0) continue;
+465	 accBonus += g_Bonus.m_DayBonus[dayNo]*accRatio/BASERATIO;
+466	 }
+467	 }
+468	 }
+469	 function GetDynamicCardAmount(uint32 iCard, uint timestamp) external view returns(uint num) {
+470	 num = GetDynamicCardNum(iCard, GetDayCount(timestamp));
+471	 }
+472	 function AddDynamicProfit(address acc, uint32 iCard, uint duration) internal {
+473	 RefreshDayBonus();
+474	 uint todayNo = GetDayCount(now);
+475	 PlayerBonus storage pb = g_Bonus.m_PlayerBonus[acc];
+476	 if (pb.m_DrawedDay == 0) pb.m_DrawedDay = todayNo;
+477	 for (uint dayNo=todayNo; dayNo<todayNo+duration; dayNo++) {
+478	 pb.m_DayDynamic[dayNo].push(iCard);
+479	 DayRatio storage dr= g_Bonus.m_DayRatio[dayNo];
+480	 if (dr.m_CardNum[iCard] == 0) {
+481	 dr.m_DynamicCard.push(iCard);
+482	 }
+483	 dr.m_CardNum[iCard]++;
+484	 }
+485	 }
+486	 function AddStaticProfit(address acc,uint16 ratio,uint duration) internal {
+487	 RefreshDayBonus();
+488	 uint todayNo = GetDayCount(now);
+489	 PlayerBonus storage pb = g_Bonus.m_PlayerBonus[acc];
+490	 if (pb.m_DrawedDay == 0) pb.m_DrawedDay = todayNo;
+491	 if (duration == 0) {
+492	 pb.m_DayPermanent[todayNo] += ratio;
+493	 g_Bonus.m_DayRatio[todayNo].m_Permanent += ratio;
+494	 }
+495	 else {
+496	 for (uint dayNo=todayNo; dayNo<todayNo+duration; dayNo++) {
+497	 pb.m_DayStatic[dayNo] += ratio;
+498	 g_Bonus.m_DayRatio[dayNo].m_Static += ratio;
+499	 }
+500	 }
+501	 }
+502	 function ImmediateProfit(address acc, uint ratio) internal {
+503	 RefreshDayBonus();
+504	 uint bonus = ratio*g_Bonus.m_RecordBonus/BASERATIO;
+505	 g_Bonus.m_RecordBonus -= bonus;
+506	 g_Bonus.m_RewardBonus -= bonus;
+507	 if (bonus == 0) return acc.transfer(bonus);
+508	 }
+509	 function ProfitByCard(address acc, uint32 iCard) internal {
+510	 Card storage oCard = GetCard(iCard);
+511	 if (oCard.m_IP > 0) {
+512	 ImmediateProfit(acc,oCard.m_IP);
+513	 }
+514	 else if (oCard.m_SP > 0) {
+515	 AddStaticProfit(acc,oCard.m_SP,oCard.m_Duration);
+516	 }
+517	 else {
+518	 AddDynamicProfit(acc,iCard,oCard.m_Duration);
+519	 }
+520	 }
+521	 function QueryBonus() external view returns(uint) {
+522	 uint todayNo = GetDayCount(now);
+523	 if (!NeedRefresh(todayNo)) return g_Bonus.m_RecordBonus;
+524	 uint tempBonus = g_Bonus.m_RecordBonus;
+525	 uint tempPR = g_Bonus.m_RecordPR;
+526	 uint tempRatio;
+527	 for (uint dayNo=g_Bonus.m_RecordDay; dayNo<todayNo; dayNo++) {
+528	 tempRatio = tempPR+GenDayRatio(dayNo);
+529	 if (tempRatio == 0) continue;
+530	 DayRatio storage dr = g_Bonus.m_DayRatio[dayNo];
+531	 tempPR += dr.m_Permanent;
+532	 tempBonus -= tempBonus*tempRatio/BASERATIO;
+533	 }
+534	 return tempBonus;
+535	 }
+536	 function QueryMyBonus(address acc) external view returns(uint bonus) {
+537	 (bonus,) = QueryPlayerBonus(acc, GetDayCount(now));
+538	 }
+539	 function AddBonus(uint bonus) external AuthAble {
+540	 RefreshDayBonus();
+541	 g_Bonus.m_RewardBonus += bonus;
+542	 g_Bonus.m_RecordBonus += bonus;
+543	 }
+544	 function Withdraw(address acc) external {
+545	 RefreshDayBonus();
+546	 PlayerBonus storage pb = g_Bonus.m_PlayerBonus[acc];
+547	 uint bonus;
+548	 uint todayNo = GetDayCount(now);
+549	 (bonus, pb.m_DDPermanent) = QueryPlayerBonus(acc, todayNo);
+550	 require(bonus > 0);
+551	 pb.m_DrawedDay = todayNo;
+552	 acc.transfer(bonus);
+553	 g_Bonus.m_RewardBonus -= bonus;
+554	 }
+555	 function MasterWithdraw() external {
+556	 uint bonus = address(this).balance-g_Bonus.m_RewardBonus;
+557	 require(bonus > 0);
+558	 master.transfer(bonus);
+559	 }
+560	 }
+561	 contract MainBag is BasicTime,BasicAuth,MainChip,MainCard {
+562	 using ItemList for ItemList.Data;
+563	 struct Bag {
+564	 ItemList.Data m_Stuff;
+565	 ItemList.Data m_TempStuff;
+566	 ItemList.Data m_Chips;
+567	 ItemList.Data m_TempCards;
+568	 ItemList.Data m_PermCards;
+569	 }
+570	 mapping(address => Bag) g_BagList;
+571	 function GainStuff(address acc, uint32 iStuff, uint iNum) external AuthAble OwnerAble(acc) {
+572	 Bag storage obj = g_BagList[acc];
+573	 obj.m_Stuff.add(iStuff,iNum);
+574	 }
+575	 function CostStuff(address acc, uint32 iStuff, uint iNum) external AuthAble OwnerAble(acc) {
+576	 Bag storage obj = g_BagList[acc];
+577	 obj.m_Stuff.sub(iStuff,iNum);
+578	 }
+579	 function GetStuffNum(address acc, uint32 iStuff) view external returns(uint) {
+580	 Bag storage obj = g_BagList[acc];
+581	 return obj.m_Stuff.get(iStuff);
+582	 }
+583	 function GetStuffList(address acc) external view returns(uint32[],uint[]) {
+584	 Bag storage obj = g_BagList[acc];
+585	 return obj.m_Stuff.list();
+586	 }
+587	 function GainTempStuff(address acc, uint32 iStuff, uint dayCnt) external AuthAble OwnerAble(acc) {
+588	 Bag storage obj = g_BagList[acc];
+589	 require(obj.m_TempStuff.get(iStuff) <= now);
+590	 obj.m_TempStuff.set(iStuff,now+dayCnt*DAY_SECONDS);
+591	 }
+592	 function GetTempStuffExpire(address acc, uint32 iStuff) external view returns(uint expire) {
+593	 Bag storage obj = g_BagList[acc];
+594	 expire = obj.m_TempStuff.get(iStuff);
+595	 }
+596	 function GetTempStuffList(address acc) external view returns(uint32[],uint[]) {
+597	 Bag storage obj = g_BagList[acc];
+598	 return obj.m_TempStuff.list();
+599	 }
+600	 function GainChip(address acc, uint32 iChip,bool bGenerated) external AuthAble OwnerAble(acc) {
+601	 if (!bGenerated) {
+602	 require(CanObtainChip(iChip));
+603	 ObtainChip(iChip);
+604	 }
+605	 Bag storage obj = g_BagList[acc];
+606	 obj.m_Chips.add(iChip,1);
+607	 }
+608	 function CostChip(address acc, uint32 iChip) external AuthAble OwnerAble(acc) {
+609	 Bag storage obj = g_BagList[acc];
+610	 obj.m_Chips.sub(iChip,1);
+611	 CostChip(iChip);
+612	 }
+613	 function GetChipNum(address acc, uint32 iChip) external view returns(uint) {
+614	 Bag storage obj = g_BagList[acc];
+615	 return obj.m_Chips.get(iChip);
+616	 }
+617	 function GetChipList(address acc) external view returns(uint32[],uint[]) {
+618	 Bag storage obj = g_BagList[acc];
+619	 return obj.m_Chips.list();
+620	 }
+621	 function GainCard2(address acc, uint32 iCard) internal {
+622	 Card storage oCard = GetCard(iCard);
+623	 if (oCard.m_IP > 0) return;
+624	 uint i;
+625	 uint32 iChip;
+626	 Bag storage obj = g_BagList[acc];
+627	 if (oCard.m_Duration > 0) {
+628	 uint expireTime = GetExpireTime(now,oCard.m_Duration);
+629	 for (i=0; i<oCard.m_Parts.length; i++) {
+630	 iChip = oCard.m_Parts[i];
+631	 AddChipTempTime(iChip,expireTime);
+632	 }
+633	 obj.m_TempCards.set(iCard,expireTime);
+634	 }
+635	 else {
+636	 for (i=0; i<oCard.m_Parts.length; i++) {
+637	 iChip = oCard.m_Parts[i];
+638	 ObtainChip(iChip);
+639	 }
+640	 obj.m_PermCards.set(iCard,1);
+641	 }
+642	 }
+643	 function HasCard(address acc, uint32 iCard) public view returns(bool) {
+644	 Bag storage obj = g_BagList[acc];
+645	 if (obj.m_TempCards.get(iCard) > now) return true;
+646	 if (obj.m_PermCards.has(iCard)) return true;
+647	 return false;
+648	 }
+649	 function GetCardList(address acc) external view returns(uint32[] tempCards, uint[] cardsTime, uint32[] permCards) {
+650	 Bag storage obj = g_BagList[acc];
+651	 (tempCards,cardsTime) = obj.m_TempCards.list();
+652	 permCards = obj.m_PermCards.keys();
+653	 }
+654	 }
+655	 contract Main is MainChip,MainCard,MainBag,MainBonus {
+656	 constructor(address Master) public {
+657	 InitMaster(Master);
+658	 }
+659	 function GainCard(address acc, uint32 iCard) external {
+660	 require(CardExists(iCard) && !HasCard(acc,iCard));
+661	 GainCard2(acc,iCard);
+662	 ProfitByCard(acc,iCard);
+663	 }
+664	 function GetDynamicCardAmountList(address acc) external view returns(uint[] amountList) {
+665	 Bag storage oBag = g_BagList[acc];
+666	 uint len = oBag.m_TempCards.m_List.length;
+667	 amountList = new uint[](len);
+668	 for (uint i=0; i<len; i++) {
+669	 uint32 iCard = oBag.m_TempCards.m_List[i];
+670	 amountList[i] = GetDynamicCardNum(iCard,GetDayCount(now));
+671	 }
+672	 }
+673	 function GenChipByRandomWeight(uint random, uint8 level, uint[] extWeight) external AuthAble returns(uint32 iChip) {
+674	 RefreshChipUnableList(level);
+675	 iChip = GenChipByWeight(random,level,extWeight);
+676	 ObtainChip(iChip);
+677	 }
+678	 function CheckGenChip(uint32 iChip) external view returns(bool) {
+679	 return CanObtainChip(iChip);
+680	 }
+681	 function GenChip(uint32 iChip) external AuthAble {
+682	 require(CanObtainChip(iChip));
+683	 ObtainChip(iChip);
+684	 }
+685	 }
+686	 contract ProductionBoiler is BasicAuth {
+687	 struct Boiler {
+688	 uint m_Expire;
+689	 uint32[] m_Chips;
+690	 }
+691	 mapping(address => mapping(uint => Boiler)) g_Boilers;
+692	 constructor(address Master) public {
+693	 InitMaster(Master);
+694	 }
+695	 function IsBoilerValid(address acc, uint idx) external view returns(bool) {
+696	 Boiler storage obj = g_Boilers[acc][idx];
+697	 if (obj.m_Chips.length > 0) return false;
+698	 return true;
+699	 }
+700	 function IsBoilerExpire(address acc, uint idx) external view returns(bool) {
+701	 Boiler storage obj = g_Boilers[acc][idx];
+702	 return obj.m_Expire <= now;
+703	 }
+704	 function GenerateChips(address acc, uint idx, uint cd, uint32[] chips) external AuthAble OwnerAble(acc) {
+705	 Boiler storage obj = g_Boilers[acc][idx];
+706	 obj.m_Expire = cd+now;
+707	 obj.m_Chips = chips;
+708	 }
+709	 function CollectChips(address acc, uint idx) external AuthAble OwnerAble(acc) returns(uint32[] chips) {
+710	 Boiler storage obj = g_Boilers[acc][idx];
+711	 chips = new uint32[](obj.m_Chips.length);
+712	 for (uint i=0; i<obj.m_Chips.length; i++) {
+713	 chips[i] = obj.m_Chips[i];
+714	 delete obj.m_Chips[i];
+715	 }
+716	 obj.m_Chips.length = 0;
+717	 obj.m_Expire = 0;
+718	 }
+719	 function GetBoilerInfo(address acc, uint idx) external view returns(uint, uint32[]) {
+720	 Boiler storage obj = g_Boilers[acc][idx];
+721	 return (obj.m_Expire,obj.m_Chips);
+722	 }
+723	 }
+724	 contract Child is Base {
+725	 Main g_Main;
+726	 constructor(Main main) public {
+727	 require(main != address(0));
+728	 g_Main = main;
+729	 g_Main.SetAuth(this);
+730	 }
+731	 function kill() external MasterAble {
+732	 g_Main.ClearAuth(this);
+733	 selfdestruct(creator);
+734	 }
+735	 function AddBonus(uint percent) internal {
+736	 address(g_Main).transfer(msg.value);
+737	 g_Main.AddBonus(msg.value * percent / 100);
+738	 }
+739	 function GenRandom(uint seed,uint base) internal view returns(uint,uint) {
+740	 uint r = uint(keccak256(abi.encodePacked(msg.sender,seed,now)));
+741	 if (base != 0) r %= base;
+742	 return (r,seed+1);
+743	 }
+744	 }
+745	 contract Production is Child {
+746	 uint32 constant STUFF_IDX_POINT = 22001;
+747	 uint32 constant STUFF_IDX_GENRAL = 21000;
+748	 uint32 constant STUFF_IDX_EXTRA = 21004;
+749	 uint32 constant PERMISSION_1 = 23002;
+750	 uint32 constant PERMISSION_2 = 23003;
+751	 uint constant BASERATIO = 10000;
+752	 uint constant BOILER_FREE_IDX = 0;
+753	 uint constant BOILER_MAX_NUM = 3;
+754	 uint constant CREATE_COST_MIN = 30;
+755	 uint constant CREATE_COST_FEW = 60;
+756	 uint constant CREATE_COST_MANY = 150;
+757	 uint constant CREATE_COST_MAX = 300;
+758	 uint constant COOLTIME_MIN = 60 * 60;
+759	 uint constant COOLTIME_MID = 60 * 60 * 2;
+760	 uint constant COOLTIME_MAX = 60 * 60 * 4;
+761	 uint constant ACCELERATE_UNITTIME = 60 * 5;
+762	 uint constant ACCELERATE_UNITFEE = 0.0013 ether;
+763	 uint constant BONUS_PERCENT_ACCELERATE = 80;
+764	 ProductionBoiler g_Boilers;
+765	 constructor(Main main, ProductionBoiler pb) public Child(main) {
+766	 g_Boilers = pb;
+767	 g_Boilers.SetAuth(this);
+768	 }
+769	 function kill() external MasterAble {
+770	 g_Boilers.ClearAuth(this);
+771	 }
+772	 function GenChipIndex( uint seed, uint8 level, uint[] extWeight3, uint[] extWeight4, uint[] extWeight5 ) internal returns(uint32,uint) {
+773	 uint random;
+774	 (random,seed) = GenRandom(seed,0);
+775	 if (level==1 || level==2) {
+776	 return (g_Main.GenChipByRandomWeight(random,level,extWeight3),seed);
+777	 }
+778	 else if (level==3 || level==4) {
+779	 return (g_Main.GenChipByRandomWeight(random,level,extWeight4),seed);
+780	 }
+781	 else {
+782	 return (g_Main.GenChipByRandomWeight(random,level,extWeight5),seed);
+783	 }
+784	 }
+785	 function GenChipLevel_Special(uint costAll, uint x, uint seed) internal view returns(uint8,uint) {
+786	 uint8 outLv;
+787	 uint random;
+788	 if (costAll <= CREATE_COST_FEW) {
+789	 outLv = 3;
+790	 }
+791	 else {
+792	 (random,seed) = GenRandom(seed,BASERATIO);
+793	 uint baseR = BASERATIO*x/100;
+794	 if (costAll <= CREATE_COST_MANY) {
+795	 baseR /= 10;
+796	 if (random <= BASERATIO*80/100-baseR) {
+797	 outLv = 3;
+798	 }
+799	 else if (random <= BASERATIO-baseR/4) {
+800	 outLv = 4;
+801	 }
+802	 else {
+803	 outLv = 5;
+804	 }
+805	 }
+806	 else {
+807	 baseR /= 10;
+808	 if (random <= BASERATIO*70/100-baseR) {
+809	 outLv = 3;
+810	 }
+811	 else if (random <= BASERATIO*95/100-baseR/5) {
+812	 outLv = 4;
+813	 }
+814	 else {
+815	 outLv = 5;
+816	 }
+817	 }
+818	 }
+819	 return (outLv,seed);
+820	 }
+821	 function GenChipLevel_Extra(uint costAll, uint x, uint seed) internal view returns(uint8,uint) {
+822	 uint8 outLv;
+823	 uint random;
+824	 uint baseR = BASERATIO*x/100;
+825	 (random,seed) = GenRandom(seed,BASERATIO);
+826	 if (costAll <= CREATE_COST_FEW) {
+827	 baseR /= 4;
+828	 if (random <= BASERATIO*80/100-baseR) {
+829	 outLv = 1;
+830	 }
+831	 else if (random <= BASERATIO*98/100-baseR*3/4) {
+832	 outLv = 2;
+833	 }
+834	 else if (random <= BASERATIO-baseR/4) {
+835	 outLv = 3;
+836	 }
+837	 else {
+838	 outLv = 4;
+839	 }
+840	 }
+841	 else if (costAll <= CREATE_COST_MANY) {
+842	 baseR /= 10;
+843	 if (random <= BASERATIO*55/100-baseR) {
+844	 outLv = 1;
+845	 }
+846	 else if (random <= BASERATIO*85/100-baseR*4/5) {
+847	 outLv = 2;
+848	 }
+849	 else if (random <= BASERATIO*95/100-baseR*2/5) {
+850	 outLv = 3;
+851	 }
+852	 else if (random <= BASERATIO-baseR/5) {
+853	 outLv = 4;
+854	 }
+855	 else {
+856	 outLv = 5;
+857	 }
+858	 }
+859	 else {
+860	 baseR /= 10;
+861	 if (random <= BASERATIO*30/100-baseR/2) {
+862	 outLv = 1;
+863	 }
+864	 else if (random <= BASERATIO*75/100-baseR) {
+865	 outLv = 2;
+866	 }
+867	 else if (random <= BASERATIO*88/100-baseR*4/7) {
+868	 outLv = 3;
+869	 }
+870	 else if (random <= BASERATIO*97/100-baseR/7) {
+871	 outLv = 4;
+872	 }
+873	 else {
+874	 outLv = 5;
+875	 }
+876	 }
+877	 return (outLv,seed);
+878	 }
+879	 function GenChipLevel_General(uint costAll, uint x, uint seed) internal view returns(uint8,uint) {
+880	 uint8 outLv;
+881	 uint random;
+882	 uint baseR = BASERATIO*x/100;
+883	 (random,seed) = GenRandom(seed,BASERATIO);
+884	 if (costAll <= CREATE_COST_FEW) {
+885	 baseR /= 2;
+886	 if (random <= BASERATIO - baseR) {
+887	 outLv = 1;
+888	 }
+889	 else {
+890	 outLv = 2;
+891	 }
+892	 }
+893	 else if (costAll <= CREATE_COST_MANY) {
+894	 baseR = baseR*14/100;
+895	 if (random <= BASERATIO*70/100-baseR) {
+896	 outLv = 1;
+897	 }
+898	 else if (random <= BASERATIO*95/100-baseR/4) {
+899	 outLv = 2;
+900	 }
+901	 else {
+902	 outLv = 3;
+903	 }
+904	 }
+905	 else {
+906	 baseR = baseR*11/100;
+907	 if (random <= BASERATIO*50/100-baseR) {
+908	 outLv = 1;
+909	 }
+910	 else if (random <= BASERATIO*90/100-baseR/3) {
+911	 outLv = 2;
+912	 }
+913	 else {
+914	 outLv = 3;
+915	 }
+916	 }
+917	 return (outLv,seed);
+918	 }
+919	 function GenOutChipsNum(uint seed, uint costAll, uint x) internal view returns(uint,uint) {
+920	 uint amount;
+921	 uint random;
+922	 uint baseR = BASERATIO*x/100;
+923	 (random,seed) = GenRandom(seed,BASERATIO);
+924	 if (costAll <= CREATE_COST_FEW) {
+925	 if (random <= BASERATIO - baseR) {
+926	 amount = 3;
+927	 }
+928	 else {
+929	 amount = 4;
+930	 }
+931	 }
+932	 else {
+933	 baseR /= 10;
+934	 if (costAll <= CREATE_COST_MANY) {
+935	 if (random <= BASERATIO*7/10 - baseR*2) {
+936	 amount = 3;
+937	 }
+938	 else if (random <= BASERATIO*3/10 + baseR) {
+939	 amount = 4;
+940	 }
+941	 else {
+942	 amount = 5;
+943	 }
+944	 }
+945	 else {
+946	 if (random <= BASERATIO*7/10 - baseR) {
+947	 amount = 4;
+948	 }
+949	 else {
+950	 amount = 5;
+951	 }
+952	 }
+953	 }
+954	 return (amount,seed);
+955	 }
+956	 function GetMinCost(uint a, uint b, uint c) internal pure returns(uint) {
+957	 if (a>b) {
+958	 if (a>c) return a;
+959	 }
+960	 else if (b>c) return b;
+961	 else return c;
+962	 }
+963	 function GenExtWeightList(uint costA, uint costB, uint costC) internal pure returns(uint[],uint[],uint[]) {
+964	 uint min = GetMinCost(costA,costB,costC);
+965	 uint[] memory extWeight3 = new uint[](3);
+966	 uint[] memory extWeight4 = new uint[](4);
+967	 uint[] memory extWeight5 = new uint[](5);
+968	 extWeight3[0] = costA;
+969	 extWeight4[0] = costA;
+970	 extWeight5[0] = costA;
+971	 extWeight3[1] = costB;
+972	 extWeight4[1] = costB;
+973	 extWeight5[1] = costB;
+974	 extWeight3[2] = costC;
+975	 extWeight4[2] = costC;
+976	 extWeight5[2] = costC;
+977	 extWeight5[3] = min;
+978	 min = min/2;
+979	 extWeight4[3] = min;
+980	 extWeight5[4] = min;
+981	 return (extWeight3,extWeight4,extWeight5);
+982	 }
+983	 function GenChipsLevel(uint costAll,bool bUseX) internal view returns(uint8[] lvList, uint seed) {
+984	 uint x = costAll - CREATE_COST_MIN;
+985	 uint i;
+986	 uint amount;
+987	 (amount,seed) = GenOutChipsNum(0,costAll,x);
+988	 lvList = new uint8[](amount);
+989	 if (bUseX) {
+990	 (lvList[0], seed) = GenChipLevel_Special(costAll,x,seed);
+991	 for (i=1; i<amount; i++) {
+992	 (lvList[i], seed) = GenChipLevel_Extra(costAll,x,seed);
+993	 }
+994	 }
+995	 else {
+996	 for (i=0; i<amount; i++) {
+997	 (lvList[i], seed) = GenChipLevel_General(costAll,x,seed);
+998	 }
+999	 }
+1000	 }
+1001	 function CreateChips(uint costAll, uint costA, uint costB, uint costC, bool bUseX) internal returns(uint32[]) {
+1002	 (uint[] memory ext3, uint[] memory ext4, uint[] memory ext5 ) = GenExtWeightList(costA,costB,costC);
+1003	 (uint8[] memory lvList, uint seed) = GenChipsLevel(costAll,bUseX);
+1004	 uint32[] memory chips = new uint32[](lvList.length);
+1005	 for (uint i=0; i<lvList.length; i++) {
+1006	 uint8 chipLv = lvList[i];
+1007	 (chips[i], seed) = GenChipIndex(seed,chipLv,ext3,ext4,ext5);
+1008	 }
+1009	 return chips;
+1010	 }
+1011	 function GetPermissionIdx(uint idx) internal pure returns(uint32) {
+1012	 if (idx == 1) return PERMISSION_1;
+1013	 else if (idx == 2) return PERMISSION_2;
+1014	 return 0;
+1015	 }
+1016	 function IsBoilerValid(uint idx) internal view returns(bool) {
+1017	 if (idx != BOILER_FREE_IDX) {
+1018	 uint32 iStuff = GetPermissionIdx(idx);
+1019	 if (iStuff == 0) return false;
+1020	 if (g_Main.GetTempStuffExpire(msg.sender,iStuff) < now) return false;
+1021	 }
+1022	 return g_Boilers.IsBoilerValid(msg.sender,idx);
+1023	 }
+1024	 function CollectChips(uint idx) internal {
+1025	 uint32[] memory chips = g_Boilers.CollectChips(msg.sender,idx);
+1026	 for (uint i=0; i<chips.length; i++) {
+1027	 g_Main.GainChip(msg.sender,chips[i],true);
+1028	 }
+1029	 }
+1030	 function GetExchangePoint(uint8 chipLv) internal pure returns(uint) {
+1031	 if (chipLv == 1) return 1;
+1032	 else if (chipLv == 2) return 3;
+1033	 else if (chipLv == 3) return 10;
+1034	 else if (chipLv == 4) return 30;
+1035	 else if (chipLv == 5) return 120;
+1036	 return 0;
+1037	 }
+1038	 function Create(uint idx,uint costA, uint costB, uint costC, bool bUseX) external {
+1039	 require(costA <= CREATE_COST_MAX);
+1040	 require(costB <= CREATE_COST_MAX);
+1041	 require(costC <= CREATE_COST_MAX);
+1042	 uint costAll = costA+costB+costC;
+1043	 require(costAll>=CREATE_COST_MIN && costAll<=CREATE_COST_MAX);
+1044	 require(IsBoilerValid(idx));
+1045	 g_Main.CostStuff(msg.sender,STUFF_IDX_GENRAL,costAll);
+1046	 if (bUseX) g_Main.CostStuff(msg.sender,STUFF_IDX_EXTRA,1);
+1047	 uint CD;
+1048	 if (costAll <= CREATE_COST_FEW) {
+1049	 CD = COOLTIME_MIN;
+1050	 }
+1051	 else if (costAll <= CREATE_COST_MANY) {
+1052	 CD = COOLTIME_MID;
+1053	 }
+1054	 else {
+1055	 CD = COOLTIME_MAX;
+1056	 }
+1057	 uint32[] memory chips = CreateChips(costAll,costA,costB,costC,bUseX);
+1058	 g_Boilers.GenerateChips(msg.sender,idx,CD,chips);
+1059	 }
+1060	 function GetBoilersInfo() external view returns(uint[], uint32[], uint32[], uint32[] ) {
+1061	 uint[] memory expireList = new uint[](BOILER_MAX_NUM);
+1062	 uint32[][] memory allChips = new uint32[][](BOILER_MAX_NUM);
+1063	 for (uint i=BOILER_FREE_IDX; i<BOILER_MAX_NUM; i++) {
+1064	 (uint expire, uint32[] memory chips) = g_Boilers.GetBoilerInfo(msg.sender,i);
+1065	 expireList[i] = expire;
+1066	 allChips[i] = chips;
+1067	 }
+1068	 return ( expireList, allChips[0], allChips[1], allChips[2] );
+1069	 }
+1070	 function ResolveChips(uint32[] chips) external {
+1071	 for (uint i=0; i<chips.length; i++) {
+1072	 uint32 iChip = chips[i];
+1073	 g_Main.CostChip(msg.sender,iChip);
+1074	 (,uint8 lv,,,,) = g_Main.GetChipInfo(iChip);
+1075	 uint point = GetExchangePoint(lv);
+1076	 g_Main.GainStuff(msg.sender,STUFF_IDX_POINT,point);
+1077	 }
+1078	 }
+1079	 function Collect(uint idx) external {
+1080	 require(g_Boilers.IsBoilerExpire(msg.sender,idx));
+1081	 CollectChips(idx);
+1082	 }
+1083	 function Accelerate(uint idx) external payable {
+1084	 (uint expire,) = g_Boilers.GetBoilerInfo(msg.sender,idx);
+1085	 require(expire > now);
+1086	 uint remain = expire-now;
+1087	 uint num = remain/ACCELERATE_UNITTIME;
+1088	 if (remain != num*ACCELERATE_UNITTIME) {
+1089	 num++;
+1090	 }
+1091	 uint fee = num*ACCELERATE_UNITFEE;
+1092	 require(fee == msg.value);
+1093	 AddBonus(BONUS_PERCENT_ACCELERATE);
+1094	 CollectChips(idx);
+1095	 }
+1096	 }

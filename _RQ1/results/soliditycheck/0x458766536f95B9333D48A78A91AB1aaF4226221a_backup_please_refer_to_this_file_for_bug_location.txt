@@ -1,0 +1,393 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity ^0.7.5;
+3	 interface IOracle {
+4	 event UniStrategyUpdated(address oldStrategy, address newStrategy);
+5	 event GovernanceUpdated(address governance, address _governance);
+6	 function getPilotAmountForTokens( address token0, address token1, uint256 amount0, uint256 amount1, address oracle0, address oracle1 ) external view returns (uint256 total);
+7	 function getPilotAmountWethPair( address tokenAlt, uint256 altAmount, uint256 wethAmount, address altOracle ) external view returns (uint256 amount);
+8	 function getPilotAmount( address token, uint256 amount, address pool ) external view returns (uint256 pilotAmount);
+9	 function assetToEth( address token, address pool, uint256 amountIn ) external view returns (uint256 ethAmountOut);
+10	 function ethToAsset( address tokenOut, address pool, uint256 amountIn ) external view returns (uint256 amountOut);
+11	 function getPrice( address tokenA, address tokenB, address pool, uint256 _amountIn ) external view returns (uint256 amountOut);
+12	 }
+13	 pragma solidity >=0.5.0;
+14	 interface IUniswapV3PoolImmutables {
+15	 function factory() external view returns (address);
+16	 function token0() external view returns (address);
+17	 function token1() external view returns (address);
+18	 function fee() external view returns (uint24);
+19	 function tickSpacing() external view returns (int24);
+20	 function maxLiquidityPerTick() external view returns (uint128);
+21	 }
+22	 pragma solidity >=0.5.0;
+23	 interface IUniswapV3PoolState {
+24	 function slot0() external view returns ( uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked );
+25	 function feeGrowthGlobal0X128() external view returns (uint256);
+26	 function feeGrowthGlobal1X128() external view returns (uint256);
+27	 function protocolFees() external view returns (uint128 token0, uint128 token1);
+28	 function liquidity() external view returns (uint128);
+29	 function ticks(int24 tick) external view returns ( uint128 liquidityGross, int128 liquidityNet, uint256 feeGrowthOutside0X128, uint256 feeGrowthOutside1X128, int56 tickCumulativeOutside, uint160 secondsPerLiquidityOutsideX128, uint32 secondsOutside, bool initialized );
+30	 function tickBitmap(int16 wordPosition) external view returns (uint256);
+31	 function positions(bytes32 key) external view returns ( uint128 _liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1 );
+32	 function observations(uint256 index) external view returns ( uint32 blockTimestamp, int56 tickCumulative, uint160 secondsPerLiquidityCumulativeX128, bool initialized );
+33	 }
+34	 pragma solidity >=0.5.0;
+35	 interface IUniswapV3PoolDerivedState {
+36	 function observe(uint32[] calldata secondsAgos) external view returns (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidityCumulativeX128s);
+37	 function snapshotCumulativesInside(int24 tickLower, int24 tickUpper) external view returns ( int56 tickCumulativeInside, uint160 secondsPerLiquidityInsideX128, uint32 secondsInside );
+38	 }
+39	 pragma solidity >=0.5.0;
+40	 interface IUniswapV3PoolActions {
+41	 function initialize(uint160 sqrtPriceX96) external;
+42	 function mint( address recipient, int24 tickLower, int24 tickUpper, uint128 amount, bytes calldata data ) external returns (uint256 amount0, uint256 amount1);
+43	 function collect( address recipient, int24 tickLower, int24 tickUpper, uint128 amount0Requested, uint128 amount1Requested ) external returns (uint128 amount0, uint128 amount1);
+44	 function burn( int24 tickLower, int24 tickUpper, uint128 amount ) external returns (uint256 amount0, uint256 amount1);
+45	 function swap( address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes calldata data ) external returns (int256 amount0, int256 amount1);
+46	 function flash( address recipient, uint256 amount0, uint256 amount1, bytes calldata data ) external;
+47	 function increaseObservationCardinalityNext(uint16 observationCardinalityNext) external;
+48	 }
+49	 pragma solidity >=0.5.0;
+50	 interface IUniswapV3PoolOwnerActions {
+51	 function setFeeProtocol(uint8 feeProtocol0, uint8 feeProtocol1) external;
+52	 function collectProtocol( address recipient, uint128 amount0Requested, uint128 amount1Requested ) external returns (uint128 amount0, uint128 amount1);
+53	 }
+54	 pragma solidity >=0.5.0;
+55	 interface IUniswapV3PoolEvents {
+56	 event Initialize(uint160 sqrtPriceX96, int24 tick);
+57	 event Mint( address sender, address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1 );
+58	 event Collect( address indexed owner, address recipient, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount0, uint128 amount1 );
+59	 event Burn( address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1 );
+60	 event Swap( address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick );
+61	 event Flash( address indexed sender, address indexed recipient, uint256 amount0, uint256 amount1, uint256 paid0, uint256 paid1 );
+62	 event IncreaseObservationCardinalityNext( uint16 observationCardinalityNextOld, uint16 observationCardinalityNextNew );
+63	 event SetFeeProtocol(uint8 feeProtocol0Old, uint8 feeProtocol1Old, uint8 feeProtocol0New, uint8 feeProtocol1New);
+64	 event CollectProtocol(address indexed sender, address indexed recipient, uint128 amount0, uint128 amount1);
+65	 }
+66	 pragma solidity 0.7.6;
+67	 contract V3Oracle is IOracle {
+68	 using SafeMath for uint256;
+69	 address public strategy;
+70	 address public governance;
+71	 address public pilotWethPair;
+72	 address public immutable weth;
+73	 address public immutable pilot;
+74	 address public immutable uniswapFactory;
+75	 modifier onlyGovernance() {
+76	 require(msg.sender == governance, "NG");
+77	 _;
+78	 }
+79	 constructor( address _uniswapFactory, address _weth, address _pilot, address _pilotWethPair, address _strategy, address _governance ) {
+80	 (uniswapFactory, weth, pilot, pilotWethPair, strategy, governance) = ( _uniswapFactory, _weth, _pilot, _pilotWethPair, _strategy, _governance );
+81	 }
+82	 function setUniStrategy(address _strategy) external onlyGovernance {
+83	 require(_strategy != address(0), "IUS");
+84	 emit UniStrategyUpdated(strategy, _strategy);
+85	 strategy = _strategy;
+86	 }
+87	 function setGovernance(address _governance) external onlyGovernance {
+88	 require(_governance != address(0), "IGA");
+89	 emit GovernanceUpdated(governance, _governance);
+90	 governance = _governance;
+91	 }
+92	 function getPoolAddress( address token0, address token1, uint24 fee ) private view returns (address) {
+93	 return IUniswapV3Factory(uniswapFactory).getPool(token0, token1, fee);
+94	 }
+95	 function getPoolDetails(address pool) private view returns ( address token0, address token1, uint24 fee, uint16 poolCardinality, uint128 liquidity, uint160 sqrtPriceX96, int24 currentTick, int24 tickSpacing ) {
+96	 IUniswapV3Pool uniswapPool = IUniswapV3Pool(pool);
+97	 token0 = uniswapPool.token0();
+98	 token1 = uniswapPool.token1();
+99	 fee = uniswapPool.fee();
+100	 liquidity = uniswapPool.liquidity();
+101	 (sqrtPriceX96, currentTick, , poolCardinality, , , ) = uniswapPool.slot0();
+102	 tickSpacing = uniswapPool.tickSpacing();
+103	 }
+104	 function getPilotAmountForTokens( address token0, address token1, uint256 amount0, uint256 amount1, address oracle0, address oracle1 ) external view override returns (uint256 total) {
+105	 amount0 = getPilotAmount(token0, amount0, oracle0);
+106	 amount1 = getPilotAmount(token1, amount1, oracle1);
+107	 total = amount0.add(amount1);
+108	 }
+109	 function getPilotAmountWethPair( address tokenAlt, uint256 altAmount, uint256 wethAmount, address altOracle ) external view override returns (uint256 amount) {
+110	 uint256 pilotAmount0 = ethToAsset(pilot, pilotWethPair, wethAmount);
+111	 uint256 pilotAmount1 = altAmount;
+112	 if (tokenAlt != pilot) {
+113	 pilotAmount1 = getPilotAmount(tokenAlt, altAmount, altOracle);
+114	 }
+115	 amount = pilotAmount0.add(pilotAmount1);
+116	 }
+117	 function getPilotAmount( address token, uint256 amount, address pool ) public view override returns (uint256 pilotAmount) {
+118	 uint256 ethAmount = assetToEth(token, pool, amount);
+119	 pilotAmount = ethToAsset(pilot, pilotWethPair, ethAmount);
+120	 }
+121	 function assetToEth( address token, address pool, uint256 amountIn ) public view override returns (uint256 ethAmountOut) {
+122	 return getPrice(token, weth, pool, amountIn);
+123	 }
+124	 function ethToAsset( address tokenOut, address pool, uint256 amountIn ) public view override returns (uint256 amountOut) {
+125	 return getPrice(weth, tokenOut, pool, amountIn);
+126	 }
+127	 function getPrice( address tokenA, address tokenB, address poolAddress, uint256 _amountIn ) public view override returns (uint256 amountOut) {
+128	 int256 twapTick = IUniStrategy(strategy).getTwap(poolAddress);
+129	 return OracleLibrary.getQuoteAtTick( int24(twapTick), SafeUint128.toUint128(_amountIn), tokenA, tokenB );
+130	 }
+131	 }
+132	 pragma solidity =0.7.6;
+133	 library SafeUint128 {
+134	 function toUint128(uint256 y) internal pure returns (uint128 z) {
+135	 require((z = uint128(y)) == y);
+136	 }
+137	 }
+138	 pragma solidity =0.7.6;
+139	 library OracleLibrary {
+140	 function consult(address pool, uint32 period) internal view returns (int24 timeWeightedAverageTick) {
+141	 require(period != 0, "BP");
+142	 uint32[] memory secondAgos = new uint32[](2);
+143	 secondAgos[0] = period;
+144	 secondAgos[1] = 0;
+145	 (int56[] memory tickCumulatives, ) = IUniswapV3Pool(pool).observe(secondAgos);
+146	 int56 tickCumulativesDelta = tickCumulatives[1] - tickCumulatives[0];
+147	 timeWeightedAverageTick = int24(tickCumulativesDelta / period);
+148	 if (tickCumulativesDelta < 0 && (tickCumulativesDelta % period != 0)) timeWeightedAverageTick--;
+149	 }
+150	 function getQuoteAtTick( int24 tick, uint128 baseAmount, address baseToken, address quoteToken ) internal pure returns (uint256 quoteAmount) {
+151	 uint160 sqrtRatioX96 = TickMath.getSqrtRatioAtTick(tick);
+152	 if (sqrtRatioX96 <= type(uint128).max) {
+153	 uint256 ratioX192 = uint256(sqrtRatioX96) * sqrtRatioX96;
+154	 quoteAmount = baseToken < quoteToken ? FullMath.mulDiv(ratioX192, baseAmount, 1 << 192) : FullMath.mulDiv(1 << 192, baseAmount, ratioX192);
+155	 }
+156	 else {
+157	 uint256 ratioX128 = FullMath.mulDiv(sqrtRatioX96, sqrtRatioX96, 1 << 64);
+158	 quoteAmount = baseToken < quoteToken ? FullMath.mulDiv(ratioX128, baseAmount, 1 << 128) : FullMath.mulDiv(1 << 128, baseAmount, ratioX128);
+159	 }
+160	 }
+161	 }
+162	 pragma solidity >=0.7.6;
+163	 interface IUniStrategy {
+164	 struct PoolStrategy {
+165	 int24 baseThreshold;
+166	 int24 rangeThreshold;
+167	 int24 maxTwapDeviation;
+168	 int24 readjustThreshold;
+169	 uint32 twapDuration;
+170	 }
+171	 event StrategyUpdated(PoolStrategy oldStrategy, PoolStrategy newStrategy);
+172	 event MaxTwapDeviationUpdated(int24 oldDeviation, int24 newDeviation);
+173	 event BaseMultiplierUpdated(int24 oldMultiplier, int24 newMultiplier);
+174	 event RangeMultiplierUpdated(int24 oldMultiplier, int24 newMultiplier);
+175	 event PriceThresholdUpdated(uint24 oldThreshold, uint24 newThreshold);
+176	 event SwapPercentageUpdated(uint8 oldPercentage, uint8 newPercentage);
+177	 event TwapDurationUpdated(uint32 oldDuration, uint32 newDuration);
+178	 function getTicks(address _pool) external returns ( int24 baseLower, int24 baseUpper, int24 bidLower, int24 bidUpper, int24 askLower, int24 askUpper );
+179	 function getReadjustThreshold(address _pool) external view returns (int24 readjustThreshold);
+180	 function getTwap(address _pool) external view returns (int24);
+181	 }
+182	 pragma solidity ^0.7.0;
+183	 library SafeMath {
+184	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+185	 uint256 c = a + b;
+186	 if (c < a) return (false, 0);
+187	 return (true, c);
+188	 }
+189	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+190	 if (b > a) return (false, 0);
+191	 return (true, a - b);
+192	 }
+193	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+194	 if (a == 0) return (true, 0);
+195	 uint256 c = a * b;
+196	 if (c / a != b) return (false, 0);
+197	 return (true, c);
+198	 }
+199	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+200	 if (b == 0) return (false, 0);
+201	 return (true, a / b);
+202	 }
+203	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+204	 if (b == 0) return (false, 0);
+205	 return (true, a % b);
+206	 }
+207	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+208	 uint256 c = a + b;
+209	 require(c >= a, "SafeMath: addition overflow");
+210	 return c;
+211	 }
+212	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+213	 require(b <= a, "SafeMath: subtraction overflow");
+214	 return a - b;
+215	 }
+216	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+217	 if (a == 0) return 0;
+218	 uint256 c = a * b;
+219	 require(c / a == b, "SafeMath: multiplication overflow");
+220	 return c;
+221	 }
+222	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+223	 require(b > 0, "SafeMath: division by zero");
+224	 return a / b;
+225	 }
+226	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+227	 require(b > 0, "SafeMath: modulo by zero");
+228	 return a % b;
+229	 }
+230	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+231	 require(b <= a, errorMessage);
+232	 return a - b;
+233	 }
+234	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+235	 require(b > 0, errorMessage);
+236	 return a / b;
+237	 }
+238	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+239	 require(b > 0, errorMessage);
+240	 return a % b;
+241	 }
+242	 }
+243	 pragma solidity >=0.5.0;
+244	 interface IUniswapV3Pool is IUniswapV3PoolImmutables, IUniswapV3PoolState, IUniswapV3PoolDerivedState, IUniswapV3PoolActions, IUniswapV3PoolOwnerActions, IUniswapV3PoolEvents {
+245	 }
+246	 pragma solidity >=0.5.0;
+247	 interface IUniswapV3Factory {
+248	 event OwnerChanged(address indexed oldOwner, address indexed newOwner);
+249	 event PoolCreated( address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool );
+250	 event FeeAmountEnabled(uint24 indexed fee, int24 indexed tickSpacing);
+251	 function owner() external view returns (address);
+252	 function feeAmountTickSpacing(uint24 fee) external view returns (int24);
+253	 function getPool( address tokenA, address tokenB, uint24 fee ) external view returns (address pool);
+254	 function createPool( address tokenA, address tokenB, uint24 fee ) external returns (address pool);
+255	 function setOwner(address _owner) external;
+256	 function enableFeeAmount(uint24 fee, int24 tickSpacing) external;
+257	 }
+258	 pragma solidity >=0.4.0;
+259	 library FullMath {
+260	 function mulDiv( uint256 a, uint256 b, uint256 denominator ) internal pure returns (uint256 result) {
+261	 uint256 prod0;
+262	 uint256 prod1;
+263	 assembly {
+264	 let mm := mulmod(a, b, not(0)) prod0 := mul(a, b) prod1 := sub(sub(mm, prod0), lt(mm, prod0)) }
+265	 if (prod1 == 0) {
+266	 require(denominator > 0);
+267	 assembly {
+268	 result := div(prod0, denominator) }
+269	 return result;
+270	 }
+271	 require(denominator > prod1);
+272	 uint256 remainder;
+273	 assembly {
+274	 remainder := mulmod(a, b, denominator) }
+275	 assembly {
+276	 prod1 := sub(prod1, gt(remainder, prod0)) prod0 := sub(prod0, remainder) }
+277	 uint256 twos = -denominator & denominator;
+278	 assembly {
+279	 denominator := div(denominator, twos) }
+280	 assembly {
+281	 prod0 := div(prod0, twos) }
+282	 assembly {
+283	 twos := add(div(sub(0, twos), twos), 1) }
+284	 prod0 |= prod1 * twos;
+285	 uint256 inv = (3 * denominator) ^ 2;
+286	 inv *= 2 - denominator * inv;
+287	 inv *= 2 - denominator * inv;
+288	 inv *= 2 - denominator * inv;
+289	 inv *= 2 - denominator * inv;
+290	 inv *= 2 - denominator * inv;
+291	 inv *= 2 - denominator * inv;
+292	 result = prod0 * inv;
+293	 return result;
+294	 }
+295	 function mulDivRoundingUp( uint256 a, uint256 b, uint256 denominator ) internal pure returns (uint256 result) {
+296	 result = mulDiv(a, b, denominator);
+297	 if (mulmod(a, b, denominator) > 0) {
+298	 require(result < type(uint256).max);
+299	 result++;
+300	 }
+301	 }
+302	 }
+303	 pragma solidity >=0.5.0;
+304	 library TickMath {
+305	 int24 internal constant MIN_TICK = -887272;
+306	 int24 internal constant MAX_TICK = -MIN_TICK;
+307	 uint160 internal constant MIN_SQRT_RATIO = 4295128739;
+308	 uint160 internal constant MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342;
+309	 function getSqrtRatioAtTick(int24 tick) internal pure returns (uint160 sqrtPriceX96) {
+310	 uint256 absTick = tick < 0 ? uint256(-int256(tick)) : uint256(int256(tick));
+311	 require(absTick <= uint256(MAX_TICK), 'T');
+312	 uint256 ratio = absTick & 0x1 != 0 ? 0xfffcb933bd6fad37aa2d162d1a594001 : 0x100000000000000000000000000000000;
+313	 if (absTick & 0x2 != 0) ratio = (ratio * 0xfff97272373d413259a46990580e213a) >> 128;
+314	 if (absTick & 0x4 != 0) ratio = (ratio * 0xfff2e50f5f656932ef12357cf3c7fdcc) >> 128;
+315	 if (absTick & 0x8 != 0) ratio = (ratio * 0xffe5caca7e10e4e61c3624eaa0941cd0) >> 128;
+316	 if (absTick & 0x10 != 0) ratio = (ratio * 0xffcb9843d60f6159c9db58835c926644) >> 128;
+317	 if (absTick & 0x20 != 0) ratio = (ratio * 0xff973b41fa98c081472e6896dfb254c0) >> 128;
+318	 if (absTick & 0x40 != 0) ratio = (ratio * 0xff2ea16466c96a3843ec78b326b52861) >> 128;
+319	 if (absTick & 0x80 != 0) ratio = (ratio * 0xfe5dee046a99a2a811c461f1969c3053) >> 128;
+320	 if (absTick & 0x100 != 0) ratio = (ratio * 0xfcbe86c7900a88aedcffc83b479aa3a4) >> 128;
+321	 if (absTick & 0x200 != 0) ratio = (ratio * 0xf987a7253ac413176f2b074cf7815e54) >> 128;
+322	 if (absTick & 0x400 != 0) ratio = (ratio * 0xf3392b0822b70005940c7a398e4b70f3) >> 128;
+323	 if (absTick & 0x800 != 0) ratio = (ratio * 0xe7159475a2c29b7443b29c7fa6e889d9) >> 128;
+324	 if (absTick & 0x1000 != 0) ratio = (ratio * 0xd097f3bdfd2022b8845ad8f792aa5825) >> 128;
+325	 if (absTick & 0x2000 != 0) ratio = (ratio * 0xa9f746462d870fdf8a65dc1f90e061e5) >> 128;
+326	 if (absTick & 0x4000 != 0) ratio = (ratio * 0x70d869a156d2a1b890bb3df62baf32f7) >> 128;
+327	 if (absTick & 0x8000 != 0) ratio = (ratio * 0x31be135f97d08fd981231505542fcfa6) >> 128;
+328	 if (absTick & 0x10000 != 0) ratio = (ratio * 0x9aa508b5b7a84e1c677de54f3e99bc9) >> 128;
+329	 if (absTick & 0x20000 != 0) ratio = (ratio * 0x5d6af8dedb81196699c329225ee604) >> 128;
+330	 if (absTick & 0x40000 != 0) ratio = (ratio * 0x2216e584f5fa1ea926041bedfe98) >> 128;
+331	 if (absTick & 0x80000 != 0) ratio = (ratio * 0x48a170391f7dc42444e8fa2) >> 128;
+332	 if (tick > 0) ratio = type(uint256).max / ratio;
+333	 sqrtPriceX96 = uint160((ratio >> 32) + (ratio % (1 << 32) == 0 ? 0 : 1));
+334	 }
+335	 function getTickAtSqrtRatio(uint160 sqrtPriceX96) internal pure returns (int24 tick) {
+336	 require(sqrtPriceX96 >= MIN_SQRT_RATIO && sqrtPriceX96 < MAX_SQRT_RATIO, 'R');
+337	 uint256 ratio = uint256(sqrtPriceX96) << 32;
+338	 uint256 r = ratio;
+339	 uint256 msb = 0;
+340	 assembly {
+341	 let f := shl(7, gt(r, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+342	 assembly {
+343	 let f := shl(6, gt(r, 0xFFFFFFFFFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+344	 assembly {
+345	 let f := shl(5, gt(r, 0xFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+346	 assembly {
+347	 let f := shl(4, gt(r, 0xFFFF)) msb := or(msb, f) r := shr(f, r) }
+348	 assembly {
+349	 let f := shl(3, gt(r, 0xFF)) msb := or(msb, f) r := shr(f, r) }
+350	 assembly {
+351	 let f := shl(2, gt(r, 0xF)) msb := or(msb, f) r := shr(f, r) }
+352	 assembly {
+353	 let f := shl(1, gt(r, 0x3)) msb := or(msb, f) r := shr(f, r) }
+354	 assembly {
+355	 let f := gt(r, 0x1) msb := or(msb, f) }
+356	 if (msb >= 128) r = ratio >> (msb - 127);
+357	 else r = ratio << (127 - msb);
+358	 int256 log_2 = (int256(msb) - 128) << 64;
+359	 assembly {
+360	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(63, f)) r := shr(f, r) }
+361	 assembly {
+362	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(62, f)) r := shr(f, r) }
+363	 assembly {
+364	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(61, f)) r := shr(f, r) }
+365	 assembly {
+366	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(60, f)) r := shr(f, r) }
+367	 assembly {
+368	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(59, f)) r := shr(f, r) }
+369	 assembly {
+370	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(58, f)) r := shr(f, r) }
+371	 assembly {
+372	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(57, f)) r := shr(f, r) }
+373	 assembly {
+374	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(56, f)) r := shr(f, r) }
+375	 assembly {
+376	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(55, f)) r := shr(f, r) }
+377	 assembly {
+378	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(54, f)) r := shr(f, r) }
+379	 assembly {
+380	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(53, f)) r := shr(f, r) }
+381	 assembly {
+382	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(52, f)) r := shr(f, r) }
+383	 assembly {
+384	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(51, f)) r := shr(f, r) }
+385	 assembly {
+386	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(50, f)) }
+387	 int256 log_sqrt10001 = log_2 * 255738958999603826347141;
+388	 int24 tickLow = int24((log_sqrt10001 - 3402992956809132418596140100660247210) >> 128);
+389	 int24 tickHi = int24((log_sqrt10001 + 291339464771989622907027621153398088495) >> 128);
+390	 tick = tickLow == tickHi ? tickLow : getSqrtRatioAtTick(tickHi) <= sqrtPriceX96 ? tickHi : tickLow;
+391	 }
+392	 }

@@ -1,0 +1,121 @@
+row number 
+1	         pragma solidity >=0.7.6 <0.8.0;
+2	 contract OracleRegistryTrustMinimizedProxy{
+3	 event Upgraded(address indexed toLogic);
+4	 event AdminChanged(address indexed previousAdmin, address indexed newAdmin);
+5	 event NextLogicDefined(address indexed nextLogic, uint earliestArrivalBlock);
+6	 event ProposingUpgradesRestrictedUntil(uint block, uint nextProposedLogicEarliestArrival);
+7	 event NextLogicCanceled();
+8	 event TrustRemoved();
+9	 bytes32 internal constant ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+10	 bytes32 internal constant LOGIC_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+11	 bytes32 internal constant NEXT_LOGIC_SLOT = 0xb182d207b11df9fb38eec1e3fe4966cf344774ba58fb0e9d88ea35ad46f3601e;
+12	 bytes32 internal constant NEXT_LOGIC_BLOCK_SLOT = 0x96de003e85302815fe026bddb9630a50a1d4dc51c5c355def172204c3fd1c733;
+13	 bytes32 internal constant PROPOSE_BLOCK_SLOT = 0xbc9d35b69e82e85049be70f91154051f5e20e574471195334bde02d1a9974c90;
+14	 bytes32 internal constant TRUST_MINIMIZED_SLOT = 0xa0ea182b754772c4f5848349cff27d3431643ba25790e0c61a8e4bdf4cec9201;
+15	 constructor() payable {
+16	 _setAdmin(msg.sender);
+17	 }
+18	 modifier ifAdmin() {
+19	 if (msg.sender == _admin()) {
+20	 _;
+21	 }
+22	 else {
+23	 _fallback();
+24	 }
+25	 }
+26	 function _logic() internal view returns (address logic) {
+27	 assembly {
+28	 logic := sload(LOGIC_SLOT) }
+29	 }
+30	 function _proposeBlock() internal view returns (uint bl) {
+31	 assembly {
+32	 bl := sload(PROPOSE_BLOCK_SLOT) }
+33	 }
+34	 function _nextLogicBlock() internal view returns (uint bl) {
+35	 assembly {
+36	 bl := sload(NEXT_LOGIC_BLOCK_SLOT) }
+37	 }
+38	 function _trustMinimized() internal view returns (bool tm) {
+39	 assembly {
+40	 tm := sload(TRUST_MINIMIZED_SLOT) }
+41	 }
+42	 function _admin() internal view returns (address adm) {
+43	 assembly {
+44	 adm := sload(ADMIN_SLOT) }
+45	 }
+46	 function _setAdmin(address newAdm) internal {
+47	 assembly {
+48	 sstore(ADMIN_SLOT, newAdm)}
+49	 }
+50	 function changeAdmin(address newAdm) external ifAdmin {
+51	 emit AdminChanged(_admin(), newAdm);
+52	 _setAdmin(newAdm);
+53	 }
+54	 function upgrade() external ifAdmin {
+55	 require(block.number>=_nextLogicBlock());
+56	 address logic;
+57	 assembly {
+58	 logic := sload(NEXT_LOGIC_SLOT) sstore(LOGIC_SLOT,logic)}
+59	 emit Upgraded(logic);
+60	 }
+61	 fallback () external payable {
+62	 _fallback();
+63	 }
+64	 receive () external payable {
+65	 _fallback();
+66	 }
+67	 function _fallback() internal {
+68	 require(msg.sender != _admin());
+69	 _delegate(_logic());
+70	 }
+71	 function cancelUpgrade() external ifAdmin {
+72	 address logic;
+73	 assembly {
+74	 logic := sload(LOGIC_SLOT)sstore(NEXT_LOGIC_SLOT, logic)}
+75	 emit NextLogicCanceled();
+76	 }
+77	 function prolongLock(uint b) external ifAdmin {
+78	 require(b > _proposeBlock());
+79	 assembly {
+80	 sstore(PROPOSE_BLOCK_SLOT,b)}
+81	 emit ProposingUpgradesRestrictedUntil(b,b+172800);
+82	 }
+83	 function removeTrust() external ifAdmin {
+84	 assembly{
+85	 sstore(TRUST_MINIMIZED_SLOT, true) }
+86	 emit TrustRemoved();
+87	 }
+88	 function _updateBlockSlot() internal {
+89	 uint nlb = block.number + 172800;
+90	 assembly {
+91	 sstore(NEXT_LOGIC_BLOCK_SLOT,nlb)}
+92	 }
+93	 function _setNextLogic(address nl) internal {
+94	 require(block.number >= _proposeBlock());
+95	 _updateBlockSlot();
+96	 assembly {
+97	 sstore(NEXT_LOGIC_SLOT, nl)}
+98	 emit NextLogicDefined(nl,block.number + 172800);
+99	 }
+100	 function proposeToAndCall(address newLogic, bytes calldata data) payable external ifAdmin {
+101	 if (_logic() == address(0) || _trustMinimized() == false) {
+102	 assembly {
+103	 sstore(LOGIC_SLOT,newLogic)}
+104	 emit Upgraded(newLogic);
+105	 }
+106	 else{
+107	 _setNextLogic(newLogic);
+108	 }
+109	 (bool success,) = newLogic.delegatecall(data);
+110	 require(success);
+111	 }
+112	 function _delegate(address logic_) internal {
+113	 assembly {
+114	 calldatacopy(0, 0, calldatasize()) let result := delegatecall(gas(), logic_, 0, calldatasize(), 0, 0) returndatacopy(0, 0, returndatasize()) switch result case 0 {
+115	 revert(0, returndatasize()) }
+116	 default {
+117	 return(0, returndatasize()) }
+118	 }
+119	 }
+120	 }

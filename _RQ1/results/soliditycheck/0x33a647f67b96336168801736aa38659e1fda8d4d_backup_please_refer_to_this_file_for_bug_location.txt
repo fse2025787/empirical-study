@@ -1,0 +1,392 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.4.24 <0.8.0;
+3	 abstract contract Initializable {
+4	 bool private _initialized;
+5	 bool private _initializing;
+6	 modifier initializer() {
+7	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+8	 bool isTopLevelCall = !_initializing;
+9	 if (isTopLevelCall) {
+10	 _initializing = true;
+11	 _initialized = true;
+12	 }
+13	 _;
+14	 if (isTopLevelCall) {
+15	 _initializing = false;
+16	 }
+17	 }
+18	 function _isConstructor() private view returns (bool) {
+19	 return !AddressUpgradeable.isContract(address(this));
+20	 }
+21	 }
+22	 pragma solidity >=0.6.0 <0.8.0;
+23	 abstract contract ContextUpgradeable is Initializable {
+24	 function __Context_init() internal initializer {
+25	 __Context_init_unchained();
+26	 }
+27	 function __Context_init_unchained() internal initializer {
+28	 }
+29	 function _msgSender() internal view virtual returns (address payable) {
+30	 return msg.sender;
+31	 }
+32	 function _msgData() internal view virtual returns (bytes memory) {
+33	 this;
+34	 return msg.data;
+35	 }
+36	 uint256[50] private __gap;
+37	 }
+38	 pragma solidity 0.7.6;
+39	 interface IRariMine {
+40	 event Claim(address indexed owner, uint value);
+41	 event Value(address indexed owner, uint value);
+42	 struct Balance {
+43	 address recipient;
+44	 uint256 value;
+45	 }
+46	 }
+47	 pragma solidity >=0.6.0 <0.8.0;
+48	 abstract contract OwnableUpgradeable is Initializable, ContextUpgradeable {
+49	 address private _owner;
+50	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+51	 function __Ownable_init() internal initializer {
+52	 __Context_init_unchained();
+53	 __Ownable_init_unchained();
+54	 }
+55	 function __Ownable_init_unchained() internal initializer {
+56	 address msgSender = _msgSender();
+57	 _owner = msgSender;
+58	 emit OwnershipTransferred(address(0), msgSender);
+59	 }
+60	 function owner() public view virtual returns (address) {
+61	 return _owner;
+62	 }
+63	 modifier onlyOwner() {
+64	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+65	 _;
+66	 }
+67	 function renounceOwnership() public virtual onlyOwner {
+68	 emit OwnershipTransferred(_owner, address(0));
+69	 _owner = address(0);
+70	 }
+71	 function transferOwnership(address newOwner) public virtual onlyOwner {
+72	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+73	 emit OwnershipTransferred(_owner, newOwner);
+74	 _owner = newOwner;
+75	 }
+76	 uint256[49] private __gap;
+77	 }
+78	 pragma solidity 0.7.6;
+79	 contract RariMineV3 is OwnableUpgradeable, IRariMine {
+80	 using SafeMathUpgradeable for uint256;
+81	 using LibString for string;
+82	 using LibUint for uint256;
+83	 using LibAddress for address;
+84	 IERC20Upgradeable public token;
+85	 address public tokenOwner;
+86	 IStaking public staking;
+87	 uint256 public claimFormulaClaim;
+88	 uint256 public claimCliffWeeks;
+89	 uint256 public claimSlopeWeeks;
+90	 uint256 constant CLAIM_FORMULA_DIVIDER = 10000;
+91	 uint8 public constant VERSION = 1;
+92	 mapping(address => uint256) public claimed;
+93	 event SetClaimFormulaClaim(uint256 indexed newClaimFormulaClaim);
+94	 event SetClaimCliffWeeks(uint256 indexed newClaimCliffWeeks);
+95	 event SetClaimSlopeWeeks(uint256 indexed newClaimSlopeWeeks);
+96	 event SetNewTokenOwner(address indexed newTokenOwner);
+97	 event SetNewStaking(address indexed newStaking);
+98	 function __RariMineV3_init( IERC20Upgradeable _token, address _tokenOwner, IStaking _staking, uint256 _claimCliffWeeks, uint256 _claimSlopeWeeks, uint256 _claimFormulaClaim ) external initializer {
+99	 __RariMineV3_init_unchained(_token, _tokenOwner, _staking, _claimCliffWeeks, _claimSlopeWeeks, _claimFormulaClaim);
+100	 __Ownable_init_unchained();
+101	 __Context_init_unchained();
+102	 }
+103	 function __RariMineV3_init_unchained( IERC20Upgradeable _token, address _tokenOwner, IStaking _staking, uint256 _claimCliffWeeks, uint256 _claimSlopeWeeks, uint256 _claimFormulaClaim ) internal initializer {
+104	 token = _token;
+105	 tokenOwner = _tokenOwner;
+106	 staking = _staking;
+107	 claimCliffWeeks = _claimCliffWeeks;
+108	 claimSlopeWeeks = _claimSlopeWeeks;
+109	 claimFormulaClaim = _claimFormulaClaim;
+110	 }
+111	 function claim( Balance memory _balance, uint8 v, bytes32 r, bytes32 s ) public {
+112	 require(prepareMessage(_balance, address(this)).recover(v, r, s) == owner(), "owner should sign balances");
+113	 address recipient = _balance.recipient;
+114	 if (_msgSender() == recipient) {
+115	 uint256 toClaim = _balance.value.sub(claimed[recipient], "nothing to claim");
+116	 claimed[recipient] = _balance.value;
+117	 uint256 claimAmount = toClaim.mul(claimFormulaClaim).div(CLAIM_FORMULA_DIVIDER);
+118	 if (claimAmount > 0) {
+119	 require(token.transferFrom(tokenOwner, recipient, claimAmount), "transfer to msg sender is not successful");
+120	 emit Claim(recipient, claimAmount);
+121	 emit Value(recipient, _balance.value);
+122	 }
+123	 uint256 stakeAmount = toClaim.sub(claimAmount);
+124	 uint256 slope = LibStakingMath.divUp(stakeAmount, claimSlopeWeeks);
+125	 require(token.transferFrom(tokenOwner, address(this), stakeAmount), "transfer to RariMine is not successful");
+126	 require(token.approve(address(staking), stakeAmount), "approve is not successful");
+127	 staking.stake(recipient, recipient, stakeAmount, slope, claimCliffWeeks);
+128	 return;
+129	 }
+130	 revert("_msgSender() is not the receipient");
+131	 }
+132	 function doOverride(Balance[] memory _balances) public onlyOwner {
+133	 for (uint256 i = 0; i < _balances.length; i++) {
+134	 claimed[_balances[i].recipient] = _balances[i].value;
+135	 emit Value(_balances[i].recipient, _balances[i].value);
+136	 }
+137	 }
+138	 function prepareMessage(Balance memory _balance, address _address) internal pure returns (string memory) {
+139	 uint256 id;
+140	 assembly {
+141	 id := chainid() }
+142	 return toString(keccak256(abi.encode(_balance, _address, VERSION, id)));
+143	 }
+144	 function toString(bytes32 value) internal pure returns (string memory) {
+145	 bytes memory alphabet = "0123456789abcdef";
+146	 bytes memory str = new bytes(64);
+147	 for (uint256 i = 0; i < 32; i++) {
+148	 str[i * 2] = alphabet[uint8(value[i] >> 4)];
+149	 str[1 + i * 2] = alphabet[uint8(value[i] & 0x0f)];
+150	 }
+151	 return string(str);
+152	 }
+153	 function setTokenOwner(address newTokenOwner) external onlyOwner {
+154	 tokenOwner = newTokenOwner;
+155	 emit SetNewTokenOwner(newTokenOwner);
+156	 }
+157	 function setClaimFormulaClaim(uint256 newClaimFormulaClaim) external onlyOwner {
+158	 claimFormulaClaim = newClaimFormulaClaim;
+159	 emit SetClaimCliffWeeks(newClaimFormulaClaim);
+160	 }
+161	 function setClaimCliffWeeks(uint256 newClaimCliffWeeks) external onlyOwner {
+162	 claimCliffWeeks = newClaimCliffWeeks;
+163	 emit SetClaimCliffWeeks(newClaimCliffWeeks);
+164	 }
+165	 function setClaimSlopeWeeks(uint256 newClaimSlopeWeeks) external onlyOwner {
+166	 claimSlopeWeeks = newClaimSlopeWeeks;
+167	 emit SetClaimCliffWeeks(newClaimSlopeWeeks);
+168	 }
+169	 function setStaking(address newStaking) external onlyOwner {
+170	 staking = IStaking(newStaking);
+171	 emit SetNewStaking(newStaking);
+172	 }
+173	 uint256[48] private __gap;
+174	 }
+175	 pragma solidity 0.7.6;
+176	 library LibUint {
+177	 using SafeMathUpgradeable for uint256;
+178	 function toString(uint256 _i) internal pure returns (string memory) {
+179	 if (_i == 0) {
+180	 return "0";
+181	 }
+182	 uint j = _i;
+183	 uint len;
+184	 while (j != 0) {
+185	 len++;
+186	 j /= 10;
+187	 }
+188	 bytes memory bstr = new bytes(len);
+189	 uint k = len - 1;
+190	 while (_i != 0) {
+191	 bstr[k--] = byte(uint8(48 + _i % 10));
+192	 _i /= 10;
+193	 }
+194	 return string(bstr);
+195	 }
+196	 }
+197	 pragma solidity 0.7.6;
+198	 library LibString {
+199	 using LibUint for uint256;
+200	 function append(string memory _a, string memory _b) internal pure returns (string memory) {
+201	 bytes memory _ba = bytes(_a);
+202	 bytes memory _bb = bytes(_b);
+203	 bytes memory bab = new bytes(_ba.length + _bb.length);
+204	 uint k = 0;
+205	 for (uint i = 0; i < _ba.length; i++) bab[k++] = _ba[i];
+206	 for (uint i = 0; i < _bb.length; i++) bab[k++] = _bb[i];
+207	 return string(bab);
+208	 }
+209	 function append(string memory _a, string memory _b, string memory _c) internal pure returns (string memory) {
+210	 bytes memory _ba = bytes(_a);
+211	 bytes memory _bb = bytes(_b);
+212	 bytes memory _bc = bytes(_c);
+213	 bytes memory bbb = new bytes(_ba.length + _bb.length + _bc.length);
+214	 uint k = 0;
+215	 for (uint i = 0; i < _ba.length; i++) bbb[k++] = _ba[i];
+216	 for (uint i = 0; i < _bb.length; i++) bbb[k++] = _bb[i];
+217	 for (uint i = 0; i < _bc.length; i++) bbb[k++] = _bc[i];
+218	 return string(bbb);
+219	 }
+220	 function recover(string memory message, uint8 v, bytes32 r, bytes32 s) internal pure returns (address) {
+221	 bytes memory msgBytes = bytes(message);
+222	 bytes memory fullMessage = concat( bytes("\x19Ethereum Signed Message:\n"), bytes(msgBytes.length.toString()), msgBytes, new bytes(0), new bytes(0), new bytes(0), new bytes(0) );
+223	 return ecrecover(keccak256(fullMessage), v, r, s);
+224	 }
+225	 function concat(bytes memory _ba, bytes memory _bb, bytes memory _bc, bytes memory _bd, bytes memory _be, bytes memory _bf, bytes memory _bg) internal pure returns (bytes memory) {
+226	 bytes memory resultBytes = new bytes(_ba.length + _bb.length + _bc.length + _bd.length + _be.length + _bf.length + _bg.length);
+227	 uint k = 0;
+228	 for (uint i = 0; i < _ba.length; i++) resultBytes[k++] = _ba[i];
+229	 for (uint i = 0; i < _bb.length; i++) resultBytes[k++] = _bb[i];
+230	 for (uint i = 0; i < _bc.length; i++) resultBytes[k++] = _bc[i];
+231	 for (uint i = 0; i < _bd.length; i++) resultBytes[k++] = _bd[i];
+232	 for (uint i = 0; i < _be.length; i++) resultBytes[k++] = _be[i];
+233	 for (uint i = 0; i < _bf.length; i++) resultBytes[k++] = _bf[i];
+234	 for (uint i = 0; i < _bg.length; i++) resultBytes[k++] = _bg[i];
+235	 return resultBytes;
+236	 }
+237	 }
+238	 pragma solidity 0.7.6;
+239	 library LibStakingMath {
+240	 using SafeMathUpgradeable for uint;
+241	 function divUp(uint a, uint b) internal pure returns (uint) {
+242	 return ((a.sub(1)).div(b)).add(1);
+243	 }
+244	 }
+245	 pragma solidity 0.7.6;
+246	 library LibAddress {
+247	 using AddressUpgradeable for address;
+248	 function toString(address _addr) internal pure returns (string memory) {
+249	 bytes32 value = bytes32(uint256(_addr));
+250	 bytes memory alphabet = "0123456789abcdef";
+251	 bytes memory str = new bytes(42);
+252	 str[0] = '0';
+253	 str[1] = 'x';
+254	 for (uint256 i = 0; i < 20; i++) {
+255	 str[2+i*2] = alphabet[uint8(value[i + 12] >> 4)];
+256	 str[3+i*2] = alphabet[uint8(value[i + 12] & 0x0f)];
+257	 }
+258	 return string(str);
+259	 }
+260	 }
+261	 pragma solidity >=0.6.9 <0.8.0;
+262	 interface IStaking {
+263	 function stake( address account, address delegate, uint amount, uint slope, uint cliff ) external returns (uint);
+264	 }
+265	 pragma solidity >=0.6.2 <0.8.0;
+266	 library AddressUpgradeable {
+267	 function isContract(address account) internal view returns (bool) {
+268	 uint256 size;
+269	 assembly {
+270	 size := extcodesize(account) }
+271	 return size > 0;
+272	 }
+273	 function sendValue(address payable recipient, uint256 amount) internal {
+274	 require(address(this).balance >= amount, "Address: insufficient balance");
+275	 (bool success, ) = recipient.call{
+276	 value: amount }
+277	 ("");
+278	 require(success, "Address: unable to send value, recipient may have reverted");
+279	 }
+280	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+281	 return functionCall(target, data, "Address: low-level call failed");
+282	 }
+283	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+284	 return functionCallWithValue(target, data, 0, errorMessage);
+285	 }
+286	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+287	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+288	 }
+289	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+290	 require(address(this).balance >= value, "Address: insufficient balance for call");
+291	 require(isContract(target), "Address: call to non-contract");
+292	 (bool success, bytes memory returndata) = target.call{
+293	 value: value }
+294	 (data);
+295	 return _verifyCallResult(success, returndata, errorMessage);
+296	 }
+297	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+298	 return functionStaticCall(target, data, "Address: low-level static call failed");
+299	 }
+300	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+301	 require(isContract(target), "Address: static call to non-contract");
+302	 (bool success, bytes memory returndata) = target.staticcall(data);
+303	 return _verifyCallResult(success, returndata, errorMessage);
+304	 }
+305	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+306	 if (success) {
+307	 return returndata;
+308	 }
+309	 else {
+310	 if (returndata.length > 0) {
+311	 assembly {
+312	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+313	 }
+314	 else {
+315	 revert(errorMessage);
+316	 }
+317	 }
+318	 }
+319	 }
+320	 pragma solidity >=0.6.0 <0.8.0;
+321	 interface IERC20Upgradeable {
+322	 function totalSupply() external view returns (uint256);
+323	 function balanceOf(address account) external view returns (uint256);
+324	 function transfer(address recipient, uint256 amount) external returns (bool);
+325	 function allowance(address owner, address spender) external view returns (uint256);
+326	 function approve(address spender, uint256 amount) external returns (bool);
+327	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+328	 event Transfer(address indexed from, address indexed to, uint256 value);
+329	 event Approval(address indexed owner, address indexed spender, uint256 value);
+330	 }
+331	 pragma solidity >=0.6.0 <0.8.0;
+332	 library SafeMathUpgradeable {
+333	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+334	 uint256 c = a + b;
+335	 if (c < a) return (false, 0);
+336	 return (true, c);
+337	 }
+338	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+339	 if (b > a) return (false, 0);
+340	 return (true, a - b);
+341	 }
+342	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+343	 if (a == 0) return (true, 0);
+344	 uint256 c = a * b;
+345	 if (c / a != b) return (false, 0);
+346	 return (true, c);
+347	 }
+348	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+349	 if (b == 0) return (false, 0);
+350	 return (true, a / b);
+351	 }
+352	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+353	 if (b == 0) return (false, 0);
+354	 return (true, a % b);
+355	 }
+356	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+357	 uint256 c = a + b;
+358	 require(c >= a, "SafeMath: addition overflow");
+359	 return c;
+360	 }
+361	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+362	 require(b <= a, "SafeMath: subtraction overflow");
+363	 return a - b;
+364	 }
+365	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+366	 if (a == 0) return 0;
+367	 uint256 c = a * b;
+368	 require(c / a == b, "SafeMath: multiplication overflow");
+369	 return c;
+370	 }
+371	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+372	 require(b > 0, "SafeMath: division by zero");
+373	 return a / b;
+374	 }
+375	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+376	 require(b > 0, "SafeMath: modulo by zero");
+377	 return a % b;
+378	 }
+379	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+380	 require(b <= a, errorMessage);
+381	 return a - b;
+382	 }
+383	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+384	 require(b > 0, errorMessage);
+385	 return a / b;
+386	 }
+387	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+388	 require(b > 0, errorMessage);
+389	 return a % b;
+390	 }
+391	 }

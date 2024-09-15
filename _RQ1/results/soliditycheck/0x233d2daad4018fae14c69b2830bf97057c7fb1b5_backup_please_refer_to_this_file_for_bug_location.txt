@@ -1,0 +1,243 @@
+row number 
+1	   pragma solidity ^0.4.21;
+2	 contract Ownable {
+3	 address public owner;
+4	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+5	 function Ownable() public {
+6	 owner = msg.sender;
+7	 }
+8	 modifier onlyOwner() {
+9	 require(msg.sender == owner);
+10	 _;
+11	 }
+12	 function transferOwnership(address newOwner) public onlyOwner {
+13	 require(newOwner != address(0));
+14	 emit OwnershipTransferred(owner, newOwner);
+15	 owner = newOwner;
+16	 }
+17	 }
+18	 contract ERC20Basic {
+19	 function totalSupply() public view returns (uint256);
+20	 function balanceOf(address who) public view returns (uint256);
+21	 function transfer(address to, uint256 value) public returns (bool);
+22	 event Transfer(address indexed from, address indexed to, uint256 value);
+23	 }
+24	 contract ERC20 is ERC20Basic {
+25	 function allowance(address owner, address spender) public view returns (uint256);
+26	 function transferFrom(address from, address to, uint256 value) public returns (bool);
+27	 function approve(address spender, uint256 value) public returns (bool);
+28	 event Approval(address indexed owner, address indexed spender, uint256 value);
+29	 }
+30	 library SafeMath {
+31	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+32	 if (a == 0) {
+33	 return 0;
+34	 }
+35	 c = a * b;
+36	 assert(c / a == b);
+37	 return c;
+38	 }
+39	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+40	 return a / b;
+41	 }
+42	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+43	 assert(b <= a);
+44	 return a - b;
+45	 }
+46	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+47	 c = a + b;
+48	 assert(c >= a);
+49	 return c;
+50	 }
+51	 }
+52	 contract Crowdsale {
+53	 using SafeMath for uint256;
+54	 ERC20 public token;
+55	 address public wallet;
+56	 uint256 public rate;
+57	 uint256 public weiRaised;
+58	 event TokenPurchase(address indexed purchaser, address indexed beneficiary, uint256 value, uint256 amount);
+59	 function Crowdsale(uint256 _rate, address _wallet, ERC20 _token) public {
+60	 require(_rate > 0);
+61	 require(_wallet != address(0));
+62	 require(_token != address(0));
+63	 rate = _rate;
+64	 wallet = _wallet;
+65	 token = _token;
+66	 }
+67	 function () external payable {
+68	 buyTokens(msg.sender);
+69	 }
+70	 function buyTokens(address _beneficiary) public payable {
+71	 uint256 weiAmount = msg.value;
+72	 _preValidatePurchase(_beneficiary, weiAmount);
+73	 uint256 tokens = _getTokenAmount(weiAmount);
+74	 weiRaised = weiRaised.add(weiAmount);
+75	 _processPurchase(_beneficiary, tokens);
+76	 emit TokenPurchase( msg.sender, _beneficiary, weiAmount, tokens );
+77	 _updatePurchasingState(_beneficiary, weiAmount);
+78	 _forwardFunds();
+79	 _postValidatePurchase(_beneficiary, weiAmount);
+80	 }
+81	 function _preValidatePurchase(address _beneficiary, uint256 _weiAmount) internal {
+82	 require(_beneficiary != address(0));
+83	 require(_weiAmount != 0);
+84	 }
+85	 function _postValidatePurchase(address _beneficiary, uint256 _weiAmount) internal {
+86	 }
+87	 function _deliverTokens(address _beneficiary, uint256 _tokenAmount) internal {
+88	 token.transfer(_beneficiary, _tokenAmount);
+89	 }
+90	 function _processPurchase(address _beneficiary, uint256 _tokenAmount) internal {
+91	 _deliverTokens(_beneficiary, _tokenAmount);
+92	 }
+93	 function _updatePurchasingState(address _beneficiary, uint256 _weiAmount) internal {
+94	 }
+95	 function _getTokenAmount(uint256 _weiAmount) internal view returns (uint256) {
+96	 return _weiAmount.mul(rate);
+97	 }
+98	 function _forwardFunds() internal {
+99	 wallet.transfer(msg.value);
+100	 }
+101	 }
+102	 contract AllowanceCrowdsale is Crowdsale {
+103	 using SafeMath for uint256;
+104	 address public tokenWallet;
+105	 function AllowanceCrowdsale(address _tokenWallet) public {
+106	 require(_tokenWallet != address(0));
+107	 tokenWallet = _tokenWallet;
+108	 }
+109	 function remainingTokens() public view returns (uint256) {
+110	 return token.allowance(tokenWallet, this);
+111	 }
+112	 function _deliverTokens(address _beneficiary, uint256 _tokenAmount) internal {
+113	 token.transferFrom(tokenWallet, _beneficiary, _tokenAmount);
+114	 }
+115	 }
+116	 contract IndividuallyCappedCrowdsale is Crowdsale, Ownable {
+117	 using SafeMath for uint256;
+118	 mapping(address => uint256) public contributions;
+119	 mapping(address => uint256) public caps;
+120	 function setUserCap(address _beneficiary, uint256 _cap) external onlyOwner {
+121	 caps[_beneficiary] = _cap;
+122	 }
+123	 function setGroupCap(address[] _beneficiaries, uint256 _cap) external onlyOwner {
+124	 for (uint256 i = 0; i < _beneficiaries.length; i++) {
+125	 caps[_beneficiaries[i]] = _cap;
+126	 }
+127	 }
+128	 function getUserCap(address _beneficiary) public view returns (uint256) {
+129	 return caps[_beneficiary];
+130	 }
+131	 function getUserContribution(address _beneficiary) public view returns (uint256) {
+132	 return contributions[_beneficiary];
+133	 }
+134	 function _preValidatePurchase(address _beneficiary, uint256 _weiAmount) internal {
+135	 super._preValidatePurchase(_beneficiary, _weiAmount);
+136	 require(contributions[_beneficiary].add(_weiAmount) <= caps[_beneficiary]);
+137	 }
+138	 function _updatePurchasingState(address _beneficiary, uint256 _weiAmount) internal {
+139	 super._updatePurchasingState(_beneficiary, _weiAmount);
+140	 contributions[_beneficiary] = contributions[_beneficiary].add(_weiAmount);
+141	 }
+142	 }
+143	 contract WhitelistedCrowdsale is Crowdsale, Ownable {
+144	 mapping(address => bool) public whitelist;
+145	 modifier isWhitelisted(address _beneficiary) {
+146	 require(whitelist[_beneficiary]);
+147	 _;
+148	 }
+149	 function addToWhitelist(address _beneficiary) external onlyOwner {
+150	 whitelist[_beneficiary] = true;
+151	 }
+152	 function addManyToWhitelist(address[] _beneficiaries) external onlyOwner {
+153	 for (uint256 i = 0; i < _beneficiaries.length; i++) {
+154	 whitelist[_beneficiaries[i]] = true;
+155	 }
+156	 }
+157	 function removeFromWhitelist(address _beneficiary) external onlyOwner {
+158	 whitelist[_beneficiary] = false;
+159	 }
+160	 function _preValidatePurchase(address _beneficiary, uint256 _weiAmount) internal isWhitelisted(_beneficiary) {
+161	 super._preValidatePurchase(_beneficiary, _weiAmount);
+162	 }
+163	 }
+164	 contract TimedCrowdsale is Crowdsale {
+165	 using SafeMath for uint256;
+166	 uint256 public openingTime;
+167	 uint256 public closingTime;
+168	 modifier onlyWhileOpen {
+169	 require(block.timestamp >= openingTime && block.timestamp <= closingTime);
+170	 _;
+171	 }
+172	 function TimedCrowdsale(uint256 _openingTime, uint256 _closingTime) public {
+173	 require(_openingTime >= block.timestamp);
+174	 require(_closingTime >= _openingTime);
+175	 openingTime = _openingTime;
+176	 closingTime = _closingTime;
+177	 }
+178	 function hasClosed() public view returns (bool) {
+179	 return block.timestamp > closingTime;
+180	 }
+181	 function _preValidatePurchase(address _beneficiary, uint256 _weiAmount) internal onlyWhileOpen {
+182	 super._preValidatePurchase(_beneficiary, _weiAmount);
+183	 }
+184	 }
+185	 contract Membership {
+186	 function removeMember(address _user) external;
+187	 function setMemberTier(address _user, uint _tier);
+188	 }
+189	 contract PreSquirrelICO is Crowdsale, TimedCrowdsale, WhitelistedCrowdsale, IndividuallyCappedCrowdsale, AllowanceCrowdsale {
+190	 using SafeMath for uint;
+191	 uint constant public MIN_PURCHASE = 1 * 1 ether;
+192	 uint constant public MAX_PURCHASE = 15 * 1 ether;
+193	 uint public totalNtsSold;
+194	 uint public totalNtsSoldWithBonus;
+195	 uint public totalEthRcvd;
+196	 Membership public membership;
+197	 constructor( uint _startTime, uint _endTime, uint _rate, address _ethWallet, ERC20 _token, address _tokenWallet, Membership _membership ) public Crowdsale(_rate, _ethWallet, _token) TimedCrowdsale(_startTime, _endTime) AllowanceCrowdsale(_tokenWallet) {
+198	 membership = Membership(_membership);
+199	 }
+200	 function _preValidatePurchase(address _beneficiary, uint _weiAmount) internal {
+201	 super._preValidatePurchase(_beneficiary, _weiAmount);
+202	 require(_weiAmount >= MIN_PURCHASE);
+203	 totalEthRcvd = totalEthRcvd.add(_weiAmount);
+204	 }
+205	 function _processPurchase(address _beneficiary, uint _tokenAmount) internal {
+206	 uint tokenAmountWithBonus_ = _tokenAmount.add(_tokenAmount.div(100).mul(30));
+207	 totalNtsSold = totalNtsSold.add(_tokenAmount);
+208	 totalNtsSoldWithBonus = totalNtsSoldWithBonus.add(tokenAmountWithBonus_);
+209	 _deliverTokens(_beneficiary, tokenAmountWithBonus_);
+210	 }
+211	 function addToWhitelist(address _beneficiary) external onlyOwner {
+212	 whitelist[_beneficiary] = true;
+213	 caps[_beneficiary] = MAX_PURCHASE;
+214	 membership.setMemberTier(_beneficiary, 1);
+215	 }
+216	 function addManyToWhitelist(address[] _beneficiaries) external onlyOwner {
+217	 for (uint i = 0; i < _beneficiaries.length; i++) {
+218	 whitelist[_beneficiaries[i]] = true;
+219	 caps[_beneficiaries[i]] = MAX_PURCHASE;
+220	 membership.setMemberTier(_beneficiaries[i], 1);
+221	 }
+222	 }
+223	 function removeFromWhitelist(address _beneficiary) external onlyOwner {
+224	 whitelist[_beneficiary] = false;
+225	 membership.removeMember(_beneficiary);
+226	 }
+227	 function hasStarted() external view returns (bool) {
+228	 return block.timestamp >= openingTime;
+229	 }
+230	 function userAlreadyBoughtEth(address _user) public view returns (uint) {
+231	 return contributions[_user];
+232	 }
+233	 function userCanStillBuyEth(address _user) external view returns (uint) {
+234	 return MAX_PURCHASE.sub(userAlreadyBoughtEth(_user));
+235	 }
+236	 function userIsWhitelisted(address _user) external view returns (bool) {
+237	 return whitelist[_user];
+238	 }
+239	 function getStats() external view returns (uint, uint, uint) {
+240	 return (totalNtsSold, totalNtsSoldWithBonus, totalEthRcvd);
+241	 }
+242	 }

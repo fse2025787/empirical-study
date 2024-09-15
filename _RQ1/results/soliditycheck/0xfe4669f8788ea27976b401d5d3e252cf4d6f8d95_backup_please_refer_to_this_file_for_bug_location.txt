@@ -1,0 +1,168 @@
+row number 
+1	             pragma solidity ^0.5.0;
+2	 contract OpenZeppelinUpgradesOwnable {
+3	 address private _owner;
+4	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+5	 constructor () internal {
+6	 _owner = msg.sender;
+7	 emit OwnershipTransferred(address(0), _owner);
+8	 }
+9	 function owner() public view returns (address) {
+10	 return _owner;
+11	 }
+12	 modifier onlyOwner() {
+13	 require(isOwner());
+14	 _;
+15	 }
+16	 function isOwner() public view returns (bool) {
+17	 return msg.sender == _owner;
+18	 }
+19	 function renounceOwnership() public onlyOwner {
+20	 emit OwnershipTransferred(_owner, address(0));
+21	 _owner = address(0);
+22	 }
+23	 function transferOwnership(address newOwner) public onlyOwner {
+24	 _transferOwnership(newOwner);
+25	 }
+26	 function _transferOwnership(address newOwner) internal {
+27	 require(newOwner != address(0));
+28	 emit OwnershipTransferred(_owner, newOwner);
+29	 _owner = newOwner;
+30	 }
+31	 }
+32	 pragma solidity ^0.5.0;
+33	 contract Proxy {
+34	 function () payable external {
+35	 _fallback();
+36	 }
+37	 function _implementation() internal view returns (address);
+38	 function _delegate(address implementation) internal {
+39	 assembly {
+40	 calldatacopy(0, 0, calldatasize) let result := delegatecall(gas, implementation, 0, calldatasize, 0, 0) returndatacopy(0, 0, returndatasize) switch result case 0 {
+41	 revert(0, returndatasize) }
+42	 default {
+43	 return(0, returndatasize) }
+44	 }
+45	 }
+46	 function _willFallback() internal {
+47	 }
+48	 function _fallback() internal {
+49	 _willFallback();
+50	 _delegate(_implementation());
+51	 }
+52	 }
+53	 pragma solidity ^0.5.0;
+54	 library OpenZeppelinUpgradesAddress {
+55	 function isContract(address account) internal view returns (bool) {
+56	 uint256 size;
+57	 assembly {
+58	 size := extcodesize(account) }
+59	 return size > 0;
+60	 }
+61	 }
+62	 pragma solidity ^0.5.0;
+63	 contract BaseUpgradeabilityProxy is Proxy {
+64	 event Upgraded(address indexed implementation);
+65	 bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+66	 function _implementation() internal view returns (address impl) {
+67	 bytes32 slot = IMPLEMENTATION_SLOT;
+68	 assembly {
+69	 impl := sload(slot) }
+70	 }
+71	 function _upgradeTo(address newImplementation) internal {
+72	 _setImplementation(newImplementation);
+73	 emit Upgraded(newImplementation);
+74	 }
+75	 function _setImplementation(address newImplementation) internal {
+76	 require(OpenZeppelinUpgradesAddress.isContract(newImplementation), "Cannot set a proxy implementation to a non-contract address");
+77	 bytes32 slot = IMPLEMENTATION_SLOT;
+78	 assembly {
+79	 sstore(slot, newImplementation) }
+80	 }
+81	 }
+82	 pragma solidity ^0.5.0;
+83	 contract BaseAdminUpgradeabilityProxy is BaseUpgradeabilityProxy {
+84	 event AdminChanged(address previousAdmin, address newAdmin);
+85	 bytes32 internal constant ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+86	 modifier ifAdmin() {
+87	 if (msg.sender == _admin()) {
+88	 _;
+89	 }
+90	 else {
+91	 _fallback();
+92	 }
+93	 }
+94	 function admin() external ifAdmin returns (address) {
+95	 return _admin();
+96	 }
+97	 function implementation() external ifAdmin returns (address) {
+98	 return _implementation();
+99	 }
+100	 function changeAdmin(address newAdmin) external ifAdmin {
+101	 require(newAdmin != address(0), "Cannot change the admin of a proxy to the zero address");
+102	 emit AdminChanged(_admin(), newAdmin);
+103	 _setAdmin(newAdmin);
+104	 }
+105	 function upgradeTo(address newImplementation) external ifAdmin {
+106	 _upgradeTo(newImplementation);
+107	 }
+108	 function upgradeToAndCall(address newImplementation, bytes calldata data) payable external ifAdmin {
+109	 _upgradeTo(newImplementation);
+110	 (bool success,) = newImplementation.delegatecall(data);
+111	 require(success);
+112	 }
+113	 function _admin() internal view returns (address adm) {
+114	 bytes32 slot = ADMIN_SLOT;
+115	 assembly {
+116	 adm := sload(slot) }
+117	 }
+118	 function _setAdmin(address newAdmin) internal {
+119	 bytes32 slot = ADMIN_SLOT;
+120	 assembly {
+121	 sstore(slot, newAdmin) }
+122	 }
+123	 function _willFallback() internal {
+124	 require(msg.sender != _admin(), "Cannot call fallback function from the proxy admin");
+125	 super._willFallback();
+126	 }
+127	 }
+128	 pragma solidity ^0.5.0;
+129	 contract UpgradeabilityProxy is BaseUpgradeabilityProxy {
+130	 constructor(address _logic, bytes memory _data) public payable {
+131	 assert(IMPLEMENTATION_SLOT == bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1));
+132	 _setImplementation(_logic);
+133	 if(_data.length > 0) {
+134	 (bool success,) = _logic.delegatecall(_data);
+135	 require(success);
+136	 }
+137	 }
+138	 }
+139	 pragma solidity ^0.5.0;
+140	 contract AdminUpgradeabilityProxy is BaseAdminUpgradeabilityProxy, UpgradeabilityProxy {
+141	 constructor(address _logic, address _admin, bytes memory _data) UpgradeabilityProxy(_logic, _data) public payable {
+142	 assert(ADMIN_SLOT == bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1));
+143	 _setAdmin(_admin);
+144	 }
+145	 }
+146	 pragma solidity ^0.5.0;
+147	 contract ProxyAdmin is OpenZeppelinUpgradesOwnable {
+148	 function getProxyImplementation(AdminUpgradeabilityProxy proxy) public view returns (address) {
+149	 (bool success, bytes memory returndata) = address(proxy).staticcall(hex"5c60da1b");
+150	 require(success);
+151	 return abi.decode(returndata, (address));
+152	 }
+153	 function getProxyAdmin(AdminUpgradeabilityProxy proxy) public view returns (address) {
+154	 (bool success, bytes memory returndata) = address(proxy).staticcall(hex"f851a440");
+155	 require(success);
+156	 return abi.decode(returndata, (address));
+157	 }
+158	 function changeProxyAdmin(AdminUpgradeabilityProxy proxy, address newAdmin) public onlyOwner {
+159	 proxy.changeAdmin(newAdmin);
+160	 }
+161	 function upgrade(AdminUpgradeabilityProxy proxy, address implementation) public onlyOwner {
+162	 proxy.upgradeTo(implementation);
+163	 }
+164	 function upgradeAndCall(AdminUpgradeabilityProxy proxy, address implementation, bytes memory data) payable public onlyOwner {
+165	 proxy.upgradeToAndCall.value(msg.value)(implementation, data);
+166	 }
+167	 }

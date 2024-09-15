@@ -1,0 +1,261 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 library SafeMath{
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 uint256 c = a * b;
+5	 assert(a == 0 || c / a == b);
+6	 return c;
+7	 }
+8	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+9	 uint256 c = a / b;
+10	 return c;
+11	 }
+12	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+13	 assert(b <= a);
+14	 return a - b;
+15	 }
+16	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+17	 uint256 c = a + b;
+18	 assert(c >= a);
+19	 return c;
+20	 }
+21	 }
+22	 contract BioXToken {
+23	 using SafeMath for uint256;
+24	 string public constant name = "BIOX";
+25	 string public constant symbol = "BIOX";
+26	 uint public constant decimals = 18;
+27	 uint256 bioxEthRate = 10 ** decimals;
+28	 uint256 bioxSupply = 200000000000;
+29	 uint256 public totalSupply = bioxSupply * bioxEthRate;
+30	 uint256 public minInvEth = 0.1 ether;
+31	 uint256 public maxInvEth = 9999999999999 ether;
+32	 uint256 public sellStartTime = 1532861854;
+33	 uint256 public sellDeadline1 = sellStartTime + 30 days;
+34	 uint256 public sellDeadline2 = sellDeadline1 + 360 days;
+35	 uint256 public freezeDuration = 30 days;
+36	 uint256 public ethBioxRate1 = 35000;
+37	 uint256 public ethBioxRate2 = 35000;
+38	 bool public running = true;
+39	 bool public buyable = true;
+40	 address owner;
+41	 mapping (address => mapping (address => uint256)) allowed;
+42	 mapping (address => bool) public whitelist;
+43	 mapping (address => uint256) whitelistLimit;
+44	 struct BalanceInfo {
+45	 uint256 balance;
+46	 uint256[] freezeAmount;
+47	 uint256[] releaseTime;
+48	 }
+49	 mapping (address => BalanceInfo) balances;
+50	 event Transfer(address indexed _from, address indexed _to, uint256 _value);
+51	 event Approval(address indexed _owner, address indexed _spender, uint256 _value);
+52	 event BeginRunning();
+53	 event Pause();
+54	 event BeginSell();
+55	 event PauseSell();
+56	 event Burn(address indexed burner, uint256 val);
+57	 event Freeze(address indexed from, uint256 value);
+58	 constructor () public{
+59	 owner = msg.sender;
+60	 balances[owner].balance = totalSupply;
+61	 }
+62	 modifier onlyOwner() {
+63	 require(msg.sender == owner);
+64	 _;
+65	 }
+66	 modifier onlyWhitelist() {
+67	 require(whitelist[msg.sender] == true);
+68	 _;
+69	 }
+70	 modifier isRunning(){
+71	 require(running);
+72	 _;
+73	 }
+74	 modifier isNotRunning(){
+75	 require(!running);
+76	 _;
+77	 }
+78	 modifier isBuyable(){
+79	 require(buyable && now >= sellStartTime && now <= sellDeadline2);
+80	 _;
+81	 }
+82	 modifier isNotBuyable(){
+83	 require(!buyable || now < sellStartTime || now > sellDeadline2);
+84	 _;
+85	 }
+86	 modifier onlyPayloadSize(uint size) {
+87	 assert(msg.data.length >= size + 4);
+88	 _;
+89	 }
+90	 function setPublicOfferPrice(uint256 _rate1, uint256 _rate2) onlyOwner public {
+91	 ethBioxRate1 = _rate1;
+92	 ethBioxRate2 = _rate2;
+93	 }
+94	 function setPublicOfferLimit(uint256 _minVal, uint256 _maxVal) onlyOwner public {
+95	 minInvEth = _minVal;
+96	 maxInvEth = _maxVal;
+97	 }
+98	 function setPublicOfferDate(uint256 _startTime, uint256 _deadLine1, uint256 _deadLine2) onlyOwner public {
+99	 sellStartTime = _startTime;
+100	 sellDeadline1 = _deadLine1;
+101	 sellDeadline2 = _deadLine2;
+102	 }
+103	 function transferOwnership(address _newOwner) onlyOwner public {
+104	 if (_newOwner != address(0)) {
+105	 owner = _newOwner;
+106	 }
+107	 }
+108	 function pause() onlyOwner isRunning public {
+109	 running = false;
+110	 emit Pause();
+111	 }
+112	 function start() onlyOwner isNotRunning public {
+113	 running = true;
+114	 emit BeginRunning();
+115	 }
+116	 function pauseSell() onlyOwner isBuyable isRunning public{
+117	 buyable = false;
+118	 emit PauseSell();
+119	 }
+120	 function beginSell() onlyOwner isNotBuyable isRunning public{
+121	 buyable = true;
+122	 emit BeginSell();
+123	 }
+124	 function airDeliver(address _to, uint256 _amount) onlyOwner public {
+125	 require(owner != _to);
+126	 require(_amount > 0);
+127	 require(balances[owner].balance >= _amount);
+128	 if(_amount < bioxSupply){
+129	 _amount = _amount * bioxEthRate;
+130	 }
+131	 balances[owner].balance = balances[owner].balance.sub(_amount);
+132	 balances[_to].balance = balances[_to].balance.add(_amount);
+133	 emit Transfer(owner, _to, _amount);
+134	 }
+135	 function airDeliverMulti(address[] _addrs, uint256 _amount) onlyOwner public {
+136	 require(_addrs.length <= 255);
+137	 for (uint8 i = 0; i < _addrs.length; i++) {
+138	 airDeliver(_addrs[i], _amount);
+139	 }
+140	 }
+141	 function airDeliverStandalone(address[] _addrs, uint256[] _amounts) onlyOwner public {
+142	 require(_addrs.length <= 255);
+143	 require(_addrs.length == _amounts.length);
+144	 for (uint8 i = 0; i < _addrs.length; i++) {
+145	 airDeliver(_addrs[i], _amounts[i]);
+146	 }
+147	 }
+148	 function freezeDeliver(address _to, uint _amount, uint _freezeAmount, uint _freezeMonth, uint _unfreezeBeginTime ) onlyOwner public {
+149	 require(owner != _to);
+150	 require(_freezeMonth > 0);
+151	 uint average = _freezeAmount / _freezeMonth;
+152	 BalanceInfo storage bi = balances[_to];
+153	 uint[] memory fa = new uint[](_freezeMonth);
+154	 uint[] memory rt = new uint[](_freezeMonth);
+155	 if(_amount < bioxSupply){
+156	 _amount = _amount * bioxEthRate;
+157	 average = average * bioxEthRate;
+158	 _freezeAmount = _freezeAmount * bioxEthRate;
+159	 }
+160	 require(balances[owner].balance > _amount);
+161	 uint remainAmount = _freezeAmount;
+162	 if(_unfreezeBeginTime == 0) _unfreezeBeginTime = now + freezeDuration;
+163	 for(uint i=0; i<_freezeMonth-1; i++){
+164	 fa[i] = average;
+165	 rt[i] = _unfreezeBeginTime;
+166	 _unfreezeBeginTime += freezeDuration;
+167	 remainAmount = remainAmount.sub(average);
+168	 }
+169	 fa[i] = remainAmount;
+170	 rt[i] = _unfreezeBeginTime;
+171	 bi.balance = bi.balance.add(_amount);
+172	 bi.freezeAmount = fa;
+173	 bi.releaseTime = rt;
+174	 balances[owner].balance = balances[owner].balance.sub(_amount);
+175	 emit Transfer(owner, _to, _amount);
+176	 emit Freeze(_to, _freezeAmount);
+177	 }
+178	 function () external payable {
+179	 buyTokens();
+180	 }
+181	 function buyTokens() payable isRunning isBuyable public {
+182	 uint256 weiVal = msg.value;
+183	 address investor = msg.sender;
+184	 require(investor != address(0) && weiVal >= minInvEth && weiVal <= maxInvEth);
+185	 require(weiVal.add(whitelistLimit[investor]) <= maxInvEth);
+186	 uint256 amount = 0;
+187	 if(now > sellDeadline1) amount = msg.value.mul(ethBioxRate2);
+188	 else amount = msg.value.mul(ethBioxRate1);
+189	 whitelistLimit[investor] = weiVal.add(whitelistLimit[investor]);
+190	 balances[owner].balance = balances[owner].balance.sub(amount);
+191	 balances[investor].balance = balances[investor].balance.add(amount);
+192	 emit Transfer(owner, investor, amount);
+193	 }
+194	 function addWhiteListMulti(address[] _addrs) public onlyOwner {
+195	 require(_addrs.length <= 255);
+196	 for (uint8 i = 0; i < _addrs.length; i++) {
+197	 if (!whitelist[_addrs[i]]){
+198	 whitelist[_addrs[i]] = true;
+199	 }
+200	 }
+201	 }
+202	 function balanceOf(address _owner) constant public returns (uint256) {
+203	 return balances[_owner].balance;
+204	 }
+205	 function freezeOf(address _owner) constant public returns (uint256) {
+206	 BalanceInfo storage bi = balances[_owner];
+207	 uint freezeAmount = 0;
+208	 uint t = now;
+209	 for(uint i=0; i< bi.freezeAmount.length; i++){
+210	 if(t < bi.releaseTime[i]) freezeAmount += bi.freezeAmount[i];
+211	 }
+212	 return freezeAmount;
+213	 }
+214	 function transfer(address _to, uint256 _amount) isRunning onlyPayloadSize(2 * 32) public returns (bool success) {
+215	 require(_to != address(0));
+216	 uint freezeAmount = freezeOf(msg.sender);
+217	 uint256 _balance = balances[msg.sender].balance.sub(freezeAmount);
+218	 require(_amount <= _balance);
+219	 balances[msg.sender].balance = balances[msg.sender].balance.sub(_amount);
+220	 balances[_to].balance = balances[_to].balance.add(_amount);
+221	 emit Transfer(msg.sender, _to, _amount);
+222	 return true;
+223	 }
+224	 function transferFrom(address _from, address _to, uint256 _amount) isRunning onlyPayloadSize(3 * 32) public returns (bool success) {
+225	 require(_from != address(0) && _to != address(0));
+226	 require(_amount <= allowed[_from][msg.sender]);
+227	 uint freezeAmount = freezeOf(_from);
+228	 uint256 _balance = balances[_from].balance.sub(freezeAmount);
+229	 require(_amount <= _balance);
+230	 balances[_from].balance = balances[_from].balance.sub(_amount);
+231	 allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_amount);
+232	 balances[_to].balance = balances[_to].balance.add(_amount);
+233	 emit Transfer(_from, _to, _amount);
+234	 return true;
+235	 }
+236	 function approve(address _spender, uint256 _value) isRunning public returns (bool success) {
+237	 if (_value != 0 && allowed[msg.sender][_spender] != 0) {
+238	 return false;
+239	 }
+240	 allowed[msg.sender][_spender] = _value;
+241	 emit Approval(msg.sender, _spender, _value);
+242	 return true;
+243	 }
+244	 function allowance(address _owner, address _spender) constant public returns (uint256) {
+245	 return allowed[_owner][_spender];
+246	 }
+247	 function withdraw() onlyOwner public {
+248	 address myAddress = this;
+249	 require(myAddress.balance > 0);
+250	 owner.transfer(myAddress.balance);
+251	 emit Transfer(this, owner, myAddress.balance);
+252	 }
+253	 function burn(address burner, uint256 _value) onlyOwner public {
+254	 require(_value <= balances[msg.sender].balance);
+255	 balances[burner].balance = balances[burner].balance.sub(_value);
+256	 totalSupply = totalSupply.sub(_value);
+257	 bioxSupply = totalSupply / bioxEthRate;
+258	 emit Burn(burner, _value);
+259	 }
+260	 }

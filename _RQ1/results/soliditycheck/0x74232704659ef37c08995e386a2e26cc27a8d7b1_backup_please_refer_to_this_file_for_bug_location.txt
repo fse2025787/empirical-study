@@ -1,0 +1,175 @@
+row number 
+1	 pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.5.16;
+3	 contract STRK {
+4	 string public constant name = "Strike Token";
+5	 string public constant symbol = "STRK";
+6	 uint8 public constant decimals = 18;
+7	 uint public constant totalSupply = 6540888e18;
+8	 mapping (address => mapping (address => uint96)) internal allowances;
+9	 mapping (address => uint96) internal balances;
+10	 mapping (address => address) public delegates;
+11	 struct Checkpoint {
+12	 uint32 fromBlock;
+13	 uint96 votes;
+14	 }
+15	 mapping (address => mapping (uint32 => Checkpoint)) public checkpoints;
+16	 mapping (address => uint32) public numCheckpoints;
+17	 bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
+18	 bytes32 public constant DELEGATION_TYPEHASH = keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)");
+19	 mapping (address => uint) public nonces;
+20	 event DelegateChanged(address indexed delegator, address indexed fromDelegate, address indexed toDelegate);
+21	 event DelegateVotesChanged(address indexed delegate, uint previousBalance, uint newBalance);
+22	 event Transfer(address indexed from, address indexed to, uint256 amount);
+23	 event Approval(address indexed owner, address indexed spender, uint256 amount);
+24	 constructor(address account) public {
+25	 balances[account] = uint96(totalSupply);
+26	 emit Transfer(address(0), account, totalSupply);
+27	 }
+28	 function allowance(address account, address spender) external view returns (uint) {
+29	 return allowances[account][spender];
+30	 }
+31	 function approve(address spender, uint rawAmount) external returns (bool) {
+32	 uint96 amount;
+33	 if (rawAmount == uint(-1)) {
+34	 amount = uint96(-1);
+35	 }
+36	 else {
+37	 amount = safe96(rawAmount, "Strk::approve: amount exceeds 96 bits");
+38	 }
+39	 allowances[msg.sender][spender] = amount;
+40	 emit Approval(msg.sender, spender, amount);
+41	 return true;
+42	 }
+43	 function balanceOf(address account) external view returns (uint) {
+44	 return balances[account];
+45	 }
+46	 function transfer(address dst, uint rawAmount) external returns (bool) {
+47	 uint96 amount = safe96(rawAmount, "Strk::transfer: amount exceeds 96 bits");
+48	 _transferTokens(msg.sender, dst, amount);
+49	 return true;
+50	 }
+51	 function transferFrom(address src, address dst, uint rawAmount) external returns (bool) {
+52	 address spender = msg.sender;
+53	 uint96 spenderAllowance = allowances[src][spender];
+54	 uint96 amount = safe96(rawAmount, "Strk::approve: amount exceeds 96 bits");
+55	 if (spender != src && spenderAllowance != uint96(-1)) {
+56	 uint96 newAllowance = sub96(spenderAllowance, amount, "Strk::transferFrom: transfer amount exceeds spender allowance");
+57	 allowances[src][spender] = newAllowance;
+58	 emit Approval(src, spender, newAllowance);
+59	 }
+60	 _transferTokens(src, dst, amount);
+61	 return true;
+62	 }
+63	 function delegate(address delegatee) public {
+64	 return _delegate(msg.sender, delegatee);
+65	 }
+66	 function delegateBySig(address delegatee, uint nonce, uint expiry, uint8 v, bytes32 r, bytes32 s) public {
+67	 bytes32 domainSeparator = keccak256(abi.encode(DOMAIN_TYPEHASH, keccak256(bytes(name)), getChainId(), address(this)));
+68	 bytes32 structHash = keccak256(abi.encode(DELEGATION_TYPEHASH, delegatee, nonce, expiry));
+69	 bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+70	 address signatory = ecrecover(digest, v, r, s);
+71	 require(signatory != address(0), "Strk::delegateBySig: invalid signature");
+72	 require(nonce == nonces[signatory]++, "Strk::delegateBySig: invalid nonce");
+73	 require(now <= expiry, "Strk::delegateBySig: signature expired");
+74	 return _delegate(signatory, delegatee);
+75	 }
+76	 function getCurrentVotes(address account) external view returns (uint96) {
+77	 uint32 nCheckpoints = numCheckpoints[account];
+78	 return nCheckpoints > 0 ? checkpoints[account][nCheckpoints - 1].votes : 0;
+79	 }
+80	 function getPriorVotes(address account, uint blockNumber) public view returns (uint96) {
+81	 require(blockNumber < block.number, "Strk::getPriorVotes: not yet determined");
+82	 uint32 nCheckpoints = numCheckpoints[account];
+83	 if (nCheckpoints == 0) {
+84	 return 0;
+85	 }
+86	 if (checkpoints[account][nCheckpoints - 1].fromBlock <= blockNumber) {
+87	 return checkpoints[account][nCheckpoints - 1].votes;
+88	 }
+89	 if (checkpoints[account][0].fromBlock > blockNumber) {
+90	 return 0;
+91	 }
+92	 uint32 lower = 0;
+93	 uint32 upper = nCheckpoints - 1;
+94	 while (upper > lower) {
+95	 uint32 center = upper - (upper - lower) / 2;
+96	 Checkpoint memory cp = checkpoints[account][center];
+97	 if (cp.fromBlock == blockNumber) {
+98	 return cp.votes;
+99	 }
+100	 else if (cp.fromBlock < blockNumber) {
+101	 lower = center;
+102	 }
+103	 else {
+104	 upper = center - 1;
+105	 }
+106	 }
+107	 return checkpoints[account][lower].votes;
+108	 }
+109	 function _delegate(address delegator, address delegatee) internal {
+110	 address currentDelegate = delegates[delegator];
+111	 uint96 delegatorBalance = balances[delegator];
+112	 delegates[delegator] = delegatee;
+113	 emit DelegateChanged(delegator, currentDelegate, delegatee);
+114	 _moveDelegates(currentDelegate, delegatee, delegatorBalance);
+115	 }
+116	 function _transferTokens(address src, address dst, uint96 amount) internal {
+117	 require(src != address(0), "Strk::_transferTokens: cannot transfer from the zero address");
+118	 require(dst != address(0), "Strk::_transferTokens: cannot transfer to the zero address");
+119	 balances[src] = sub96(balances[src], amount, "Strk::_transferTokens: transfer amount exceeds balance");
+120	 balances[dst] = add96(balances[dst], amount, "Strk::_transferTokens: transfer amount overflows");
+121	 emit Transfer(src, dst, amount);
+122	 _moveDelegates(delegates[src], delegates[dst], amount);
+123	 }
+124	 function _moveDelegates(address srcRep, address dstRep, uint96 amount) internal {
+125	 if (srcRep != dstRep && amount > 0) {
+126	 if (srcRep != address(0)) {
+127	 uint32 srcRepNum = numCheckpoints[srcRep];
+128	 uint96 srcRepOld = srcRepNum > 0 ? checkpoints[srcRep][srcRepNum - 1].votes : 0;
+129	 uint96 srcRepNew = sub96(srcRepOld, amount, "Strk::_moveVotes: vote amount underflows");
+130	 _writeCheckpoint(srcRep, srcRepNum, srcRepOld, srcRepNew);
+131	 }
+132	 if (dstRep != address(0)) {
+133	 uint32 dstRepNum = numCheckpoints[dstRep];
+134	 uint96 dstRepOld = dstRepNum > 0 ? checkpoints[dstRep][dstRepNum - 1].votes : 0;
+135	 uint96 dstRepNew = add96(dstRepOld, amount, "Strk::_moveVotes: vote amount overflows");
+136	 _writeCheckpoint(dstRep, dstRepNum, dstRepOld, dstRepNew);
+137	 }
+138	 }
+139	 }
+140	 function _writeCheckpoint(address delegatee, uint32 nCheckpoints, uint96 oldVotes, uint96 newVotes) internal {
+141	 uint32 blockNumber = safe32(block.number, "Strk::_writeCheckpoint: block number exceeds 32 bits");
+142	 if (nCheckpoints > 0 && checkpoints[delegatee][nCheckpoints - 1].fromBlock == blockNumber) {
+143	 checkpoints[delegatee][nCheckpoints - 1].votes = newVotes;
+144	 }
+145	 else {
+146	 checkpoints[delegatee][nCheckpoints] = Checkpoint(blockNumber, newVotes);
+147	 numCheckpoints[delegatee] = nCheckpoints + 1;
+148	 }
+149	 emit DelegateVotesChanged(delegatee, oldVotes, newVotes);
+150	 }
+151	 function safe32(uint n, string memory errorMessage) internal pure returns (uint32) {
+152	 require(n < 2**32, errorMessage);
+153	 return uint32(n);
+154	 }
+155	 function safe96(uint n, string memory errorMessage) internal pure returns (uint96) {
+156	 require(n < 2**96, errorMessage);
+157	 return uint96(n);
+158	 }
+159	 function add96(uint96 a, uint96 b, string memory errorMessage) internal pure returns (uint96) {
+160	 uint96 c = a + b;
+161	 require(c >= a, errorMessage);
+162	 return c;
+163	 }
+164	 function sub96(uint96 a, uint96 b, string memory errorMessage) internal pure returns (uint96) {
+165	 require(b <= a, errorMessage);
+166	 return a - b;
+167	 }
+168	 function getChainId() internal pure returns (uint) {
+169	 uint256 chainId;
+170	 assembly {
+171	 chainId := chainid() }
+172	 return chainId;
+173	 }
+174	 }

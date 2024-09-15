@@ -1,0 +1,422 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.7.0;
+3	 abstract contract ReentrancyGuard {
+4	 uint256 private constant _NOT_ENTERED = 1;
+5	 uint256 private constant _ENTERED = 2;
+6	 uint256 private _status;
+7	 constructor () {
+8	 _status = _NOT_ENTERED;
+9	 }
+10	 modifier nonReentrant() {
+11	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+12	 _status = _ENTERED;
+13	 _;
+14	 _status = _NOT_ENTERED;
+15	 }
+16	 }
+17	 pragma solidity ^0.7.6;
+18	 interface IVault {
+19	 function getRewardTokens() external view returns (address[] memory);
+20	 function balance() external view returns (uint256);
+21	 function balanceOf(address _user) external view returns (uint256);
+22	 function deposit(uint256 _amount) external;
+23	 function withdraw(uint256 _amount) external;
+24	 function claim() external;
+25	 function exit() external;
+26	 function harvest() external;
+27	 }
+28	 pragma solidity ^0.7.6;
+29	 abstract contract VaultBase is ReentrancyGuard, IVault {
+30	 uint256 public constant PRECISION = 1e18;
+31	 address public immutable baseToken;
+32	 address public depositor;
+33	 address public governor;
+34	 uint256 public bondPercentage;
+35	 uint256 public override balance;
+36	 mapping(address => uint256) public override balanceOf;
+37	 modifier onlyGovernor() {
+38	 require(msg.sender == governor, "VaultBase: only governor");
+39	 _;
+40	 }
+41	 constructor( address _baseToken, address _depositor, address _governor ) {
+42	 baseToken = _baseToken;
+43	 depositor = _depositor;
+44	 governor = _governor;
+45	 bondPercentage = PRECISION;
+46	 }
+47	 function setGovernor(address _governor) external onlyGovernor {
+48	 governor = _governor;
+49	 }
+50	 function setBondPercentage(uint256 _bondPercentage) external onlyGovernor {
+51	 require(_bondPercentage <= PRECISION, "VaultBase: percentage too large");
+52	 bondPercentage = _bondPercentage;
+53	 }
+54	 }
+55	 pragma solidity ^0.7.6;
+56	 abstract contract MultipleRewardsVaultBase is VaultBase {
+57	 using SafeERC20 for IERC20;
+58	 using SafeMath for uint256;
+59	 uint256 private constant MAX_REWARD_TOKENS = 4;
+60	 event Deposit(address indexed user, uint256 amount);
+61	 event Withdraw(address indexed user, uint256 amount);
+62	 event Claim(address indexed user, uint256[] amount);
+63	 event Harvest(address indexed keeper, uint256[] bondAmount, uint256[] rewardAmount);
+64	 address[] private rewardTokens;
+65	 uint256 public lastUpdateBlock;
+66	 mapping(uint256 => uint256) public rewardsPerShareStored;
+67	 mapping(address => mapping(uint256 => uint256)) public userRewardPerSharePaid;
+68	 mapping(address => mapping(uint256 => uint256)) public rewards;
+69	 constructor( address _baseToken, address _depositor, address _governor ) VaultBase(_baseToken, _depositor, _governor) {
+70	 }
+71	 function _setupRewardTokens(address[] memory _rewardTokens) internal {
+72	 require(_rewardTokens.length <= MAX_REWARD_TOKENS, "MultipleRewardsVaultBase: too much reward");
+73	 rewardTokens = _rewardTokens;
+74	 for (uint256 i = 0; i < _rewardTokens.length; i++) {
+75	 IERC20(_rewardTokens[i]).safeApprove(depositor, uint256(-1));
+76	 }
+77	 }
+78	 function getRewardTokens() external view override returns (address[] memory) {
+79	 return rewardTokens;
+80	 }
+81	 function earned(address _account, uint256 _index) public view returns (uint256) {
+82	 uint256 _balance = balanceOf[_account];
+83	 return _balance.mul(rewardsPerShareStored[_index].sub(userRewardPerSharePaid[_account][_index])).div(PRECISION).add( rewards[_account][_index] );
+84	 }
+85	 function getPricePerFullShare() public view returns (uint256) {
+86	 if (balance == 0) return 0;
+87	 return _strategyBalance().mul(PRECISION).div(balance);
+88	 }
+89	 function deposit(uint256 _amount) external override nonReentrant {
+90	 _updateReward(msg.sender);
+91	 address _token = baseToken;
+92	 uint256 _pool = IERC20(_token).balanceOf(address(this));
+93	 IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
+94	 _amount = IERC20(_token).balanceOf(address(this)).sub(_pool);
+95	 uint256 _share;
+96	 if (balance == 0) {
+97	 _share = _amount;
+98	 }
+99	 else {
+100	 _share = _amount.mul(balance).div(_strategyBalance());
+101	 }
+102	 balance = balance.add(_share);
+103	 balanceOf[msg.sender] = balanceOf[msg.sender].add(_share);
+104	 _deposit();
+105	 emit Deposit(msg.sender, _amount);
+106	 }
+107	 function withdraw(uint256 _share) public override nonReentrant {
+108	 require(_share <= balanceOf[msg.sender], "Vault: not enough share");
+109	 _updateReward(msg.sender);
+110	 uint256 _amount = _share.mul(_strategyBalance()).div(balance);
+111	 balanceOf[msg.sender] = balanceOf[msg.sender] - _share;
+112	 balance = balance - _share;
+113	 address _token = baseToken;
+114	 uint256 _pool = IERC20(_token).balanceOf(address(this));
+115	 if (_pool < _amount) {
+116	 uint256 _withdrawAmount = _amount - _pool;
+117	 _withdraw(_withdrawAmount);
+118	 uint256 _poolAfter = IERC20(_token).balanceOf(address(this));
+119	 uint256 _diff = _poolAfter.sub(_pool);
+120	 if (_diff < _withdrawAmount) {
+121	 _amount = _pool.add(_diff);
+122	 }
+123	 }
+124	 IERC20(_token).safeTransfer(msg.sender, _amount);
+125	 emit Withdraw(msg.sender, _amount);
+126	 }
+127	 function claim() public override {
+128	 _updateReward(msg.sender);
+129	 uint256 length = rewardTokens.length;
+130	 uint256[] memory _rewards = new uint256[](length);
+131	 for (uint256 i = 0; i < length; i++) {
+132	 uint256 reward = rewards[msg.sender][i];
+133	 if (reward > 0) {
+134	 rewards[msg.sender][i] = 0;
+135	 IERC20(rewardTokens[i]).safeTransfer(msg.sender, reward);
+136	 }
+137	 _rewards[i] = reward;
+138	 }
+139	 emit Claim(msg.sender, _rewards);
+140	 }
+141	 function exit() external override {
+142	 withdraw(balanceOf[msg.sender]);
+143	 claim();
+144	 }
+145	 function harvest() public override {
+146	 if (lastUpdateBlock == block.number) {
+147	 return;
+148	 }
+149	 lastUpdateBlock = block.number;
+150	 if (balance == 0) {
+151	 IRewardBondDepositor(depositor).notifyRewards(msg.sender, new uint256[](rewardTokens.length));
+152	 return;
+153	 }
+154	 uint256 length = rewardTokens.length;
+155	 uint256[] memory harvested = new uint256[](length);
+156	 uint256[] memory bondAmount = new uint256[](length);
+157	 for (uint256 i = 0; i < length; i++) {
+158	 harvested[i] = IERC20(rewardTokens[i]).balanceOf(address(this));
+159	 }
+160	 _harvest();
+161	 for (uint256 i = 0; i < length; i++) {
+162	 harvested[i] = IERC20(rewardTokens[i]).balanceOf(address(this)).sub(harvested[i]);
+163	 bondAmount[i] = harvested[i].mul(bondPercentage).div(PRECISION);
+164	 harvested[i] = harvested[i].sub(bondAmount[i]);
+165	 }
+166	 IRewardBondDepositor(depositor).notifyRewards(msg.sender, bondAmount);
+167	 for (uint256 i = 0; i < length; i++) {
+168	 rewardsPerShareStored[i] = rewardsPerShareStored[i].add(harvested[i].mul(1e18).div(balance));
+169	 }
+170	 emit Harvest(msg.sender, bondAmount, harvested);
+171	 }
+172	 function _deposit() internal virtual;
+173	 function _withdraw(uint256 _amount) internal virtual;
+174	 function _harvest() internal virtual;
+175	 function _strategyBalance() internal view virtual returns (uint256);
+176	 function _updateReward(address _account) internal {
+177	 harvest();
+178	 uint256 length = rewardTokens.length;
+179	 for (uint256 i = 0; i < length; i++) {
+180	 rewards[_account][i] = earned(_account, i);
+181	 userRewardPerSharePaid[_account][i] = rewardsPerShareStored[i];
+182	 }
+183	 }
+184	 }
+185	 abstract contract BaseConvexVault is MultipleRewardsVaultBase {
+186	 using SafeERC20 for IERC20;
+187	 IBooster public booster;
+188	 IBaseRewardPool public cvxRewardPool;
+189	 uint256 public pid;
+190	 constructor( address _baseToken, address _depositor, address _governor, address _booster, uint256 _pid ) MultipleRewardsVaultBase(_baseToken, _depositor, _governor) {
+191	 IBooster.PoolInfo memory info = IBooster(_booster).poolInfo(_pid);
+192	 require(info.lptoken == _baseToken, "invalid pid or token");
+193	 booster = IBooster(_booster);
+194	 cvxRewardPool = IBaseRewardPool(info.crvRewards);
+195	 pid = _pid;
+196	 }
+197	 function _deposit() internal override {
+198	 IERC20 _baseToken = IERC20(baseToken);
+199	 uint256 amount = _baseToken.balanceOf(address(this));
+200	 if (amount > 0) {
+201	 IBooster _booster = booster;
+202	 _baseToken.safeApprove(address(_booster), amount);
+203	 _booster.deposit(pid, amount, true);
+204	 }
+205	 }
+206	 function _withdraw(uint256 _amount) internal override {
+207	 cvxRewardPool.withdrawAndUnwrap(_amount, false);
+208	 }
+209	 function _harvest() internal override {
+210	 cvxRewardPool.getReward();
+211	 }
+212	 function _strategyBalance() internal view override returns (uint256) {
+213	 return cvxRewardPool.balanceOf(address(this));
+214	 }
+215	 }
+216	 pragma solidity ^0.7.3;
+217	 contract TriCrypto2ConvexVault is BaseConvexVault {
+218	 constructor(address _depositor, address _governor) BaseConvexVault( address(0xc4AD29ba4B3c580e6D59105FFf484999997675Ff), _depositor, _governor, address(0xF403C135812408BFbE8713b5A23a04b3D48AAE31), 38 ) {
+219	 address[] memory _rewardTokens = new address[](2);
+220	 _rewardTokens[0] = address(0xD533a949740bb3306d119CC777fa900bA034cd52);
+221	 _rewardTokens[1] = address(0x4e3FBD56CD56c3e72c1403e103b45Db9da5B9D2B);
+222	 _setupRewardTokens(_rewardTokens);
+223	 }
+224	 }
+225	 pragma solidity ^0.7.6;
+226	 interface IBooster {
+227	 struct PoolInfo {
+228	 address lptoken;
+229	 address token;
+230	 address gauge;
+231	 address crvRewards;
+232	 address stash;
+233	 bool shutdown;
+234	 }
+235	 function poolInfo(uint256 _pid) external view returns (PoolInfo memory);
+236	 function deposit( uint256 _pid, uint256 _amount, bool _stake ) external returns (bool);
+237	 function depositAll(uint256 _pid, bool _stake) external returns (bool);
+238	 function withdraw(uint256 _pid, uint256 _amount) external returns (bool);
+239	 function withdrawAll(uint256 _pid) external returns (bool);
+240	 }
+241	 interface IBaseRewardPool {
+242	 function balanceOf(address account) external view returns (uint256);
+243	 function getReward() external returns (bool);
+244	 function getReward(address _account, bool _claimExtras) external returns (bool);
+245	 function withdrawAndUnwrap(uint256 amount, bool claim) external returns (bool);
+246	 function earned(address _account) external view returns (uint256);
+247	 }
+248	 pragma solidity ^0.7.0;
+249	 library SafeMath {
+250	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+251	 uint256 c = a + b;
+252	 if (c < a) return (false, 0);
+253	 return (true, c);
+254	 }
+255	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+256	 if (b > a) return (false, 0);
+257	 return (true, a - b);
+258	 }
+259	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+260	 if (a == 0) return (true, 0);
+261	 uint256 c = a * b;
+262	 if (c / a != b) return (false, 0);
+263	 return (true, c);
+264	 }
+265	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+266	 if (b == 0) return (false, 0);
+267	 return (true, a / b);
+268	 }
+269	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+270	 if (b == 0) return (false, 0);
+271	 return (true, a % b);
+272	 }
+273	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+274	 uint256 c = a + b;
+275	 require(c >= a, "SafeMath: addition overflow");
+276	 return c;
+277	 }
+278	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+279	 require(b <= a, "SafeMath: subtraction overflow");
+280	 return a - b;
+281	 }
+282	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+283	 if (a == 0) return 0;
+284	 uint256 c = a * b;
+285	 require(c / a == b, "SafeMath: multiplication overflow");
+286	 return c;
+287	 }
+288	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+289	 require(b > 0, "SafeMath: division by zero");
+290	 return a / b;
+291	 }
+292	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+293	 require(b > 0, "SafeMath: modulo by zero");
+294	 return a % b;
+295	 }
+296	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+297	 require(b <= a, errorMessage);
+298	 return a - b;
+299	 }
+300	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+301	 require(b > 0, errorMessage);
+302	 return a / b;
+303	 }
+304	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+305	 require(b > 0, errorMessage);
+306	 return a % b;
+307	 }
+308	 }
+309	 pragma solidity ^0.7.0;
+310	 interface IERC20 {
+311	 function totalSupply() external view returns (uint256);
+312	 function balanceOf(address account) external view returns (uint256);
+313	 function transfer(address recipient, uint256 amount) external returns (bool);
+314	 function allowance(address owner, address spender) external view returns (uint256);
+315	 function approve(address spender, uint256 amount) external returns (bool);
+316	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+317	 event Transfer(address indexed from, address indexed to, uint256 value);
+318	 event Approval(address indexed owner, address indexed spender, uint256 value);
+319	 }
+320	 pragma solidity ^0.7.0;
+321	 library SafeERC20 {
+322	 using SafeMath for uint256;
+323	 using Address for address;
+324	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+325	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+326	 }
+327	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+328	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+329	 }
+330	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+331	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+332	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+333	 }
+334	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+335	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+336	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+337	 }
+338	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+339	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+340	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+341	 }
+342	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+343	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+344	 if (returndata.length > 0) {
+345	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+346	 }
+347	 }
+348	 }
+349	 pragma solidity ^0.7.6;
+350	 interface IRewardBondDepositor {
+351	 function currentEpoch() external view returns ( uint64 epochNumber, uint64 startBlock, uint64 nextBlock, uint64 epochLength );
+352	 function rewardShares(uint256 _epoch, address _vault) external view returns (uint256);
+353	 function getVaultsFromAccount(address _user) external view returns (address[] memory);
+354	 function getAccountRewardShareSince( uint256 _epoch, address _user, address _vault ) external view returns (uint256[] memory);
+355	 function bond(address _vault) external;
+356	 function rebase() external;
+357	 function notifyRewards(address _user, uint256[] memory _amounts) external;
+358	 }
+359	 pragma solidity ^0.7.0;
+360	 library Address {
+361	 function isContract(address account) internal view returns (bool) {
+362	 uint256 size;
+363	 assembly {
+364	 size := extcodesize(account) }
+365	 return size > 0;
+366	 }
+367	 function sendValue(address payable recipient, uint256 amount) internal {
+368	 require(address(this).balance >= amount, "Address: insufficient balance");
+369	 (bool success, ) = recipient.call{
+370	 value: amount }
+371	 ("");
+372	 require(success, "Address: unable to send value, recipient may have reverted");
+373	 }
+374	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+375	 return functionCall(target, data, "Address: low-level call failed");
+376	 }
+377	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+378	 return functionCallWithValue(target, data, 0, errorMessage);
+379	 }
+380	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+381	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+382	 }
+383	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+384	 require(address(this).balance >= value, "Address: insufficient balance for call");
+385	 require(isContract(target), "Address: call to non-contract");
+386	 (bool success, bytes memory returndata) = target.call{
+387	 value: value }
+388	 (data);
+389	 return _verifyCallResult(success, returndata, errorMessage);
+390	 }
+391	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+392	 return functionStaticCall(target, data, "Address: low-level static call failed");
+393	 }
+394	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+395	 require(isContract(target), "Address: static call to non-contract");
+396	 (bool success, bytes memory returndata) = target.staticcall(data);
+397	 return _verifyCallResult(success, returndata, errorMessage);
+398	 }
+399	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+400	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+401	 }
+402	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+403	 require(isContract(target), "Address: delegate call to non-contract");
+404	 (bool success, bytes memory returndata) = target.delegatecall(data);
+405	 return _verifyCallResult(success, returndata, errorMessage);
+406	 }
+407	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+408	 if (success) {
+409	 return returndata;
+410	 }
+411	 else {
+412	 if (returndata.length > 0) {
+413	 assembly {
+414	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+415	 }
+416	 else {
+417	 revert(errorMessage);
+418	 }
+419	 }
+420	 }
+421	 }

@@ -1,0 +1,284 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract Owned {
+3	 address public owner;
+4	 constructor() public {
+5	 owner = msg.sender;
+6	 }
+7	 modifier onlyOwner() {
+8	 require(msg.sender == owner);
+9	 _;
+10	 }
+11	 function setOwner(address _owner) onlyOwner public {
+12	 owner = _owner;
+13	 }
+14	 }
+15	 contract SafeMath {
+16	 function add(uint256 _a, uint256 _b) internal pure returns (uint256) {
+17	 uint256 c = _a + _b;
+18	 assert(c >= _a);
+19	 return c;
+20	 }
+21	 function sub(uint256 _a, uint256 _b) internal pure returns (uint256) {
+22	 assert(_a >= _b);
+23	 return _a - _b;
+24	 }
+25	 function mul(uint256 _a, uint256 _b) internal pure returns (uint256) {
+26	 uint256 c = _a * _b;
+27	 assert(_a == 0 || c / _a == _b);
+28	 return c;
+29	 }
+30	 }
+31	 interface ERC20Token {
+32	 function name() external view returns (string _name);
+33	 function symbol() external view returns (string _symbol);
+34	 function decimals() external view returns (uint8 _decimals);
+35	 function totalSupply() external view returns (uint256 _totalSupply);
+36	 function balanceOf(address _owner) external view returns (uint256 _balance);
+37	 function transfer(address _to, uint256 _value) external returns (bool _success);
+38	 function transferFrom(address _from, address _to, uint256 _value) external returns (bool _success);
+39	 function approve(address _spender, uint256 _value) external returns (bool _success);
+40	 function allowance(address _owner, address _spender) external view returns (uint256 _remaining);
+41	 event Transfer(address indexed _from, address indexed _to, uint256 _value);
+42	 event Approval(address indexed _owner, address indexed _spender, uint256 _value);
+43	 }
+44	 contract iGameTree is SafeMath, Owned, ERC20Token {
+45	 string private constant standard = "0.242";
+46	 string private constant version = "v3.0x";
+47	 string private _name = "igametree";
+48	 string private _symbol = "IGT";
+49	 uint8 private _decimals = 4;
+50	 uint256 private _totalSupply = 2 * 10**8 * uint256(10)**_decimals;
+51	 mapping (address => uint256) private balanceP;
+52	 mapping (address => mapping (address => uint256)) private _allowance;
+53	 mapping (address => uint256[]) private lockTime;
+54	 mapping (address => uint256[]) private lockValue;
+55	 mapping (address => uint256) private lockNum;
+56	 uint256 private later = 0;
+57	 uint256 private earlier = 0;
+58	 event Burn(address indexed _from, uint256 _value);
+59	 event TransferLocked(address indexed _from, address indexed _to, uint256 _time, uint256 _value);
+60	 event TokenUnlocked(address indexed _address, uint256 _value);
+61	 event WrongTokenEmptied(address indexed _token, address indexed _addr, uint256 _amount);
+62	 event WrongEtherEmptied(address indexed _addr, uint256 _amount);
+63	 constructor() public {
+64	 balanceP[msg.sender] = _totalSupply;
+65	 }
+66	 modifier validAddress(address _address) {
+67	 require(_address != 0x0);
+68	 _;
+69	 }
+70	 function setUnlockEarlier(uint256 _earlier) public onlyOwner {
+71	 earlier = add(earlier, _earlier);
+72	 }
+73	 function setUnlockLater(uint256 _later) public onlyOwner {
+74	 later = add(later, _later);
+75	 }
+76	 function name() public view returns (string) {
+77	 return _name;
+78	 }
+79	 function symbol() public view returns (string) {
+80	 return _symbol;
+81	 }
+82	 function decimals() public view returns (uint8) {
+83	 return _decimals;
+84	 }
+85	 function totalSupply() public view returns (uint256) {
+86	 return _totalSupply;
+87	 }
+88	 function allowance(address _owner, address _spender) external view returns (uint256) {
+89	 return _allowance[_owner][_spender];
+90	 }
+91	 function balanceUnlocked(address _address) public view returns (uint256 _balance) {
+92	 _balance = balanceP[_address];
+93	 uint256 i = 0;
+94	 while (i < lockNum[_address]) {
+95	 if (add(now, earlier) >= add(lockTime[_address][i], later)) _balance = add(_balance, lockValue[_address][i]);
+96	 i++;
+97	 }
+98	 return _balance;
+99	 }
+100	 function balanceLocked(address _address) public view returns (uint256 _balance) {
+101	 _balance = 0;
+102	 uint256 i = 0;
+103	 while (i < lockNum[_address]) {
+104	 if (add(now, earlier) < add(lockTime[_address][i], later)) _balance = add(_balance, lockValue[_address][i]);
+105	 i++;
+106	 }
+107	 return _balance;
+108	 }
+109	 function balanceOf(address _address) public view returns (uint256 _balance) {
+110	 _balance = balanceP[_address];
+111	 uint256 i = 0;
+112	 while (i < lockNum[_address]) {
+113	 _balance = add(_balance, lockValue[_address][i]);
+114	 i++;
+115	 }
+116	 return _balance;
+117	 }
+118	 function showLockTimes(address _address) public view validAddress(_address) returns (uint256[] _times) {
+119	 uint i = 0;
+120	 uint256[] memory tempLockTime = new uint256[](lockNum[_address]);
+121	 while (i < lockNum[_address]) {
+122	 tempLockTime[i] = sub(add(lockTime[_address][i], later), earlier);
+123	 i++;
+124	 }
+125	 return tempLockTime;
+126	 }
+127	 function showLockValues(address _address) public view validAddress(_address) returns (uint256[] _values) {
+128	 return lockValue[_address];
+129	 }
+130	 function showLockNum(address _address) public view validAddress(_address) returns (uint256 _lockNum) {
+131	 return lockNum[_address];
+132	 }
+133	 function calcUnlock(address _address) private {
+134	 uint256 i = 0;
+135	 uint256 j = 0;
+136	 uint256[] memory currentLockTime;
+137	 uint256[] memory currentLockValue;
+138	 uint256[] memory newLockTime = new uint256[](lockNum[_address]);
+139	 uint256[] memory newLockValue = new uint256[](lockNum[_address]);
+140	 currentLockTime = lockTime[_address];
+141	 currentLockValue = lockValue[_address];
+142	 while (i < lockNum[_address]) {
+143	 if (add(now, earlier) >= add(currentLockTime[i], later)) {
+144	 balanceP[_address] = add(balanceP[_address], currentLockValue[i]);
+145	 emit TokenUnlocked(_address, currentLockValue[i]);
+146	 }
+147	 else {
+148	 newLockTime[j] = currentLockTime[i];
+149	 newLockValue[j] = currentLockValue[i];
+150	 j++;
+151	 }
+152	 i++;
+153	 }
+154	 uint256[] memory trimLockTime = new uint256[](j);
+155	 uint256[] memory trimLockValue = new uint256[](j);
+156	 i = 0;
+157	 while (i < j) {
+158	 trimLockTime[i] = newLockTime[i];
+159	 trimLockValue[i] = newLockValue[i];
+160	 i++;
+161	 }
+162	 lockTime[_address] = trimLockTime;
+163	 lockValue[_address] = trimLockValue;
+164	 lockNum[_address] = j;
+165	 }
+166	 function transfer(address _to, uint256 _value) public validAddress(_to) returns (bool _success) {
+167	 if (lockNum[msg.sender] > 0) calcUnlock(msg.sender);
+168	 require(balanceP[msg.sender] >= _value && _value >= 0);
+169	 balanceP[msg.sender] = sub(balanceP[msg.sender], _value);
+170	 balanceP[_to] = add(balanceP[_to], _value);
+171	 emit Transfer(msg.sender, _to, _value);
+172	 return true;
+173	 }
+174	 function transferLocked(address _to, uint256[] _time, uint256[] _value) public validAddress(_to) returns (bool _success) {
+175	 require(_value.length == _time.length);
+176	 if (lockNum[msg.sender] > 0) calcUnlock(msg.sender);
+177	 uint256 i = 0;
+178	 uint256 totalValue = 0;
+179	 while (i < _value.length) {
+180	 totalValue = add(totalValue, _value[i]);
+181	 i++;
+182	 }
+183	 require(balanceP[msg.sender] >= totalValue && totalValue >= 0);
+184	 require(add(lockNum[msg.sender], _time.length) <= 42);
+185	 i = 0;
+186	 while (i < _time.length) {
+187	 if (_value[i] > 0) {
+188	 balanceP[msg.sender] = sub(balanceP[msg.sender], _value[i]);
+189	 lockTime[_to].length = lockNum[_to]+1;
+190	 lockValue[_to].length = lockNum[_to]+1;
+191	 lockTime[_to][lockNum[_to]] = sub(add(add(now, _time[i]), earlier), later);
+192	 lockValue[_to][lockNum[_to]] = _value[i];
+193	 lockNum[_to]++;
+194	 }
+195	 emit TransferLocked(msg.sender, _to, _time[i], _value[i]);
+196	 emit Transfer(msg.sender, _to, _value[i]);
+197	 i++;
+198	 }
+199	 return true;
+200	 }
+201	 function transferLockedFrom(address _from, address _to, uint256[] _time, uint256[] _value) public validAddress(_from) validAddress(_to) returns (bool success) {
+202	 require(_value.length == _time.length);
+203	 if (lockNum[_from] > 0) calcUnlock(_from);
+204	 uint256 i = 0;
+205	 uint256 totalValue = 0;
+206	 while (i < _value.length) {
+207	 totalValue = add(totalValue, _value[i]);
+208	 i++;
+209	 }
+210	 require(balanceP[_from] >= totalValue && totalValue >= 0 && _allowance[_from][msg.sender] >= totalValue);
+211	 require(add(lockNum[_from], _time.length) <= 42);
+212	 i = 0;
+213	 while (i < _time.length) {
+214	 if (_value[i] > 0) {
+215	 balanceP[_from] = sub(balanceP[_from], _value[i]);
+216	 _allowance[_from][msg.sender] = sub(_allowance[_from][msg.sender], _value[i]);
+217	 lockTime[_to].length = lockNum[_to]+1;
+218	 lockValue[_to].length = lockNum[_to]+1;
+219	 lockTime[_to][lockNum[_to]] = sub(add(add(now, _time[i]), earlier), later);
+220	 lockValue[_to][lockNum[_to]] = _value[i];
+221	 lockNum[_to]++;
+222	 }
+223	 emit TransferLocked(_from, _to, _time[i], _value[i]);
+224	 emit Transfer(_from, _to, _value[i]);
+225	 i++;
+226	 }
+227	 return true;
+228	 }
+229	 function transferFrom(address _from, address _to, uint256 _value) public validAddress(_from) validAddress(_to) returns (bool _success) {
+230	 if (lockNum[_from] > 0) calcUnlock(_from);
+231	 require(balanceP[_from] >= _value && _value >= 0 && _allowance[_from][msg.sender] >= _value);
+232	 _allowance[_from][msg.sender] = sub(_allowance[_from][msg.sender], _value);
+233	 balanceP[_from] = sub(balanceP[_from], _value);
+234	 balanceP[_to] = add(balanceP[_to], _value);
+235	 emit Transfer(_from, _to, _value);
+236	 return true;
+237	 }
+238	 function approve(address _spender, uint256 _value) public validAddress(_spender) returns (bool _success) {
+239	 if (lockNum[msg.sender] > 0) calcUnlock(msg.sender);
+240	 _allowance[msg.sender][_spender] = _value;
+241	 emit Approval(msg.sender, _spender, _value);
+242	 return true;
+243	 }
+244	 function increaseApproval(address _spender, uint _value) public validAddress(_spender) returns (bool _success) {
+245	 _allowance[msg.sender][_spender] = add(_allowance[msg.sender][_spender], _value);
+246	 emit Approval(msg.sender, _spender, _allowance[msg.sender][_spender]);
+247	 return true;
+248	 }
+249	 function decreaseApproval(address _spender, uint _value) public validAddress(_spender) returns (bool _success) {
+250	 if(_value >= _allowance[msg.sender][_spender]) {
+251	 _allowance[msg.sender][_spender] = 0;
+252	 }
+253	 else {
+254	 _allowance[msg.sender][_spender] = sub(_allowance[msg.sender][_spender], _value);
+255	 }
+256	 emit Approval(msg.sender, _spender, _allowance[msg.sender][_spender]);
+257	 return true;
+258	 }
+259	 function burn(uint256 _value) public onlyOwner returns (bool _success) {
+260	 if (lockNum[msg.sender] > 0) calcUnlock(msg.sender);
+261	 require(balanceP[msg.sender] >= _value && _value >= 0);
+262	 balanceP[msg.sender] = sub(balanceP[msg.sender], _value);
+263	 _totalSupply = sub(_totalSupply, _value);
+264	 emit Burn(msg.sender, _value);
+265	 return true;
+266	 }
+267	 function () public payable {
+268	 revert();
+269	 }
+270	 function emptyWrongToken(address _addr) onlyOwner public {
+271	 ERC20Token wrongToken = ERC20Token(_addr);
+272	 uint256 amount = wrongToken.balanceOf(address(this));
+273	 require(amount > 0);
+274	 require(wrongToken.transfer(msg.sender, amount));
+275	 emit WrongTokenEmptied(_addr, msg.sender, amount);
+276	 }
+277	 function emptyWrongEther() onlyOwner public {
+278	 uint256 amount = address(this).balance;
+279	 require(amount > 0);
+280	 msg.sender.transfer(amount);
+281	 emit WrongEtherEmptied(msg.sender, amount);
+282	 }
+283	 }

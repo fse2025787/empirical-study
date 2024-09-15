@@ -1,0 +1,411 @@
+row number 
+1	         pragma solidity >=0.4.24 <0.7.0;
+2	 abstract contract Initializable {
+3	 bool private _initialized;
+4	 bool private _initializing;
+5	 modifier initializer() {
+6	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+7	 bool isTopLevelCall = !_initializing;
+8	 if (isTopLevelCall) {
+9	 _initializing = true;
+10	 _initialized = true;
+11	 }
+12	 _;
+13	 if (isTopLevelCall) {
+14	 _initializing = false;
+15	 }
+16	 }
+17	 function _isConstructor() private view returns (bool) {
+18	 address self = address(this);
+19	 uint256 cs;
+20	 assembly {
+21	 cs := extcodesize(self) }
+22	 return cs == 0;
+23	 }
+24	 }
+25	 pragma solidity 0.6.12;
+26	 interface IHermezAuctionProtocol {
+27	 function getSlotDeadline() external view returns (uint8);
+28	 function setSlotDeadline(uint8 newDeadline) external;
+29	 function getOpenAuctionSlots() external view returns (uint16);
+30	 function setOpenAuctionSlots(uint16 newOpenAuctionSlots) external;
+31	 function getClosedAuctionSlots() external view returns (uint16);
+32	 function setClosedAuctionSlots(uint16 newClosedAuctionSlots) external;
+33	 function getOutbidding() external view returns (uint16);
+34	 function setOutbidding(uint16 newOutbidding) external;
+35	 function getAllocationRatio() external view returns (uint16[3] memory);
+36	 function setAllocationRatio(uint16[3] memory newAllocationRatio) external;
+37	 function getDonationAddress() external view returns (address);
+38	 function setDonationAddress(address newDonationAddress) external;
+39	 function getBootCoordinator() external view returns (address);
+40	 function setBootCoordinator( address newBootCoordinator, string memory newBootCoordinatorURL ) external;
+41	 function changeDefaultSlotSetBid(uint128 slotSet, uint128 newInitialMinBid) external;
+42	 function setCoordinator(address forger, string memory coordinatorURL) external;
+43	 function processBid( uint128 amount, uint128 slot, uint128 bidAmount, bytes calldata permit ) external;
+44	 function processMultiBid( uint128 amount, uint128 startingSlot, uint128 endingSlot, bool[6] memory slotSets, uint128 maxBid, uint128 minBid, bytes calldata permit ) external;
+45	 function forge(address forger) external;
+46	 function canForge(address forger, uint256 blockNumber) external view returns (bool);
+47	 }
+48	 pragma solidity ^0.6.0;
+49	 contract ReentrancyGuardUpgradeable is Initializable {
+50	 uint256 private constant _NOT_ENTERED = 1;
+51	 uint256 private constant _ENTERED = 2;
+52	 uint256 private _status;
+53	 function __ReentrancyGuard_init() internal initializer {
+54	 __ReentrancyGuard_init_unchained();
+55	 }
+56	 function __ReentrancyGuard_init_unchained() internal initializer {
+57	 _status = _NOT_ENTERED;
+58	 }
+59	 modifier nonReentrant() {
+60	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+61	 _status = _ENTERED;
+62	 _;
+63	 _status = _NOT_ENTERED;
+64	 }
+65	 uint256[49] private __gap;
+66	 }
+67	 pragma solidity 0.6.12;
+68	 contract HermezAuctionProtocol is Initializable, ReentrancyGuardUpgradeable, IHermezAuctionProtocol {
+69	 using SafeMath128 for uint128;
+70	 struct Coordinator {
+71	 address forger;
+72	 string coordinatorURL;
+73	 }
+74	 struct SlotState {
+75	 address bidder;
+76	 bool fulfilled;
+77	 bool forgerCommitment;
+78	 uint128 bidAmount;
+79	 uint128 closedMinBid;
+80	 }
+81	 bytes4 private constant _PERMIT_SIGNATURE = 0xd505accf;
+82	 uint8 public constant BLOCKS_PER_SLOT = 40;
+83	 uint128 public constant INITIAL_MINIMAL_BIDDING = 1000000 * (1e18);
+84	 IHEZToken public tokenHEZ;
+85	 address public hermezRollup;
+86	 address public governanceAddress;
+87	 address private _donationAddress;
+88	 address private _bootCoordinator;
+89	 string public bootCoordinatorURL;
+90	 uint128[6] private _defaultSlotSetBid;
+91	 uint128 public genesisBlock;
+92	 uint16 private _closedAuctionSlots;
+93	 uint16 private _openAuctionSlots;
+94	 uint16[3] private _allocationRatio;
+95	 uint16 private _outbidding;
+96	 uint8 private _slotDeadline;
+97	 mapping(uint128 => SlotState) public slots;
+98	 mapping(address => uint128) public pendingBalances;
+99	 mapping(address => Coordinator) public coordinators;
+100	 event NewBid( uint128 indexed slot, uint128 bidAmount, address indexed bidder );
+101	 event NewSlotDeadline(uint8 newSlotDeadline);
+102	 event NewClosedAuctionSlots(uint16 newClosedAuctionSlots);
+103	 event NewOutbidding(uint16 newOutbidding);
+104	 event NewDonationAddress(address indexed newDonationAddress);
+105	 event NewBootCoordinator( address indexed newBootCoordinator, string newBootCoordinatorURL );
+106	 event NewOpenAuctionSlots(uint16 newOpenAuctionSlots);
+107	 event NewAllocationRatio(uint16[3] newAllocationRatio);
+108	 event SetCoordinator( address indexed bidder, address indexed forger, string coordinatorURL );
+109	 event NewForgeAllocated( address indexed bidder, address indexed forger, uint128 indexed slotToForge, uint128 burnAmount, uint128 donationAmount, uint128 governanceAmount );
+110	 event NewDefaultSlotSetBid(uint128 slotSet, uint128 newInitialMinBid);
+111	 event NewForge(address indexed forger, uint128 indexed slotToForge);
+112	 event HEZClaimed(address indexed owner, uint128 amount);
+113	 event InitializeHermezAuctionProtocolEvent( address donationAddress, address bootCoordinatorAddress, string bootCoordinatorURL, uint16 outbidding, uint8 slotDeadline, uint16 closedAuctionSlots, uint16 openAuctionSlots, uint16[3] allocationRatio );
+114	 modifier onlyGovernance() {
+115	 require( governanceAddress == msg.sender, "HermezAuctionProtocol::onlyGovernance: ONLY_GOVERNANCE" );
+116	 _;
+117	 }
+118	 function hermezAuctionProtocolInitializer( address token, uint128 genesis, address hermezRollupAddress, address _governanceAddress, address donationAddress, address bootCoordinatorAddress, string memory _bootCoordinatorURL ) public initializer {
+119	 __ReentrancyGuard_init_unchained();
+120	 require( hermezRollupAddress != address(0), "HermezAuctionProtocol::hermezAuctionProtocolInitializer ADDRESS_0_NOT_VALID" );
+121	 _outbidding = 1000;
+122	 _slotDeadline = 20;
+123	 _closedAuctionSlots = 2;
+124	 _openAuctionSlots = 4320;
+125	 _allocationRatio = [4000, 4000, 2000];
+126	 _defaultSlotSetBid = [ INITIAL_MINIMAL_BIDDING, INITIAL_MINIMAL_BIDDING, INITIAL_MINIMAL_BIDDING, INITIAL_MINIMAL_BIDDING, INITIAL_MINIMAL_BIDDING, INITIAL_MINIMAL_BIDDING ];
+127	 require( genesis >= block.number, "HermezAuctionProtocol::hermezAuctionProtocolInitializer GENESIS_BELOW_MINIMAL" );
+128	 tokenHEZ = IHEZToken(token);
+129	 genesisBlock = genesis;
+130	 hermezRollup = hermezRollupAddress;
+131	 governanceAddress = _governanceAddress;
+132	 _donationAddress = donationAddress;
+133	 _bootCoordinator = bootCoordinatorAddress;
+134	 bootCoordinatorURL = _bootCoordinatorURL;
+135	 emit InitializeHermezAuctionProtocolEvent( donationAddress, bootCoordinatorAddress, _bootCoordinatorURL, _outbidding, _slotDeadline, _closedAuctionSlots, _openAuctionSlots, _allocationRatio );
+136	 }
+137	 function getSlotDeadline() external override view returns (uint8) {
+138	 return _slotDeadline;
+139	 }
+140	 function setSlotDeadline(uint8 newDeadline) external override onlyGovernance {
+141	 require( newDeadline <= BLOCKS_PER_SLOT, "HermezAuctionProtocol::setSlotDeadline: GREATER_THAN_BLOCKS_PER_SLOT" );
+142	 _slotDeadline = newDeadline;
+143	 emit NewSlotDeadline(_slotDeadline);
+144	 }
+145	 function getOpenAuctionSlots() external override view returns (uint16) {
+146	 return _openAuctionSlots;
+147	 }
+148	 function setOpenAuctionSlots(uint16 newOpenAuctionSlots) external override onlyGovernance {
+149	 _openAuctionSlots = newOpenAuctionSlots;
+150	 emit NewOpenAuctionSlots(_openAuctionSlots);
+151	 }
+152	 function getClosedAuctionSlots() external override view returns (uint16) {
+153	 return _closedAuctionSlots;
+154	 }
+155	 function setClosedAuctionSlots(uint16 newClosedAuctionSlots) external override onlyGovernance {
+156	 _closedAuctionSlots = newClosedAuctionSlots;
+157	 emit NewClosedAuctionSlots(_closedAuctionSlots);
+158	 }
+159	 function getOutbidding() external override view returns (uint16) {
+160	 return _outbidding;
+161	 }
+162	 function setOutbidding(uint16 newOutbidding) external override onlyGovernance {
+163	 require( newOutbidding > 1 && newOutbidding < 10000, "HermezAuctionProtocol::setOutbidding: OUTBIDDING_NOT_VALID" );
+164	 _outbidding = newOutbidding;
+165	 emit NewOutbidding(_outbidding);
+166	 }
+167	 function getAllocationRatio() external override view returns (uint16[3] memory) {
+168	 return _allocationRatio;
+169	 }
+170	 function setAllocationRatio(uint16[3] memory newAllocationRatio) external override onlyGovernance {
+171	 require( newAllocationRatio[0] <= 10000 && newAllocationRatio[1] <= 10000 && newAllocationRatio[2] <= 10000 && newAllocationRatio[0] + newAllocationRatio[1] + newAllocationRatio[2] == 10000, "HermezAuctionProtocol::setAllocationRatio: ALLOCATION_RATIO_NOT_VALID" );
+172	 _allocationRatio = newAllocationRatio;
+173	 emit NewAllocationRatio(_allocationRatio);
+174	 }
+175	 function getDonationAddress() external override view returns (address) {
+176	 return _donationAddress;
+177	 }
+178	 function setDonationAddress(address newDonationAddress) external override onlyGovernance {
+179	 require( newDonationAddress != address(0), "HermezAuctionProtocol::setDonationAddress: NOT_VALID_ADDRESS" );
+180	 _donationAddress = newDonationAddress;
+181	 emit NewDonationAddress(_donationAddress);
+182	 }
+183	 function getBootCoordinator() external override view returns (address) {
+184	 return _bootCoordinator;
+185	 }
+186	 function setBootCoordinator( address newBootCoordinator, string memory newBootCoordinatorURL ) external override onlyGovernance {
+187	 _bootCoordinator = newBootCoordinator;
+188	 bootCoordinatorURL = newBootCoordinatorURL;
+189	 emit NewBootCoordinator(_bootCoordinator, newBootCoordinatorURL);
+190	 }
+191	 function getDefaultSlotSetBid(uint8 slotSet) public view returns (uint128) {
+192	 return _defaultSlotSetBid[slotSet];
+193	 }
+194	 function changeDefaultSlotSetBid(uint128 slotSet, uint128 newInitialMinBid) external override onlyGovernance {
+195	 require( slotSet < _defaultSlotSetBid.length, "HermezAuctionProtocol::changeDefaultSlotSetBid: NOT_VALID_SLOT_SET" );
+196	 require( _defaultSlotSetBid[slotSet] != 0, "HermezAuctionProtocol::changeDefaultSlotSetBid: SLOT_DECENTRALIZED" );
+197	 uint128 current = getCurrentSlotNumber();
+198	 for (uint128 i = current; i <= current + _closedAuctionSlots; i++) {
+199	 if (slots[i].closedMinBid == 0) {
+200	 slots[i].closedMinBid = _defaultSlotSetBid[getSlotSet(i)];
+201	 }
+202	 }
+203	 _defaultSlotSetBid[slotSet] = newInitialMinBid;
+204	 emit NewDefaultSlotSetBid(slotSet, newInitialMinBid);
+205	 }
+206	 function setCoordinator(address forger, string memory coordinatorURL) external override {
+207	 require( keccak256(abi.encodePacked(coordinatorURL)) != keccak256(abi.encodePacked("")), "HermezAuctionProtocol::setCoordinator: NOT_VALID_URL" );
+208	 coordinators[msg.sender].forger = forger;
+209	 coordinators[msg.sender].coordinatorURL = coordinatorURL;
+210	 emit SetCoordinator(msg.sender, forger, coordinatorURL);
+211	 }
+212	 function getCurrentSlotNumber() public view returns (uint128) {
+213	 return getSlotNumber(uint128(block.number));
+214	 }
+215	 function getSlotNumber(uint128 blockNumber) public view returns (uint128) {
+216	 return (blockNumber >= genesisBlock) ? ((blockNumber - genesisBlock) / BLOCKS_PER_SLOT) : uint128(0);
+217	 }
+218	 function getSlotSet(uint128 slot) public view returns (uint128) {
+219	 return slot.mod(uint128(_defaultSlotSetBid.length));
+220	 }
+221	 function getMinBidBySlot(uint128 slot) public view returns (uint128) {
+222	 require( slot > (getCurrentSlotNumber() + _closedAuctionSlots), "HermezAuctionProtocol::getMinBidBySlot: AUCTION_CLOSED" );
+223	 uint128 slotSet = getSlotSet(slot);
+224	 return (slots[slot].bidAmount == 0) ? _defaultSlotSetBid[slotSet].add( _defaultSlotSetBid[slotSet].mul(_outbidding).div( uint128(10000) ) ) : slots[slot].bidAmount.add( slots[slot].bidAmount.mul(_outbidding).div(uint128(10000)) );
+225	 }
+226	 function processBid( uint128 amount, uint128 slot, uint128 bidAmount, bytes calldata permit ) external override {
+227	 require( coordinators[msg.sender].forger != address(0), "HermezAuctionProtocol::processBid: COORDINATOR_NOT_REGISTERED" );
+228	 require( slot > (getCurrentSlotNumber() + _closedAuctionSlots), "HermezAuctionProtocol::processBid: AUCTION_CLOSED" );
+229	 require( bidAmount >= getMinBidBySlot(slot), "HermezAuctionProtocol::processBid: BELOW_MINIMUM" );
+230	 require( slot <= (getCurrentSlotNumber() + _closedAuctionSlots + _openAuctionSlots), "HermezAuctionProtocol::processBid: AUCTION_NOT_OPEN" );
+231	 if (permit.length != 0) {
+232	 _permit(amount, permit);
+233	 }
+234	 require( tokenHEZ.transferFrom(msg.sender, address(this), amount), "HermezAuctionProtocol::processBid: TOKEN_TRANSFER_FAILED" );
+235	 pendingBalances[msg.sender] = pendingBalances[msg.sender].add(amount);
+236	 require( pendingBalances[msg.sender] >= bidAmount, "HermezAuctionProtocol::processBid: NOT_ENOUGH_BALANCE" );
+237	 _doBid(slot, bidAmount, msg.sender);
+238	 }
+239	 function processMultiBid( uint128 amount, uint128 startingSlot, uint128 endingSlot, bool[6] memory slotSets, uint128 maxBid, uint128 minBid, bytes calldata permit ) external override {
+240	 require( startingSlot > (getCurrentSlotNumber() + _closedAuctionSlots), "HermezAuctionProtocol::processMultiBid AUCTION_CLOSED" );
+241	 require( endingSlot <= (getCurrentSlotNumber() + _closedAuctionSlots + _openAuctionSlots), "HermezAuctionProtocol::processMultiBid AUCTION_NOT_OPEN" );
+242	 require( maxBid >= minBid, "HermezAuctionProtocol::processMultiBid MAXBID_GREATER_THAN_MINBID" );
+243	 require( coordinators[msg.sender].forger != address(0), "HermezAuctionProtocol::processMultiBid COORDINATOR_NOT_REGISTERED" );
+244	 if (permit.length != 0) {
+245	 _permit(amount, permit);
+246	 }
+247	 require( tokenHEZ.transferFrom(msg.sender, address(this), amount), "HermezAuctionProtocol::processMultiBid: TOKEN_TRANSFER_FAILED" );
+248	 pendingBalances[msg.sender] = pendingBalances[msg.sender].add(amount);
+249	 uint128 bidAmount;
+250	 for (uint128 slot = startingSlot; slot <= endingSlot; slot++) {
+251	 uint128 minBidBySlot = getMinBidBySlot(slot);
+252	 if (minBidBySlot <= minBid) {
+253	 bidAmount = minBid;
+254	 }
+255	 else if (minBidBySlot > minBid && minBidBySlot <= maxBid) {
+256	 bidAmount = minBidBySlot;
+257	 }
+258	 else {
+259	 continue;
+260	 }
+261	 if (slotSets[getSlotSet(slot)]) {
+262	 require( pendingBalances[msg.sender] >= bidAmount, "HermezAuctionProtocol::processMultiBid NOT_ENOUGH_BALANCE" );
+263	 _doBid(slot, bidAmount, msg.sender);
+264	 }
+265	 }
+266	 }
+267	 function _permit(uint256 _amount, bytes calldata _permitData) internal {
+268	 bytes4 sig = abi.decode(_permitData, (bytes4));
+269	 require( sig == _PERMIT_SIGNATURE, "HermezAuctionProtocol::_permit: NOT_VALID_CALL" );
+270	 ( address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s ) = abi.decode( _permitData[4:], (address, address, uint256, uint256, uint8, bytes32, bytes32) );
+271	 require( owner == msg.sender, "HermezAuctionProtocol::_permit: OWNER_NOT_EQUAL_SENDER" );
+272	 require( spender == address(this), "HermezAuctionProtocol::_permit: SPENDER_NOT_EQUAL_THIS" );
+273	 require( value == _amount, "HermezAuctionProtocol::_permit: WRONG_AMOUNT" );
+274	 address(tokenHEZ).call( abi.encodeWithSelector( _PERMIT_SIGNATURE, owner, spender, value, deadline, v, r, s ) );
+275	 }
+276	 function _doBid( uint128 slot, uint128 bidAmount, address bidder ) private {
+277	 address prevBidder = slots[slot].bidder;
+278	 uint128 prevBidValue = slots[slot].bidAmount;
+279	 require( bidAmount > prevBidValue, "HermezAuctionProtocol::_doBid: BID_MUST_BE_HIGHER" );
+280	 pendingBalances[bidder] = pendingBalances[bidder].sub(bidAmount);
+281	 slots[slot].bidder = bidder;
+282	 slots[slot].bidAmount = bidAmount;
+283	 if (prevBidder != address(0) && prevBidValue != 0) {
+284	 pendingBalances[prevBidder] = pendingBalances[prevBidder].add( prevBidValue );
+285	 }
+286	 emit NewBid(slot, bidAmount, bidder);
+287	 }
+288	 function canForge(address forger, uint256 blockNumber) external override view returns (bool) {
+289	 return _canForge(forger, blockNumber);
+290	 }
+291	 function _canForge(address forger, uint256 blockNumber) internal view returns (bool) {
+292	 require( blockNumber < 2**128, "HermezAuctionProtocol::canForge WRONG_BLOCKNUMBER" );
+293	 require( blockNumber >= genesisBlock, "HermezAuctionProtocol::canForge AUCTION_NOT_STARTED" );
+294	 uint128 slotToForge = getSlotNumber(uint128(blockNumber));
+295	 uint128 relativeBlock = uint128(blockNumber).sub( (slotToForge.mul(BLOCKS_PER_SLOT)).add(genesisBlock) );
+296	 uint128 minBid = (slots[slotToForge].closedMinBid == 0) ? _defaultSlotSetBid[getSlotSet(slotToForge)] : slots[slotToForge].closedMinBid;
+297	 if ( !slots[slotToForge].forgerCommitment && (relativeBlock >= _slotDeadline) ) {
+298	 return true;
+299	 }
+300	 else if ( (coordinators[slots[slotToForge].bidder].forger == forger) && (slots[slotToForge].bidAmount >= minBid) ) {
+301	 return true;
+302	 }
+303	 else if ( (_bootCoordinator == forger) && ((slots[slotToForge].bidAmount < minBid) || (slots[slotToForge].bidAmount == 0)) ) {
+304	 return true;
+305	 }
+306	 else {
+307	 return false;
+308	 }
+309	 }
+310	 function forge(address forger) external override {
+311	 require( msg.sender == hermezRollup, "HermezAuctionProtocol::forge: ONLY_HERMEZ_ROLLUP" );
+312	 require( _canForge(forger, block.number), "HermezAuctionProtocol::forge: CANNOT_FORGE" );
+313	 uint128 slotToForge = getCurrentSlotNumber();
+314	 if (!slots[slotToForge].forgerCommitment) {
+315	 uint128 relativeBlock = uint128(block.number).sub( (slotToForge.mul(BLOCKS_PER_SLOT)).add(genesisBlock) );
+316	 if (relativeBlock < _slotDeadline) {
+317	 slots[slotToForge].forgerCommitment = true;
+318	 }
+319	 }
+320	 if (!slots[slotToForge].fulfilled) {
+321	 slots[slotToForge].fulfilled = true;
+322	 if (slots[slotToForge].bidAmount != 0) {
+323	 uint128 minBid = (slots[slotToForge].closedMinBid == 0) ? _defaultSlotSetBid[getSlotSet(slotToForge)] : slots[slotToForge].closedMinBid;
+324	 if (slots[slotToForge].bidAmount < minBid) {
+325	 pendingBalances[slots[slotToForge] .bidder] = pendingBalances[slots[slotToForge].bidder] .add(slots[slotToForge].bidAmount);
+326	 }
+327	 else {
+328	 uint128 bidAmount = slots[slotToForge].bidAmount;
+329	 uint128 amountToBurn = bidAmount .mul(_allocationRatio[0]) .div(uint128(10000));
+330	 uint128 donationAmount = bidAmount .mul(_allocationRatio[1]) .div(uint128(10000));
+331	 uint128 governanceAmount = bidAmount .mul(_allocationRatio[2]) .div(uint128(10000));
+332	 require( tokenHEZ.burn(amountToBurn), "HermezAuctionProtocol::forge: TOKEN_BURN_FAILED" );
+333	 pendingBalances[_donationAddress] = pendingBalances[_donationAddress] .add(donationAmount);
+334	 pendingBalances[governanceAddress] = pendingBalances[governanceAddress] .add(governanceAmount);
+335	 emit NewForgeAllocated( slots[slotToForge].bidder, forger, slotToForge, amountToBurn, donationAmount, governanceAmount );
+336	 }
+337	 }
+338	 }
+339	 emit NewForge(forger, slotToForge);
+340	 }
+341	 function claimPendingHEZ(uint128 slot) public {
+342	 require( slot < getCurrentSlotNumber(), "HermezAuctionProtocol::claimPendingHEZ: ONLY_IF_PREVIOUS_SLOT" );
+343	 require( !slots[slot].fulfilled, "HermezAuctionProtocol::claimPendingHEZ: ONLY_IF_NOT_FULFILLED" );
+344	 uint128 minBid = (slots[slot].closedMinBid == 0) ? _defaultSlotSetBid[getSlotSet(slot)] : slots[slot].closedMinBid;
+345	 require( slots[slot].bidAmount < minBid, "HermezAuctionProtocol::claimPendingHEZ: ONLY_IF_NOT_FULFILLED" );
+346	 slots[slot].closedMinBid = minBid;
+347	 slots[slot].fulfilled = true;
+348	 pendingBalances[slots[slot].bidder] = pendingBalances[slots[slot] .bidder] .add(slots[slot].bidAmount);
+349	 }
+350	 function getClaimableHEZ(address bidder) public view returns (uint128) {
+351	 return pendingBalances[bidder];
+352	 }
+353	 function claimHEZ() public nonReentrant {
+354	 uint128 pending = getClaimableHEZ(msg.sender);
+355	 require( pending > 0, "HermezAuctionProtocol::claimHEZ: NOT_ENOUGH_BALANCE" );
+356	 pendingBalances[msg.sender] = 0;
+357	 require( tokenHEZ.transfer(msg.sender, pending), "HermezAuctionProtocol::claimHEZ: TOKEN_TRANSFER_FAILED" );
+358	 emit HEZClaimed(msg.sender, pending);
+359	 }
+360	 }
+361	 pragma solidity ^0.6.0;
+362	 library SafeMath128 {
+363	 function add(uint128 a, uint128 b) internal pure returns (uint128) {
+364	 uint128 c = a + b;
+365	 require(c >= a, "SafeMath: addition overflow");
+366	 return c;
+367	 }
+368	 function sub(uint128 a, uint128 b) internal pure returns (uint128) {
+369	 return sub(a, b, "SafeMath: subtraction overflow");
+370	 }
+371	 function sub( uint128 a, uint128 b, string memory errorMessage ) internal pure returns (uint128) {
+372	 require(b <= a, errorMessage);
+373	 uint128 c = a - b;
+374	 return c;
+375	 }
+376	 function mul(uint128 a, uint128 b) internal pure returns (uint128) {
+377	 if (a == 0) {
+378	 return 0;
+379	 }
+380	 uint128 c = a * b;
+381	 require(c / a == b, "SafeMath: multiplication overflow");
+382	 return c;
+383	 }
+384	 function div(uint128 a, uint128 b) internal pure returns (uint128) {
+385	 return div(a, b, "SafeMath: division by zero");
+386	 }
+387	 function div( uint128 a, uint128 b, string memory errorMessage ) internal pure returns (uint128) {
+388	 require(b > 0, errorMessage);
+389	 uint128 c = a / b;
+390	 return c;
+391	 }
+392	 function mod(uint128 a, uint128 b) internal pure returns (uint128) {
+393	 return mod(a, b, "SafeMath: modulo by zero");
+394	 }
+395	 function mod( uint128 a, uint128 b, string memory errorMessage ) internal pure returns (uint128) {
+396	 require(b != 0, errorMessage);
+397	 return a % b;
+398	 }
+399	 }
+400	 pragma solidity 0.6.12;
+401	 interface IHEZToken {
+402	 function totalSupply() external view returns (uint256);
+403	 function balanceOf(address account) external view returns (uint256);
+404	 function allowance(address owner, address spender) external view returns (uint256);
+405	 function approve(address spender, uint256 amount) external returns (bool);
+406	 function transfer(address recipient, uint256 amount) external returns (bool);
+407	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+408	 function burn(uint256 value) external returns (bool);
+409	 function permit( address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s ) external;
+410	 }

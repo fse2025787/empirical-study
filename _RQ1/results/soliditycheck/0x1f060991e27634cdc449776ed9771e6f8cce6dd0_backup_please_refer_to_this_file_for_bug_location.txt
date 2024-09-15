@@ -1,0 +1,378 @@
+row number 
+1	     library SafeMath {
+2	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+3	 if (a == 0) {
+4	 return 0;
+5	 }
+6	 c = a * b;
+7	 assert(c / a == b);
+8	 return c;
+9	 }
+10	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+11	 return a / b;
+12	 }
+13	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+14	 assert(b <= a);
+15	 return a - b;
+16	 }
+17	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+18	 c = a + b;
+19	 assert(c >= a);
+20	 return c;
+21	 }
+22	 }
+23	 contract ERC20Basic {
+24	 function totalSupply() public view returns (uint256);
+25	 function balanceOf(address who) public view returns (uint256);
+26	 function transfer(address to, uint256 value) public returns (bool);
+27	 event Transfer(address indexed from, address indexed to, uint256 value);
+28	 }
+29	 contract ERC20 is ERC20Basic {
+30	 function allowance(address owner, address spender) public view returns (uint256);
+31	 function transferFrom(address from, address to, uint256 value) public returns (bool);
+32	 function approve(address spender, uint256 value) public returns (bool);
+33	 event Approval( address indexed owner, address indexed spender, uint256 value );
+34	 }
+35	 library SafeERC20 {
+36	 function safeTransfer(ERC20Basic token, address to, uint256 value) internal {
+37	 require(token.transfer(to, value));
+38	 }
+39	 function safeTransferFrom( ERC20 token, address from, address to, uint256 value ) internal {
+40	 require(token.transferFrom(from, to, value));
+41	 }
+42	 function safeApprove(ERC20 token, address spender, uint256 value) internal {
+43	 require(token.approve(spender, value));
+44	 }
+45	 }
+46	 contract Crowdsale {
+47	 using SafeMath for uint256;
+48	 using SafeERC20 for ERC20;
+49	 ERC20 public token;
+50	 address public wallet;
+51	 uint256 public rate;
+52	 uint256 public weiRaised;
+53	 event TokenPurchase( address indexed purchaser, address indexed beneficiary, uint256 value, uint256 amount );
+54	 constructor(uint256 _rate, address _wallet, ERC20 _token) public {
+55	 require(_rate > 0);
+56	 require(_wallet != address(0));
+57	 require(_token != address(0));
+58	 rate = _rate;
+59	 wallet = _wallet;
+60	 token = _token;
+61	 }
+62	 function () external payable {
+63	 buyTokens(msg.sender);
+64	 }
+65	 function buyTokens(address _beneficiary) public payable {
+66	 uint256 weiAmount = msg.value;
+67	 _preValidatePurchase(_beneficiary, weiAmount);
+68	 uint256 tokens = _getTokenAmount(weiAmount);
+69	 weiRaised = weiRaised.add(weiAmount);
+70	 _processPurchase(_beneficiary, tokens);
+71	 emit TokenPurchase( msg.sender, _beneficiary, weiAmount, tokens );
+72	 _updatePurchasingState(_beneficiary, weiAmount);
+73	 _forwardFunds();
+74	 _postValidatePurchase(_beneficiary, weiAmount);
+75	 }
+76	 function _preValidatePurchase( address _beneficiary, uint256 _weiAmount ) internal {
+77	 require(_beneficiary != address(0));
+78	 require(_weiAmount != 0);
+79	 }
+80	 function _postValidatePurchase( address _beneficiary, uint256 _weiAmount ) internal {
+81	 }
+82	 function _deliverTokens( address _beneficiary, uint256 _tokenAmount ) internal {
+83	 token.safeTransfer(_beneficiary, _tokenAmount);
+84	 }
+85	 function _processPurchase( address _beneficiary, uint256 _tokenAmount ) internal {
+86	 _deliverTokens(_beneficiary, _tokenAmount);
+87	 }
+88	 function _updatePurchasingState( address _beneficiary, uint256 _weiAmount ) internal {
+89	 }
+90	 function _getTokenAmount(uint256 _weiAmount) internal view returns (uint256) {
+91	 return _weiAmount.mul(rate);
+92	 }
+93	 function _forwardFunds() internal {
+94	 wallet.transfer(msg.value);
+95	 }
+96	 }
+97	 contract Ownable {
+98	 address public owner;
+99	 event OwnershipRenounced(address indexed previousOwner);
+100	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+101	 constructor() public {
+102	 owner = msg.sender;
+103	 }
+104	 modifier onlyOwner() {
+105	 require(msg.sender == owner);
+106	 _;
+107	 }
+108	 function renounceOwnership() public onlyOwner {
+109	 emit OwnershipRenounced(owner);
+110	 owner = address(0);
+111	 }
+112	 function transferOwnership(address _newOwner) public onlyOwner {
+113	 _transferOwnership(_newOwner);
+114	 }
+115	 function _transferOwnership(address _newOwner) internal {
+116	 require(_newOwner != address(0));
+117	 emit OwnershipTransferred(owner, _newOwner);
+118	 owner = _newOwner;
+119	 }
+120	 }
+121	 library Roles {
+122	 struct Role {
+123	 mapping (address => bool) bearer;
+124	 }
+125	 function add(Role storage role, address addr) internal {
+126	 role.bearer[addr] = true;
+127	 }
+128	 function remove(Role storage role, address addr) internal {
+129	 role.bearer[addr] = false;
+130	 }
+131	 function check(Role storage role, address addr) view internal {
+132	 require(has(role, addr));
+133	 }
+134	 function has(Role storage role, address addr) view internal returns (bool) {
+135	 return role.bearer[addr];
+136	 }
+137	 }
+138	 contract RBAC {
+139	 using Roles for Roles.Role;
+140	 mapping (string => Roles.Role) private roles;
+141	 event RoleAdded(address indexed operator, string role);
+142	 event RoleRemoved(address indexed operator, string role);
+143	 function checkRole(address _operator, string _role) view public {
+144	 roles[_role].check(_operator);
+145	 }
+146	 function hasRole(address _operator, string _role) view public returns (bool) {
+147	 return roles[_role].has(_operator);
+148	 }
+149	 function addRole(address _operator, string _role) internal {
+150	 roles[_role].add(_operator);
+151	 emit RoleAdded(_operator, _role);
+152	 }
+153	 function removeRole(address _operator, string _role) internal {
+154	 roles[_role].remove(_operator);
+155	 emit RoleRemoved(_operator, _role);
+156	 }
+157	 modifier onlyRole(string _role) {
+158	 checkRole(msg.sender, _role);
+159	 _;
+160	 }
+161	 }
+162	 contract Superuser is Ownable, RBAC {
+163	 string public constant ROLE_SUPERUSER = "superuser";
+164	 constructor () public {
+165	 addRole(msg.sender, ROLE_SUPERUSER);
+166	 }
+167	 modifier onlySuperuser() {
+168	 checkRole(msg.sender, ROLE_SUPERUSER);
+169	 _;
+170	 }
+171	 modifier onlyOwnerOrSuperuser() {
+172	 require(msg.sender == owner || isSuperuser(msg.sender));
+173	 _;
+174	 }
+175	 function isSuperuser(address _addr) public view returns (bool) {
+176	 return hasRole(_addr, ROLE_SUPERUSER);
+177	 }
+178	 function transferSuperuser(address _newSuperuser) public onlySuperuser {
+179	 require(_newSuperuser != address(0));
+180	 removeRole(msg.sender, ROLE_SUPERUSER);
+181	 addRole(_newSuperuser, ROLE_SUPERUSER);
+182	 }
+183	 function transferOwnership(address _newOwner) public onlyOwnerOrSuperuser {
+184	 _transferOwnership(_newOwner);
+185	 }
+186	 }
+187	 contract TimedCrowdsale is Crowdsale {
+188	 using SafeMath for uint256;
+189	 uint256 public openingTime;
+190	 uint256 public closingTime;
+191	 modifier onlyWhileOpen {
+192	 require(block.timestamp >= openingTime && block.timestamp <= closingTime);
+193	 _;
+194	 }
+195	 constructor(uint256 _openingTime, uint256 _closingTime) public {
+196	 require(_openingTime >= block.timestamp);
+197	 require(_closingTime >= _openingTime);
+198	 openingTime = _openingTime;
+199	 closingTime = _closingTime;
+200	 }
+201	 function hasClosed() public view returns (bool) {
+202	 return block.timestamp > closingTime;
+203	 }
+204	 function _preValidatePurchase( address _beneficiary, uint256 _weiAmount ) internal onlyWhileOpen {
+205	 super._preValidatePurchase(_beneficiary, _weiAmount);
+206	 }
+207	 }
+208	 contract Whitelist is Ownable, RBAC {
+209	 string public constant ROLE_WHITELISTED = "whitelist";
+210	 modifier onlyIfWhitelisted(address _operator) {
+211	 checkRole(_operator, ROLE_WHITELISTED);
+212	 _;
+213	 }
+214	 function addAddressToWhitelist(address _operator) onlyOwner public {
+215	 addRole(_operator, ROLE_WHITELISTED);
+216	 }
+217	 function whitelist(address _operator) public view returns (bool) {
+218	 return hasRole(_operator, ROLE_WHITELISTED);
+219	 }
+220	 function addAddressesToWhitelist(address[] _operators) onlyOwner public {
+221	 for (uint256 i = 0; i < _operators.length; i++) {
+222	 addAddressToWhitelist(_operators[i]);
+223	 }
+224	 }
+225	 function removeAddressFromWhitelist(address _operator) onlyOwner public {
+226	 removeRole(_operator, ROLE_WHITELISTED);
+227	 }
+228	 function removeAddressesFromWhitelist(address[] _operators) onlyOwner public {
+229	 for (uint256 i = 0; i < _operators.length; i++) {
+230	 removeAddressFromWhitelist(_operators[i]);
+231	 }
+232	 }
+233	 }
+234	 contract WhitelistedCrowdsale is Whitelist, Crowdsale {
+235	 function _preValidatePurchase( address _beneficiary, uint256 _weiAmount ) onlyIfWhitelisted(_beneficiary) internal {
+236	 super._preValidatePurchase(_beneficiary, _weiAmount);
+237	 }
+238	 }
+239	 contract CappedCrowdsale is Crowdsale {
+240	 using SafeMath for uint256;
+241	 uint256 public cap;
+242	 constructor(uint256 _cap) public {
+243	 require(_cap > 0);
+244	 cap = _cap;
+245	 }
+246	 function capReached() public view returns (bool) {
+247	 return weiRaised >= cap;
+248	 }
+249	 function _preValidatePurchase( address _beneficiary, uint256 _weiAmount ) internal {
+250	 super._preValidatePurchase(_beneficiary, _weiAmount);
+251	 require(weiRaised.add(_weiAmount) <= cap);
+252	 }
+253	 }
+254	 contract BasicToken is ERC20Basic {
+255	 using SafeMath for uint256;
+256	 mapping(address => uint256) balances;
+257	 uint256 totalSupply_;
+258	 function totalSupply() public view returns (uint256) {
+259	 return totalSupply_;
+260	 }
+261	 function transfer(address _to, uint256 _value) public returns (bool) {
+262	 require(_to != address(0));
+263	 require(_value <= balances[msg.sender]);
+264	 balances[msg.sender] = balances[msg.sender].sub(_value);
+265	 balances[_to] = balances[_to].add(_value);
+266	 emit Transfer(msg.sender, _to, _value);
+267	 return true;
+268	 }
+269	 function balanceOf(address _owner) public view returns (uint256) {
+270	 return balances[_owner];
+271	 }
+272	 }
+273	 contract StandardToken is ERC20, BasicToken {
+274	 mapping (address => mapping (address => uint256)) internal allowed;
+275	 function transferFrom( address _from, address _to, uint256 _value ) public returns (bool) {
+276	 require(_to != address(0));
+277	 require(_value <= balances[_from]);
+278	 require(_value <= allowed[_from][msg.sender]);
+279	 balances[_from] = balances[_from].sub(_value);
+280	 balances[_to] = balances[_to].add(_value);
+281	 allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
+282	 emit Transfer(_from, _to, _value);
+283	 return true;
+284	 }
+285	 function approve(address _spender, uint256 _value) public returns (bool) {
+286	 allowed[msg.sender][_spender] = _value;
+287	 emit Approval(msg.sender, _spender, _value);
+288	 return true;
+289	 }
+290	 function allowance( address _owner, address _spender ) public view returns (uint256) {
+291	 return allowed[_owner][_spender];
+292	 }
+293	 function increaseApproval( address _spender, uint256 _addedValue ) public returns (bool) {
+294	 allowed[msg.sender][_spender] = ( allowed[msg.sender][_spender].add(_addedValue));
+295	 emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+296	 return true;
+297	 }
+298	 function decreaseApproval( address _spender, uint256 _subtractedValue ) public returns (bool) {
+299	 uint256 oldValue = allowed[msg.sender][_spender];
+300	 if (_subtractedValue > oldValue) {
+301	 allowed[msg.sender][_spender] = 0;
+302	 }
+303	 else {
+304	 allowed[msg.sender][_spender] = oldValue.sub(_subtractedValue);
+305	 }
+306	 emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+307	 return true;
+308	 }
+309	 }
+310	 contract MintableToken is StandardToken, Ownable {
+311	 event Mint(address indexed to, uint256 amount);
+312	 event MintFinished();
+313	 bool public mintingFinished = false;
+314	 modifier canMint() {
+315	 require(!mintingFinished);
+316	 _;
+317	 }
+318	 modifier hasMintPermission() {
+319	 require(msg.sender == owner);
+320	 _;
+321	 }
+322	 function mint( address _to, uint256 _amount ) hasMintPermission canMint public returns (bool) {
+323	 totalSupply_ = totalSupply_.add(_amount);
+324	 balances[_to] = balances[_to].add(_amount);
+325	 emit Mint(_to, _amount);
+326	 emit Transfer(address(0), _to, _amount);
+327	 return true;
+328	 }
+329	 function finishMinting() onlyOwner canMint public returns (bool) {
+330	 mintingFinished = true;
+331	 emit MintFinished();
+332	 return true;
+333	 }
+334	 }
+335	 contract MintedCrowdsale is Crowdsale {
+336	 function _deliverTokens( address _beneficiary, uint256 _tokenAmount ) internal {
+337	 require(MintableToken(token).mint(_beneficiary, _tokenAmount));
+338	 }
+339	 }
+340	 contract CoinSmarttICO is TimedCrowdsale, WhitelistedCrowdsale, MintedCrowdsale, Superuser {
+341	 uint256 public round;
+342	 uint256 public lastRound;
+343	 function CoinSmarttICO(uint256 _rate, address _wallet, ERC20 _token, uint256 _openingTime, uint256 _closingTime) TimedCrowdsale(_openingTime, _closingTime) Crowdsale(_rate, _wallet, _token) {
+344	 round = 1;
+345	 lastRound = 0;
+346	 }
+347	 function changeRound(uint256 deadline, uint256 cap, uint256 _rate, uint256 _newAmount) internal {
+348	 if (now >= deadline || (_newAmount.sub(lastRound) >= cap)) {
+349	 round += 1;
+350	 lastRound = token.totalSupply();
+351	 rate = _rate;
+352	 }
+353	 }
+354	 function getRate(uint256 _newAmount) internal {
+355	 if(round == 4) {
+356	 }
+357	 else if (round == 3) {
+358	 changeRound(1547596800, 666666667 ether, 32481, _newAmount);
+359	 }
+360	 else if (round == 2) {
+361	 changeRound(1543622400, 333333333 ether, 38977, _newAmount);
+362	 }
+363	 else if (round == 1) {
+364	 changeRound(1539648000, 250000000 ether, 48721, _newAmount);
+365	 }
+366	 }
+367	 function _preValidatePurchase( address _beneficiary, uint256 _weiAmount ) internal {
+368	 require(_getTokenAmount(_weiAmount).add(token.totalSupply()) < 3138888888 ether);
+369	 getRate(_getTokenAmount(_weiAmount).add(token.totalSupply()));
+370	 super._preValidatePurchase(_beneficiary, _weiAmount);
+371	 }
+372	 function bumpRound(uint256 _rate) onlyOwner {
+373	 round += 1;
+374	 lastRound = token.totalSupply();
+375	 rate = _rate;
+376	 }
+377	 }

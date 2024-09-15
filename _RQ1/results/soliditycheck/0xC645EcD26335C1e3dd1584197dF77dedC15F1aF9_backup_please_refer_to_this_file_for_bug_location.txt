@@ -1,0 +1,371 @@
+row number 
+1	         pragma solidity ^0.6.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity ^0.6.0;
+12	 contract Ownable is Context {
+13	 address private _owner;
+14	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+15	 constructor () internal {
+16	 address msgSender = _msgSender();
+17	 _owner = msgSender;
+18	 emit OwnershipTransferred(address(0), msgSender);
+19	 }
+20	 function owner() public view returns (address) {
+21	 return _owner;
+22	 }
+23	 modifier onlyOwner() {
+24	 require(_owner == _msgSender(), "Ownable: caller is not the owner");
+25	 _;
+26	 }
+27	 function renounceOwnership() public virtual onlyOwner {
+28	 emit OwnershipTransferred(_owner, address(0));
+29	 _owner = address(0);
+30	 }
+31	 function transferOwnership(address newOwner) public virtual onlyOwner {
+32	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+33	 emit OwnershipTransferred(_owner, newOwner);
+34	 _owner = newOwner;
+35	 }
+36	 }
+37	 pragma solidity >=0.6.0;
+38	 contract BlackholePrevention {
+39	 using Address for address payable;
+40	 using SafeERC20 for IERC20;
+41	 event WithdrawStuckEther(address indexed receiver, uint256 amount);
+42	 event WithdrawStuckERC20(address indexed receiver, address indexed tokenAddress, uint256 amount);
+43	 event WithdrawStuckERC721(address indexed receiver, address indexed tokenAddress, uint256 indexed tokenId);
+44	 function _withdrawEther(address payable receiver, uint256 amount) internal virtual {
+45	 require(receiver != address(0x0), "BHP:E-403");
+46	 if (address(this).balance >= amount) {
+47	 receiver.sendValue(amount);
+48	 emit WithdrawStuckEther(receiver, amount);
+49	 }
+50	 }
+51	 function _withdrawERC20(address payable receiver, address tokenAddress, uint256 amount) internal virtual {
+52	 require(receiver != address(0x0), "BHP:E-403");
+53	 if (IERC20(tokenAddress).balanceOf(address(this)) >= amount) {
+54	 IERC20(tokenAddress).safeTransfer(receiver, amount);
+55	 emit WithdrawStuckERC20(receiver, tokenAddress, amount);
+56	 }
+57	 }
+58	 function _withdrawERC721(address payable receiver, address tokenAddress, uint256 tokenId) internal virtual {
+59	 require(receiver != address(0x0), "BHP:E-403");
+60	 if (IERC721(tokenAddress).ownerOf(tokenId) == address(this)) {
+61	 IERC721(tokenAddress).transferFrom(address(this), receiver, tokenId);
+62	 emit WithdrawStuckERC721(receiver, tokenAddress, tokenId);
+63	 }
+64	 }
+65	 }
+66	 pragma solidity ^0.6.0;
+67	 interface IERC165 {
+68	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+69	 }
+70	 pragma solidity ^0.6.11;
+71	 contract YieldFarm is Ownable, BlackholePrevention {
+72	 using SafeMath for uint;
+73	 using SafeMath for uint128;
+74	 uint public immutable TOTAL_DISTRIBUTED_AMOUNT;
+75	 uint public immutable NR_OF_EPOCHS;
+76	 address private immutable _token;
+77	 address private immutable _communityVault;
+78	 IERC20 private immutable _ionx;
+79	 IStaking private _staking;
+80	 uint[] private epochs;
+81	 uint private immutable _genesisEpochAmount;
+82	 uint private _deprecationPerEpoch;
+83	 uint128 public lastInitializedEpoch;
+84	 bool internal _paused;
+85	 mapping(address => uint128) public lastEpochIdHarvested;
+86	 uint public epochDuration;
+87	 uint public immutable epochStart;
+88	 event PausedStateSet(bool isPaused);
+89	 event MassHarvest(address indexed user, uint256 epochsHarvested, uint256 totalValue);
+90	 event Harvest(address indexed user, uint128 indexed epochId, uint256 amount);
+91	 constructor(address ionxTokenAddress, address token, address stakeContract, address communityVault, uint genesisEpochAmount, uint deprecationPerEpoch, uint nrOfEpochs) public {
+92	 _paused = false;
+93	 _ionx = IERC20(ionxTokenAddress);
+94	 _token = token;
+95	 _staking = IStaking(stakeContract);
+96	 _communityVault = communityVault;
+97	 epochDuration = _staking.epochDuration();
+98	 epochStart = _staking.epoch1Start() + epochDuration;
+99	 _deprecationPerEpoch = deprecationPerEpoch;
+100	 uint n = nrOfEpochs;
+101	 uint amountEpochN = genesisEpochAmount.sub(n.sub(1).mul(_deprecationPerEpoch));
+102	 TOTAL_DISTRIBUTED_AMOUNT = n.mul((genesisEpochAmount.add(amountEpochN)).div(2));
+103	 NR_OF_EPOCHS = nrOfEpochs;
+104	 epochs = new uint[](nrOfEpochs + 1);
+105	 _genesisEpochAmount = genesisEpochAmount;
+106	 }
+107	 function isPaused() external view returns (bool) {
+108	 return _paused;
+109	 }
+110	 function getAmountClaimable() external view returns (uint) {
+111	 uint totalClaimable;
+112	 uint epochId = _getEpochId().sub(1);
+113	 if (epochId > NR_OF_EPOCHS) {
+114	 epochId = NR_OF_EPOCHS;
+115	 }
+116	 for (uint128 i = lastEpochIdHarvested[msg.sender] + 1; i <= epochId; i++) {
+117	 totalClaimable += _getAmountClaimableAtEpoch(msg.sender, i);
+118	 }
+119	 return totalClaimable;
+120	 }
+121	 function massHarvest() external whenNotPaused returns (uint){
+122	 uint totalDistributedValue;
+123	 uint epochId = _getEpochId().sub(1);
+124	 uint lastEpochIdHarvestedUser = lastEpochIdHarvested[msg.sender];
+125	 if (epochId > NR_OF_EPOCHS) {
+126	 epochId = NR_OF_EPOCHS;
+127	 }
+128	 for (uint128 i = lastEpochIdHarvested[msg.sender] + 1; i <= epochId; i++) {
+129	 totalDistributedValue += _harvest(i);
+130	 }
+131	 emit MassHarvest(msg.sender, epochId - lastEpochIdHarvestedUser, totalDistributedValue);
+132	 if (totalDistributedValue > 0) {
+133	 _ionx.transferFrom(_communityVault, msg.sender, totalDistributedValue);
+134	 }
+135	 return totalDistributedValue;
+136	 }
+137	 function harvest (uint128 epochId) external whenNotPaused returns (uint){
+138	 require (_getEpochId() > epochId, "YLD:E-306");
+139	 require(epochId <= NR_OF_EPOCHS, "YLD:E-408");
+140	 require (lastEpochIdHarvested[msg.sender].add(1) == epochId, "YLD:E-204");
+141	 uint userReward = _harvest(epochId);
+142	 if (userReward > 0) {
+143	 _ionx.transferFrom(_communityVault, msg.sender, userReward);
+144	 }
+145	 emit Harvest(msg.sender, epochId, userReward);
+146	 return userReward;
+147	 }
+148	 function getPoolSize(uint128 epochId) external view returns (uint) {
+149	 return _getPoolSize(epochId);
+150	 }
+151	 function getCurrentEpoch() external view returns (uint) {
+152	 return _getEpochId();
+153	 }
+154	 function getEpochStake(address userAddress, uint128 epochId) external view returns (uint) {
+155	 return _getUserBalancePerEpoch(userAddress, epochId);
+156	 }
+157	 function getGenesisEpochAmount() external view returns (uint){
+158	 return _genesisEpochAmount;
+159	 }
+160	 function getDeprecationPerEpoch() external view returns (uint){
+161	 return _deprecationPerEpoch;
+162	 }
+163	 function userLastEpochIdHarvested() external view returns (uint){
+164	 return lastEpochIdHarvested[msg.sender];
+165	 }
+166	 function withdrawEther(address payable receiver, uint256 amount) external virtual onlyOwner {
+167	 _withdrawEther(receiver, amount);
+168	 }
+169	 function withdrawErc20(address payable receiver, address tokenAddress, uint256 amount) external virtual onlyOwner {
+170	 _withdrawERC20(receiver, tokenAddress, amount);
+171	 }
+172	 function withdrawERC721(address payable receiver, address tokenAddress, uint256 tokenId) external virtual onlyOwner {
+173	 _withdrawERC721(receiver, tokenAddress, tokenId);
+174	 }
+175	 function _initEpoch(uint128 epochId) internal {
+176	 require(lastInitializedEpoch.add(1) == epochId, "YLD:E-204");
+177	 lastInitializedEpoch = epochId;
+178	 epochs[epochId] = _getPoolSize(epochId);
+179	 }
+180	 function _getAmountClaimableAtEpoch(address account, uint128 epochId) internal view returns (uint) {
+181	 if (epochs[epochId] == 0) {
+182	 return 0;
+183	 }
+184	 return _calcTotalAmountPerEpoch(epochId) .mul(_getUserBalancePerEpoch(account, epochId)) .div(epochs[epochId]);
+185	 }
+186	 function _harvest (uint128 epochId) internal returns (uint) {
+187	 if (lastInitializedEpoch < epochId) {
+188	 _initEpoch(epochId);
+189	 }
+190	 lastEpochIdHarvested[msg.sender] = epochId;
+191	 if (epochs[epochId] == 0) {
+192	 return 0;
+193	 }
+194	 return _calcTotalAmountPerEpoch(epochId) .mul(_getUserBalancePerEpoch(msg.sender, epochId)) .div(epochs[epochId]);
+195	 }
+196	 function _calcTotalAmountPerEpoch(uint256 epochId) internal view returns (uint) {
+197	 return _genesisEpochAmount.sub(epochId.mul(_deprecationPerEpoch));
+198	 }
+199	 function _getPoolSize(uint128 epochId) internal view returns (uint) {
+200	 return _staking.getEpochPoolSize(_token, _stakingEpochId(epochId));
+201	 }
+202	 function _getUserBalancePerEpoch(address userAddress, uint128 epochId) internal view returns (uint){
+203	 return _staking.getEpochUserBalance(userAddress, _token, _stakingEpochId(epochId));
+204	 }
+205	 function _getEpochId() internal view returns (uint128 epochId) {
+206	 if (block.timestamp < epochStart) {
+207	 return 0;
+208	 }
+209	 epochId = uint128(block.timestamp.sub(epochStart).div(epochDuration).add(1));
+210	 }
+211	 function _stakingEpochId(uint128 epochId) pure internal returns (uint128) {
+212	 return epochId + 1;
+213	 }
+214	 modifier whenNotPaused() {
+215	 require(_paused != true, "YLD:E-101");
+216	 _;
+217	 }
+218	 }
+219	 pragma solidity ^0.6.0;
+220	 library SafeMath {
+221	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+222	 uint256 c = a + b;
+223	 require(c >= a, "SafeMath: addition overflow");
+224	 return c;
+225	 }
+226	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+227	 return sub(a, b, "SafeMath: subtraction overflow");
+228	 }
+229	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+230	 require(b <= a, errorMessage);
+231	 uint256 c = a - b;
+232	 return c;
+233	 }
+234	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+235	 if (a == 0) {
+236	 return 0;
+237	 }
+238	 uint256 c = a * b;
+239	 require(c / a == b, "SafeMath: multiplication overflow");
+240	 return c;
+241	 }
+242	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+243	 return div(a, b, "SafeMath: division by zero");
+244	 }
+245	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+246	 require(b > 0, errorMessage);
+247	 uint256 c = a / b;
+248	 return c;
+249	 }
+250	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+251	 return mod(a, b, "SafeMath: modulo by zero");
+252	 }
+253	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+254	 require(b != 0, errorMessage);
+255	 return a % b;
+256	 }
+257	 }
+258	 pragma solidity ^0.6.0;
+259	 interface IERC20 {
+260	 function totalSupply() external view returns (uint256);
+261	 function balanceOf(address account) external view returns (uint256);
+262	 function transfer(address recipient, uint256 amount) external returns (bool);
+263	 function allowance(address owner, address spender) external view returns (uint256);
+264	 function approve(address spender, uint256 amount) external returns (bool);
+265	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+266	 event Transfer(address indexed from, address indexed to, uint256 value);
+267	 event Approval(address indexed owner, address indexed spender, uint256 value);
+268	 }
+269	 pragma solidity ^0.6.0;
+270	 interface IStaking {
+271	 function manualEpochInit(address[] memory tokens, uint128 epochId) external;
+272	 function getCurrentEpoch() external view returns (uint128);
+273	 function getEpochId(uint timestamp) external view returns (uint);
+274	 function getEpochUserBalance(address user, address token, uint128 epoch) external view returns(uint);
+275	 function getEpochPoolSize(address token, uint128 epoch) external view returns (uint);
+276	 function epoch1Start() external view returns (uint);
+277	 function epochDuration() external view returns (uint);
+278	 }
+279	 pragma solidity ^0.6.2;
+280	 library Address {
+281	 function isContract(address account) internal view returns (bool) {
+282	 bytes32 codehash;
+283	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+284	 assembly {
+285	 codehash := extcodehash(account) }
+286	 return (codehash != accountHash && codehash != 0x0);
+287	 }
+288	 function sendValue(address payable recipient, uint256 amount) internal {
+289	 require(address(this).balance >= amount, "Address: insufficient balance");
+290	 (bool success, ) = recipient.call{
+291	 value: amount }
+292	 ("");
+293	 require(success, "Address: unable to send value, recipient may have reverted");
+294	 }
+295	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+296	 return functionCall(target, data, "Address: low-level call failed");
+297	 }
+298	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+299	 return _functionCallWithValue(target, data, 0, errorMessage);
+300	 }
+301	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+302	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+303	 }
+304	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+305	 require(address(this).balance >= value, "Address: insufficient balance for call");
+306	 return _functionCallWithValue(target, data, value, errorMessage);
+307	 }
+308	 function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+309	 require(isContract(target), "Address: call to non-contract");
+310	 (bool success, bytes memory returndata) = target.call{
+311	 value: weiValue }
+312	 (data);
+313	 if (success) {
+314	 return returndata;
+315	 }
+316	 else {
+317	 if (returndata.length > 0) {
+318	 assembly {
+319	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+320	 }
+321	 else {
+322	 revert(errorMessage);
+323	 }
+324	 }
+325	 }
+326	 }
+327	 pragma solidity ^0.6.0;
+328	 library SafeERC20 {
+329	 using SafeMath for uint256;
+330	 using Address for address;
+331	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+332	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+333	 }
+334	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+335	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+336	 }
+337	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+338	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+339	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+340	 }
+341	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+342	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+343	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+344	 }
+345	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+346	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+347	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+348	 }
+349	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+350	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+351	 if (returndata.length > 0) {
+352	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+353	 }
+354	 }
+355	 }
+356	 pragma solidity ^0.6.2;
+357	 interface IERC721 is IERC165 {
+358	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+359	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+360	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+361	 function balanceOf(address owner) external view returns (uint256 balance);
+362	 function ownerOf(uint256 tokenId) external view returns (address owner);
+363	 function safeTransferFrom(address from, address to, uint256 tokenId) external;
+364	 function transferFrom(address from, address to, uint256 tokenId) external;
+365	 function approve(address to, uint256 tokenId) external;
+366	 function getApproved(uint256 tokenId) external view returns (address operator);
+367	 function setApprovalForAll(address operator, bool _approved) external;
+368	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+369	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;
+370	 }

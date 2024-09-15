@@ -1,0 +1,219 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract Migratable {
+3	 event Migrated(string contractName, string migrationId);
+4	 mapping (string => mapping (string => bool)) internal migrated;
+5	 string constant private INITIALIZED_ID = "initialized";
+6	 modifier isInitializer(string contractName, string migrationId) {
+7	 validateMigrationIsPending(contractName, INITIALIZED_ID);
+8	 validateMigrationIsPending(contractName, migrationId);
+9	 _;
+10	 emit Migrated(contractName, migrationId);
+11	 migrated[contractName][migrationId] = true;
+12	 migrated[contractName][INITIALIZED_ID] = true;
+13	 }
+14	 modifier isMigration(string contractName, string requiredMigrationId, string newMigrationId) {
+15	 require(isMigrated(contractName, requiredMigrationId), "Prerequisite migration ID has not been run yet");
+16	 validateMigrationIsPending(contractName, newMigrationId);
+17	 _;
+18	 emit Migrated(contractName, newMigrationId);
+19	 migrated[contractName][newMigrationId] = true;
+20	 }
+21	 function isMigrated(string contractName, string migrationId) public view returns(bool) {
+22	 return migrated[contractName][migrationId];
+23	 }
+24	 function initialize() isInitializer("Migratable", "1.2.1") public {
+25	 }
+26	 function validateMigrationIsPending(string contractName, string migrationId) private {
+27	 require(!isMigrated(contractName, migrationId), "Requested target migration ID has already been run");
+28	 }
+29	 }
+30	 contract ERC20Basic {
+31	 function totalSupply() public view returns (uint256);
+32	 function balanceOf(address who) public view returns (uint256);
+33	 function transfer(address to, uint256 value) public returns (bool);
+34	 event Transfer(address indexed from, address indexed to, uint256 value);
+35	 }
+36	 contract ERC20 is ERC20Basic {
+37	 function allowance(address owner, address spender) public view returns (uint256);
+38	 function transferFrom(address from, address to, uint256 value) public returns (bool);
+39	 function approve(address spender, uint256 value) public returns (bool);
+40	 event Approval(address indexed owner, address indexed spender, uint256 value);
+41	 }
+42	 contract DetailedERC20 is Migratable, ERC20 {
+43	 string public name;
+44	 string public symbol;
+45	 uint8 public decimals;
+46	 function initialize(string _name, string _symbol, uint8 _decimals) public isInitializer("DetailedERC20", "1.9.0") {
+47	 name = _name;
+48	 symbol = _symbol;
+49	 decimals = _decimals;
+50	 }
+51	 }
+52	 library SafeMath {
+53	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+54	 if (a == 0) {
+55	 return 0;
+56	 }
+57	 c = a * b;
+58	 assert(c / a == b);
+59	 return c;
+60	 }
+61	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+62	 return a / b;
+63	 }
+64	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+65	 assert(b <= a);
+66	 return a - b;
+67	 }
+68	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+69	 c = a + b;
+70	 assert(c >= a);
+71	 return c;
+72	 }
+73	 }
+74	 contract BasicToken is ERC20Basic {
+75	 using SafeMath for uint256;
+76	 mapping(address => uint256) balances;
+77	 uint256 totalSupply_;
+78	 function totalSupply() public view returns (uint256) {
+79	 return totalSupply_;
+80	 }
+81	 function transfer(address _to, uint256 _value) public returns (bool) {
+82	 require(_to != address(0));
+83	 require(_value <= balances[msg.sender]);
+84	 balances[msg.sender] = balances[msg.sender].sub(_value);
+85	 balances[_to] = balances[_to].add(_value);
+86	 emit Transfer(msg.sender, _to, _value);
+87	 return true;
+88	 }
+89	 function balanceOf(address _owner) public view returns (uint256) {
+90	 return balances[_owner];
+91	 }
+92	 }
+93	 contract StandardToken is ERC20, BasicToken {
+94	 mapping (address => mapping (address => uint256)) internal allowed;
+95	 function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+96	 require(_to != address(0));
+97	 require(_value <= balances[_from]);
+98	 require(_value <= allowed[_from][msg.sender]);
+99	 balances[_from] = balances[_from].sub(_value);
+100	 balances[_to] = balances[_to].add(_value);
+101	 allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
+102	 emit Transfer(_from, _to, _value);
+103	 return true;
+104	 }
+105	 function approve(address _spender, uint256 _value) public returns (bool) {
+106	 allowed[msg.sender][_spender] = _value;
+107	 emit Approval(msg.sender, _spender, _value);
+108	 return true;
+109	 }
+110	 function allowance(address _owner, address _spender) public view returns (uint256) {
+111	 return allowed[_owner][_spender];
+112	 }
+113	 function increaseApproval(address _spender, uint _addedValue) public returns (bool) {
+114	 allowed[msg.sender][_spender] = allowed[msg.sender][_spender].add(_addedValue);
+115	 emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+116	 return true;
+117	 }
+118	 function decreaseApproval(address _spender, uint _subtractedValue) public returns (bool) {
+119	 uint oldValue = allowed[msg.sender][_spender];
+120	 if (_subtractedValue > oldValue) {
+121	 allowed[msg.sender][_spender] = 0;
+122	 }
+123	 else {
+124	 allowed[msg.sender][_spender] = oldValue.sub(_subtractedValue);
+125	 }
+126	 emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+127	 return true;
+128	 }
+129	 }
+130	 contract Ownable is Migratable {
+131	 address public owner;
+132	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+133	 function initialize(address _sender) public isInitializer("Ownable", "1.9.0") {
+134	 owner = _sender;
+135	 }
+136	 modifier onlyOwner() {
+137	 require(msg.sender == owner);
+138	 _;
+139	 }
+140	 function transferOwnership(address newOwner) public onlyOwner {
+141	 require(newOwner != address(0));
+142	 emit OwnershipTransferred(owner, newOwner);
+143	 owner = newOwner;
+144	 }
+145	 }
+146	 contract MintableToken is Migratable, Ownable, StandardToken {
+147	 event Mint(address indexed to, uint256 amount);
+148	 event MintFinished();
+149	 bool public mintingFinished = false;
+150	 modifier canMint() {
+151	 require(!mintingFinished);
+152	 _;
+153	 }
+154	 function initialize(address _sender) isInitializer("MintableToken", "1.9.0") public {
+155	 Ownable.initialize(_sender);
+156	 }
+157	 function mint(address _to, uint256 _amount) onlyOwner canMint public returns (bool) {
+158	 totalSupply_ = totalSupply_.add(_amount);
+159	 balances[_to] = balances[_to].add(_amount);
+160	 emit Mint(_to, _amount);
+161	 emit Transfer(address(0), _to, _amount);
+162	 return true;
+163	 }
+164	 function finishMinting() onlyOwner canMint public returns (bool) {
+165	 mintingFinished = true;
+166	 emit MintFinished();
+167	 return true;
+168	 }
+169	 }
+170	 contract DetailedPremintedToken is Migratable, DetailedERC20, StandardToken {
+171	 function initialize( address _sender, string _name, string _symbol, uint8 _decimals, uint256 _initialBalance ) isInitializer("DetailedPremintedToken", "1.9.0") public {
+172	 DetailedERC20.initialize(_name, _symbol, _decimals);
+173	 _premint(_sender, _initialBalance);
+174	 }
+175	 function _premint(address _to, uint256 _value) internal {
+176	 totalSupply_ += _value;
+177	 balances[_to] += _value;
+178	 emit Transfer(0, _to, _value);
+179	 }
+180	 }
+181	 contract S4FE is Ownable, DetailedPremintedToken {
+182	 uint256 public INITIAL_SUPPLY;
+183	 bool public transferLocked;
+184	 mapping (address => bool) public transferWhitelist;
+185	 constructor() public {
+186	 }
+187	 function initializeS4FE(address _owner) isInitializer('S4FE', '0') public {
+188	 INITIAL_SUPPLY = 1000000000 * (10 ** uint256(18));
+189	 Ownable.initialize(_owner);
+190	 DetailedPremintedToken.initialize(_owner, "S4FE", "S4F", 18, INITIAL_SUPPLY);
+191	 }
+192	 function () public {
+193	 revert();
+194	 }
+195	 function transfer(address _to, uint256 _value) public returns (bool) {
+196	 require(msg.sender == owner || transferLocked == false || transferWhitelist[msg.sender] == true);
+197	 bool result = super.transfer(_to , _value);
+198	 return result;
+199	 }
+200	 function setTransferLocked(bool _transferLocked) onlyOwner public returns (bool) {
+201	 transferLocked = _transferLocked;
+202	 return transferLocked;
+203	 }
+204	 function setTransferWhitelist(address _address, bool _transferLocked) onlyOwner public returns (bool) {
+205	 transferWhitelist[_address] = _transferLocked;
+206	 return _transferLocked;
+207	 }
+208	 function whitelist(address[] _addresses) onlyOwner public {
+209	 for(uint i = 0; i < _addresses.length ; i ++) {
+210	 transferWhitelist[_addresses[i]] = true;
+211	 }
+212	 }
+213	 function blacklist(address[] _addresses) onlyOwner public {
+214	 for(uint i = 0; i < _addresses.length ; i ++) {
+215	 transferWhitelist[_addresses[i]] = false;
+216	 }
+217	 }
+218	 }

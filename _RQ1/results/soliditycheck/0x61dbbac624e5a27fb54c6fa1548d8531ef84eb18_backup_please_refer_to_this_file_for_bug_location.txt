@@ -1,0 +1,1065 @@
+row number 
+1	     pragma solidity >=0.4.24 <0.7.0;
+2	 contract Initializable {
+3	 bool private initialized;
+4	 bool private initializing;
+5	 modifier initializer() {
+6	 require(initializing || isConstructor() || !initialized, "Contract instance has already been initialized");
+7	 bool isTopLevelCall = !initializing;
+8	 if (isTopLevelCall) {
+9	 initializing = true;
+10	 initialized = true;
+11	 }
+12	 _;
+13	 if (isTopLevelCall) {
+14	 initializing = false;
+15	 }
+16	 }
+17	 function isConstructor() private view returns (bool) {
+18	 address self = address(this);
+19	 uint256 cs;
+20	 assembly {
+21	 cs := extcodesize(self) }
+22	 return cs == 0;
+23	 }
+24	 uint256[50] private ______gap;
+25	 }
+26	 pragma solidity ^0.5.0;
+27	 interface IERC165 {
+28	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+29	 }
+30	 pragma solidity 0.5.17;
+31	 contract MixinFunds {
+32	 using Address for address payable;
+33	 using SafeERC20 for IERC20;
+34	 address public tokenAddress;
+35	 function _initializeMixinFunds( address _tokenAddress ) internal {
+36	 tokenAddress = _tokenAddress;
+37	 require( _tokenAddress == address(0) || IERC20(_tokenAddress).totalSupply() > 0, 'INVALID_TOKEN' );
+38	 }
+39	 function getBalance( address _tokenAddress, address _account ) public view returns (uint) {
+40	 if(_tokenAddress == address(0)) {
+41	 return _account.balance;
+42	 }
+43	 else {
+44	 return IERC20(_tokenAddress).balanceOf(_account);
+45	 }
+46	 }
+47	 function _transfer( address _tokenAddress, address _to, uint _amount ) internal {
+48	 if(_amount > 0) {
+49	 if(_tokenAddress == address(0)) {
+50	 address(uint160(_to)).sendValue(_amount);
+51	 }
+52	 else {
+53	 IERC20 token = IERC20(_tokenAddress);
+54	 token.safeTransfer(_to, _amount);
+55	 }
+56	 }
+57	 }
+58	 }
+59	 pragma solidity 0.5.17;
+60	 contract MixinLockManagerRole {
+61	 using Roles for Roles.Role;
+62	 event LockManagerAdded(address indexed account);
+63	 event LockManagerRemoved(address indexed account);
+64	 Roles.Role private lockManagers;
+65	 function _initializeMixinLockManagerRole(address sender) internal {
+66	 if (!isLockManager(sender)) {
+67	 lockManagers.add(sender);
+68	 }
+69	 }
+70	 modifier onlyLockManager() {
+71	 require(isLockManager(msg.sender), 'MixinLockManager: caller does not have the LockManager role');
+72	 _;
+73	 }
+74	 function isLockManager(address account) public view returns (bool) {
+75	 return lockManagers.has(account);
+76	 }
+77	 function addLockManager(address account) public onlyLockManager {
+78	 lockManagers.add(account);
+79	 emit LockManagerAdded(account);
+80	 }
+81	 function renounceLockManager() public {
+82	 lockManagers.remove(msg.sender);
+83	 emit LockManagerRemoved(msg.sender);
+84	 }
+85	 }
+86	 pragma solidity ^0.5.0;
+87	 contract IERC721 is Initializable, IERC165 {
+88	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+89	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+90	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+91	 function balanceOf(address owner) public view returns (uint256 balance);
+92	 function ownerOf(uint256 tokenId) public view returns (address owner);
+93	 function safeTransferFrom(address from, address to, uint256 tokenId) public;
+94	 function transferFrom(address from, address to, uint256 tokenId) public;
+95	 function approve(address to, uint256 tokenId) public;
+96	 function getApproved(uint256 tokenId) public view returns (address operator);
+97	 function setApprovalForAll(address operator, bool _approved) public;
+98	 function isApprovedForAll(address owner, address operator) public view returns (bool);
+99	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes memory data) public;
+100	 }
+101	 pragma solidity ^0.5.0;
+102	 contract IERC721Enumerable is Initializable, IERC721 {
+103	 function totalSupply() public view returns (uint256);
+104	 function tokenOfOwnerByIndex(address owner, uint256 index) public view returns (uint256 tokenId);
+105	 function tokenByIndex(uint256 index) public view returns (uint256);
+106	 }
+107	 pragma solidity 0.5.17;
+108	 contract MixinDisable is MixinLockManagerRole, MixinFunds {
+109	 bool public isAlive;
+110	 event Disable();
+111	 function _initializeMixinDisable( ) internal {
+112	 isAlive = true;
+113	 }
+114	 modifier onlyIfAlive() {
+115	 require(isAlive, 'LOCK_DEPRECATED');
+116	 _;
+117	 }
+118	 function disableLock() external onlyLockManager onlyIfAlive {
+119	 emit Disable();
+120	 isAlive = false;
+121	 }
+122	 }
+123	 pragma solidity 0.5.17;
+124	 contract MixinLockCore is IERC721Enumerable, MixinLockManagerRole, MixinFunds, MixinDisable {
+125	 using Address for address;
+126	 event Withdrawal( address indexed sender, address indexed tokenAddress, address indexed beneficiary, uint amount );
+127	 event PricingChanged( uint oldKeyPrice, uint keyPrice, address oldTokenAddress, address tokenAddress );
+128	 IUnlock public unlockProtocol;
+129	 uint public expirationDuration;
+130	 uint public keyPrice;
+131	 uint public maxNumberOfKeys;
+132	 uint internal _totalSupply;
+133	 address public beneficiary;
+134	 uint internal constant BASIS_POINTS_DEN = 10000;
+135	 ILockKeyPurchaseHook public onKeyPurchaseHook;
+136	 ILockKeyCancelHook public onKeyCancelHook;
+137	 modifier notSoldOut() {
+138	 require(maxNumberOfKeys > _totalSupply, 'LOCK_SOLD_OUT');
+139	 _;
+140	 }
+141	 modifier onlyLockManagerOrBeneficiary() {
+142	 require( isLockManager(msg.sender) || msg.sender == beneficiary, 'ONLY_LOCK_MANAGER_OR_BENEFICIARY' );
+143	 _;
+144	 }
+145	 function _initializeMixinLockCore( address _beneficiary, uint _expirationDuration, uint _keyPrice, uint _maxNumberOfKeys ) internal {
+146	 require(_expirationDuration <= 100 * 365 * 24 * 60 * 60, 'MAX_EXPIRATION_100_YEARS');
+147	 unlockProtocol = IUnlock(msg.sender);
+148	 beneficiary = _beneficiary;
+149	 expirationDuration = _expirationDuration;
+150	 keyPrice = _keyPrice;
+151	 maxNumberOfKeys = _maxNumberOfKeys;
+152	 }
+153	 function publicLockVersion( ) public pure returns (uint) {
+154	 return 8;
+155	 }
+156	 function withdraw( address _tokenAddress, uint _amount ) external onlyLockManagerOrBeneficiary {
+157	 uint balance = getBalance(_tokenAddress, address(this));
+158	 uint amount;
+159	 if(_amount == 0 || _amount > balance) {
+160	 require(balance > 0, 'NOT_ENOUGH_FUNDS');
+161	 amount = balance;
+162	 }
+163	 else {
+164	 amount = _amount;
+165	 }
+166	 emit Withdrawal(msg.sender, _tokenAddress, beneficiary, amount);
+167	 _transfer(_tokenAddress, beneficiary, amount);
+168	 }
+169	 function updateKeyPricing( uint _keyPrice, address _tokenAddress ) external onlyLockManager onlyIfAlive {
+170	 uint oldKeyPrice = keyPrice;
+171	 address oldTokenAddress = tokenAddress;
+172	 require( _tokenAddress == address(0) || IERC20(_tokenAddress).totalSupply() > 0, 'INVALID_TOKEN' );
+173	 keyPrice = _keyPrice;
+174	 tokenAddress = _tokenAddress;
+175	 emit PricingChanged(oldKeyPrice, keyPrice, oldTokenAddress, tokenAddress);
+176	 }
+177	 function updateBeneficiary( address _beneficiary ) external {
+178	 require(msg.sender == beneficiary || isLockManager(msg.sender), 'ONLY_BENEFICIARY_OR_LOCKMANAGER');
+179	 require(_beneficiary != address(0), 'INVALID_ADDRESS');
+180	 beneficiary = _beneficiary;
+181	 }
+182	 function setEventHooks( address _onKeyPurchaseHook, address _onKeyCancelHook ) external onlyLockManager() {
+183	 require(_onKeyPurchaseHook == address(0) || _onKeyPurchaseHook.isContract(), 'INVALID_ON_KEY_SOLD_HOOK');
+184	 require(_onKeyCancelHook == address(0) || _onKeyCancelHook.isContract(), 'INVALID_ON_KEY_CANCEL_HOOK');
+185	 onKeyPurchaseHook = ILockKeyPurchaseHook(_onKeyPurchaseHook);
+186	 onKeyCancelHook = ILockKeyCancelHook(_onKeyCancelHook);
+187	 }
+188	 function totalSupply() public view returns(uint256) {
+189	 return _totalSupply;
+190	 }
+191	 function approveBeneficiary( address _spender, uint _amount ) public onlyLockManagerOrBeneficiary returns (bool) {
+192	 return IERC20(tokenAddress).approve(_spender, _amount);
+193	 }
+194	 }
+195	 pragma solidity ^0.5.0;
+196	 contract ERC165 is Initializable, IERC165 {
+197	 bytes4 private constant _INTERFACE_ID_ERC165 = 0x01ffc9a7;
+198	 mapping(bytes4 => bool) private _supportedInterfaces;
+199	 function initialize() public initializer {
+200	 _registerInterface(_INTERFACE_ID_ERC165);
+201	 }
+202	 function supportsInterface(bytes4 interfaceId) public view returns (bool) {
+203	 return _supportedInterfaces[interfaceId];
+204	 }
+205	 function _registerInterface(bytes4 interfaceId) internal {
+206	 require(interfaceId != 0xffffffff, "ERC165: invalid interface id");
+207	 _supportedInterfaces[interfaceId] = true;
+208	 }
+209	 uint256[50] private ______gap;
+210	 }
+211	 pragma solidity 0.5.17;
+212	 contract MixinKeys is MixinLockCore {
+213	 using SafeMath for uint;
+214	 struct Key {
+215	 uint tokenId;
+216	 uint expirationTimestamp;
+217	 }
+218	 event ExpireKey(uint indexed tokenId);
+219	 event ExpirationChanged( uint indexed _tokenId, uint _amount, bool _timeAdded );
+220	 event KeyManagerChanged(uint indexed _tokenId, address indexed _newManager);
+221	 mapping (address => Key) internal keyByOwner;
+222	 mapping (uint => address) internal _ownerOf;
+223	 address[] public owners;
+224	 mapping (uint => address) public keyManagerOf;
+225	 mapping (uint => address) private approved;
+226	 mapping (address => mapping (address => bool)) private managerToOperatorApproved;
+227	 modifier onlyKeyManagerOrApproved( uint _tokenId ) {
+228	 require( _isKeyManager(_tokenId, msg.sender) || _isApproved(_tokenId, msg.sender) || isApprovedForAll(_ownerOf[_tokenId], msg.sender), 'ONLY_KEY_MANAGER_OR_APPROVED' );
+229	 _;
+230	 }
+231	 modifier ownsOrHasOwnedKey( address _keyOwner ) {
+232	 require( keyByOwner[_keyOwner].expirationTimestamp > 0, 'HAS_NEVER_OWNED_KEY' );
+233	 _;
+234	 }
+235	 modifier hasValidKey( address _user ) {
+236	 require( getHasValidKey(_user), 'KEY_NOT_VALID' );
+237	 _;
+238	 }
+239	 modifier isKey( uint _tokenId ) {
+240	 require( _ownerOf[_tokenId] != address(0), 'NO_SUCH_KEY' );
+241	 _;
+242	 }
+243	 modifier onlyKeyOwner( uint _tokenId ) {
+244	 require( isKeyOwner(_tokenId, msg.sender), 'ONLY_KEY_OWNER' );
+245	 _;
+246	 }
+247	 function balanceOf( address _keyOwner ) public view returns (uint) {
+248	 require(_keyOwner != address(0), 'INVALID_ADDRESS');
+249	 return getHasValidKey(_keyOwner) ? 1 : 0;
+250	 }
+251	 function getHasValidKey( address _keyOwner ) public view returns (bool) {
+252	 return keyByOwner[_keyOwner].expirationTimestamp > block.timestamp;
+253	 }
+254	 function getTokenIdFor( address _account ) public view returns (uint) {
+255	 return keyByOwner[_account].tokenId;
+256	 }
+257	 function getOwnersByPage(uint _page, uint _pageSize) public view returns (address[] memory) {
+258	 uint pageSize = _pageSize;
+259	 uint _startIndex = _page * pageSize;
+260	 uint endOfPageIndex;
+261	 if (_startIndex + pageSize > owners.length) {
+262	 endOfPageIndex = owners.length;
+263	 pageSize = owners.length - _startIndex;
+264	 }
+265	 else {
+266	 endOfPageIndex = (_startIndex + pageSize);
+267	 }
+268	 address[] memory ownersByPage = new address[](pageSize);
+269	 uint pageIndex = 0;
+270	 for (uint i = _startIndex; i < endOfPageIndex; i++) {
+271	 ownersByPage[pageIndex] = owners[i];
+272	 pageIndex++;
+273	 }
+274	 return ownersByPage;
+275	 }
+276	 function isKeyOwner( uint _tokenId, address _keyOwner ) public view returns (bool) {
+277	 return _ownerOf[_tokenId] == _keyOwner;
+278	 }
+279	 function keyExpirationTimestampFor( address _keyOwner ) public view returns (uint) {
+280	 return keyByOwner[_keyOwner].expirationTimestamp;
+281	 }
+282	 function numberOfOwners() public view returns (uint) {
+283	 return owners.length;
+284	 }
+285	 function ownerOf( uint _tokenId ) public view returns(address) {
+286	 return _ownerOf[_tokenId];
+287	 }
+288	 function setKeyManagerOf( uint _tokenId, address _keyManager ) public isKey(_tokenId) {
+289	 require( _isKeyManager(_tokenId, msg.sender) || isLockManager(msg.sender), 'UNAUTHORIZED_KEY_MANAGER_UPDATE' );
+290	 _setKeyManagerOf(_tokenId, _keyManager);
+291	 }
+292	 function _setKeyManagerOf( uint _tokenId, address _keyManager ) internal {
+293	 if(keyManagerOf[_tokenId] != _keyManager) {
+294	 keyManagerOf[_tokenId] = _keyManager;
+295	 _clearApproval(_tokenId);
+296	 emit KeyManagerChanged(_tokenId, address(0));
+297	 }
+298	 }
+299	 function approve( address _approved, uint _tokenId ) public onlyIfAlive onlyKeyManagerOrApproved(_tokenId) {
+300	 require(msg.sender != _approved, 'APPROVE_SELF');
+301	 approved[_tokenId] = _approved;
+302	 emit Approval(_ownerOf[_tokenId], _approved, _tokenId);
+303	 }
+304	 function getApproved( uint _tokenId ) public view isKey(_tokenId) returns (address) {
+305	 address approvedRecipient = approved[_tokenId];
+306	 return approvedRecipient;
+307	 }
+308	 function isApprovedForAll( address _owner, address _operator ) public view returns (bool) {
+309	 uint tokenId = keyByOwner[_owner].tokenId;
+310	 address keyManager = keyManagerOf[tokenId];
+311	 if(keyManager == address(0)) {
+312	 return managerToOperatorApproved[_owner][_operator];
+313	 }
+314	 else {
+315	 return managerToOperatorApproved[keyManager][_operator];
+316	 }
+317	 }
+318	 function _isKeyManager( uint _tokenId, address _keyManager ) internal view returns (bool) {
+319	 if(keyManagerOf[_tokenId] == _keyManager || (keyManagerOf[_tokenId] == address(0) && isKeyOwner(_tokenId, _keyManager))) {
+320	 return true;
+321	 }
+322	 else {
+323	 return false;
+324	 }
+325	 }
+326	 function _assignNewTokenId( Key storage _key ) internal {
+327	 if (_key.tokenId == 0) {
+328	 _totalSupply++;
+329	 _key.tokenId = _totalSupply;
+330	 }
+331	 }
+332	 function _recordOwner( address _keyOwner, uint _tokenId ) internal {
+333	 if (_ownerOf[_tokenId] != _keyOwner) {
+334	 owners.push(_keyOwner);
+335	 _ownerOf[_tokenId] = _keyOwner;
+336	 }
+337	 }
+338	 function _timeMachine( uint _tokenId, uint256 _deltaT, bool _addTime ) internal {
+339	 address tokenOwner = _ownerOf[_tokenId];
+340	 require(tokenOwner != address(0), 'NON_EXISTENT_KEY');
+341	 Key storage key = keyByOwner[tokenOwner];
+342	 uint formerTimestamp = key.expirationTimestamp;
+343	 bool validKey = getHasValidKey(tokenOwner);
+344	 if(_addTime) {
+345	 if(validKey) {
+346	 key.expirationTimestamp = formerTimestamp.add(_deltaT);
+347	 }
+348	 else {
+349	 key.expirationTimestamp = block.timestamp.add(_deltaT);
+350	 }
+351	 }
+352	 else {
+353	 key.expirationTimestamp = formerTimestamp.sub(_deltaT);
+354	 }
+355	 emit ExpirationChanged(_tokenId, _deltaT, _addTime);
+356	 }
+357	 function setApprovalForAll( address _to, bool _approved ) public onlyIfAlive {
+358	 require(_to != msg.sender, 'APPROVE_SELF');
+359	 managerToOperatorApproved[msg.sender][_to] = _approved;
+360	 emit ApprovalForAll(msg.sender, _to, _approved);
+361	 }
+362	 function _isApproved( uint _tokenId, address _user ) internal view returns (bool) {
+363	 return approved[_tokenId] == _user;
+364	 }
+365	 function _clearApproval( uint256 _tokenId ) internal {
+366	 if (approved[_tokenId] != address(0)) {
+367	 approved[_tokenId] = address(0);
+368	 }
+369	 }
+370	 }
+371	 pragma solidity 0.5.17;
+372	 contract MixinSignatures {
+373	 event NonceChanged( address indexed keyManager, uint nextAvailableNonce );
+374	 mapping(address => uint) public keyManagerToNonce;
+375	 modifier consumeOffchainApproval( bytes32 _hash, address _keyManager, uint8 _v, bytes32 _r, bytes32 _s ) {
+376	 require( ecrecover( ECDSA.toEthSignedMessageHash(_hash), _v, _r, _s ) == _keyManager, 'INVALID_SIGNATURE' );
+377	 keyManagerToNonce[_keyManager]++;
+378	 emit NonceChanged(_keyManager, keyManagerToNonce[_keyManager]);
+379	 _;
+380	 }
+381	 function invalidateOffchainApproval( uint _nextAvailableNonce ) external {
+382	 require(_nextAvailableNonce > keyManagerToNonce[msg.sender], 'NONCE_ALREADY_USED');
+383	 keyManagerToNonce[msg.sender] = _nextAvailableNonce;
+384	 emit NonceChanged(msg.sender, _nextAvailableNonce);
+385	 }
+386	 }
+387	 pragma solidity 0.5.17;
+388	 contract MixinKeyGranterRole is MixinLockManagerRole {
+389	 using Roles for Roles.Role;
+390	 event KeyGranterAdded(address indexed account);
+391	 event KeyGranterRemoved(address indexed account);
+392	 Roles.Role private keyGranters;
+393	 function _initializeMixinKeyGranterRole(address sender) internal {
+394	 if (!isKeyGranter(sender)) {
+395	 keyGranters.add(sender);
+396	 }
+397	 }
+398	 modifier onlyKeyGranterOrManager() {
+399	 require(isKeyGranter(msg.sender) || isLockManager(msg.sender), 'MixinKeyGranter: caller does not have the KeyGranter or LockManager role');
+400	 _;
+401	 }
+402	 function isKeyGranter(address account) public view returns (bool) {
+403	 return keyGranters.has(account);
+404	 }
+405	 function addKeyGranter(address account) public onlyLockManager {
+406	 keyGranters.add(account);
+407	 emit KeyGranterAdded(account);
+408	 }
+409	 function revokeKeyGranter(address _granter) public onlyLockManager {
+410	 keyGranters.remove(_granter);
+411	 emit KeyGranterRemoved(_granter);
+412	 }
+413	 }
+414	 pragma solidity 0.5.17;
+415	 contract IPublicLock {
+416	 function initialize( address _lockCreator, uint _expirationDuration, address _tokenAddress, uint _keyPrice, uint _maxNumberOfKeys, string calldata _lockName ) external;
+417	 function() external payable;
+418	 function initialize() external;
+419	 function publicLockVersion() public pure returns (uint);
+420	 function getBalance( address _tokenAddress, address _account ) external view returns (uint);
+421	 function disableLock() external;
+422	 function withdraw( address _tokenAddress, uint _amount ) external;
+423	 function approveBeneficiary( address _spender, uint _amount ) external returns (bool);
+424	 function updateKeyPricing( uint _keyPrice, address _tokenAddress ) external;
+425	 function updateBeneficiary( address _beneficiary ) external;
+426	 function getHasValidKey( address _user ) external view returns (bool);
+427	 function getTokenIdFor( address _account ) external view returns (uint);
+428	 function getOwnersByPage( uint _page, uint _pageSize ) external view returns (address[] memory);
+429	 function isKeyOwner( uint _tokenId, address _keyOwner ) external view returns (bool);
+430	 function keyExpirationTimestampFor( address _keyOwner ) external view returns (uint timestamp);
+431	 function numberOfOwners() external view returns (uint);
+432	 function updateLockName( string calldata _lockName ) external;
+433	 function updateLockSymbol( string calldata _lockSymbol ) external;
+434	 function symbol() external view returns(string memory);
+435	 function setBaseTokenURI( string calldata _baseTokenURI ) external;
+436	 function tokenURI( uint256 _tokenId ) external view returns(string memory);
+437	 function setEventHooks( address _onKeyPurchaseHook, address _onKeyCancelHook ) external;
+438	 function grantKeys( address[] calldata _recipients, uint[] calldata _expirationTimestamps, address[] calldata _keyManagers ) external;
+439	 function purchase( uint256 _value, address _recipient, address _referrer, bytes calldata _data ) external payable;
+440	 function purchasePriceFor( address _recipient, address _referrer, bytes calldata _data ) external view returns (uint);
+441	 function updateTransferFee( uint _transferFeeBasisPoints ) external;
+442	 function getTransferFee( address _keyOwner, uint _time ) external view returns (uint);
+443	 function expireAndRefundFor( address _keyOwner, uint amount ) external;
+444	 function cancelAndRefund(uint _tokenId) external;
+445	 function cancelAndRefundFor( address _keyManager, uint8 _v, bytes32 _r, bytes32 _s, uint _tokenId ) external;
+446	 function invalidateOffchainApproval( uint _nextAvailableNonce ) external;
+447	 function updateRefundPenalty( uint _freeTrialLength, uint _refundPenaltyBasisPoints ) external;
+448	 function getCancelAndRefundValueFor( address _keyOwner ) external view returns (uint refund);
+449	 function keyManagerToNonce(address ) external view returns (uint256 );
+450	 function getCancelAndRefundApprovalHash( address _keyManager, address _txSender ) external view returns (bytes32 approvalHash);
+451	 function addKeyGranter(address account) external;
+452	 function addLockManager(address account) external;
+453	 function isKeyGranter(address account) external view returns (bool);
+454	 function isLockManager(address account) external view returns (bool);
+455	 function onKeyPurchaseHook() external view returns(address);
+456	 function onKeyCancelHook() external view returns(address);
+457	 function revokeKeyGranter(address _granter) external;
+458	 function renounceLockManager() external;
+459	 function beneficiary() external view returns (address );
+460	 function expirationDuration() external view returns (uint256 );
+461	 function freeTrialLength() external view returns (uint256 );
+462	 function isAlive() external view returns (bool );
+463	 function keyPrice() external view returns (uint256 );
+464	 function maxNumberOfKeys() external view returns (uint256 );
+465	 function owners(uint256 ) external view returns (address );
+466	 function refundPenaltyBasisPoints() external view returns (uint256 );
+467	 function tokenAddress() external view returns (address );
+468	 function transferFeeBasisPoints() external view returns (uint256 );
+469	 function unlockProtocol() external view returns (address );
+470	 function keyManagerOf(uint) external view returns (address );
+471	 function shareKey( address _to, uint _tokenId, uint _timeShared ) external;
+472	 function setKeyManagerOf( uint _tokenId, address _keyManager ) external;
+473	 function name() external view returns (string memory _name);
+474	 function supportsInterface(bytes4 interfaceId) external view returns (bool );
+475	 function balanceOf(address _owner) public view returns (uint256 balance);
+476	 function ownerOf(uint256 tokenId) public view returns (address _owner);
+477	 function safeTransferFrom(address from, address to, uint256 tokenId) public;
+478	 function transferFrom(address from, address to, uint256 tokenId) public;
+479	 function approve(address to, uint256 tokenId) public;
+480	 function getApproved(uint256 _tokenId) public view returns (address operator);
+481	 function setApprovalForAll(address operator, bool _approved) public;
+482	 function isApprovedForAll(address _owner, address operator) public view returns (bool);
+483	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes memory data) public;
+484	 function totalSupply() public view returns (uint256);
+485	 function tokenOfOwnerByIndex(address _owner, uint256 index) public view returns (uint256 tokenId);
+486	 function tokenByIndex(uint256 index) public view returns (uint256);
+487	 function transfer( address _to, uint _value ) external returns (bool success);
+488	 }
+489	 pragma solidity 0.5.17;
+490	 contract MixinERC721Enumerable is IERC721Enumerable, ERC165, MixinLockCore, MixinKeys {
+491	 function _initializeMixinERC721Enumerable() internal {
+492	 _registerInterface(0x780e9d63);
+493	 }
+494	 function tokenByIndex( uint256 _index ) public view returns (uint256) {
+495	 require(_index < _totalSupply, 'OUT_OF_RANGE');
+496	 return _index;
+497	 }
+498	 function tokenOfOwnerByIndex( address _keyOwner, uint256 _index ) public view returns (uint256) {
+499	 require(_index == 0, 'ONLY_ONE_KEY_PER_OWNER');
+500	 return getTokenIdFor(_keyOwner);
+501	 }
+502	 }
+503	 pragma solidity 0.5.17;
+504	 contract MixinGrantKeys is MixinKeyGranterRole, MixinKeys {
+505	 function grantKeys( address[] calldata _recipients, uint[] calldata _expirationTimestamps, address[] calldata _keyManagers ) external onlyKeyGranterOrManager {
+506	 for(uint i = 0; i < _recipients.length; i++) {
+507	 address recipient = _recipients[i];
+508	 uint expirationTimestamp = _expirationTimestamps[i];
+509	 address keyManager = _keyManagers[i];
+510	 require(recipient != address(0), 'INVALID_ADDRESS');
+511	 Key storage toKey = keyByOwner[recipient];
+512	 require(expirationTimestamp > toKey.expirationTimestamp, 'ALREADY_OWNS_KEY');
+513	 uint idTo = toKey.tokenId;
+514	 if(idTo == 0) {
+515	 _assignNewTokenId(toKey);
+516	 idTo = toKey.tokenId;
+517	 _recordOwner(recipient, idTo);
+518	 }
+519	 _setKeyManagerOf(idTo, keyManager);
+520	 emit KeyManagerChanged(idTo, keyManager);
+521	 toKey.expirationTimestamp = expirationTimestamp;
+522	 emit Transfer( address(0), recipient, idTo );
+523	 }
+524	 }
+525	 }
+526	 pragma solidity 0.5.17;
+527	 contract MixinLockMetadata is IERC721Enumerable, ERC165, MixinLockManagerRole, MixinLockCore, MixinKeys {
+528	 using UnlockUtils for uint;
+529	 using UnlockUtils for address;
+530	 using UnlockUtils for string;
+531	 string public name;
+532	 string private lockSymbol;
+533	 string private baseTokenURI;
+534	 event NewLockSymbol( string symbol );
+535	 function _initializeMixinLockMetadata( string memory _lockName ) internal {
+536	 ERC165.initialize();
+537	 name = _lockName;
+538	 _registerInterface(0x5b5e139f);
+539	 }
+540	 function updateLockName( string calldata _lockName ) external onlyLockManager {
+541	 name = _lockName;
+542	 }
+543	 function updateLockSymbol( string calldata _lockSymbol ) external onlyLockManager {
+544	 lockSymbol = _lockSymbol;
+545	 emit NewLockSymbol(_lockSymbol);
+546	 }
+547	 function symbol() external view returns(string memory) {
+548	 if(bytes(lockSymbol).length == 0) {
+549	 return unlockProtocol.globalTokenSymbol();
+550	 }
+551	 else {
+552	 return lockSymbol;
+553	 }
+554	 }
+555	 function setBaseTokenURI( string calldata _baseTokenURI ) external onlyLockManager {
+556	 baseTokenURI = _baseTokenURI;
+557	 }
+558	 function tokenURI( uint256 _tokenId ) external view returns(string memory) {
+559	 string memory URI;
+560	 string memory tokenId;
+561	 string memory lockAddress = address(this).address2Str();
+562	 string memory seperator;
+563	 if(_tokenId != 0) {
+564	 tokenId = _tokenId.uint2Str();
+565	 }
+566	 else {
+567	 tokenId = '';
+568	 }
+569	 if(bytes(baseTokenURI).length == 0) {
+570	 URI = unlockProtocol.globalBaseTokenURI();
+571	 seperator = '/';
+572	 }
+573	 else {
+574	 URI = baseTokenURI;
+575	 seperator = '';
+576	 lockAddress = '';
+577	 }
+578	 return URI.strConcat( lockAddress, seperator, tokenId );
+579	 }
+580	 }
+581	 pragma solidity 0.5.17;
+582	 contract MixinPurchase is MixinFunds, MixinDisable, MixinLockCore, MixinKeys {
+583	 using SafeMath for uint;
+584	 event RenewKeyPurchase(address indexed owner, uint newExpiration);
+585	 function purchase( uint256 _value, address _recipient, address _referrer, bytes calldata _data ) external payable onlyIfAlive notSoldOut {
+586	 require(_recipient != address(0), 'INVALID_ADDRESS');
+587	 Key storage toKey = keyByOwner[_recipient];
+588	 uint idTo = toKey.tokenId;
+589	 uint newTimeStamp;
+590	 if (idTo == 0) {
+591	 _assignNewTokenId(toKey);
+592	 idTo = toKey.tokenId;
+593	 _recordOwner(_recipient, idTo);
+594	 newTimeStamp = block.timestamp + expirationDuration;
+595	 toKey.expirationTimestamp = newTimeStamp;
+596	 emit Transfer( address(0), _recipient, idTo );
+597	 }
+598	 else if (toKey.expirationTimestamp > block.timestamp) {
+599	 newTimeStamp = toKey.expirationTimestamp.add(expirationDuration);
+600	 toKey.expirationTimestamp = newTimeStamp;
+601	 emit RenewKeyPurchase(_recipient, newTimeStamp);
+602	 }
+603	 else {
+604	 newTimeStamp = block.timestamp + expirationDuration;
+605	 toKey.expirationTimestamp = newTimeStamp;
+606	 _setKeyManagerOf(idTo, address(0));
+607	 emit RenewKeyPurchase(_recipient, newTimeStamp);
+608	 }
+609	 (uint inMemoryKeyPrice, uint discount, uint tokens) = _purchasePriceFor(_recipient, _referrer, _data);
+610	 if (discount > 0) {
+611	 unlockProtocol.recordConsumedDiscount(discount, tokens);
+612	 }
+613	 unlockProtocol.recordKeyPurchase(inMemoryKeyPrice, _referrer);
+614	 uint pricePaid;
+615	 if(tokenAddress != address(0)) {
+616	 pricePaid = _value;
+617	 IERC20 token = IERC20(tokenAddress);
+618	 token.safeTransferFrom(msg.sender, address(this), _value);
+619	 }
+620	 else {
+621	 pricePaid = msg.value;
+622	 }
+623	 require(pricePaid >= inMemoryKeyPrice, 'INSUFFICIENT_VALUE');
+624	 if(address(onKeyPurchaseHook) != address(0)) {
+625	 onKeyPurchaseHook.onKeyPurchase(msg.sender, _recipient, _referrer, _data, inMemoryKeyPrice, pricePaid);
+626	 }
+627	 }
+628	 function purchasePriceFor( address _recipient, address _referrer, bytes calldata _data ) external view returns (uint minKeyPrice) {
+629	 (minKeyPrice, , ) = _purchasePriceFor(_recipient, _referrer, _data);
+630	 }
+631	 function _purchasePriceFor( address _recipient, address _referrer, bytes memory _data ) internal view returns (uint minKeyPrice, uint unlockDiscount, uint unlockTokens) {
+632	 if(address(onKeyPurchaseHook) != address(0)) {
+633	 minKeyPrice = onKeyPurchaseHook.keyPurchasePrice(msg.sender, _recipient, _referrer, _data);
+634	 }
+635	 else {
+636	 minKeyPrice = keyPrice;
+637	 }
+638	 if(minKeyPrice > 0) {
+639	 (unlockDiscount, unlockTokens) = unlockProtocol.computeAvailableDiscountFor(_recipient, minKeyPrice);
+640	 require(unlockDiscount <= minKeyPrice, 'INVALID_DISCOUNT_FROM_UNLOCK');
+641	 minKeyPrice -= unlockDiscount;
+642	 }
+643	 }
+644	 }
+645	 pragma solidity 0.5.17;
+646	 contract MixinRefunds is MixinLockManagerRole, MixinSignatures, MixinFunds, MixinLockCore, MixinKeys {
+647	 using SafeMath for uint;
+648	 uint public refundPenaltyBasisPoints;
+649	 uint public freeTrialLength;
+650	 bytes32 private constant CANCEL_TYPEHASH = keccak256('cancelAndRefundFor(address _keyOwner)');
+651	 event CancelKey( uint indexed tokenId, address indexed owner, address indexed sendTo, uint refund );
+652	 event RefundPenaltyChanged( uint freeTrialLength, uint refundPenaltyBasisPoints );
+653	 function _initializeMixinRefunds() internal {
+654	 refundPenaltyBasisPoints = 1000;
+655	 }
+656	 function expireAndRefundFor( address _keyOwner, uint amount ) external onlyLockManager hasValidKey(_keyOwner) {
+657	 _cancelAndRefund(_keyOwner, amount);
+658	 }
+659	 function cancelAndRefund(uint _tokenId) external onlyKeyManagerOrApproved(_tokenId) {
+660	 address keyOwner = ownerOf(_tokenId);
+661	 uint refund = _getCancelAndRefundValue(keyOwner);
+662	 _cancelAndRefund(keyOwner, refund);
+663	 }
+664	 function cancelAndRefundFor( address _keyManager, uint8 _v, bytes32 _r, bytes32 _s, uint _tokenId ) external consumeOffchainApproval( getCancelAndRefundApprovalHash(_keyManager, msg.sender), _keyManager, _v, _r, _s ) {
+665	 address keyOwner = ownerOf(_tokenId);
+666	 uint refund = _getCancelAndRefundValue(keyOwner);
+667	 _cancelAndRefund(keyOwner, refund);
+668	 }
+669	 function updateRefundPenalty( uint _freeTrialLength, uint _refundPenaltyBasisPoints ) external onlyLockManager {
+670	 emit RefundPenaltyChanged( _freeTrialLength, _refundPenaltyBasisPoints );
+671	 freeTrialLength = _freeTrialLength;
+672	 refundPenaltyBasisPoints = _refundPenaltyBasisPoints;
+673	 }
+674	 function getCancelAndRefundValueFor( address _keyOwner ) external view returns (uint refund) {
+675	 return _getCancelAndRefundValue(_keyOwner);
+676	 }
+677	 function getCancelAndRefundApprovalHash( address _keyManager, address _txSender ) public view returns (bytes32 approvalHash) {
+678	 return keccak256( abi.encodePacked( address(this), CANCEL_TYPEHASH, keyManagerToNonce[_keyManager], _txSender ) );
+679	 }
+680	 function _cancelAndRefund( address _keyOwner, uint refund ) internal {
+681	 Key storage key = keyByOwner[_keyOwner];
+682	 emit CancelKey(key.tokenId, _keyOwner, msg.sender, refund);
+683	 key.expirationTimestamp = block.timestamp;
+684	 if (refund > 0) {
+685	 _transfer(tokenAddress, _keyOwner, refund);
+686	 }
+687	 if(address(onKeyCancelHook) != address(0)) {
+688	 onKeyCancelHook.onKeyCancel(msg.sender, _keyOwner, refund);
+689	 }
+690	 }
+691	 function _getCancelAndRefundValue( address _keyOwner ) private view hasValidKey(_keyOwner) returns (uint refund) {
+692	 Key storage key = keyByOwner[_keyOwner];
+693	 uint timeRemaining = key.expirationTimestamp - block.timestamp;
+694	 if(timeRemaining + freeTrialLength >= expirationDuration) {
+695	 refund = keyPrice;
+696	 }
+697	 else {
+698	 refund = keyPrice.mul(timeRemaining) / expirationDuration;
+699	 }
+700	 if(freeTrialLength == 0 || timeRemaining + freeTrialLength < expirationDuration) {
+701	 uint penalty = keyPrice.mul(refundPenaltyBasisPoints) / BASIS_POINTS_DEN;
+702	 if (refund > penalty) {
+703	 refund -= penalty;
+704	 }
+705	 else {
+706	 refund = 0;
+707	 }
+708	 }
+709	 }
+710	 }
+711	 pragma solidity 0.5.17;
+712	 contract MixinTransfer is MixinLockManagerRole, MixinFunds, MixinLockCore, MixinKeys {
+713	 using SafeMath for uint;
+714	 using Address for address;
+715	 event TransferFeeChanged( uint transferFeeBasisPoints );
+716	 bytes4 private constant _ERC721_RECEIVED = 0x150b7a02;
+717	 uint public transferFeeBasisPoints;
+718	 function shareKey( address _to, uint _tokenId, uint _timeShared ) public onlyIfAlive onlyKeyManagerOrApproved(_tokenId) {
+719	 require(transferFeeBasisPoints < BASIS_POINTS_DEN, 'KEY_TRANSFERS_DISABLED');
+720	 require(_to != address(0), 'INVALID_ADDRESS');
+721	 address keyOwner = _ownerOf[_tokenId];
+722	 require(getHasValidKey(keyOwner), 'KEY_NOT_VALID');
+723	 Key storage fromKey = keyByOwner[keyOwner];
+724	 Key storage toKey = keyByOwner[_to];
+725	 uint idTo = toKey.tokenId;
+726	 uint time;
+727	 uint timeRemaining = fromKey.expirationTimestamp - block.timestamp;
+728	 uint fee = getTransferFee(keyOwner, _timeShared);
+729	 uint timePlusFee = _timeShared.add(fee);
+730	 if(timePlusFee < timeRemaining) {
+731	 time = _timeShared;
+732	 _timeMachine(_tokenId, timePlusFee, false);
+733	 }
+734	 else {
+735	 fee = getTransferFee(keyOwner, timeRemaining);
+736	 time = timeRemaining - fee;
+737	 fromKey.expirationTimestamp = block.timestamp;
+738	 emit ExpireKey(_tokenId);
+739	 }
+740	 if (idTo == 0) {
+741	 _assignNewTokenId(toKey);
+742	 idTo = toKey.tokenId;
+743	 _recordOwner(_to, idTo);
+744	 emit Transfer( address(0), _to, idTo );
+745	 }
+746	 else if (toKey.expirationTimestamp <= block.timestamp) {
+747	 _setKeyManagerOf(idTo, address(0));
+748	 }
+749	 _timeMachine(idTo, time, true);
+750	 emit Transfer( keyOwner, _to, idTo );
+751	 require(_checkOnERC721Received(keyOwner, _to, _tokenId, ''), 'NON_COMPLIANT_ERC721_RECEIVER');
+752	 }
+753	 function transferFrom( address _from, address _recipient, uint _tokenId ) public onlyIfAlive hasValidKey(_from) onlyKeyManagerOrApproved(_tokenId) {
+754	 require(isKeyOwner(_tokenId, _from), 'TRANSFER_FROM: NOT_KEY_OWNER');
+755	 require(transferFeeBasisPoints < BASIS_POINTS_DEN, 'KEY_TRANSFERS_DISABLED');
+756	 require(_recipient != address(0), 'INVALID_ADDRESS');
+757	 uint fee = getTransferFee(_from, 0);
+758	 Key storage fromKey = keyByOwner[_from];
+759	 Key storage toKey = keyByOwner[_recipient];
+760	 uint previousExpiration = toKey.expirationTimestamp;
+761	 _timeMachine(_tokenId, fee, false);
+762	 if (toKey.tokenId == 0) {
+763	 toKey.tokenId = _tokenId;
+764	 _recordOwner(_recipient, _tokenId);
+765	 _clearApproval(_tokenId);
+766	 }
+767	 if (previousExpiration <= block.timestamp) {
+768	 toKey.expirationTimestamp = fromKey.expirationTimestamp;
+769	 toKey.tokenId = _tokenId;
+770	 _setKeyManagerOf(_tokenId, address(0));
+771	 _recordOwner(_recipient, _tokenId);
+772	 }
+773	 else {
+774	 toKey.expirationTimestamp = fromKey .expirationTimestamp.add(previousExpiration - block.timestamp);
+775	 }
+776	 fromKey.expirationTimestamp = block.timestamp;
+777	 fromKey.tokenId = 0;
+778	 emit Transfer( _from, _recipient, _tokenId );
+779	 }
+780	 function transfer( address _to, uint _value ) public returns (bool success) {
+781	 uint maxTimeToSend = _value * expirationDuration;
+782	 Key storage fromKey = keyByOwner[msg.sender];
+783	 uint timeRemaining = fromKey.expirationTimestamp.sub(block.timestamp);
+784	 if(maxTimeToSend < timeRemaining) {
+785	 shareKey(_to, fromKey.tokenId, maxTimeToSend);
+786	 }
+787	 else {
+788	 transferFrom(msg.sender, _to, fromKey.tokenId);
+789	 }
+790	 return true;
+791	 }
+792	 function safeTransferFrom( address _from, address _to, uint _tokenId ) public {
+793	 safeTransferFrom(_from, _to, _tokenId, '');
+794	 }
+795	 function safeTransferFrom( address _from, address _to, uint _tokenId, bytes memory _data ) public {
+796	 transferFrom(_from, _to, _tokenId);
+797	 require(_checkOnERC721Received(_from, _to, _tokenId, _data), 'NON_COMPLIANT_ERC721_RECEIVER');
+798	 }
+799	 function updateTransferFee( uint _transferFeeBasisPoints ) external onlyLockManager {
+800	 emit TransferFeeChanged( _transferFeeBasisPoints );
+801	 transferFeeBasisPoints = _transferFeeBasisPoints;
+802	 }
+803	 function getTransferFee( address _keyOwner, uint _time ) public view returns (uint) {
+804	 if(! getHasValidKey(_keyOwner)) {
+805	 return 0;
+806	 }
+807	 else {
+808	 Key storage key = keyByOwner[_keyOwner];
+809	 uint timeToTransfer;
+810	 uint fee;
+811	 if(_time == 0) {
+812	 timeToTransfer = key.expirationTimestamp - block.timestamp;
+813	 }
+814	 else {
+815	 timeToTransfer = _time;
+816	 }
+817	 fee = timeToTransfer.mul(transferFeeBasisPoints) / BASIS_POINTS_DEN;
+818	 return fee;
+819	 }
+820	 }
+821	 function _checkOnERC721Received( address from, address to, uint256 tokenId, bytes memory _data ) internal returns (bool) {
+822	 if (!to.isContract()) {
+823	 return true;
+824	 }
+825	 bytes4 retval = IERC721Receiver(to).onERC721Received( msg.sender, from, tokenId, _data);
+826	 return (retval == _ERC721_RECEIVED);
+827	 }
+828	 }
+829	 pragma solidity 0.5.17;
+830	 contract PublicLock is IPublicLock, Initializable, ERC165, MixinLockManagerRole, MixinKeyGranterRole, MixinSignatures, MixinFunds, MixinDisable, MixinLockCore, MixinKeys, MixinLockMetadata, MixinERC721Enumerable, MixinGrantKeys, MixinPurchase, MixinTransfer, MixinRefunds {
+831	 function initialize( address _lockCreator, uint _expirationDuration, address _tokenAddress, uint _keyPrice, uint _maxNumberOfKeys, string memory _lockName ) public initializer() {
+832	 MixinFunds._initializeMixinFunds(_tokenAddress);
+833	 MixinDisable._initializeMixinDisable();
+834	 MixinLockCore._initializeMixinLockCore(_lockCreator, _expirationDuration, _keyPrice, _maxNumberOfKeys);
+835	 MixinLockMetadata._initializeMixinLockMetadata(_lockName);
+836	 MixinERC721Enumerable._initializeMixinERC721Enumerable();
+837	 MixinRefunds._initializeMixinRefunds();
+838	 MixinLockManagerRole._initializeMixinLockManagerRole(_lockCreator);
+839	 MixinKeyGranterRole._initializeMixinKeyGranterRole(_lockCreator);
+840	 _registerInterface(0x80ac58cd);
+841	 }
+842	 function() external payable {
+843	 }
+844	 }
+845	 pragma solidity ^0.5.0;
+846	 interface IERC20 {
+847	 function totalSupply() external view returns (uint256);
+848	 function balanceOf(address account) external view returns (uint256);
+849	 function transfer(address recipient, uint256 amount) external returns (bool);
+850	 function allowance(address owner, address spender) external view returns (uint256);
+851	 function approve(address spender, uint256 amount) external returns (bool);
+852	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+853	 event Transfer(address indexed from, address indexed to, uint256 value);
+854	 event Approval(address indexed owner, address indexed spender, uint256 value);
+855	 }
+856	 pragma solidity ^0.5.5;
+857	 library Address {
+858	 function isContract(address account) internal view returns (bool) {
+859	 bytes32 codehash;
+860	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+861	 assembly {
+862	 codehash := extcodehash(account) }
+863	 return (codehash != accountHash && codehash != 0x0);
+864	 }
+865	 function toPayable(address account) internal pure returns (address payable) {
+866	 return address(uint160(account));
+867	 }
+868	 function sendValue(address payable recipient, uint256 amount) internal {
+869	 require(address(this).balance >= amount, "Address: insufficient balance");
+870	 (bool success, ) = recipient.call.value(amount)("");
+871	 require(success, "Address: unable to send value, recipient may have reverted");
+872	 }
+873	 }
+874	 pragma solidity ^0.5.0;
+875	 library SafeERC20 {
+876	 using SafeMath for uint256;
+877	 using Address for address;
+878	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+879	 callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+880	 }
+881	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+882	 callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+883	 }
+884	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+885	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+886	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+887	 }
+888	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+889	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+890	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+891	 }
+892	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+893	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+894	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+895	 }
+896	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+897	 require(address(token).isContract(), "SafeERC20: call to non-contract");
+898	 (bool success, bytes memory returndata) = address(token).call(data);
+899	 require(success, "SafeERC20: low-level call failed");
+900	 if (returndata.length > 0) {
+901	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+902	 }
+903	 }
+904	 }
+905	 pragma solidity ^0.5.0;
+906	 library SafeMath {
+907	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+908	 uint256 c = a + b;
+909	 require(c >= a, "SafeMath: addition overflow");
+910	 return c;
+911	 }
+912	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+913	 return sub(a, b, "SafeMath: subtraction overflow");
+914	 }
+915	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+916	 require(b <= a, errorMessage);
+917	 uint256 c = a - b;
+918	 return c;
+919	 }
+920	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+921	 if (a == 0) {
+922	 return 0;
+923	 }
+924	 uint256 c = a * b;
+925	 require(c / a == b, "SafeMath: multiplication overflow");
+926	 return c;
+927	 }
+928	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+929	 return div(a, b, "SafeMath: division by zero");
+930	 }
+931	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+932	 require(b > 0, errorMessage);
+933	 uint256 c = a / b;
+934	 return c;
+935	 }
+936	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+937	 return mod(a, b, "SafeMath: modulo by zero");
+938	 }
+939	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+940	 require(b != 0, errorMessage);
+941	 return a % b;
+942	 }
+943	 }
+944	 pragma solidity ^0.5.0;
+945	 library Roles {
+946	 struct Role {
+947	 mapping (address => bool) bearer;
+948	 }
+949	 function add(Role storage role, address account) internal {
+950	 require(!has(role, account), "Roles: account already has role");
+951	 role.bearer[account] = true;
+952	 }
+953	 function remove(Role storage role, address account) internal {
+954	 require(has(role, account), "Roles: account does not have role");
+955	 role.bearer[account] = false;
+956	 }
+957	 function has(Role storage role, address account) internal view returns (bool) {
+958	 require(account != address(0), "Roles: account is the zero address");
+959	 return role.bearer[account];
+960	 }
+961	 }
+962	 pragma solidity 0.5.17;
+963	 interface IUnlock {
+964	 function initialize(address _unlockOwner) external;
+965	 function createLock( uint _expirationDuration, address _tokenAddress, uint _keyPrice, uint _maxNumberOfKeys, string calldata _lockName, bytes12 _salt ) external returns(address);
+966	 function recordKeyPurchase( uint _value, address _referrer ) external;
+967	 function recordConsumedDiscount( uint _discount, uint _tokens ) external;
+968	 function computeAvailableDiscountFor( address _purchaser, uint _keyPrice ) external view returns(uint discount, uint tokens);
+969	 function globalBaseTokenURI() external view returns(string memory);
+970	 function getGlobalBaseTokenURI() external view returns (string memory);
+971	 function globalTokenSymbol() external view returns(string memory);
+972	 function chainId() external view returns(uint);
+973	 function getGlobalTokenSymbol() external view returns (string memory);
+974	 function configUnlock( address _udt, address _weth, uint _estimatedGasForPurchase, string calldata _symbol, string calldata _URI, uint _chainId ) external;
+975	 function setLockTemplate( address payable _publicLockAddress ) external;
+976	 function resetTrackedValue( uint _grossNetworkProduct, uint _totalDiscountGranted ) external;
+977	 function grossNetworkProduct() external view returns(uint);
+978	 function totalDiscountGranted() external view returns(uint);
+979	 function locks(address) external view returns(bool deployed, uint totalSales, uint yieldedDiscountTokens);
+980	 function publicLockAddress() external view returns(address);
+981	 function uniswapOracles(address) external view returns(address);
+982	 function weth() external view returns(address);
+983	 function udt() external view returns(address);
+984	 function estimatedGasForPurchase() external view returns(uint);
+985	 function unlockVersion() external pure returns(uint16);
+986	 function setOracle( address _tokenAddress, address _oracleAddress ) external;
+987	 function isOwner() external view returns(bool);
+988	 function owner() external view returns(address);
+989	 function renounceOwnership() external;
+990	 function transferOwnership(address newOwner) external;
+991	 }
+992	 pragma solidity 0.5.17;
+993	 interface ILockKeyCancelHook {
+994	 function onKeyCancel( address operator, address to, uint256 refund ) external;
+995	 }
+996	 pragma solidity 0.5.17;
+997	 interface ILockKeyPurchaseHook {
+998	 function keyPurchasePrice( address from, address recipient, address referrer, bytes calldata data ) external view returns (uint minKeyPrice);
+999	 function onKeyPurchase( address from, address recipient, address referrer, bytes calldata data, uint minKeyPrice, uint pricePaid ) external;
+1000	 }
+1001	 pragma solidity 0.5.17;
+1002	 library UnlockUtils {
+1003	 function strConcat( string memory _a, string memory _b, string memory _c, string memory _d ) internal pure returns (string memory _concatenatedString) {
+1004	 return string(abi.encodePacked(_a, _b, _c, _d));
+1005	 }
+1006	 function uint2Str( uint _i ) internal pure returns (string memory _uintAsString) {
+1007	 uint c = _i;
+1008	 if (_i == 0) {
+1009	 return '0';
+1010	 }
+1011	 uint j = _i;
+1012	 uint len;
+1013	 while (j != 0) {
+1014	 len++;
+1015	 j /= 10;
+1016	 }
+1017	 bytes memory bstr = new bytes(len);
+1018	 uint k = len - 1;
+1019	 while (c != 0) {
+1020	 bstr[k--] = byte(uint8(48 + c % 10));
+1021	 c /= 10;
+1022	 }
+1023	 return string(bstr);
+1024	 }
+1025	 function address2Str( address _addr ) internal pure returns(string memory) {
+1026	 bytes32 value = bytes32(uint256(_addr));
+1027	 bytes memory alphabet = '0123456789abcdef';
+1028	 bytes memory str = new bytes(42);
+1029	 str[0] = '0';
+1030	 str[1] = 'x';
+1031	 for (uint i = 0; i < 20; i++) {
+1032	 str[2+i*2] = alphabet[uint8(value[i + 12] >> 4)];
+1033	 str[3+i*2] = alphabet[uint8(value[i + 12] & 0x0f)];
+1034	 }
+1035	 return string(str);
+1036	 }
+1037	 }
+1038	 pragma solidity ^0.5.0;
+1039	 library ECDSA {
+1040	 function recover(bytes32 hash, bytes memory signature) internal pure returns (address) {
+1041	 if (signature.length != 65) {
+1042	 return (address(0));
+1043	 }
+1044	 bytes32 r;
+1045	 bytes32 s;
+1046	 uint8 v;
+1047	 assembly {
+1048	 r := mload(add(signature, 0x20)) s := mload(add(signature, 0x40)) v := byte(0, mload(add(signature, 0x60))) }
+1049	 if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+1050	 return address(0);
+1051	 }
+1052	 if (v != 27 && v != 28) {
+1053	 return address(0);
+1054	 }
+1055	 return ecrecover(hash, v, r, s);
+1056	 }
+1057	 function toEthSignedMessageHash(bytes32 hash) internal pure returns (bytes32) {
+1058	 return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+1059	 }
+1060	 }
+1061	 pragma solidity ^0.5.0;
+1062	 contract IERC721Receiver {
+1063	 function onERC721Received(address operator, address from, uint256 tokenId, bytes memory data) public returns (bytes4);
+1064	 }

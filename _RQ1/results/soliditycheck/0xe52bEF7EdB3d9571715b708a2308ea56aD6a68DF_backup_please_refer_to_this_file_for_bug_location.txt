@@ -1,0 +1,331 @@
+row number 
+1	    pragma solidity 0.6.12;
+2	 contract PublicIDO {
+3	 using SafeMath for uint256;
+4	 address public immutable dev;
+5	 address public usdt;
+6	 address public plexus;
+7	 uint256 public price;
+8	 uint256 public priceP2;
+9	 uint256 public idoStartTime;
+10	 uint256 public idoEndTime;
+11	 uint256 public idoStartTimeP2;
+12	 uint256 public idoEndTimeP2;
+13	 uint256 public lockupBlock;
+14	 uint256 public claimDuringBlock;
+15	 uint256 public plexusTotalValue;
+16	 uint256 public plexusTotalValueP2;
+17	 uint256 public usdtHardCap;
+18	 uint256 public usdtSoftCap;
+19	 uint256 public userHardCap;
+20	 uint256 public userSoftCap;
+21	 uint256 public usdtHardCapP2;
+22	 uint256 public usdtSoftCapP2;
+23	 uint256 public userHardCapP2;
+24	 uint256 public userSoftCapP2;
+25	 uint256 public usdtTotalReciveAmount;
+26	 uint256 public usdtTotalReciveAmountP2;
+27	 address[] public userAddress;
+28	 address[] public userAddressP2;
+29	 uint256 public USDT_ACC_PRECESION = 1e6;
+30	 uint256 public PLX_ACC_PRECESION = 1e18;
+31	 struct UserInfo {
+32	 uint256 amount;
+33	 uint256 amountP2;
+34	 uint256 totalReward;
+35	 uint256 lastRewardBlock;
+36	 uint256 recivePLX;
+37	 }
+38	 mapping(address => UserInfo) public userInfo;
+39	 mapping(address => uint256) public userId;
+40	 mapping(address => uint256) public userIdP2;
+41	 event Deposit(address user, uint256 userDepositAmount, uint256 userPLXTotalReward);
+42	 event Claim(address user, uint256 userClaimAmount, uint256 userRecivePLX);
+43	 event refund(address user, uint256 refundAmount);
+44	 constructor(address _usdt, address _plexus) public {
+45	 usdt = _usdt;
+46	 plexus = _plexus;
+47	 claimDuringBlock = 518400;
+48	 dev = msg.sender;
+49	 }
+50	 function init( uint256 _plxTotalValue, uint256 _usdtHardCap, uint256 _usdtSoftCap, uint256 _userHardCap, uint256 _userSoftCap ) public {
+51	 require(msg.sender == dev);
+52	 plexusTotalValue = _plxTotalValue;
+53	 usdtHardCap = _usdtHardCap;
+54	 usdtSoftCap = _usdtSoftCap;
+55	 userHardCap = _userHardCap;
+56	 userSoftCap = _userSoftCap;
+57	 price = (usdtHardCap / (plexusTotalValue / PLX_ACC_PRECESION));
+58	 IERC20(plexus).transferFrom(msg.sender, address(this), plexusTotalValue);
+59	 }
+60	 function initP2( uint256 _plxTotalValueP2, uint256 _usdtHardCapP2, uint256 _usdtSoftCapP2, uint256 _userHardCapP2, uint256 _userSoftCapP2 ) public {
+61	 require(msg.sender == dev);
+62	 plexusTotalValueP2 = _plxTotalValueP2;
+63	 usdtHardCapP2 = _usdtHardCapP2;
+64	 usdtSoftCapP2 = _usdtSoftCapP2;
+65	 userHardCapP2 = _userHardCapP2;
+66	 userSoftCapP2 = _userSoftCapP2;
+67	 priceP2 = (usdtHardCapP2 / (plexusTotalValueP2 / PLX_ACC_PRECESION));
+68	 IERC20(plexus).transferFrom(msg.sender, address(this), plexusTotalValueP2);
+69	 }
+70	 function userLength() public view returns (uint256 user) {
+71	 return userAddress.length;
+72	 }
+73	 function userP2Length() public view returns (uint256 user) {
+74	 return userAddressP2.length;
+75	 }
+76	 function deposit(uint256 _userDepositAmount) public {
+77	 require(block.timestamp >= idoStartTime && block.timestamp <= idoEndTime, "PLEXUS : This is not IDO time.");
+78	 uint256 userDepositAmountInt = (_userDepositAmount / price) * price;
+79	 address depositUser = msg.sender;
+80	 require( usdtHardCap.sub(usdtTotalReciveAmount) >= userDepositAmountInt, "PLEXUS : The deposit amount exceeds the hardcap." );
+81	 TransferHelper.safeTransferFrom(usdt, depositUser, address(this), userDepositAmountInt);
+82	 if (userAddress.length == 0) {
+83	 userAddress.push(depositUser);
+84	 userId[depositUser] = userAddress.length - 1;
+85	 }
+86	 else if ((userId[depositUser] == 0 && userAddress[0] != depositUser)) {
+87	 userAddress.push(depositUser);
+88	 userId[depositUser] = userAddress.length - 1;
+89	 }
+90	 UserInfo memory user = userInfo[depositUser];
+91	 user.amount = user.amount.add(userDepositAmountInt);
+92	 require( _userDepositAmount >= userSoftCap && user.amount <= userHardCap, "PLEXUS : The deposit amount exceeds the hardcap." );
+93	 usdtTotalReciveAmount = usdtTotalReciveAmount.add(userDepositAmountInt);
+94	 user.totalReward = user.totalReward.add(userDepositAmountInt.mul(PLX_ACC_PRECESION) / price);
+95	 userInfo[depositUser] = user;
+96	 emit Deposit(depositUser, user.amount, user.totalReward);
+97	 }
+98	 function depositP2(uint256 _userDepositAmount) public {
+99	 require(block.timestamp >= idoStartTimeP2 && block.timestamp <= idoEndTimeP2, "PLEXUS : This is not IDO time.");
+100	 uint256 userDepositAmountInt = (_userDepositAmount / priceP2) * priceP2;
+101	 address depositUser = msg.sender;
+102	 require( usdtHardCapP2.sub(usdtTotalReciveAmountP2) >= userDepositAmountInt, "PLEXUS : The deposit amount exceeds the hardcap." );
+103	 IERC20(usdt).transferFrom(depositUser, address(this), userDepositAmountInt);
+104	 if (userAddressP2.length == 0) {
+105	 userAddressP2.push(depositUser);
+106	 userIdP2[depositUser] = userAddressP2.length - 1;
+107	 }
+108	 else if ((userIdP2[depositUser] == 0 && userAddressP2[0] != depositUser)) {
+109	 userAddressP2.push(depositUser);
+110	 userIdP2[depositUser] = userAddressP2.length - 1;
+111	 }
+112	 UserInfo memory user = userInfo[depositUser];
+113	 user.amountP2 = user.amountP2.add(userDepositAmountInt);
+114	 require( _userDepositAmount >= userSoftCapP2 && user.amountP2 <= userHardCapP2, "PLEXUS : The deposit amount exceeds the hardcap." );
+115	 usdtTotalReciveAmountP2 = usdtTotalReciveAmountP2.add(userDepositAmountInt);
+116	 user.totalReward = user.totalReward.add(userDepositAmountInt.mul(PLX_ACC_PRECESION) / priceP2);
+117	 userInfo[depositUser] = user;
+118	 emit Deposit(depositUser, user.amountP2, user.totalReward);
+119	 }
+120	 function pendingClaim(address _user) public view returns (uint256 pendingAmount) {
+121	 UserInfo memory user = userInfo[_user];
+122	 if (block.number > lockupBlock && lockupBlock != 0) {
+123	 uint256 claimBlock;
+124	 if (block.number > lockupBlock.add(claimDuringBlock)) {
+125	 if (user.lastRewardBlock <= lockupBlock.add(claimDuringBlock)) {
+126	 pendingAmount = user.totalReward.sub(user.recivePLX);
+127	 }
+128	 else pendingAmount = 0;
+129	 }
+130	 else {
+131	 if (userInfo[_user].lastRewardBlock < lockupBlock) {
+132	 claimBlock = block.number.sub(lockupBlock);
+133	 }
+134	 else {
+135	 claimBlock = block.number.sub(user.lastRewardBlock);
+136	 }
+137	 uint256 perBlock = (user.totalReward.mul(PLX_ACC_PRECESION)) / claimDuringBlock;
+138	 pendingAmount = claimBlock.mul(perBlock) / PLX_ACC_PRECESION;
+139	 }
+140	 }
+141	 else pendingAmount = 0;
+142	 }
+143	 function claim(address _user) public {
+144	 require(block.number >= lockupBlock && lockupBlock != 0, "PLEXUS : lockupBlock not set.");
+145	 UserInfo memory user = userInfo[_user];
+146	 uint256 claimAmount = pendingClaim(_user);
+147	 require(claimAmount != 0, "PLEXUS : There is no claimable amount.");
+148	 if (IERC20(plexus).balanceOf(address(this)) <= claimAmount) {
+149	 claimAmount = IERC20(plexus).balanceOf(address(this));
+150	 }
+151	 TransferHelper.safeTransfer(plexus, _user, claimAmount);
+152	 user.lastRewardBlock = block.number;
+153	 user.recivePLX += claimAmount;
+154	 userInfo[_user] = user;
+155	 emit Claim(_user, claimAmount, user.recivePLX);
+156	 }
+157	 function close(uint256 roopStart, uint256 roopEnd) public {
+158	 require(msg.sender == dev);
+159	 require(block.timestamp > idoEndTime);
+160	 uint256 usdtSoftCapInt = (usdtSoftCap / price) * price;
+161	 if (usdtTotalReciveAmount < usdtSoftCapInt) {
+162	 if (roopEnd >= userAddress.length) {
+163	 roopEnd = userAddress.length;
+164	 }
+165	 for (roopStart; roopStart < roopEnd; roopStart++) {
+166	 UserInfo memory user = userInfo[userAddress[roopStart]];
+167	 if (user.amount != 0) {
+168	 TransferHelper.safeTransfer(usdt, userAddress[roopStart], user.amount);
+169	 user.totalReward = user.totalReward.sub(user.amount.mul(PLX_ACC_PRECESION) / price);
+170	 emit refund(userAddress[roopStart], user.amount);
+171	 usdtTotalReciveAmount -= user.amount;
+172	 user.amount = 0;
+173	 userInfo[userAddress[roopStart]] = user;
+174	 }
+175	 }
+176	 }
+177	 else {
+178	 TransferHelper.safeTransfer(usdt, dev, usdtTotalReciveAmount);
+179	 }
+180	 }
+181	 function closeP2(uint256 roopStart, uint256 roopEnd) public {
+182	 require(msg.sender == dev);
+183	 require(block.timestamp > idoEndTime);
+184	 uint256 usdtSoftCapInt = (usdtSoftCapP2 / priceP2) * priceP2;
+185	 if (usdtTotalReciveAmountP2 < usdtSoftCapInt) {
+186	 if (roopEnd >= userAddressP2.length) {
+187	 roopEnd = userAddressP2.length;
+188	 }
+189	 for (roopStart; roopStart < roopEnd; roopStart++) {
+190	 UserInfo memory user = userInfo[userAddressP2[roopStart]];
+191	 if (user.amountP2 != 0) {
+192	 TransferHelper.safeTransfer(usdt, userAddressP2[roopStart], user.amountP2);
+193	 user.totalReward = user.totalReward.sub(user.amountP2.mul(PLX_ACC_PRECESION) / priceP2);
+194	 emit refund(userAddressP2[roopStart], user.amountP2);
+195	 usdtTotalReciveAmountP2 -= user.amountP2;
+196	 user.amountP2 = 0;
+197	 userInfo[userAddressP2[roopStart]] = user;
+198	 }
+199	 }
+200	 }
+201	 else {
+202	 TransferHelper.safeTransfer(usdt, dev, usdtTotalReciveAmountP2);
+203	 }
+204	 }
+205	 function emergencyWithdraw() public {
+206	 require(msg.sender == dev);
+207	 TransferHelper.safeTransfer(plexus, dev, IERC20(plexus).balanceOf(address(this)));
+208	 TransferHelper.safeTransfer(usdt, dev, IERC20(usdt).balanceOf(address(this)));
+209	 }
+210	 function setLockupBlock(uint256 _launchingBlock) public {
+211	 require(msg.sender == dev);
+212	 lockupBlock = _launchingBlock.add(172800);
+213	 }
+214	 function setIdoTime(uint256 _startTime, uint256 _endTime) public {
+215	 require(msg.sender == dev);
+216	 idoStartTime = _startTime;
+217	 idoEndTime = _endTime;
+218	 }
+219	 function setIdoTimeP2(uint256 _startTime, uint256 _endTime) public {
+220	 require(msg.sender == dev);
+221	 idoStartTimeP2 = _startTime;
+222	 idoEndTimeP2 = _endTime;
+223	 }
+224	 function idoClosePlxWithdraw() public {
+225	 require(msg.sender == dev);
+226	 uint256 plxWithdrawAmount = plexusTotalValue.sub((usdtTotalReciveAmount / price) * PLX_ACC_PRECESION);
+227	 TransferHelper.safeTransfer(plexus, dev, plxWithdrawAmount);
+228	 }
+229	 function idoClosePlxWithdrawP2() public {
+230	 require(msg.sender == dev);
+231	 uint256 plxWithdrawAmount = plexusTotalValueP2.sub((usdtTotalReciveAmountP2 / priceP2) * PLX_ACC_PRECESION);
+232	 TransferHelper.safeTransfer(plexus, dev, plxWithdrawAmount);
+233	 }
+234	 }
+235	 pragma solidity >=0.6.12;
+236	 library SafeMath {
+237	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+238	 uint256 c = a + b;
+239	 if (c < a) return (false, 0);
+240	 return (true, c);
+241	 }
+242	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+243	 if (b > a) return (false, 0);
+244	 return (true, a - b);
+245	 }
+246	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+247	 if (a == 0) return (true, 0);
+248	 uint256 c = a * b;
+249	 if (c / a != b) return (false, 0);
+250	 return (true, c);
+251	 }
+252	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+253	 if (b == 0) return (false, 0);
+254	 return (true, a / b);
+255	 }
+256	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+257	 if (b == 0) return (false, 0);
+258	 return (true, a % b);
+259	 }
+260	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+261	 uint256 c = a + b;
+262	 require(c >= a, "SafeMath: addition overflow");
+263	 return c;
+264	 }
+265	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+266	 require(b <= a, "SafeMath: subtraction overflow");
+267	 return a - b;
+268	 }
+269	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+270	 if (a == 0) return 0;
+271	 uint256 c = a * b;
+272	 require(c / a == b, "SafeMath: multiplication overflow");
+273	 return c;
+274	 }
+275	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+276	 require(b > 0, "SafeMath: division by zero");
+277	 return a / b;
+278	 }
+279	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+280	 require(b > 0, "SafeMath: modulo by zero");
+281	 return a % b;
+282	 }
+283	 function sub( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+284	 require(b <= a, errorMessage);
+285	 return a - b;
+286	 }
+287	 function div( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+288	 require(b > 0, errorMessage);
+289	 return a / b;
+290	 }
+291	 function mod( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+292	 require(b > 0, errorMessage);
+293	 return a % b;
+294	 }
+295	 }
+296	 pragma solidity >=0.6.12;
+297	 interface IERC20 {
+298	 event Approval(address indexed owner, address indexed spender, uint256 value);
+299	 event Transfer(address indexed from, address indexed to, uint256 value);
+300	 function name() external view returns (string memory);
+301	 function symbol() external view returns (string memory);
+302	 function decimals() external view returns (uint8);
+303	 function totalSupply() external view returns (uint256);
+304	 function balanceOf(address owner) external view returns (uint256);
+305	 function allowance(address owner, address spender) external view returns (uint256);
+306	 function approve(address spender, uint256 value) external returns (bool);
+307	 function transfer(address to, uint256 value) external returns (bool);
+308	 function transferFrom( address from, address to, uint256 value ) external returns (bool);
+309	 }
+310	 pragma solidity >=0.6.0;
+311	 library TransferHelper {
+312	 function safeApprove( address token, address to, uint256 value ) internal {
+313	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+314	 require(success && (data.length == 0 || abi.decode(data, (bool))), "TransferHelper: APPROVE_FAILED");
+315	 }
+316	 function safeTransfer( address token, address to, uint256 value ) internal {
+317	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+318	 require(success && (data.length == 0 || abi.decode(data, (bool))), "TransferHelper: TRANSFER_FAILED");
+319	 }
+320	 function safeTransferFrom( address token, address from, address to, uint256 value ) internal {
+321	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+322	 require(success && (data.length == 0 || abi.decode(data, (bool))), "TransferHelper: TRANSFER_FROM_FAILED");
+323	 }
+324	 function safeTransferETH(address to, uint256 value) internal {
+325	 (bool success, ) = to.call{
+326	 value: value }
+327	 (new bytes(0));
+328	 require(success, "TransferHelper: KLAY_TRANSFER_FAILED");
+329	 }
+330	 }

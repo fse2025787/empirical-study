@@ -1,0 +1,570 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.4.24 <0.8.0;
+3	 abstract contract Initializable {
+4	 bool private _initialized;
+5	 bool private _initializing;
+6	 modifier initializer() {
+7	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+8	 bool isTopLevelCall = !_initializing;
+9	 if (isTopLevelCall) {
+10	 _initializing = true;
+11	 _initialized = true;
+12	 }
+13	 _;
+14	 if (isTopLevelCall) {
+15	 _initializing = false;
+16	 }
+17	 }
+18	 function _isConstructor() private view returns (bool) {
+19	 return !AddressUpgradeable.isContract(address(this));
+20	 }
+21	 }
+22	 pragma solidity >=0.6.0 <0.8.0;
+23	 abstract contract ContextUpgradeable is Initializable {
+24	 function __Context_init() internal initializer {
+25	 __Context_init_unchained();
+26	 }
+27	 function __Context_init_unchained() internal initializer {
+28	 }
+29	 function _msgSender() internal view virtual returns (address payable) {
+30	 return msg.sender;
+31	 }
+32	 function _msgData() internal view virtual returns (bytes memory) {
+33	 this;
+34	 return msg.data;
+35	 }
+36	 uint256[50] private __gap;
+37	 }
+38	 pragma solidity 0.7.6;
+39	 abstract contract AdminControl is Initializable, ContextUpgradeable {
+40	 event NewAdmin(address oldAdmin, address newAdmin);
+41	 event NewPendingAdmin(address oldPendingAdmin, address newPendingAdmin);
+42	 address public admin;
+43	 address public pendingAdmin;
+44	 modifier onlyAdmin() {
+45	 require(_msgSender() == admin, "only admin");
+46	 _;
+47	 }
+48	 function __AdminControl_init(address admin_) internal initializer {
+49	 admin = admin_;
+50	 }
+51	 function setPendingAdmin(address newPendingAdmin_) external virtual onlyAdmin {
+52	 emit NewPendingAdmin(pendingAdmin, newPendingAdmin_);
+53	 pendingAdmin = newPendingAdmin_;
+54	 }
+55	 function acceptAdmin() external virtual {
+56	 require(_msgSender() == pendingAdmin, "only pending admin");
+57	 emit NewAdmin(admin, pendingAdmin);
+58	 admin = pendingAdmin;
+59	 pendingAdmin = address(0);
+60	 }
+61	 }
+62	 pragma solidity >=0.6.0 <0.8.0;
+63	 interface IERC20Upgradeable {
+64	 function totalSupply() external view returns (uint256);
+65	 function balanceOf(address account) external view returns (uint256);
+66	 function transfer(address recipient, uint256 amount) external returns (bool);
+67	 function allowance(address owner, address spender) external view returns (uint256);
+68	 function approve(address spender, uint256 amount) external returns (bool);
+69	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+70	 event Transfer(address indexed from, address indexed to, uint256 value);
+71	 event Approval(address indexed owner, address indexed spender, uint256 value);
+72	 }
+73	 pragma solidity >=0.6.0 <0.8.0;
+74	 abstract contract ReentrancyGuardUpgradeable is Initializable {
+75	 uint256 private constant _NOT_ENTERED = 1;
+76	 uint256 private constant _ENTERED = 2;
+77	 uint256 private _status;
+78	 function __ReentrancyGuard_init() internal initializer {
+79	 __ReentrancyGuard_init_unchained();
+80	 }
+81	 function __ReentrancyGuard_init_unchained() internal initializer {
+82	 _status = _NOT_ENTERED;
+83	 }
+84	 modifier nonReentrant() {
+85	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+86	 _status = _ENTERED;
+87	 _;
+88	 _status = _NOT_ENTERED;
+89	 }
+90	 uint256[49] private __gap;
+91	 }
+92	 pragma solidity 0.7.6;
+93	 interface IBondPool {
+94	 struct SlotDetail {
+95	 address issuer;
+96	 uint256 totalValue;
+97	 uint64 effectiveTime;
+98	 uint64 maturity;
+99	 bool isIssuerRefunded;
+100	 bool isValid;
+101	 }
+102	 event NewVoucher(address oldVoucher, address newVoucher);
+103	 event CreateSlot( uint256 indexed slot, address indexed issuer, uint64 effectiveTime, uint64 maturity );
+104	 event Mint( address indexed minter, uint256 indexed slot, uint256 value );
+105	 event Refund(uint256 indexed slot, address sender, uint256 refundAmount);
+106	 function mint( address minter_, uint256 slot_, uint256 mintValue_ ) external;
+107	 function claim( uint256 slot_, address to_, uint256 claimValue_ ) external returns (uint256);
+108	 function refund(uint256 slot_) external;
+109	 }
+110	 pragma solidity 0.7.6;
+111	 interface ERC20Interface {
+112	 function balanceOf(address account) external view returns (uint256);
+113	 function transfer(address recipient, uint256 amount) external returns (bool);
+114	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+115	 }
+116	 library ERC20TransferHelper {
+117	 function doTransferIn( address underlying, address from, uint256 amount ) internal returns (uint256) {
+118	 if (underlying == Constants.ETH_ADDRESS) {
+119	 require(tx.origin == from || msg.sender == from, "sender mismatch");
+120	 require(msg.value == amount, "value mismatch");
+121	 return amount;
+122	 }
+123	 else {
+124	 require(msg.value == 0, "don't support msg.value");
+125	 uint256 balanceBefore = ERC20Interface(underlying).balanceOf( address(this) );
+126	 (bool success, bytes memory data) = underlying.call( abi.encodeWithSelector( ERC20Interface.transferFrom.selector, from, address(this), amount ) );
+127	 require( success && (data.length == 0 || abi.decode(data, (bool))), "STF" );
+128	 uint256 balanceAfter = ERC20Interface(underlying).balanceOf( address(this) );
+129	 require( balanceAfter >= balanceBefore, "TOKEN_TRANSFER_IN_OVERFLOW" );
+130	 return balanceAfter - balanceBefore;
+131	 }
+132	 }
+133	 function doTransferOut( address underlying, address payable to, uint256 amount ) internal {
+134	 if (underlying == Constants.ETH_ADDRESS) {
+135	 (bool success, ) = to.call{
+136	 value: amount}
+137	 (new bytes(0));
+138	 require(success, "STE");
+139	 }
+140	 else {
+141	 (bool success, bytes memory data) = underlying.call( abi.encodeWithSelector( ERC20Interface.transfer.selector, to, amount ) );
+142	 require( success && (data.length == 0 || abi.decode(data, (bool))), "ST" );
+143	 }
+144	 }
+145	 function getCashPrior(address underlying_) internal view returns (uint256) {
+146	 if (underlying_ == Constants.ETH_ADDRESS) {
+147	 uint256 startingBalance = sub(address(this).balance, msg.value);
+148	 return startingBalance;
+149	 }
+150	 else {
+151	 ERC20Interface token = ERC20Interface(underlying_);
+152	 return token.balanceOf(address(this));
+153	 }
+154	 }
+155	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+156	 require(b <= a, "SafeMath: subtraction overflow");
+157	 return a - b;
+158	 }
+159	 }
+160	 pragma solidity 0.7.6;
+161	 library Constants {
+162	 enum ClaimType {
+163	 LINEAR, ONE_TIME, STAGED }
+164	 enum VoucherType {
+165	 STANDARD_VESTING, FLEXIBLE_DATE_VESTING, BOUNDING, DREAM }
+166	 uint32 internal constant FULL_PERCENTAGE = 10000;
+167	 address internal constant ETH_ADDRESS = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+168	 address internal constant ZERO_ADDRESS = 0x0000000000000000000000000000000000000000;
+169	 }
+170	 pragma solidity >=0.6.0 <0.8.0;
+171	 library SafeMathUpgradeable {
+172	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+173	 uint256 c = a + b;
+174	 if (c < a) return (false, 0);
+175	 return (true, c);
+176	 }
+177	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+178	 if (b > a) return (false, 0);
+179	 return (true, a - b);
+180	 }
+181	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+182	 if (a == 0) return (true, 0);
+183	 uint256 c = a * b;
+184	 if (c / a != b) return (false, 0);
+185	 return (true, c);
+186	 }
+187	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+188	 if (b == 0) return (false, 0);
+189	 return (true, a / b);
+190	 }
+191	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+192	 if (b == 0) return (false, 0);
+193	 return (true, a % b);
+194	 }
+195	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+196	 uint256 c = a + b;
+197	 require(c >= a, "SafeMath: addition overflow");
+198	 return c;
+199	 }
+200	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+201	 require(b <= a, "SafeMath: subtraction overflow");
+202	 return a - b;
+203	 }
+204	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+205	 if (a == 0) return 0;
+206	 uint256 c = a * b;
+207	 require(c / a == b, "SafeMath: multiplication overflow");
+208	 return c;
+209	 }
+210	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+211	 require(b > 0, "SafeMath: division by zero");
+212	 return a / b;
+213	 }
+214	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+215	 require(b > 0, "SafeMath: modulo by zero");
+216	 return a % b;
+217	 }
+218	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+219	 require(b <= a, errorMessage);
+220	 return a - b;
+221	 }
+222	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+223	 require(b > 0, errorMessage);
+224	 return a / b;
+225	 }
+226	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+227	 require(b > 0, errorMessage);
+228	 return a % b;
+229	 }
+230	 }
+231	 pragma solidity >=0.6.0 <0.8.0;
+232	 contract ERC20Upgradeable is Initializable, ContextUpgradeable, IERC20Upgradeable {
+233	 using SafeMathUpgradeable for uint256;
+234	 mapping (address => uint256) private _balances;
+235	 mapping (address => mapping (address => uint256)) private _allowances;
+236	 uint256 private _totalSupply;
+237	 string private _name;
+238	 string private _symbol;
+239	 uint8 private _decimals;
+240	 function __ERC20_init(string memory name_, string memory symbol_) internal initializer {
+241	 __Context_init_unchained();
+242	 __ERC20_init_unchained(name_, symbol_);
+243	 }
+244	 function __ERC20_init_unchained(string memory name_, string memory symbol_) internal initializer {
+245	 _name = name_;
+246	 _symbol = symbol_;
+247	 _decimals = 18;
+248	 }
+249	 function name() public view virtual returns (string memory) {
+250	 return _name;
+251	 }
+252	 function symbol() public view virtual returns (string memory) {
+253	 return _symbol;
+254	 }
+255	 function decimals() public view virtual returns (uint8) {
+256	 return _decimals;
+257	 }
+258	 function totalSupply() public view virtual override returns (uint256) {
+259	 return _totalSupply;
+260	 }
+261	 function balanceOf(address account) public view virtual override returns (uint256) {
+262	 return _balances[account];
+263	 }
+264	 function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+265	 _transfer(_msgSender(), recipient, amount);
+266	 return true;
+267	 }
+268	 function allowance(address owner, address spender) public view virtual override returns (uint256) {
+269	 return _allowances[owner][spender];
+270	 }
+271	 function approve(address spender, uint256 amount) public virtual override returns (bool) {
+272	 _approve(_msgSender(), spender, amount);
+273	 return true;
+274	 }
+275	 function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+276	 _transfer(sender, recipient, amount);
+277	 _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+278	 return true;
+279	 }
+280	 function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+281	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+282	 return true;
+283	 }
+284	 function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+285	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+286	 return true;
+287	 }
+288	 function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+289	 require(sender != address(0), "ERC20: transfer from the zero address");
+290	 require(recipient != address(0), "ERC20: transfer to the zero address");
+291	 _beforeTokenTransfer(sender, recipient, amount);
+292	 _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+293	 _balances[recipient] = _balances[recipient].add(amount);
+294	 emit Transfer(sender, recipient, amount);
+295	 }
+296	 function _mint(address account, uint256 amount) internal virtual {
+297	 require(account != address(0), "ERC20: mint to the zero address");
+298	 _beforeTokenTransfer(address(0), account, amount);
+299	 _totalSupply = _totalSupply.add(amount);
+300	 _balances[account] = _balances[account].add(amount);
+301	 emit Transfer(address(0), account, amount);
+302	 }
+303	 function _burn(address account, uint256 amount) internal virtual {
+304	 require(account != address(0), "ERC20: burn from the zero address");
+305	 _beforeTokenTransfer(account, address(0), amount);
+306	 _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+307	 _totalSupply = _totalSupply.sub(amount);
+308	 emit Transfer(account, address(0), amount);
+309	 }
+310	 function _approve(address owner, address spender, uint256 amount) internal virtual {
+311	 require(owner != address(0), "ERC20: approve from the zero address");
+312	 require(spender != address(0), "ERC20: approve to the zero address");
+313	 _allowances[owner][spender] = amount;
+314	 emit Approval(owner, spender, amount);
+315	 }
+316	 function _setupDecimals(uint8 decimals_) internal virtual {
+317	 _decimals = decimals_;
+318	 }
+319	 function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual {
+320	 }
+321	 uint256[44] private __gap;
+322	 }
+323	 pragma solidity >=0.6.2 <0.8.0;
+324	 library AddressUpgradeable {
+325	 function isContract(address account) internal view returns (bool) {
+326	 uint256 size;
+327	 assembly {
+328	 size := extcodesize(account) }
+329	 return size > 0;
+330	 }
+331	 function sendValue(address payable recipient, uint256 amount) internal {
+332	 require(address(this).balance >= amount, "Address: insufficient balance");
+333	 (bool success, ) = recipient.call{
+334	 value: amount }
+335	 ("");
+336	 require(success, "Address: unable to send value, recipient may have reverted");
+337	 }
+338	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+339	 return functionCall(target, data, "Address: low-level call failed");
+340	 }
+341	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+342	 return functionCallWithValue(target, data, 0, errorMessage);
+343	 }
+344	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+345	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+346	 }
+347	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+348	 require(address(this).balance >= value, "Address: insufficient balance for call");
+349	 require(isContract(target), "Address: call to non-contract");
+350	 (bool success, bytes memory returndata) = target.call{
+351	 value: value }
+352	 (data);
+353	 return _verifyCallResult(success, returndata, errorMessage);
+354	 }
+355	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+356	 return functionStaticCall(target, data, "Address: low-level static call failed");
+357	 }
+358	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+359	 require(isContract(target), "Address: static call to non-contract");
+360	 (bool success, bytes memory returndata) = target.staticcall(data);
+361	 return _verifyCallResult(success, returndata, errorMessage);
+362	 }
+363	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+364	 if (success) {
+365	 return returndata;
+366	 }
+367	 else {
+368	 if (returndata.length > 0) {
+369	 assembly {
+370	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+371	 }
+372	 else {
+373	 revert(errorMessage);
+374	 }
+375	 }
+376	 }
+377	 }
+378	 pragma solidity >=0.6.0 <0.8.0;
+379	 library EnumerableSetUpgradeable {
+380	 struct Set {
+381	 bytes32[] _values;
+382	 mapping (bytes32 => uint256) _indexes;
+383	 }
+384	 function _add(Set storage set, bytes32 value) private returns (bool) {
+385	 if (!_contains(set, value)) {
+386	 set._values.push(value);
+387	 set._indexes[value] = set._values.length;
+388	 return true;
+389	 }
+390	 else {
+391	 return false;
+392	 }
+393	 }
+394	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+395	 uint256 valueIndex = set._indexes[value];
+396	 if (valueIndex != 0) {
+397	 uint256 toDeleteIndex = valueIndex - 1;
+398	 uint256 lastIndex = set._values.length - 1;
+399	 bytes32 lastvalue = set._values[lastIndex];
+400	 set._values[toDeleteIndex] = lastvalue;
+401	 set._indexes[lastvalue] = toDeleteIndex + 1;
+402	 set._values.pop();
+403	 delete set._indexes[value];
+404	 return true;
+405	 }
+406	 else {
+407	 return false;
+408	 }
+409	 }
+410	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+411	 return set._indexes[value] != 0;
+412	 }
+413	 function _length(Set storage set) private view returns (uint256) {
+414	 return set._values.length;
+415	 }
+416	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+417	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+418	 return set._values[index];
+419	 }
+420	 struct Bytes32Set {
+421	 Set _inner;
+422	 }
+423	 function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+424	 return _add(set._inner, value);
+425	 }
+426	 function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+427	 return _remove(set._inner, value);
+428	 }
+429	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+430	 return _contains(set._inner, value);
+431	 }
+432	 function length(Bytes32Set storage set) internal view returns (uint256) {
+433	 return _length(set._inner);
+434	 }
+435	 function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+436	 return _at(set._inner, index);
+437	 }
+438	 struct AddressSet {
+439	 Set _inner;
+440	 }
+441	 function add(AddressSet storage set, address value) internal returns (bool) {
+442	 return _add(set._inner, bytes32(uint256(uint160(value))));
+443	 }
+444	 function remove(AddressSet storage set, address value) internal returns (bool) {
+445	 return _remove(set._inner, bytes32(uint256(uint160(value))));
+446	 }
+447	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+448	 return _contains(set._inner, bytes32(uint256(uint160(value))));
+449	 }
+450	 function length(AddressSet storage set) internal view returns (uint256) {
+451	 return _length(set._inner);
+452	 }
+453	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+454	 return address(uint160(uint256(_at(set._inner, index))));
+455	 }
+456	 struct UintSet {
+457	 Set _inner;
+458	 }
+459	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+460	 return _add(set._inner, bytes32(value));
+461	 }
+462	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+463	 return _remove(set._inner, bytes32(value));
+464	 }
+465	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+466	 return _contains(set._inner, bytes32(value));
+467	 }
+468	 function length(UintSet storage set) internal view returns (uint256) {
+469	 return _length(set._inner);
+470	 }
+471	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+472	 return uint256(_at(set._inner, index));
+473	 }
+474	 }
+475	 pragma solidity 0.7.6;
+476	 contract BondPool is IBondPool, AdminControl, ReentrancyGuardUpgradeable {
+477	 using SafeMathUpgradeable for uint256;
+478	 using EnumerableSetUpgradeable for EnumerableSetUpgradeable.UintSet;
+479	 mapping(uint256 => SlotDetail) internal _slotDetails;
+480	 mapping(address => EnumerableSetUpgradeable.UintSet) internal _issuerSlots;
+481	 mapping(uint256 => uint256) public slotBalances;
+482	 uint8 public valueDecimals;
+483	 address public fundCurrency;
+484	 address public voucher;
+485	 string public issuerName;
+486	 modifier onlyVoucher() {
+487	 require(_msgSender() == voucher, "only voucher");
+488	 _;
+489	 }
+490	 function initialize(uint8 valueDecimals_, address fundCurrency_, string calldata issuerName_) external initializer {
+491	 AdminControl.__AdminControl_init(_msgSender());
+492	 valueDecimals = valueDecimals_;
+493	 fundCurrency = fundCurrency_;
+494	 issuerName = issuerName_;
+495	 }
+496	 function createSlot( address issuer_, uint64 effectiveTime_, uint64 maturity_ ) external onlyVoucher returns (uint256 slot) {
+497	 validateSlotParams(issuer_, effectiveTime_, maturity_);
+498	 slot = getSlot(issuer_, effectiveTime_, maturity_);
+499	 require(!_slotDetails[slot].isValid, "slot already existed");
+500	 SlotDetail storage slotDetail = _slotDetails[slot];
+501	 slotDetail.issuer = issuer_;
+502	 slotDetail.effectiveTime = effectiveTime_;
+503	 slotDetail.maturity = maturity_;
+504	 slotDetail.isValid = true;
+505	 _issuerSlots[issuer_].add(slot);
+506	 emit CreateSlot(slot, issuer_, effectiveTime_, maturity_);
+507	 }
+508	 function validateSlotParams( address issuer_, uint64 effectiveTime_, uint64 maturity_ ) public pure {
+509	 require(issuer_ != address(0), "issuer cannot be 0 address");
+510	 require(effectiveTime_ > 0 && effectiveTime_ < maturity_, "invalid time");
+511	 }
+512	 function mint( address minter_, uint256 slot_, uint256 mintValue_ ) external override nonReentrant onlyVoucher {
+513	 require(minter_ != address(0), "minter cannot be 0 address");
+514	 require(mintValue_ != 0, "mint value cannot be 0");
+515	 SlotDetail storage slotDetail = _slotDetails[slot_];
+516	 require(slotDetail.isValid, "invalid slot");
+517	 require( !slotDetail.isIssuerRefunded && block.timestamp < slotDetail.maturity, "non-mintable slot" );
+518	 slotDetail.totalValue = slotDetail.totalValue.add(mintValue_);
+519	 emit Mint(minter_, slot_, mintValue_);
+520	 }
+521	 function refund(uint256 slot_) external override nonReentrant {
+522	 SlotDetail storage slotDetail = _slotDetails[slot_];
+523	 require(slotDetail.isValid, "invalid slot");
+524	 require(!slotDetail.isIssuerRefunded, "already refunded");
+525	 slotDetail.isIssuerRefunded = true;
+526	 uint8 currencyDecimals = ERC20Upgradeable(fundCurrency).decimals();
+527	 uint256 currencyAmount = slotDetail.totalValue.mul(10**currencyDecimals).div(10**valueDecimals);
+528	 slotBalances[slot_] = slotBalances[slot_].add(currencyAmount);
+529	 ERC20TransferHelper.doTransferIn(fundCurrency,_msgSender(),currencyAmount);
+530	 emit Refund(slot_, _msgSender(), currencyAmount);
+531	 }
+532	 function claim(uint256 slot_, address to_, uint256 claimValue_) external override onlyVoucher nonReentrant returns (uint256 claimCurrencyAmount) {
+533	 SlotDetail storage slotDetail = _slotDetails[slot_];
+534	 require(slotDetail.isValid, "invalid slot");
+535	 require(slotDetail.isIssuerRefunded, "not refunded");
+536	 claimCurrencyAmount = claimValue_ .mul(10 ** ERC20Upgradeable(fundCurrency).decimals()) .div(10 ** valueDecimals);
+537	 if (claimCurrencyAmount > 0) {
+538	 uint256 reservedCurrencyAmount = slotBalances[slot_];
+539	 if (claimCurrencyAmount > reservedCurrencyAmount) {
+540	 claimCurrencyAmount = reservedCurrencyAmount;
+541	 }
+542	 slotBalances[slot_] = reservedCurrencyAmount.sub(claimCurrencyAmount);
+543	 ERC20TransferHelper.doTransferOut(fundCurrency, payable(to_), claimCurrencyAmount);
+544	 }
+545	 }
+546	 function getSlot( address issuer_, uint64 effectiveTime_, uint64 maturity_ ) public view returns (uint256) {
+547	 return uint256( keccak256( abi.encode( voucher, issuer_, effectiveTime_, maturity_ ) ) );
+548	 }
+549	 function getSlotDetail(uint256 slot_) external view returns (SlotDetail memory) {
+550	 return _slotDetails[slot_];
+551	 }
+552	 function getIssuerSlots(address issuer_) external view returns (uint256[] memory slots) {
+553	 slots = new uint256[](_issuerSlots[issuer_].length());
+554	 for (uint256 i = 0; i < slots.length; i++) {
+555	 slots[i] = _issuerSlots[issuer_].at(i);
+556	 }
+557	 }
+558	 function getIssuerSlotDetails(address issuer_) external view returns (SlotDetail[] memory slotDetails) {
+559	 slotDetails = new SlotDetail[](_issuerSlots[issuer_].length());
+560	 for (uint256 i = 0; i < slotDetails.length; i++) {
+561	 slotDetails[i] = _slotDetails[_issuerSlots[issuer_].at(i)];
+562	 }
+563	 }
+564	 function setVoucher(address newVoucher_) external onlyAdmin {
+565	 require(newVoucher_ != address(0), "new voucher cannot be 0 address");
+566	 emit NewVoucher(voucher, newVoucher_);
+567	 voucher = newVoucher_;
+568	 }
+569	 }

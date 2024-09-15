@@ -1,0 +1,309 @@
+row number 
+1	     pragma solidity ^0.5.0;
+2	 contract Context {
+3	 constructor () internal {
+4	 }
+5	 function _msgSender() internal view returns (address payable) {
+6	 return msg.sender;
+7	 }
+8	 function _msgData() internal view returns (bytes memory) {
+9	 this;
+10	 return msg.data;
+11	 }
+12	 }
+13	 pragma solidity ^0.5.0;
+14	 contract ReentrancyGuard {
+15	 bool private _notEntered;
+16	 constructor () internal {
+17	 _notEntered = true;
+18	 }
+19	 modifier nonReentrant() {
+20	 require(_notEntered, "ReentrancyGuard: reentrant call");
+21	 _notEntered = false;
+22	 _;
+23	 _notEntered = true;
+24	 }
+25	 }
+26	 pragma solidity ^0.5.0;
+27	 contract PauserRole is Context {
+28	 using Roles for Roles.Role;
+29	 event PauserAdded(address indexed account);
+30	 event PauserRemoved(address indexed account);
+31	 Roles.Role private _pausers;
+32	 constructor () internal {
+33	 _addPauser(_msgSender());
+34	 }
+35	 modifier onlyPauser() {
+36	 require(isPauser(_msgSender()), "PauserRole: caller does not have the Pauser role");
+37	 _;
+38	 }
+39	 function isPauser(address account) public view returns (bool) {
+40	 return _pausers.has(account);
+41	 }
+42	 function addPauser(address account) public onlyPauser {
+43	 _addPauser(account);
+44	 }
+45	 function renouncePauser() public {
+46	 _removePauser(_msgSender());
+47	 }
+48	 function _addPauser(address account) internal {
+49	 _pausers.add(account);
+50	 emit PauserAdded(account);
+51	 }
+52	 function _removePauser(address account) internal {
+53	 _pausers.remove(account);
+54	 emit PauserRemoved(account);
+55	 }
+56	 }
+57	 pragma solidity ^0.5.0;
+58	 contract Crowdsale is Context, ReentrancyGuard {
+59	 using SafeMath for uint256;
+60	 using SafeERC20 for IERC20;
+61	 IERC20 private _token;
+62	 address payable private _wallet;
+63	 uint256 private _rate;
+64	 uint256 private _weiRaised;
+65	 event TokensPurchased(address indexed purchaser, address indexed beneficiary, uint256 value, uint256 amount);
+66	 constructor (uint256 rate, address payable wallet, IERC20 token) public {
+67	 require(rate > 0, "Crowdsale: rate is 0");
+68	 require(wallet != address(0), "Crowdsale: wallet is the zero address");
+69	 require(address(token) != address(0), "Crowdsale: token is the zero address");
+70	 _rate = rate;
+71	 _wallet = wallet;
+72	 _token = token;
+73	 }
+74	 function () external payable {
+75	 buyTokens(_msgSender());
+76	 }
+77	 function token() public view returns (IERC20) {
+78	 return _token;
+79	 }
+80	 function wallet() public view returns (address payable) {
+81	 return _wallet;
+82	 }
+83	 function rate() public view returns (uint256) {
+84	 return _rate;
+85	 }
+86	 function weiRaised() public view returns (uint256) {
+87	 return _weiRaised;
+88	 }
+89	 function buyTokens(address beneficiary) public nonReentrant payable {
+90	 uint256 weiAmount = msg.value;
+91	 _preValidatePurchase(beneficiary, weiAmount);
+92	 uint256 tokens = _getTokenAmount(weiAmount);
+93	 _weiRaised = _weiRaised.add(weiAmount);
+94	 _processPurchase(beneficiary, tokens);
+95	 emit TokensPurchased(_msgSender(), beneficiary, weiAmount, tokens);
+96	 _updatePurchasingState(beneficiary, weiAmount);
+97	 _forwardFunds();
+98	 _postValidatePurchase(beneficiary, weiAmount);
+99	 }
+100	 function _preValidatePurchase(address beneficiary, uint256 weiAmount) internal view {
+101	 require(beneficiary != address(0), "Crowdsale: beneficiary is the zero address");
+102	 require(weiAmount != 0, "Crowdsale: weiAmount is 0");
+103	 this;
+104	 }
+105	 function _postValidatePurchase(address beneficiary, uint256 weiAmount) internal view {
+106	 }
+107	 function _deliverTokens(address beneficiary, uint256 tokenAmount) internal {
+108	 _token.safeTransfer(beneficiary, tokenAmount);
+109	 }
+110	 function _processPurchase(address beneficiary, uint256 tokenAmount) internal {
+111	 _deliverTokens(beneficiary, tokenAmount);
+112	 }
+113	 function _updatePurchasingState(address beneficiary, uint256 weiAmount) internal {
+114	 }
+115	 function _getTokenAmount(uint256 weiAmount) internal view returns (uint256) {
+116	 return weiAmount.mul(_rate);
+117	 }
+118	 function _forwardFunds() internal {
+119	 _wallet.transfer(msg.value);
+120	 }
+121	 }
+122	 pragma solidity ^0.5.0;
+123	 contract Pausable is Context, PauserRole {
+124	 event Paused(address account);
+125	 event Unpaused(address account);
+126	 bool private _paused;
+127	 constructor () internal {
+128	 _paused = false;
+129	 }
+130	 function paused() public view returns (bool) {
+131	 return _paused;
+132	 }
+133	 modifier whenNotPaused() {
+134	 require(!_paused, "Pausable: paused");
+135	 _;
+136	 }
+137	 modifier whenPaused() {
+138	 require(_paused, "Pausable: not paused");
+139	 _;
+140	 }
+141	 function pause() public onlyPauser whenNotPaused {
+142	 _paused = true;
+143	 emit Paused(_msgSender());
+144	 }
+145	 function unpause() public onlyPauser whenPaused {
+146	 _paused = false;
+147	 emit Unpaused(_msgSender());
+148	 }
+149	 }
+150	 pragma solidity ^0.5.0;
+151	 contract PausableCrowdsale is Crowdsale, Pausable {
+152	 function _preValidatePurchase(address _beneficiary, uint256 _weiAmount) internal view whenNotPaused {
+153	 return super._preValidatePurchase(_beneficiary, _weiAmount);
+154	 }
+155	 }
+156	 pragma solidity ^0.5.0;
+157	 contract AllowanceCrowdsale is Crowdsale {
+158	 using SafeMath for uint256;
+159	 using SafeERC20 for IERC20;
+160	 address private _tokenWallet;
+161	 constructor (address tokenWallet) public {
+162	 require(tokenWallet != address(0), "AllowanceCrowdsale: token wallet is the zero address");
+163	 _tokenWallet = tokenWallet;
+164	 }
+165	 function tokenWallet() public view returns (address) {
+166	 return _tokenWallet;
+167	 }
+168	 function remainingTokens() public view returns (uint256) {
+169	 return Math.min(token().balanceOf(_tokenWallet), token().allowance(_tokenWallet, address(this)));
+170	 }
+171	 function _deliverTokens(address beneficiary, uint256 tokenAmount) internal {
+172	 token().safeTransferFrom(_tokenWallet, beneficiary, tokenAmount);
+173	 }
+174	 }
+175	 pragma solidity ^0.5.5;
+176	 contract TokenCrowdsale is Crowdsale, PausableCrowdsale, AllowanceCrowdsale {
+177	 constructor( uint256 rate, address payable wallet, IERC20 token, address tokenWallet ) AllowanceCrowdsale(tokenWallet) Crowdsale(rate, wallet, token) public {
+178	 }
+179	 }
+180	 pragma solidity ^0.5.5;
+181	 library Address {
+182	 function isContract(address account) internal view returns (bool) {
+183	 bytes32 codehash;
+184	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+185	 assembly {
+186	 codehash := extcodehash(account) }
+187	 return (codehash != accountHash && codehash != 0x0);
+188	 }
+189	 function toPayable(address account) internal pure returns (address payable) {
+190	 return address(uint160(account));
+191	 }
+192	 function sendValue(address payable recipient, uint256 amount) internal {
+193	 require(address(this).balance >= amount, "Address: insufficient balance");
+194	 (bool success, ) = recipient.call.value(amount)("");
+195	 require(success, "Address: unable to send value, recipient may have reverted");
+196	 }
+197	 }
+198	 pragma solidity ^0.5.0;
+199	 library SafeERC20 {
+200	 using SafeMath for uint256;
+201	 using Address for address;
+202	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+203	 callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+204	 }
+205	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+206	 callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+207	 }
+208	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+209	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+210	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+211	 }
+212	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+213	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+214	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+215	 }
+216	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+217	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+218	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+219	 }
+220	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+221	 require(address(token).isContract(), "SafeERC20: call to non-contract");
+222	 (bool success, bytes memory returndata) = address(token).call(data);
+223	 require(success, "SafeERC20: low-level call failed");
+224	 if (returndata.length > 0) {
+225	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+226	 }
+227	 }
+228	 }
+229	 pragma solidity ^0.5.0;
+230	 interface IERC20 {
+231	 function totalSupply() external view returns (uint256);
+232	 function balanceOf(address account) external view returns (uint256);
+233	 function transfer(address recipient, uint256 amount) external returns (bool);
+234	 function allowance(address owner, address spender) external view returns (uint256);
+235	 function approve(address spender, uint256 amount) external returns (bool);
+236	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+237	 event Transfer(address indexed from, address indexed to, uint256 value);
+238	 event Approval(address indexed owner, address indexed spender, uint256 value);
+239	 }
+240	 pragma solidity ^0.5.0;
+241	 library SafeMath {
+242	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+243	 uint256 c = a + b;
+244	 require(c >= a, "SafeMath: addition overflow");
+245	 return c;
+246	 }
+247	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+248	 return sub(a, b, "SafeMath: subtraction overflow");
+249	 }
+250	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+251	 require(b <= a, errorMessage);
+252	 uint256 c = a - b;
+253	 return c;
+254	 }
+255	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+256	 if (a == 0) {
+257	 return 0;
+258	 }
+259	 uint256 c = a * b;
+260	 require(c / a == b, "SafeMath: multiplication overflow");
+261	 return c;
+262	 }
+263	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+264	 return div(a, b, "SafeMath: division by zero");
+265	 }
+266	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+267	 require(b > 0, errorMessage);
+268	 uint256 c = a / b;
+269	 return c;
+270	 }
+271	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+272	 return mod(a, b, "SafeMath: modulo by zero");
+273	 }
+274	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+275	 require(b != 0, errorMessage);
+276	 return a % b;
+277	 }
+278	 }
+279	 pragma solidity ^0.5.0;
+280	 library Math {
+281	 function max(uint256 a, uint256 b) internal pure returns (uint256) {
+282	 return a >= b ? a : b;
+283	 }
+284	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+285	 return a < b ? a : b;
+286	 }
+287	 function average(uint256 a, uint256 b) internal pure returns (uint256) {
+288	 return (a / 2) + (b / 2) + ((a % 2 + b % 2) / 2);
+289	 }
+290	 }
+291	 pragma solidity ^0.5.0;
+292	 library Roles {
+293	 struct Role {
+294	 mapping (address => bool) bearer;
+295	 }
+296	 function add(Role storage role, address account) internal {
+297	 require(!has(role, account), "Roles: account already has role");
+298	 role.bearer[account] = true;
+299	 }
+300	 function remove(Role storage role, address account) internal {
+301	 require(has(role, account), "Roles: account does not have role");
+302	 role.bearer[account] = false;
+303	 }
+304	 function has(Role storage role, address account) internal view returns (bool) {
+305	 require(account != address(0), "Roles: account is the zero address");
+306	 return role.bearer[account];
+307	 }
+308	 }

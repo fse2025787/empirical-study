@@ -1,0 +1,84 @@
+row number 
+1	         pragma solidity ^0.7.5;
+2	 interface IERC20 {
+3	 function totalSupply() external view returns (uint256);
+4	 function decimals() external view returns (uint256);
+5	 function balanceOf(address account) external view returns (uint256);
+6	 function transfer(address recipient, uint256 amount) external returns (bool);
+7	 function allowance(address owner, address spender) external view returns (uint256);
+8	 function approve(address spender, uint256 amount) external returns (bool);
+9	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+10	 }
+11	 interface ILendingPool {
+12	 function borrow( address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf ) external;
+13	 function repay( address asset, uint256 amount, uint256 rateMode, address onBehalfOf ) external returns (uint256);
+14	 }
+15	 interface IyVault {
+16	 function token() external view returns (address);
+17	 function deposit(uint, address) external returns (uint);
+18	 function withdraw(uint, address, uint) external returns (uint);
+19	 function permit(address, address, uint, uint, bytes32) external view returns (bool);
+20	 }
+21	 interface IyRegistry {
+22	 function latestVault(address) external view returns (address);
+23	 }
+24	 interface IProtocolDataProvider {
+25	 function getReserveTokensAddresses(address asset) external view returns (address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress);
+26	 }
+27	 interface IDebtToken {
+28	 function borrowAllowance(address, address) external view returns (uint);
+29	 }
+30	 contract yDelegate {
+31	 ILendingPool constant public lendingPool = ILendingPool(0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9);
+32	 IyRegistry constant public registry = IyRegistry(0xE15461B18EE31b7379019Dc523231C57d1Cbc18c);
+33	 IProtocolDataProvider constant public provider = IProtocolDataProvider(0x057835Ad21a177dbdd3090bB1CAE03EaCF78Fc6d);
+34	 function approval(address token) external view returns (address) {
+35	 (, , address variableDebtTokenAddress) = provider.getReserveTokensAddresses(token);
+36	 return variableDebtTokenAddress;
+37	 }
+38	 function vault(address token) external view returns (address) {
+39	 return registry.latestVault(token);
+40	 }
+41	 function available(address delegate, address token) external view returns (uint) {
+42	 (, , address variableDebtTokenAddress) = provider.getReserveTokensAddresses(token);
+43	 return IDebtToken(variableDebtTokenAddress).borrowAllowance(delegate, address(this));
+44	 }
+45	 function depositAll(address token) external {
+46	 (, , address variableDebtTokenAddress) = provider.getReserveTokensAddresses(token);
+47	 uint256 variableAllowance = IDebtToken(variableDebtTokenAddress).borrowAllowance(msg.sender, address(this));
+48	 _deposit(token, variableAllowance);
+49	 }
+50	 function deposit(address token, uint amount) external {
+51	 _deposit(token, amount);
+52	 }
+53	 function _deposit(address token, uint amount) internal {
+54	 IyVault _vault = IyVault(registry.latestVault(token));
+55	 lendingPool.borrow(token, amount, 2, 7, msg.sender);
+56	 IERC20(token).approve(address(_vault), amount);
+57	 _vault.deposit(amount, msg.sender);
+58	 }
+59	 function withdrawAll(address token, uint maxLoss) external {
+60	 IyVault _vault = IyVault(registry.latestVault(token));
+61	 _withdraw(_vault, token, IERC20(address(_vault)).balanceOf(msg.sender), maxLoss);
+62	 }
+63	 function withdrawAllWithPermit(address token, uint maxLoss, uint expiry, bytes32 signature) external {
+64	 IyVault _vault = IyVault(registry.latestVault(token));
+65	 uint _amount = IERC20(address(_vault)).balanceOf(msg.sender);
+66	 _vault.permit(msg.sender, address(this), _amount, expiry, signature);
+67	 _withdraw(_vault, token, _amount, maxLoss);
+68	 }
+69	 function withdraw(address token, uint amount, uint maxLoss) external {
+70	 IyVault _vault = IyVault(registry.latestVault(token));
+71	 _withdraw(_vault, token, amount, maxLoss);
+72	 }
+73	 function withdrawWithPermit(address token, uint amount, uint maxLoss, uint expiry, bytes32 signature) external {
+74	 IyVault _vault = IyVault(registry.latestVault(token));
+75	 _vault.permit(msg.sender, address(this), amount, expiry, signature);
+76	 _withdraw(_vault, token, amount, maxLoss);
+77	 }
+78	 function _withdraw(IyVault _vault, address token, uint amount, uint maxLoss) internal {
+79	 IERC20(address(_vault)).transferFrom(msg.sender, address(this), amount);
+80	 uint _amount = _vault.withdraw(amount, address(this), maxLoss);
+81	 lendingPool.repay(token, _amount, 2, msg.sender);
+82	 }
+83	 }

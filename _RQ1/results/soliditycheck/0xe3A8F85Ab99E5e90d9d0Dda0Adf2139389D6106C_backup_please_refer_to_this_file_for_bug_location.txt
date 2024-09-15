@@ -1,0 +1,129 @@
+row number 
+1	       pragma solidity ^0.5.17;
+2	 library SafeMath {
+3	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 uint256 c = a + b;
+5	 require(c >= a, "SafeMath: addition overflow");
+6	 return c;
+7	 }
+8	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+9	 return sub(a, b, "SafeMath: subtraction overflow");
+10	 }
+11	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+12	 require(b <= a, errorMessage);
+13	 uint256 c = a - b;
+14	 return c;
+15	 }
+16	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+17	 if (a == 0) {
+18	 return 0;
+19	 }
+20	 uint256 c = a * b;
+21	 require(c / a == b, "SafeMath: multiplication overflow");
+22	 return c;
+23	 }
+24	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+25	 return div(a, b, "SafeMath: division by zero");
+26	 }
+27	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+28	 require(b > 0, errorMessage);
+29	 uint256 c = a / b;
+30	 return c;
+31	 }
+32	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+33	 return mod(a, b, "SafeMath: modulo by zero");
+34	 }
+35	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+36	 require(b != 0, errorMessage);
+37	 return a % b;
+38	 }
+39	 }
+40	 interface IERC20 {
+41	 function totalSupply() external view returns (uint256);
+42	 function balanceOf(address account) external view returns (uint256);
+43	 function transfer(address recipient, uint256 amount) external returns (bool);
+44	 function allowance(address owner, address spender) external view returns (uint256);
+45	 function approve(address spender, uint256 amount) external returns (bool);
+46	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+47	 event Transfer(address indexed from, address indexed to, uint256 value);
+48	 event Approval(address indexed owner, address indexed spender, uint256 value);
+49	 }
+50	 library Address {
+51	 function isContract(address account) internal view returns (bool) {
+52	 bytes32 codehash;
+53	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+54	 assembly {
+55	 codehash := extcodehash(account) }
+56	 return (codehash != accountHash && codehash != 0x0);
+57	 }
+58	 function toPayable(address account) internal pure returns (address payable) {
+59	 return address(uint160(account));
+60	 }
+61	 function sendValue(address payable recipient, uint256 amount) internal {
+62	 require(address(this).balance >= amount, "Address: insufficient balance");
+63	 (bool success, ) = recipient.call.value(amount)("");
+64	 require(success, "Address: unable to send value, recipient may have reverted");
+65	 }
+66	 }
+67	 library SafeERC20 {
+68	 using SafeMath for uint256;
+69	 using Address for address;
+70	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+71	 callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+72	 }
+73	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+74	 require(address(token).isContract(), "SafeERC20: call to non-contract");
+75	 (bool success, bytes memory returndata) = address(token).call(data);
+76	 require(success, "SafeERC20: low-level call failed");
+77	 if (returndata.length > 0) {
+78	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+79	 }
+80	 }
+81	 }
+82	 interface IRewardDistributionRecipient {
+83	 function notifyRewardAmount(uint256 reward, uint256 duration) external;
+84	 }
+85	 contract StakingRewardsFactory {
+86	 using SafeMath for uint256;
+87	 using SafeERC20 for IERC20;
+88	 bool internal initialized;
+89	 address public owner;
+90	 address public rewardsToken;
+91	 struct PoolInfo {
+92	 address poolAddress;
+93	 uint256 allocPoint;
+94	 }
+95	 uint256 public totalAllocPoint;
+96	 PoolInfo[] public poolInfo;
+97	 function initialize(address newOwner, address _rewardsToken) public {
+98	 require(!initialized, "already initialized");
+99	 require(newOwner != address(0), "new owner is the zero address");
+100	 initialized = true;
+101	 owner = newOwner;
+102	 rewardsToken = _rewardsToken;
+103	 }
+104	 function add(uint256 _allocPoint, address _poolAddress) public onlyOwner {
+105	 totalAllocPoint = totalAllocPoint.add(_allocPoint);
+106	 poolInfo.push(PoolInfo({
+107	 poolAddress: _poolAddress, allocPoint: _allocPoint }
+108	 ));
+109	 }
+110	 function set(uint256 _pid, uint256 _allocPoint) public onlyOwner {
+111	 totalAllocPoint = totalAllocPoint.sub(poolInfo[_pid].allocPoint).add(_allocPoint);
+112	 poolInfo[_pid].allocPoint = _allocPoint;
+113	 }
+114	 function notifyRewardAmounts(uint256 reward, uint256 duration) public onlyOwner {
+115	 uint balance = IERC20(rewardsToken).balanceOf(address(this));
+116	 require(balance >= reward, 'reward balance is not enough');
+117	 for (uint i = 0; i < poolInfo.length; i++) {
+118	 PoolInfo storage pool = poolInfo[i];
+119	 uint256 rewardAmount = balance.mul(pool.allocPoint).div(totalAllocPoint);
+120	 IERC20(rewardsToken).safeTransfer(pool.poolAddress, rewardAmount);
+121	 IRewardDistributionRecipient(pool.poolAddress).notifyRewardAmount(rewardAmount, duration);
+122	 }
+123	 }
+124	 modifier onlyOwner() {
+125	 require(msg.sender == owner, "!owner");
+126	 _;
+127	 }
+128	 }

@@ -1,0 +1,180 @@
+row number 
+1	   pragma solidity 0.4.24;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 if (a == 0) {
+5	 return 0;
+6	 }
+7	 uint256 c = a * b;
+8	 assert(c / a == b);
+9	 return c;
+10	 }
+11	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+12	 return a / b;
+13	 }
+14	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+15	 assert(b <= a);
+16	 return a - b;
+17	 }
+18	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+19	 uint256 c = a + b;
+20	 assert(c >= a);
+21	 return c;
+22	 }
+23	 }
+24	 contract Ownable {
+25	 address public owner;
+26	 address public creater;
+27	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+28	 function Ownable(address _owner) public {
+29	 creater = msg.sender;
+30	 if (_owner != 0) {
+31	 owner = _owner;
+32	 }
+33	 else {
+34	 owner = creater;
+35	 }
+36	 }
+37	 modifier onlyOwner() {
+38	 require(msg.sender == owner);
+39	 _;
+40	 }
+41	 modifier isCreator() {
+42	 require(msg.sender == creater);
+43	 _;
+44	 }
+45	 }
+46	 contract TravelHelperToken {
+47	 function transfer (address, uint) public pure {
+48	 }
+49	 function burnTokensForSale() public returns (bool);
+50	 function saleTransfer(address _to, uint256 _value) public returns (bool) {
+51	 }
+52	 function finalize() public pure {
+53	 }
+54	 }
+55	 contract Crowdsale is Ownable {
+56	 using SafeMath for uint256;
+57	 TravelHelperToken public token;
+58	 uint public ethPrice;
+59	 address public wallet;
+60	 uint256 public weiRaised;
+61	 bool public crowdsaleStarted = false;
+62	 uint256 public preIcoCap = uint256(1000000000).mul(1 ether);
+63	 uint256 public icoCap = uint256(1500000000).mul(1 ether);
+64	 uint256 public preIcoTokensSold = 0;
+65	 uint256 public discountedIcoTokensSold = 0;
+66	 uint256 public icoTokensSold = 0;
+67	 uint256 public mainTokensPerDollar = 400 * 1 ether;
+68	 uint256 public totalRaisedInCents;
+69	 uint256 public presaleTokensPerDollar = 533.3333 * 1 ether;
+70	 uint256 public discountedTokensPerDollar = 444.4444 * 1 ether;
+71	 uint256 public hardCapInCents = 525000000;
+72	 uint256 public preIcoStartBlock;
+73	 uint256 public discountedIcoStartBlock;
+74	 uint256 public mainIcoStartBlock;
+75	 uint256 public mainIcoEndBlock;
+76	 uint public preSaleDuration = (7 days)/(15);
+77	 uint public discountedSaleDuration = (15 days)/(15);
+78	 uint public mainSaleDuration = (15 days)/(15);
+79	 modifier CrowdsaleStarted(){
+80	 require(crowdsaleStarted);
+81	 _;
+82	 }
+83	 event TokenPurchase(address indexed purchaser, address indexed beneficiary, uint256 value, uint256 amount);
+84	 function Crowdsale(address _newOwner, address _wallet, TravelHelperToken _token,uint256 _ethPriceInCents) Ownable(_newOwner) public {
+85	 require(_wallet != address(0));
+86	 require(_token != address(0));
+87	 require(_ethPriceInCents > 0);
+88	 wallet = _wallet;
+89	 owner = _newOwner;
+90	 token = _token;
+91	 ethPrice = _ethPriceInCents;
+92	 }
+93	 function startCrowdsale() onlyOwner public returns (bool) {
+94	 require(!crowdsaleStarted);
+95	 crowdsaleStarted = true;
+96	 preIcoStartBlock = block.number;
+97	 discountedIcoStartBlock = block.number + preSaleDuration;
+98	 mainIcoStartBlock = block.number + preSaleDuration + discountedSaleDuration;
+99	 mainIcoEndBlock = block.number + preSaleDuration + discountedSaleDuration + mainSaleDuration;
+100	 }
+101	 function () external payable {
+102	 require(msg.sender != owner);
+103	 buyTokens(msg.sender);
+104	 }
+105	 function buyTokens(address _beneficiary) CrowdsaleStarted public payable {
+106	 uint256 weiAmount = msg.value;
+107	 require(weiAmount > 0);
+108	 require(ethPrice > 0);
+109	 uint256 usdCents = weiAmount.mul(ethPrice).div(1 ether);
+110	 uint256 tokens = _getTokenAmount(usdCents);
+111	 _validateTokensLimits(tokens);
+112	 weiRaised = weiRaised.add(weiAmount);
+113	 totalRaisedInCents = totalRaisedInCents.add(usdCents);
+114	 _processPurchase(_beneficiary,tokens);
+115	 emit TokenPurchase(msg.sender, _beneficiary, weiAmount, tokens);
+116	 _forwardFunds();
+117	 }
+118	 function setEthPriceInDollar(uint _ethPriceInCents) onlyOwner public returns(bool) {
+119	 ethPrice = _ethPriceInCents;
+120	 return true;
+121	 }
+122	 function _validateTokensLimits(uint256 _tokens) internal {
+123	 if (block.number > preIcoStartBlock && block.number < discountedIcoStartBlock) {
+124	 preIcoTokensSold = preIcoTokensSold.add(_tokens);
+125	 require(preIcoTokensSold <= preIcoCap && totalRaisedInCents <= hardCapInCents);
+126	 }
+127	 else if(block.number >= discountedIcoStartBlock && block.number < mainIcoStartBlock ) {
+128	 require(discountedIcoTokensSold <= icoCap && totalRaisedInCents <= hardCapInCents);
+129	 }
+130	 else if(block.number >= mainIcoStartBlock && block.number < mainIcoEndBlock ) {
+131	 icoTokensSold = icoTokensSold.add(_tokens);
+132	 require(icoTokensSold <= icoCap && totalRaisedInCents < hardCapInCents);
+133	 }
+134	 else {
+135	 revert();
+136	 }
+137	 }
+138	 function _deliverTokens(address _beneficiary, uint256 _tokenAmount) internal {
+139	 require(token.saleTransfer(_beneficiary, _tokenAmount));
+140	 }
+141	 function _processPurchase(address _beneficiary, uint256 _tokenAmount) internal {
+142	 _deliverTokens(_beneficiary, _tokenAmount);
+143	 }
+144	 function _getTokenAmount(uint256 _usdCents) CrowdsaleStarted public view returns (uint256) {
+145	 uint256 tokens;
+146	 if (block.number > preIcoStartBlock && block.number < discountedIcoStartBlock ) tokens = _usdCents.div(100).mul(presaleTokensPerDollar);
+147	 if (block.number >= discountedIcoStartBlock && block.number < mainIcoStartBlock ) tokens = _usdCents.div(100).mul(discountedTokensPerDollar);
+148	 if (block.number >= mainIcoStartBlock && block.number < mainIcoEndBlock ) tokens = _usdCents.div(100).mul(mainTokensPerDollar);
+149	 return tokens;
+150	 }
+151	 function getStage() public view returns (string) {
+152	 if(!crowdsaleStarted){
+153	 return 'Crowdsale not started yet';
+154	 }
+155	 if (block.number > preIcoStartBlock && block.number < discountedIcoStartBlock ) {
+156	 return 'Presale';
+157	 }
+158	 else if (block.number >= discountedIcoStartBlock && block.number < mainIcoStartBlock ) {
+159	 return 'Discounted sale';
+160	 }
+161	 else if (block.number >= mainIcoStartBlock && block.number < mainIcoEndBlock ) {
+162	 return 'Crowdsale';
+163	 }
+164	 else if(block.number > mainIcoEndBlock) {
+165	 return 'Sale ended';
+166	 }
+167	 }
+168	 function burnTokens() public onlyOwner {
+169	 require(block.number > mainIcoEndBlock);
+170	 require(token.burnTokensForSale());
+171	 }
+172	 function finalizeSale() public onlyOwner {
+173	 require(block.number > mainIcoEndBlock);
+174	 token.finalize();
+175	 }
+176	 function _forwardFunds() internal {
+177	 wallet.transfer(msg.value);
+178	 }
+179	 }

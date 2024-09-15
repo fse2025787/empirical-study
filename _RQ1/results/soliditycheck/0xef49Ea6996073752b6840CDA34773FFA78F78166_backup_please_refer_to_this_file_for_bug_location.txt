@@ -1,0 +1,1456 @@
+row number 
+1	          pragma solidity ^0.5.2;
+2	 interface IERC20 {
+3	 function transfer(address to, uint256 value) external returns (bool);
+4	 function approve(address spender, uint256 value) external returns (bool);
+5	 function transferFrom(address from, address to, uint256 value) external returns (bool);
+6	 function totalSupply() external view returns (uint256);
+7	 function balanceOf(address who) external view returns (uint256);
+8	 function allowance(address owner, address spender) external view returns (uint256);
+9	 event Transfer(address indexed from, address indexed to, uint256 value);
+10	 event Approval(address indexed owner, address indexed spender, uint256 value);
+11	 }
+12	 pragma solidity ^0.5.2;
+13	 library SafeMath {
+14	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+15	 if (a == 0) {
+16	 return 0;
+17	 }
+18	 uint256 c = a * b;
+19	 require(c / a == b);
+20	 return c;
+21	 }
+22	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+23	 require(b > 0);
+24	 uint256 c = a / b;
+25	 return c;
+26	 }
+27	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+28	 require(b <= a);
+29	 uint256 c = a - b;
+30	 return c;
+31	 }
+32	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+33	 uint256 c = a + b;
+34	 require(c >= a);
+35	 return c;
+36	 }
+37	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+38	 require(b != 0);
+39	 return a % b;
+40	 }
+41	 }
+42	 pragma solidity ^0.5.2;
+43	 interface IGovernance {
+44	 function update(address target, bytes calldata data) external;
+45	 }
+46	 pragma solidity ^0.5.2;
+47	 contract Governable {
+48	 IGovernance public governance;
+49	 constructor(address _governance) public {
+50	 governance = IGovernance(_governance);
+51	 }
+52	 modifier onlyGovernance() {
+53	 _assertGovernance();
+54	 _;
+55	 }
+56	 function _assertGovernance() private view {
+57	 require( msg.sender == address(governance), "Only governance contract is authorized" );
+58	 }
+59	 }
+60	 pragma solidity ^0.5.2;
+61	 contract IWithdrawManager {
+62	 function createExitQueue(address token) external;
+63	 function verifyInclusion( bytes calldata data, uint8 offset, bool verifyTxInclusion ) external view returns (uint256 age);
+64	 function addExitToQueue( address exitor, address childToken, address rootToken, uint256 exitAmountOrTokenId, bytes32 txHash, bool isRegularExit, uint256 priority ) external;
+65	 function addInput( uint256 exitId, uint256 age, address utxoOwner, address token ) external;
+66	 function challengeExit( uint256 exitId, uint256 inputId, bytes calldata challengeData, address adjudicatorPredicate ) external;
+67	 }
+68	 pragma solidity ^0.5.2;
+69	 contract Registry is Governable {
+70	 bytes32 private constant WETH_TOKEN = keccak256("wethToken");
+71	 bytes32 private constant DEPOSIT_MANAGER = keccak256("depositManager");
+72	 bytes32 private constant STAKE_MANAGER = keccak256("stakeManager");
+73	 bytes32 private constant VALIDATOR_SHARE = keccak256("validatorShare");
+74	 bytes32 private constant WITHDRAW_MANAGER = keccak256("withdrawManager");
+75	 bytes32 private constant CHILD_CHAIN = keccak256("childChain");
+76	 bytes32 private constant STATE_SENDER = keccak256("stateSender");
+77	 bytes32 private constant SLASHING_MANAGER = keccak256("slashingManager");
+78	 address public erc20Predicate;
+79	 address public erc721Predicate;
+80	 mapping(bytes32 => address) public contractMap;
+81	 mapping(address => address) public rootToChildToken;
+82	 mapping(address => address) public childToRootToken;
+83	 mapping(address => bool) public proofValidatorContracts;
+84	 mapping(address => bool) public isERC721;
+85	 enum Type {
+86	 Invalid, ERC20, ERC721, Custom}
+87	 struct Predicate {
+88	 Type _type;
+89	 }
+90	 mapping(address => Predicate) public predicates;
+91	 event TokenMapped(address indexed rootToken, address indexed childToken);
+92	 event ProofValidatorAdded(address indexed validator, address indexed from);
+93	 event ProofValidatorRemoved(address indexed validator, address indexed from);
+94	 event PredicateAdded(address indexed predicate, address indexed from);
+95	 event PredicateRemoved(address indexed predicate, address indexed from);
+96	 event ContractMapUpdated(bytes32 indexed key, address indexed previousContract, address indexed newContract);
+97	 constructor(address _governance) public Governable(_governance) {
+98	 }
+99	 function updateContractMap(bytes32 _key, address _address) external onlyGovernance {
+100	 emit ContractMapUpdated(_key, contractMap[_key], _address);
+101	 contractMap[_key] = _address;
+102	 }
+103	 function mapToken( address _rootToken, address _childToken, bool _isERC721 ) external onlyGovernance {
+104	 require(_rootToken != address(0x0) && _childToken != address(0x0), "INVALID_TOKEN_ADDRESS");
+105	 rootToChildToken[_rootToken] = _childToken;
+106	 childToRootToken[_childToken] = _rootToken;
+107	 isERC721[_rootToken] = _isERC721;
+108	 IWithdrawManager(contractMap[WITHDRAW_MANAGER]).createExitQueue(_rootToken);
+109	 emit TokenMapped(_rootToken, _childToken);
+110	 }
+111	 function addErc20Predicate(address predicate) public onlyGovernance {
+112	 require(predicate != address(0x0), "Can not add null address as predicate");
+113	 erc20Predicate = predicate;
+114	 addPredicate(predicate, Type.ERC20);
+115	 }
+116	 function addErc721Predicate(address predicate) public onlyGovernance {
+117	 erc721Predicate = predicate;
+118	 addPredicate(predicate, Type.ERC721);
+119	 }
+120	 function addPredicate(address predicate, Type _type) public onlyGovernance {
+121	 require(predicates[predicate]._type == Type.Invalid, "Predicate already added");
+122	 predicates[predicate]._type = _type;
+123	 emit PredicateAdded(predicate, msg.sender);
+124	 }
+125	 function removePredicate(address predicate) public onlyGovernance {
+126	 require(predicates[predicate]._type != Type.Invalid, "Predicate does not exist");
+127	 delete predicates[predicate];
+128	 emit PredicateRemoved(predicate, msg.sender);
+129	 }
+130	 function getValidatorShareAddress() public view returns (address) {
+131	 return contractMap[VALIDATOR_SHARE];
+132	 }
+133	 function getWethTokenAddress() public view returns (address) {
+134	 return contractMap[WETH_TOKEN];
+135	 }
+136	 function getDepositManagerAddress() public view returns (address) {
+137	 return contractMap[DEPOSIT_MANAGER];
+138	 }
+139	 function getStakeManagerAddress() public view returns (address) {
+140	 return contractMap[STAKE_MANAGER];
+141	 }
+142	 function getSlashingManagerAddress() public view returns (address) {
+143	 return contractMap[SLASHING_MANAGER];
+144	 }
+145	 function getWithdrawManagerAddress() public view returns (address) {
+146	 return contractMap[WITHDRAW_MANAGER];
+147	 }
+148	 function getChildChainAndStateSender() public view returns (address, address) {
+149	 return (contractMap[CHILD_CHAIN], contractMap[STATE_SENDER]);
+150	 }
+151	 function isTokenMapped(address _token) public view returns (bool) {
+152	 return rootToChildToken[_token] != address(0x0);
+153	 }
+154	 function isTokenMappedAndIsErc721(address _token) public view returns (bool) {
+155	 require(isTokenMapped(_token), "TOKEN_NOT_MAPPED");
+156	 return isERC721[_token];
+157	 }
+158	 function isTokenMappedAndGetPredicate(address _token) public view returns (address) {
+159	 if (isTokenMappedAndIsErc721(_token)) {
+160	 return erc721Predicate;
+161	 }
+162	 return erc20Predicate;
+163	 }
+164	 function isChildTokenErc721(address childToken) public view returns (bool) {
+165	 address rootToken = childToRootToken[childToken];
+166	 require(rootToken != address(0x0), "Child token is not mapped");
+167	 return isERC721[rootToken];
+168	 }
+169	 }
+170	 pragma solidity ^0.5.2;
+171	 contract Lockable {
+172	 bool public locked;
+173	 modifier onlyWhenUnlocked() {
+174	 _assertUnlocked();
+175	 _;
+176	 }
+177	 function _assertUnlocked() private view {
+178	 require(!locked, "locked");
+179	 }
+180	 function lock() public {
+181	 locked = true;
+182	 }
+183	 function unlock() public {
+184	 locked = false;
+185	 }
+186	 }
+187	 pragma solidity ^0.5.2;
+188	 contract GovernanceLockable is Lockable, Governable {
+189	 constructor(address governance) public Governable(governance) {
+190	 }
+191	 function lock() public onlyGovernance {
+192	 super.lock();
+193	 }
+194	 function unlock() public onlyGovernance {
+195	 super.unlock();
+196	 }
+197	 }
+198	 pragma solidity 0.5.17;
+199	 contract IStakeManager {
+200	 function startAuction( uint256 validatorId, uint256 amount, bool acceptDelegation, bytes calldata signerPubkey ) external;
+201	 function confirmAuctionBid(uint256 validatorId, uint256 heimdallFee) external;
+202	 function transferFunds( uint256 validatorId, uint256 amount, address delegator ) external returns (bool);
+203	 function delegationDeposit( uint256 validatorId, uint256 amount, address delegator ) external returns (bool);
+204	 function unstake(uint256 validatorId) external;
+205	 function totalStakedFor(address addr) external view returns (uint256);
+206	 function stakeFor( address user, uint256 amount, uint256 heimdallFee, bool acceptDelegation, bytes memory signerPubkey ) public;
+207	 function checkSignatures( uint256 blockInterval, bytes32 voteHash, bytes32 stateRoot, address proposer, uint[3][] calldata sigs ) external returns (uint256);
+208	 function updateValidatorState(uint256 validatorId, int256 amount) public;
+209	 function ownerOf(uint256 tokenId) public view returns (address);
+210	 function slash(bytes calldata slashingInfoList) external returns (uint256);
+211	 function validatorStake(uint256 validatorId) public view returns (uint256);
+212	 function epoch() public view returns (uint256);
+213	 function getRegistry() public view returns (address);
+214	 function withdrawalDelay() public view returns (uint256);
+215	 function delegatedAmount(uint256 validatorId) public view returns(uint256);
+216	 function decreaseValidatorDelegatedAmount(uint256 validatorId, uint256 amount) public;
+217	 function withdrawDelegatorsReward(uint256 validatorId) public returns(uint256);
+218	 function delegatorsReward(uint256 validatorId) public view returns(uint256);
+219	 function dethroneAndStake( address auctionUser, uint256 heimdallFee, uint256 validatorId, uint256 auctionAmount, bool acceptDelegation, bytes calldata signerPubkey ) external;
+220	 }
+221	 pragma solidity ^0.5.2;
+222	 contract Ownable {
+223	 address private _owner;
+224	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+225	 constructor () internal {
+226	 _owner = msg.sender;
+227	 emit OwnershipTransferred(address(0), _owner);
+228	 }
+229	 function owner() public view returns (address) {
+230	 return _owner;
+231	 }
+232	 modifier onlyOwner() {
+233	 require(isOwner());
+234	 _;
+235	 }
+236	 function isOwner() public view returns (bool) {
+237	 return msg.sender == _owner;
+238	 }
+239	 function renounceOwnership() public onlyOwner {
+240	 emit OwnershipTransferred(_owner, address(0));
+241	 _owner = address(0);
+242	 }
+243	 function transferOwnership(address newOwner) public onlyOwner {
+244	 _transferOwnership(newOwner);
+245	 }
+246	 function _transferOwnership(address newOwner) internal {
+247	 require(newOwner != address(0));
+248	 emit OwnershipTransferred(_owner, newOwner);
+249	 _owner = newOwner;
+250	 }
+251	 }
+252	 pragma solidity ^0.5.2;
+253	 contract RootChainable is Ownable {
+254	 address public rootChain;
+255	 event RootChainChanged( address indexed previousRootChain, address indexed newRootChain );
+256	 modifier onlyRootChain() {
+257	 require(msg.sender == rootChain);
+258	 _;
+259	 }
+260	 function changeRootChain(address newRootChain) public onlyOwner {
+261	 require(newRootChain != address(0));
+262	 emit RootChainChanged(rootChain, newRootChain);
+263	 rootChain = newRootChain;
+264	 }
+265	 }
+266	 pragma solidity ^0.5.2;
+267	 contract IStakeManagerLocal {
+268	 enum Status {
+269	 Inactive, Active, Locked, Unstaked}
+270	 struct Validator {
+271	 uint256 amount;
+272	 uint256 reward;
+273	 uint256 activationEpoch;
+274	 uint256 deactivationEpoch;
+275	 uint256 jailTime;
+276	 address signer;
+277	 address contractAddress;
+278	 Status status;
+279	 }
+280	 mapping(uint256 => Validator) public validators;
+281	 bytes32 public accountStateRoot;
+282	 uint256 public activeAmount;
+283	 uint256 public validatorRewards;
+284	 function currentValidatorSetTotalStake() public view returns (uint256);
+285	 function signerToValidator(address validatorAddress) public view returns (uint256);
+286	 function isValidator(uint256 validatorId) public view returns (bool);
+287	 }
+288	 contract StakingInfo is Ownable {
+289	 using SafeMath for uint256;
+290	 mapping(uint256 => uint256) public validatorNonce;
+291	 event Staked( address indexed signer, uint256 indexed validatorId, uint256 nonce, uint256 indexed activationEpoch, uint256 amount, uint256 total, bytes signerPubkey );
+292	 event Unstaked( address indexed user, uint256 indexed validatorId, uint256 amount, uint256 total );
+293	 event UnstakeInit( address indexed user, uint256 indexed validatorId, uint256 nonce, uint256 deactivationEpoch, uint256 indexed amount );
+294	 event SignerChange( uint256 indexed validatorId, uint256 nonce, address indexed oldSigner, address indexed newSigner, bytes signerPubkey );
+295	 event Restaked(uint256 indexed validatorId, uint256 amount, uint256 total);
+296	 event Jailed( uint256 indexed validatorId, uint256 indexed exitEpoch, address indexed signer );
+297	 event UnJailed(uint256 indexed validatorId, address indexed signer);
+298	 event Slashed(uint256 indexed nonce, uint256 indexed amount);
+299	 event ThresholdChange(uint256 newThreshold, uint256 oldThreshold);
+300	 event DynastyValueChange(uint256 newDynasty, uint256 oldDynasty);
+301	 event ProposerBonusChange( uint256 newProposerBonus, uint256 oldProposerBonus );
+302	 event RewardUpdate(uint256 newReward, uint256 oldReward);
+303	 event StakeUpdate( uint256 indexed validatorId, uint256 indexed nonce, uint256 indexed newAmount );
+304	 event ClaimRewards( uint256 indexed validatorId, uint256 indexed amount, uint256 indexed totalAmount );
+305	 event StartAuction( uint256 indexed validatorId, uint256 indexed amount, uint256 indexed auctionAmount );
+306	 event ConfirmAuction( uint256 indexed newValidatorId, uint256 indexed oldValidatorId, uint256 indexed amount );
+307	 event TopUpFee(address indexed user, uint256 indexed fee);
+308	 event ClaimFee(address indexed user, uint256 indexed fee);
+309	 event ShareMinted( uint256 indexed validatorId, address indexed user, uint256 indexed amount, uint256 tokens );
+310	 event ShareBurned( uint256 indexed validatorId, address indexed user, uint256 indexed amount, uint256 tokens );
+311	 event DelegatorClaimedRewards( uint256 indexed validatorId, address indexed user, uint256 indexed rewards );
+312	 event DelegatorRestaked( uint256 indexed validatorId, address indexed user, uint256 indexed totalStaked );
+313	 event DelegatorUnstaked( uint256 indexed validatorId, address indexed user, uint256 amount );
+314	 event UpdateCommissionRate( uint256 indexed validatorId, uint256 indexed newCommissionRate, uint256 indexed oldCommissionRate );
+315	 Registry public registry;
+316	 modifier onlyValidatorContract(uint256 validatorId) {
+317	 address _contract;
+318	 (, , , , , , _contract, ) = IStakeManagerLocal( registry.getStakeManagerAddress() ) .validators(validatorId);
+319	 require(_contract == msg.sender, "Invalid sender, not validator");
+320	 _;
+321	 }
+322	 modifier StakeManagerOrValidatorContract(uint256 validatorId) {
+323	 address _contract;
+324	 address _stakeManager = registry.getStakeManagerAddress();
+325	 (, , , , , , _contract, ) = IStakeManagerLocal(_stakeManager).validators( validatorId );
+326	 require(_contract == msg.sender || _stakeManager == msg.sender, "Invalid sender, not stake manager or validator contract");
+327	 _;
+328	 }
+329	 modifier onlyStakeManager() {
+330	 require(registry.getStakeManagerAddress() == msg.sender, "Invalid sender, not stake manager");
+331	 _;
+332	 }
+333	 modifier onlySlashingManager() {
+334	 require(registry.getSlashingManagerAddress() == msg.sender, "Invalid sender, not slashing manager");
+335	 _;
+336	 }
+337	 constructor(address _registry) public {
+338	 registry = Registry(_registry);
+339	 }
+340	 function updateNonce( uint256[] calldata validatorIds, uint256[] calldata nonces ) external onlyOwner {
+341	 require(validatorIds.length == nonces.length, "args length mismatch");
+342	 for (uint256 i = 0; i < validatorIds.length; ++i) {
+343	 validatorNonce[validatorIds[i]] = nonces[i];
+344	 }
+345	 }
+346	 function logStaked( address signer, bytes memory signerPubkey, uint256 validatorId, uint256 activationEpoch, uint256 amount, uint256 total ) public onlyStakeManager {
+347	 validatorNonce[validatorId] = validatorNonce[validatorId].add(1);
+348	 emit Staked( signer, validatorId, validatorNonce[validatorId], activationEpoch, amount, total, signerPubkey );
+349	 }
+350	 function logUnstaked( address user, uint256 validatorId, uint256 amount, uint256 total ) public onlyStakeManager {
+351	 emit Unstaked(user, validatorId, amount, total);
+352	 }
+353	 function logUnstakeInit( address user, uint256 validatorId, uint256 deactivationEpoch, uint256 amount ) public onlyStakeManager {
+354	 validatorNonce[validatorId] = validatorNonce[validatorId].add(1);
+355	 emit UnstakeInit( user, validatorId, validatorNonce[validatorId], deactivationEpoch, amount );
+356	 }
+357	 function logSignerChange( uint256 validatorId, address oldSigner, address newSigner, bytes memory signerPubkey ) public onlyStakeManager {
+358	 validatorNonce[validatorId] = validatorNonce[validatorId].add(1);
+359	 emit SignerChange( validatorId, validatorNonce[validatorId], oldSigner, newSigner, signerPubkey );
+360	 }
+361	 function logRestaked(uint256 validatorId, uint256 amount, uint256 total) public onlyStakeManager {
+362	 emit Restaked(validatorId, amount, total);
+363	 }
+364	 function logJailed(uint256 validatorId, uint256 exitEpoch, address signer) public onlyStakeManager {
+365	 emit Jailed(validatorId, exitEpoch, signer);
+366	 }
+367	 function logUnjailed(uint256 validatorId, address signer) public onlyStakeManager {
+368	 emit UnJailed(validatorId, signer);
+369	 }
+370	 function logSlashed(uint256 nonce, uint256 amount) public onlySlashingManager {
+371	 emit Slashed(nonce, amount);
+372	 }
+373	 function logThresholdChange(uint256 newThreshold, uint256 oldThreshold) public onlyStakeManager {
+374	 emit ThresholdChange(newThreshold, oldThreshold);
+375	 }
+376	 function logDynastyValueChange(uint256 newDynasty, uint256 oldDynasty) public onlyStakeManager {
+377	 emit DynastyValueChange(newDynasty, oldDynasty);
+378	 }
+379	 function logProposerBonusChange( uint256 newProposerBonus, uint256 oldProposerBonus ) public onlyStakeManager {
+380	 emit ProposerBonusChange(newProposerBonus, oldProposerBonus);
+381	 }
+382	 function logRewardUpdate(uint256 newReward, uint256 oldReward) public onlyStakeManager {
+383	 emit RewardUpdate(newReward, oldReward);
+384	 }
+385	 function logStakeUpdate(uint256 validatorId) public StakeManagerOrValidatorContract(validatorId) {
+386	 validatorNonce[validatorId] = validatorNonce[validatorId].add(1);
+387	 emit StakeUpdate( validatorId, validatorNonce[validatorId], totalValidatorStake(validatorId) );
+388	 }
+389	 function logClaimRewards( uint256 validatorId, uint256 amount, uint256 totalAmount ) public onlyStakeManager {
+390	 emit ClaimRewards(validatorId, amount, totalAmount);
+391	 }
+392	 function logStartAuction( uint256 validatorId, uint256 amount, uint256 auctionAmount ) public onlyStakeManager {
+393	 emit StartAuction(validatorId, amount, auctionAmount);
+394	 }
+395	 function logConfirmAuction( uint256 newValidatorId, uint256 oldValidatorId, uint256 amount ) public onlyStakeManager {
+396	 emit ConfirmAuction(newValidatorId, oldValidatorId, amount);
+397	 }
+398	 function logTopUpFee(address user, uint256 fee) public onlyStakeManager {
+399	 emit TopUpFee(user, fee);
+400	 }
+401	 function logClaimFee(address user, uint256 fee) public onlyStakeManager {
+402	 emit ClaimFee(user, fee);
+403	 }
+404	 function getStakerDetails(uint256 validatorId) public view returns ( uint256 amount, uint256 reward, uint256 activationEpoch, uint256 deactivationEpoch, address signer, uint256 _status ) {
+405	 IStakeManagerLocal stakeManager = IStakeManagerLocal( registry.getStakeManagerAddress() );
+406	 address _contract;
+407	 IStakeManagerLocal.Status status;
+408	 ( amount, reward, activationEpoch, deactivationEpoch, , signer, _contract, status ) = stakeManager.validators(validatorId);
+409	 _status = uint256(status);
+410	 if (_contract != address(0x0)) {
+411	 reward += IStakeManagerLocal(_contract).validatorRewards();
+412	 }
+413	 }
+414	 function totalValidatorStake(uint256 validatorId) public view returns (uint256 validatorStake) {
+415	 address contractAddress;
+416	 (validatorStake, , , , , , contractAddress, ) = IStakeManagerLocal( registry.getStakeManagerAddress() ) .validators(validatorId);
+417	 if (contractAddress != address(0x0)) {
+418	 validatorStake += IStakeManagerLocal(contractAddress).activeAmount();
+419	 }
+420	 }
+421	 function getAccountStateRoot() public view returns (bytes32 accountStateRoot) {
+422	 accountStateRoot = IStakeManagerLocal(registry.getStakeManagerAddress()) .accountStateRoot();
+423	 }
+424	 function getValidatorContractAddress(uint256 validatorId) public view returns (address ValidatorContract) {
+425	 (, , , , , , ValidatorContract, ) = IStakeManagerLocal( registry.getStakeManagerAddress() ) .validators(validatorId);
+426	 }
+427	 function logShareMinted( uint256 validatorId, address user, uint256 amount, uint256 tokens ) public onlyValidatorContract(validatorId) {
+428	 emit ShareMinted(validatorId, user, amount, tokens);
+429	 }
+430	 function logShareBurned( uint256 validatorId, address user, uint256 amount, uint256 tokens ) public onlyValidatorContract(validatorId) {
+431	 emit ShareBurned(validatorId, user, amount, tokens);
+432	 }
+433	 function logDelegatorClaimRewards( uint256 validatorId, address user, uint256 rewards ) public onlyValidatorContract(validatorId) {
+434	 emit DelegatorClaimedRewards(validatorId, user, rewards);
+435	 }
+436	 function logDelegatorRestaked( uint256 validatorId, address user, uint256 totalStaked ) public onlyValidatorContract(validatorId) {
+437	 emit DelegatorRestaked(validatorId, user, totalStaked);
+438	 }
+439	 function logDelegatorUnstaked(uint256 validatorId, address user, uint256 amount) public onlyValidatorContract(validatorId) {
+440	 emit DelegatorUnstaked(validatorId, user, amount);
+441	 }
+442	 function logUpdateCommissionRate( uint256 validatorId, uint256 newCommissionRate, uint256 oldCommissionRate ) public onlyValidatorContract(validatorId) {
+443	 emit UpdateCommissionRate( validatorId, newCommissionRate, oldCommissionRate );
+444	 }
+445	 }
+446	 pragma solidity ^0.5.2;
+447	 interface IERC165 {
+448	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+449	 }
+450	 pragma solidity ^0.5.2;
+451	 contract IERC721 is IERC165 {
+452	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+453	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+454	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+455	 function balanceOf(address owner) public view returns (uint256 balance);
+456	 function ownerOf(uint256 tokenId) public view returns (address owner);
+457	 function approve(address to, uint256 tokenId) public;
+458	 function getApproved(uint256 tokenId) public view returns (address operator);
+459	 function setApprovalForAll(address operator, bool _approved) public;
+460	 function isApprovedForAll(address owner, address operator) public view returns (bool);
+461	 function transferFrom(address from, address to, uint256 tokenId) public;
+462	 function safeTransferFrom(address from, address to, uint256 tokenId) public;
+463	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes memory data) public;
+464	 }
+465	 pragma solidity ^0.5.2;
+466	 contract IERC721Receiver {
+467	 function onERC721Received(address operator, address from, uint256 tokenId, bytes memory data) public returns (bytes4);
+468	 }
+469	 pragma solidity ^0.5.2;
+470	 library Address {
+471	 function isContract(address account) internal view returns (bool) {
+472	 uint256 size;
+473	 assembly {
+474	 size := extcodesize(account) }
+475	 return size > 0;
+476	 }
+477	 }
+478	 pragma solidity ^0.5.2;
+479	 library Counters {
+480	 using SafeMath for uint256;
+481	 struct Counter {
+482	 uint256 _value;
+483	 }
+484	 function current(Counter storage counter) internal view returns (uint256) {
+485	 return counter._value;
+486	 }
+487	 function increment(Counter storage counter) internal {
+488	 counter._value += 1;
+489	 }
+490	 function decrement(Counter storage counter) internal {
+491	 counter._value = counter._value.sub(1);
+492	 }
+493	 }
+494	 pragma solidity ^0.5.2;
+495	 contract ERC165 is IERC165 {
+496	 bytes4 private constant _INTERFACE_ID_ERC165 = 0x01ffc9a7;
+497	 mapping(bytes4 => bool) private _supportedInterfaces;
+498	 constructor () internal {
+499	 _registerInterface(_INTERFACE_ID_ERC165);
+500	 }
+501	 function supportsInterface(bytes4 interfaceId) external view returns (bool) {
+502	 return _supportedInterfaces[interfaceId];
+503	 }
+504	 function _registerInterface(bytes4 interfaceId) internal {
+505	 require(interfaceId != 0xffffffff);
+506	 _supportedInterfaces[interfaceId] = true;
+507	 }
+508	 }
+509	 pragma solidity ^0.5.2;
+510	 contract ERC721 is ERC165, IERC721 {
+511	 using SafeMath for uint256;
+512	 using Address for address;
+513	 using Counters for Counters.Counter;
+514	 bytes4 private constant _ERC721_RECEIVED = 0x150b7a02;
+515	 mapping (uint256 => address) private _tokenOwner;
+516	 mapping (uint256 => address) private _tokenApprovals;
+517	 mapping (address => Counters.Counter) private _ownedTokensCount;
+518	 mapping (address => mapping (address => bool)) private _operatorApprovals;
+519	 bytes4 private constant _INTERFACE_ID_ERC721 = 0x80ac58cd;
+520	 constructor () public {
+521	 _registerInterface(_INTERFACE_ID_ERC721);
+522	 }
+523	 function balanceOf(address owner) public view returns (uint256) {
+524	 require(owner != address(0));
+525	 return _ownedTokensCount[owner].current();
+526	 }
+527	 function ownerOf(uint256 tokenId) public view returns (address) {
+528	 address owner = _tokenOwner[tokenId];
+529	 require(owner != address(0));
+530	 return owner;
+531	 }
+532	 function approve(address to, uint256 tokenId) public {
+533	 address owner = ownerOf(tokenId);
+534	 require(to != owner);
+535	 require(msg.sender == owner || isApprovedForAll(owner, msg.sender));
+536	 _tokenApprovals[tokenId] = to;
+537	 emit Approval(owner, to, tokenId);
+538	 }
+539	 function getApproved(uint256 tokenId) public view returns (address) {
+540	 require(_exists(tokenId));
+541	 return _tokenApprovals[tokenId];
+542	 }
+543	 function setApprovalForAll(address to, bool approved) public {
+544	 require(to != msg.sender);
+545	 _operatorApprovals[msg.sender][to] = approved;
+546	 emit ApprovalForAll(msg.sender, to, approved);
+547	 }
+548	 function isApprovedForAll(address owner, address operator) public view returns (bool) {
+549	 return _operatorApprovals[owner][operator];
+550	 }
+551	 function transferFrom(address from, address to, uint256 tokenId) public {
+552	 require(_isApprovedOrOwner(msg.sender, tokenId));
+553	 _transferFrom(from, to, tokenId);
+554	 }
+555	 function safeTransferFrom(address from, address to, uint256 tokenId) public {
+556	 safeTransferFrom(from, to, tokenId, "");
+557	 }
+558	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes memory _data) public {
+559	 transferFrom(from, to, tokenId);
+560	 require(_checkOnERC721Received(from, to, tokenId, _data));
+561	 }
+562	 function _exists(uint256 tokenId) internal view returns (bool) {
+563	 address owner = _tokenOwner[tokenId];
+564	 return owner != address(0);
+565	 }
+566	 function _isApprovedOrOwner(address spender, uint256 tokenId) internal view returns (bool) {
+567	 address owner = ownerOf(tokenId);
+568	 return (spender == owner || getApproved(tokenId) == spender || isApprovedForAll(owner, spender));
+569	 }
+570	 function _mint(address to, uint256 tokenId) internal {
+571	 require(to != address(0));
+572	 require(!_exists(tokenId));
+573	 _tokenOwner[tokenId] = to;
+574	 _ownedTokensCount[to].increment();
+575	 emit Transfer(address(0), to, tokenId);
+576	 }
+577	 function _burn(address owner, uint256 tokenId) internal {
+578	 require(ownerOf(tokenId) == owner);
+579	 _clearApproval(tokenId);
+580	 _ownedTokensCount[owner].decrement();
+581	 _tokenOwner[tokenId] = address(0);
+582	 emit Transfer(owner, address(0), tokenId);
+583	 }
+584	 function _burn(uint256 tokenId) internal {
+585	 _burn(ownerOf(tokenId), tokenId);
+586	 }
+587	 function _transferFrom(address from, address to, uint256 tokenId) internal {
+588	 require(ownerOf(tokenId) == from);
+589	 require(to != address(0));
+590	 _clearApproval(tokenId);
+591	 _ownedTokensCount[from].decrement();
+592	 _ownedTokensCount[to].increment();
+593	 _tokenOwner[tokenId] = to;
+594	 emit Transfer(from, to, tokenId);
+595	 }
+596	 function _checkOnERC721Received(address from, address to, uint256 tokenId, bytes memory _data) internal returns (bool) {
+597	 if (!to.isContract()) {
+598	 return true;
+599	 }
+600	 bytes4 retval = IERC721Receiver(to).onERC721Received(msg.sender, from, tokenId, _data);
+601	 return (retval == _ERC721_RECEIVED);
+602	 }
+603	 function _clearApproval(uint256 tokenId) private {
+604	 if (_tokenApprovals[tokenId] != address(0)) {
+605	 _tokenApprovals[tokenId] = address(0);
+606	 }
+607	 }
+608	 }
+609	 pragma solidity ^0.5.2;
+610	 contract IERC721Enumerable is IERC721 {
+611	 function totalSupply() public view returns (uint256);
+612	 function tokenOfOwnerByIndex(address owner, uint256 index) public view returns (uint256 tokenId);
+613	 function tokenByIndex(uint256 index) public view returns (uint256);
+614	 }
+615	 pragma solidity ^0.5.2;
+616	 contract ERC721Enumerable is ERC165, ERC721, IERC721Enumerable {
+617	 mapping(address => uint256[]) private _ownedTokens;
+618	 mapping(uint256 => uint256) private _ownedTokensIndex;
+619	 uint256[] private _allTokens;
+620	 mapping(uint256 => uint256) private _allTokensIndex;
+621	 bytes4 private constant _INTERFACE_ID_ERC721_ENUMERABLE = 0x780e9d63;
+622	 constructor () public {
+623	 _registerInterface(_INTERFACE_ID_ERC721_ENUMERABLE);
+624	 }
+625	 function tokenOfOwnerByIndex(address owner, uint256 index) public view returns (uint256) {
+626	 require(index < balanceOf(owner));
+627	 return _ownedTokens[owner][index];
+628	 }
+629	 function totalSupply() public view returns (uint256) {
+630	 return _allTokens.length;
+631	 }
+632	 function tokenByIndex(uint256 index) public view returns (uint256) {
+633	 require(index < totalSupply());
+634	 return _allTokens[index];
+635	 }
+636	 function _transferFrom(address from, address to, uint256 tokenId) internal {
+637	 super._transferFrom(from, to, tokenId);
+638	 _removeTokenFromOwnerEnumeration(from, tokenId);
+639	 _addTokenToOwnerEnumeration(to, tokenId);
+640	 }
+641	 function _mint(address to, uint256 tokenId) internal {
+642	 super._mint(to, tokenId);
+643	 _addTokenToOwnerEnumeration(to, tokenId);
+644	 _addTokenToAllTokensEnumeration(tokenId);
+645	 }
+646	 function _burn(address owner, uint256 tokenId) internal {
+647	 super._burn(owner, tokenId);
+648	 _removeTokenFromOwnerEnumeration(owner, tokenId);
+649	 _ownedTokensIndex[tokenId] = 0;
+650	 _removeTokenFromAllTokensEnumeration(tokenId);
+651	 }
+652	 function _tokensOfOwner(address owner) internal view returns (uint256[] storage) {
+653	 return _ownedTokens[owner];
+654	 }
+655	 function _addTokenToOwnerEnumeration(address to, uint256 tokenId) private {
+656	 _ownedTokensIndex[tokenId] = _ownedTokens[to].length;
+657	 _ownedTokens[to].push(tokenId);
+658	 }
+659	 function _addTokenToAllTokensEnumeration(uint256 tokenId) private {
+660	 _allTokensIndex[tokenId] = _allTokens.length;
+661	 _allTokens.push(tokenId);
+662	 }
+663	 function _removeTokenFromOwnerEnumeration(address from, uint256 tokenId) private {
+664	 uint256 lastTokenIndex = _ownedTokens[from].length.sub(1);
+665	 uint256 tokenIndex = _ownedTokensIndex[tokenId];
+666	 if (tokenIndex != lastTokenIndex) {
+667	 uint256 lastTokenId = _ownedTokens[from][lastTokenIndex];
+668	 _ownedTokens[from][tokenIndex] = lastTokenId;
+669	 _ownedTokensIndex[lastTokenId] = tokenIndex;
+670	 }
+671	 _ownedTokens[from].length--;
+672	 }
+673	 function _removeTokenFromAllTokensEnumeration(uint256 tokenId) private {
+674	 uint256 lastTokenIndex = _allTokens.length.sub(1);
+675	 uint256 tokenIndex = _allTokensIndex[tokenId];
+676	 uint256 lastTokenId = _allTokens[lastTokenIndex];
+677	 _allTokens[tokenIndex] = lastTokenId;
+678	 _allTokensIndex[lastTokenId] = tokenIndex;
+679	 _allTokens.length--;
+680	 _allTokensIndex[tokenId] = 0;
+681	 }
+682	 }
+683	 pragma solidity ^0.5.2;
+684	 contract IERC721Metadata is IERC721 {
+685	 function name() external view returns (string memory);
+686	 function symbol() external view returns (string memory);
+687	 function tokenURI(uint256 tokenId) external view returns (string memory);
+688	 }
+689	 pragma solidity ^0.5.2;
+690	 contract ERC721Metadata is ERC165, ERC721, IERC721Metadata {
+691	 string private _name;
+692	 string private _symbol;
+693	 mapping(uint256 => string) private _tokenURIs;
+694	 bytes4 private constant _INTERFACE_ID_ERC721_METADATA = 0x5b5e139f;
+695	 constructor (string memory name, string memory symbol) public {
+696	 _name = name;
+697	 _symbol = symbol;
+698	 _registerInterface(_INTERFACE_ID_ERC721_METADATA);
+699	 }
+700	 function name() external view returns (string memory) {
+701	 return _name;
+702	 }
+703	 function symbol() external view returns (string memory) {
+704	 return _symbol;
+705	 }
+706	 function tokenURI(uint256 tokenId) external view returns (string memory) {
+707	 require(_exists(tokenId));
+708	 return _tokenURIs[tokenId];
+709	 }
+710	 function _setTokenURI(uint256 tokenId, string memory uri) internal {
+711	 require(_exists(tokenId));
+712	 _tokenURIs[tokenId] = uri;
+713	 }
+714	 function _burn(address owner, uint256 tokenId) internal {
+715	 super._burn(owner, tokenId);
+716	 if (bytes(_tokenURIs[tokenId]).length != 0) {
+717	 delete _tokenURIs[tokenId];
+718	 }
+719	 }
+720	 }
+721	 pragma solidity ^0.5.2;
+722	 contract ERC721Full is ERC721, ERC721Enumerable, ERC721Metadata {
+723	 constructor (string memory name, string memory symbol) public ERC721Metadata(name, symbol) {
+724	 }
+725	 }
+726	 pragma solidity ^0.5.2;
+727	 contract StakingNFT is ERC721Full, Ownable {
+728	 constructor(string memory name, string memory symbol) public ERC721Full(name, symbol) {
+729	 }
+730	 function mint(address to, uint256 tokenId) public onlyOwner {
+731	 require( balanceOf(to) == 0, "Validators MUST NOT own multiple stake position" );
+732	 _mint(to, tokenId);
+733	 }
+734	 function burn(uint256 tokenId) public onlyOwner {
+735	 _burn(tokenId);
+736	 }
+737	 function _transferFrom(address from, address to, uint256 tokenId) internal {
+738	 require( balanceOf(to) == 0, "Validators MUST NOT own multiple stake position" );
+739	 super._transferFrom(from, to, tokenId);
+740	 }
+741	 }
+742	 pragma solidity ^0.5.2;
+743	 interface ERCProxy {
+744	 function proxyType() external pure returns (uint256 proxyTypeId);
+745	 function implementation() external view returns (address codeAddr);
+746	 }
+747	 pragma solidity ^0.5.2;
+748	 contract DelegateProxyForwarder {
+749	 function delegatedFwd(address _dst, bytes memory _calldata) internal {
+750	 assembly {
+751	 let result := delegatecall( sub(gas, 10000), _dst, add(_calldata, 0x20), mload(_calldata), 0, 0 ) let size := returndatasize let ptr := mload(0x40) returndatacopy(ptr, 0, size) switch result case 0 {
+752	 revert(ptr, size) }
+753	 default {
+754	 return(ptr, size) }
+755	 }
+756	 }
+757	 function isContract(address _target) internal view returns (bool) {
+758	 if (_target == address(0)) {
+759	 return false;
+760	 }
+761	 uint256 size;
+762	 assembly {
+763	 size := extcodesize(_target) }
+764	 return size > 0;
+765	 }
+766	 }
+767	 pragma solidity ^0.5.2;
+768	 contract DelegateProxy is ERCProxy, DelegateProxyForwarder {
+769	 function proxyType() external pure returns (uint256 proxyTypeId) {
+770	 proxyTypeId = 2;
+771	 }
+772	 function implementation() external view returns (address);
+773	 }
+774	 pragma solidity ^0.5.2;
+775	 contract UpgradableProxy is DelegateProxy {
+776	 event ProxyUpdated(address indexed _new, address indexed _old);
+777	 event OwnerUpdate(address _new, address _old);
+778	 bytes32 constant IMPLEMENTATION_SLOT = keccak256("matic.network.proxy.implementation");
+779	 bytes32 constant OWNER_SLOT = keccak256("matic.network.proxy.owner");
+780	 constructor(address _proxyTo) public {
+781	 setOwner(msg.sender);
+782	 setImplementation(_proxyTo);
+783	 }
+784	 function() external payable {
+785	 delegatedFwd(loadImplementation(), msg.data);
+786	 }
+787	 modifier onlyProxyOwner() {
+788	 require(loadOwner() == msg.sender, "NOT_OWNER");
+789	 _;
+790	 }
+791	 function owner() external view returns(address) {
+792	 return loadOwner();
+793	 }
+794	 function loadOwner() internal view returns(address) {
+795	 address _owner;
+796	 bytes32 position = OWNER_SLOT;
+797	 assembly {
+798	 _owner := sload(position) }
+799	 return _owner;
+800	 }
+801	 function implementation() external view returns (address) {
+802	 return loadImplementation();
+803	 }
+804	 function loadImplementation() internal view returns(address) {
+805	 address _impl;
+806	 bytes32 position = IMPLEMENTATION_SLOT;
+807	 assembly {
+808	 _impl := sload(position) }
+809	 return _impl;
+810	 }
+811	 function transferOwnership(address newOwner) public onlyProxyOwner {
+812	 require(newOwner != address(0), "ZERO_ADDRESS");
+813	 emit OwnerUpdate(newOwner, loadOwner());
+814	 setOwner(newOwner);
+815	 }
+816	 function setOwner(address newOwner) private {
+817	 bytes32 position = OWNER_SLOT;
+818	 assembly {
+819	 sstore(position, newOwner) }
+820	 }
+821	 function updateImplementation(address _newProxyTo) public onlyProxyOwner {
+822	 require(_newProxyTo != address(0x0), "INVALID_PROXY_ADDRESS");
+823	 require(isContract(_newProxyTo), "DESTINATION_ADDRESS_IS_NOT_A_CONTRACT");
+824	 emit ProxyUpdated(_newProxyTo, loadImplementation());
+825	 setImplementation(_newProxyTo);
+826	 }
+827	 function updateAndCall(address _newProxyTo, bytes memory data) payable public onlyProxyOwner {
+828	 updateImplementation(_newProxyTo);
+829	 (bool success, bytes memory returnData) = address(this).call.value(msg.value)(data);
+830	 require(success, string(returnData));
+831	 }
+832	 function setImplementation(address _newProxyTo) private {
+833	 bytes32 position = IMPLEMENTATION_SLOT;
+834	 assembly {
+835	 sstore(position, _newProxyTo) }
+836	 }
+837	 }
+838	 pragma solidity ^0.5.2;
+839	 contract ValidatorShareProxy is UpgradableProxy {
+840	 constructor(address _registry) public UpgradableProxy(_registry) {
+841	 }
+842	 function loadImplementation() internal view returns (address) {
+843	 return Registry(super.loadImplementation()).getValidatorShareAddress();
+844	 }
+845	 }
+846	 pragma solidity ^0.5.2;
+847	 contract ERC20 is IERC20 {
+848	 using SafeMath for uint256;
+849	 mapping (address => uint256) private _balances;
+850	 mapping (address => mapping (address => uint256)) private _allowed;
+851	 uint256 private _totalSupply;
+852	 function totalSupply() public view returns (uint256) {
+853	 return _totalSupply;
+854	 }
+855	 function balanceOf(address owner) public view returns (uint256) {
+856	 return _balances[owner];
+857	 }
+858	 function allowance(address owner, address spender) public view returns (uint256) {
+859	 return _allowed[owner][spender];
+860	 }
+861	 function transfer(address to, uint256 value) public returns (bool) {
+862	 _transfer(msg.sender, to, value);
+863	 return true;
+864	 }
+865	 function approve(address spender, uint256 value) public returns (bool) {
+866	 _approve(msg.sender, spender, value);
+867	 return true;
+868	 }
+869	 function transferFrom(address from, address to, uint256 value) public returns (bool) {
+870	 _transfer(from, to, value);
+871	 _approve(from, msg.sender, _allowed[from][msg.sender].sub(value));
+872	 return true;
+873	 }
+874	 function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+875	 _approve(msg.sender, spender, _allowed[msg.sender][spender].add(addedValue));
+876	 return true;
+877	 }
+878	 function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+879	 _approve(msg.sender, spender, _allowed[msg.sender][spender].sub(subtractedValue));
+880	 return true;
+881	 }
+882	 function _transfer(address from, address to, uint256 value) internal {
+883	 require(to != address(0));
+884	 _balances[from] = _balances[from].sub(value);
+885	 _balances[to] = _balances[to].add(value);
+886	 emit Transfer(from, to, value);
+887	 }
+888	 function _mint(address account, uint256 value) internal {
+889	 require(account != address(0));
+890	 _totalSupply = _totalSupply.add(value);
+891	 _balances[account] = _balances[account].add(value);
+892	 emit Transfer(address(0), account, value);
+893	 }
+894	 function _burn(address account, uint256 value) internal {
+895	 require(account != address(0));
+896	 _totalSupply = _totalSupply.sub(value);
+897	 _balances[account] = _balances[account].sub(value);
+898	 emit Transfer(account, address(0), value);
+899	 }
+900	 function _approve(address owner, address spender, uint256 value) internal {
+901	 require(spender != address(0));
+902	 require(owner != address(0));
+903	 _allowed[owner][spender] = value;
+904	 emit Approval(owner, spender, value);
+905	 }
+906	 function _burnFrom(address account, uint256 value) internal {
+907	 _burn(account, value);
+908	 _approve(account, msg.sender, _allowed[account][msg.sender].sub(value));
+909	 }
+910	 }
+911	 pragma solidity ^0.5.2;
+912	 contract ERC20NonTradable is ERC20 {
+913	 function _approve( address owner, address spender, uint256 value ) internal {
+914	 revert("disabled");
+915	 }
+916	 }
+917	 pragma solidity ^0.5.2;
+918	 contract Initializable {
+919	 bool inited = false;
+920	 modifier initializer() {
+921	 require(!inited, "already inited");
+922	 inited = true;
+923	 _;
+924	 }
+925	 }
+926	 pragma solidity ^0.5.2;
+927	 contract IStakeManagerEventsHub {
+928	 struct Validator {
+929	 uint256 amount;
+930	 uint256 reward;
+931	 uint256 activationEpoch;
+932	 uint256 deactivationEpoch;
+933	 uint256 jailTime;
+934	 address signer;
+935	 address contractAddress;
+936	 }
+937	 mapping(uint256 => Validator) public validators;
+938	 }
+939	 contract EventsHub is Initializable {
+940	 Registry public registry;
+941	 modifier onlyValidatorContract(uint256 validatorId) {
+942	 address _contract;
+943	 (, , , , , , _contract) = IStakeManagerEventsHub(registry.getStakeManagerAddress()).validators(validatorId);
+944	 require(_contract == msg.sender, "not validator");
+945	 _;
+946	 }
+947	 modifier onlyStakeManager() {
+948	 require(registry.getStakeManagerAddress() == msg.sender, "Invalid sender, not stake manager");
+949	 _;
+950	 }
+951	 function initialize(Registry _registry) external initializer {
+952	 registry = _registry;
+953	 }
+954	 event ShareBurnedWithId( uint256 indexed validatorId, address indexed user, uint256 indexed amount, uint256 tokens, uint256 nonce );
+955	 function logShareBurnedWithId( uint256 validatorId, address user, uint256 amount, uint256 tokens, uint256 nonce ) public onlyValidatorContract(validatorId) {
+956	 emit ShareBurnedWithId(validatorId, user, amount, tokens, nonce);
+957	 }
+958	 event DelegatorUnstakeWithId( uint256 indexed validatorId, address indexed user, uint256 amount, uint256 nonce );
+959	 function logDelegatorUnstakedWithId( uint256 validatorId, address user, uint256 amount, uint256 nonce ) public onlyValidatorContract(validatorId) {
+960	 emit DelegatorUnstakeWithId(validatorId, user, amount, nonce);
+961	 }
+962	 event RewardParams( uint256 rewardDecreasePerCheckpoint, uint256 maxRewardedCheckpoints, uint256 checkpointRewardDelta );
+963	 function logRewardParams( uint256 rewardDecreasePerCheckpoint, uint256 maxRewardedCheckpoints, uint256 checkpointRewardDelta ) public onlyStakeManager {
+964	 emit RewardParams(rewardDecreasePerCheckpoint, maxRewardedCheckpoints, checkpointRewardDelta);
+965	 }
+966	 event UpdateCommissionRate( uint256 indexed validatorId, uint256 indexed newCommissionRate, uint256 indexed oldCommissionRate );
+967	 function logUpdateCommissionRate( uint256 validatorId, uint256 newCommissionRate, uint256 oldCommissionRate ) public onlyStakeManager {
+968	 emit UpdateCommissionRate( validatorId, newCommissionRate, oldCommissionRate );
+969	 }
+970	 }
+971	 pragma solidity ^0.5.2;
+972	 contract OwnableLockable is Lockable, Ownable {
+973	 function lock() public onlyOwner {
+974	 super.lock();
+975	 }
+976	 function unlock() public onlyOwner {
+977	 super.unlock();
+978	 }
+979	 }
+980	 pragma solidity 0.5.17;
+981	 contract IValidatorShare {
+982	 function withdrawRewards() public;
+983	 function unstakeClaimTokens() public;
+984	 function getLiquidRewards(address user) public view returns (uint256);
+985	 function owner() public view returns (address);
+986	 function restake() public returns(uint256, uint256);
+987	 function unlock() external;
+988	 function lock() external;
+989	 function drain( address token, address payable destination, uint256 amount ) external;
+990	 function slash(uint256 valPow, uint256 delegatedAmount, uint256 totalAmountToSlash) external returns (uint256);
+991	 function updateDelegation(bool delegation) external;
+992	 function migrateOut(address user, uint256 amount) external;
+993	 function migrateIn(address user, uint256 amount) external;
+994	 }
+995	 pragma solidity 0.5.17;
+996	 contract ValidatorShare is IValidatorShare, ERC20NonTradable, OwnableLockable, Initializable {
+997	 struct DelegatorUnbond {
+998	 uint256 shares;
+999	 uint256 withdrawEpoch;
+1000	 }
+1001	 uint256 constant EXCHANGE_RATE_PRECISION = 100;
+1002	 uint256 constant EXCHANGE_RATE_HIGH_PRECISION = 10**29;
+1003	 uint256 constant MAX_COMMISION_RATE = 100;
+1004	 uint256 constant REWARD_PRECISION = 10**25;
+1005	 StakingInfo public stakingLogger;
+1006	 IStakeManager public stakeManager;
+1007	 uint256 public validatorId;
+1008	 uint256 public validatorRewards_deprecated;
+1009	 uint256 public commissionRate_deprecated;
+1010	 uint256 public lastCommissionUpdate_deprecated;
+1011	 uint256 public minAmount;
+1012	 uint256 public totalStake_deprecated;
+1013	 uint256 public rewardPerShare;
+1014	 uint256 public activeAmount;
+1015	 bool public delegation;
+1016	 uint256 public withdrawPool;
+1017	 uint256 public withdrawShares;
+1018	 mapping(address => uint256) amountStaked_deprecated;
+1019	 mapping(address => DelegatorUnbond) public unbonds;
+1020	 mapping(address => uint256) public initalRewardPerShare;
+1021	 mapping(address => uint256) public unbondNonces;
+1022	 mapping(address => mapping(uint256 => DelegatorUnbond)) public unbonds_new;
+1023	 EventsHub public eventsHub;
+1024	 function initialize( uint256 _validatorId, address _stakingLogger, address _stakeManager ) external initializer {
+1025	 validatorId = _validatorId;
+1026	 stakingLogger = StakingInfo(_stakingLogger);
+1027	 stakeManager = IStakeManager(_stakeManager);
+1028	 _transferOwnership(_stakeManager);
+1029	 _getOrCacheEventsHub();
+1030	 minAmount = 10**18;
+1031	 delegation = true;
+1032	 }
+1033	 function exchangeRate() public view returns (uint256) {
+1034	 uint256 totalShares = totalSupply();
+1035	 uint256 precision = _getRatePrecision();
+1036	 return totalShares == 0 ? precision : stakeManager.delegatedAmount(validatorId).mul(precision).div(totalShares);
+1037	 }
+1038	 function getTotalStake(address user) public view returns (uint256, uint256) {
+1039	 uint256 shares = balanceOf(user);
+1040	 uint256 rate = exchangeRate();
+1041	 if (shares == 0) {
+1042	 return (0, rate);
+1043	 }
+1044	 return (rate.mul(shares).div(_getRatePrecision()), rate);
+1045	 }
+1046	 function withdrawExchangeRate() public view returns (uint256) {
+1047	 uint256 precision = _getRatePrecision();
+1048	 if (validatorId < 8) {
+1049	 return precision;
+1050	 }
+1051	 uint256 _withdrawShares = withdrawShares;
+1052	 return _withdrawShares == 0 ? precision : withdrawPool.mul(precision).div(_withdrawShares);
+1053	 }
+1054	 function getLiquidRewards(address user) public view returns (uint256) {
+1055	 return _calculateReward(user, getRewardPerShare());
+1056	 }
+1057	 function getRewardPerShare() public view returns (uint256) {
+1058	 return _calculateRewardPerShareWithRewards(stakeManager.delegatorsReward(validatorId));
+1059	 }
+1060	 function buyVoucher(uint256 _amount, uint256 _minSharesToMint) public returns(uint256 amountToDeposit) {
+1061	 _withdrawAndTransferReward(msg.sender);
+1062	 amountToDeposit = _buyShares(_amount, _minSharesToMint, msg.sender);
+1063	 require(stakeManager.delegationDeposit(validatorId, amountToDeposit, msg.sender), "deposit failed");
+1064	 return amountToDeposit;
+1065	 }
+1066	 function restake() public returns(uint256, uint256) {
+1067	 address user = msg.sender;
+1068	 uint256 liquidReward = _withdrawReward(user);
+1069	 uint256 amountRestaked;
+1070	 require(liquidReward >= minAmount, "Too small rewards to restake");
+1071	 if (liquidReward != 0) {
+1072	 amountRestaked = _buyShares(liquidReward, 0, user);
+1073	 if (liquidReward > amountRestaked) {
+1074	 require( stakeManager.transferFunds(validatorId, liquidReward - amountRestaked, user), "Insufficent rewards" );
+1075	 stakingLogger.logDelegatorClaimRewards(validatorId, user, liquidReward - amountRestaked);
+1076	 }
+1077	 (uint256 totalStaked, ) = getTotalStake(user);
+1078	 stakingLogger.logDelegatorRestaked(validatorId, user, totalStaked);
+1079	 }
+1080	 return (amountRestaked, liquidReward);
+1081	 }
+1082	 function sellVoucher(uint256 claimAmount, uint256 maximumSharesToBurn) public {
+1083	 (uint256 shares, uint256 _withdrawPoolShare) = _sellVoucher(claimAmount, maximumSharesToBurn);
+1084	 DelegatorUnbond memory unbond = unbonds[msg.sender];
+1085	 unbond.shares = unbond.shares.add(_withdrawPoolShare);
+1086	 unbond.withdrawEpoch = stakeManager.epoch();
+1087	 unbonds[msg.sender] = unbond;
+1088	 StakingInfo logger = stakingLogger;
+1089	 logger.logShareBurned(validatorId, msg.sender, claimAmount, shares);
+1090	 logger.logStakeUpdate(validatorId);
+1091	 }
+1092	 function withdrawRewards() public {
+1093	 uint256 rewards = _withdrawAndTransferReward(msg.sender);
+1094	 require(rewards >= minAmount, "Too small rewards amount");
+1095	 }
+1096	 function migrateOut(address user, uint256 amount) external onlyOwner {
+1097	 _withdrawAndTransferReward(user);
+1098	 (uint256 totalStaked, uint256 rate) = getTotalStake(user);
+1099	 require(totalStaked >= amount, "Migrating too much");
+1100	 uint256 precision = _getRatePrecision();
+1101	 uint256 shares = amount.mul(precision).div(rate);
+1102	 _burn(user, shares);
+1103	 stakeManager.updateValidatorState(validatorId, -int256(amount));
+1104	 activeAmount = activeAmount.sub(amount);
+1105	 stakingLogger.logShareBurned(validatorId, user, amount, shares);
+1106	 stakingLogger.logStakeUpdate(validatorId);
+1107	 stakingLogger.logDelegatorUnstaked(validatorId, user, amount);
+1108	 }
+1109	 function migrateIn(address user, uint256 amount) external onlyOwner {
+1110	 _withdrawAndTransferReward(user);
+1111	 _buyShares(amount, 0, user);
+1112	 }
+1113	 function unstakeClaimTokens() public {
+1114	 DelegatorUnbond memory unbond = unbonds[msg.sender];
+1115	 uint256 amount = _unstakeClaimTokens(unbond);
+1116	 delete unbonds[msg.sender];
+1117	 stakingLogger.logDelegatorUnstaked(validatorId, msg.sender, amount);
+1118	 }
+1119	 function slash( uint256 validatorStake, uint256 delegatedAmount, uint256 totalAmountToSlash ) external onlyOwner returns (uint256) {
+1120	 uint256 _withdrawPool = withdrawPool;
+1121	 uint256 delegationAmount = delegatedAmount.add(_withdrawPool);
+1122	 if (delegationAmount == 0) {
+1123	 return 0;
+1124	 }
+1125	 uint256 _amountToSlash = delegationAmount.mul(totalAmountToSlash).div(validatorStake.add(delegationAmount));
+1126	 uint256 _amountToSlashWithdrawalPool = _withdrawPool.mul(_amountToSlash).div(delegationAmount);
+1127	 uint256 stakeSlashed = _amountToSlash.sub(_amountToSlashWithdrawalPool);
+1128	 stakeManager.decreaseValidatorDelegatedAmount(validatorId, stakeSlashed);
+1129	 activeAmount = activeAmount.sub(stakeSlashed);
+1130	 withdrawPool = withdrawPool.sub(_amountToSlashWithdrawalPool);
+1131	 return _amountToSlash;
+1132	 }
+1133	 function updateDelegation(bool _delegation) external onlyOwner {
+1134	 delegation = _delegation;
+1135	 }
+1136	 function drain( address token, address payable destination, uint256 amount ) external onlyOwner {
+1137	 if (token == address(0x0)) {
+1138	 destination.transfer(amount);
+1139	 }
+1140	 else {
+1141	 require(ERC20(token).transfer(destination, amount), "Drain failed");
+1142	 }
+1143	 }
+1144	 function sellVoucher_new(uint256 claimAmount, uint256 maximumSharesToBurn) public {
+1145	 (uint256 shares, uint256 _withdrawPoolShare) = _sellVoucher(claimAmount, maximumSharesToBurn);
+1146	 uint256 unbondNonce = unbondNonces[msg.sender].add(1);
+1147	 DelegatorUnbond memory unbond = DelegatorUnbond({
+1148	 shares: _withdrawPoolShare, withdrawEpoch: stakeManager.epoch() }
+1149	 );
+1150	 unbonds_new[msg.sender][unbondNonce] = unbond;
+1151	 unbondNonces[msg.sender] = unbondNonce;
+1152	 _getOrCacheEventsHub().logShareBurnedWithId(validatorId, msg.sender, claimAmount, shares, unbondNonce);
+1153	 stakingLogger.logStakeUpdate(validatorId);
+1154	 }
+1155	 function unstakeClaimTokens_new(uint256 unbondNonce) public {
+1156	 DelegatorUnbond memory unbond = unbonds_new[msg.sender][unbondNonce];
+1157	 uint256 amount = _unstakeClaimTokens(unbond);
+1158	 delete unbonds_new[msg.sender][unbondNonce];
+1159	 _getOrCacheEventsHub().logDelegatorUnstakedWithId(validatorId, msg.sender, amount, unbondNonce);
+1160	 }
+1161	 function _getOrCacheEventsHub() private returns(EventsHub) {
+1162	 EventsHub _eventsHub = eventsHub;
+1163	 if (_eventsHub == EventsHub(0x0)) {
+1164	 _eventsHub = EventsHub(Registry(stakeManager.getRegistry()).contractMap(keccak256("eventsHub")));
+1165	 eventsHub = _eventsHub;
+1166	 }
+1167	 return _eventsHub;
+1168	 }
+1169	 function _sellVoucher(uint256 claimAmount, uint256 maximumSharesToBurn) private returns(uint256, uint256) {
+1170	 (uint256 totalStaked, uint256 rate) = getTotalStake(msg.sender);
+1171	 require(totalStaked != 0 && totalStaked >= claimAmount, "Too much requested");
+1172	 uint256 precision = _getRatePrecision();
+1173	 uint256 shares = claimAmount.mul(precision).div(rate);
+1174	 require(shares <= maximumSharesToBurn, "too much slippage");
+1175	 _withdrawAndTransferReward(msg.sender);
+1176	 _burn(msg.sender, shares);
+1177	 stakeManager.updateValidatorState(validatorId, -int256(claimAmount));
+1178	 activeAmount = activeAmount.sub(claimAmount);
+1179	 uint256 _withdrawPoolShare = claimAmount.mul(precision).div(withdrawExchangeRate());
+1180	 withdrawPool = withdrawPool.add(claimAmount);
+1181	 withdrawShares = withdrawShares.add(_withdrawPoolShare);
+1182	 return (shares, _withdrawPoolShare);
+1183	 }
+1184	 function _unstakeClaimTokens(DelegatorUnbond memory unbond) private returns(uint256) {
+1185	 uint256 shares = unbond.shares;
+1186	 require( unbond.withdrawEpoch.add(stakeManager.withdrawalDelay()) <= stakeManager.epoch() && shares > 0, "Incomplete withdrawal period" );
+1187	 uint256 _amount = withdrawExchangeRate().mul(shares).div(_getRatePrecision());
+1188	 withdrawShares = withdrawShares.sub(shares);
+1189	 withdrawPool = withdrawPool.sub(_amount);
+1190	 require(stakeManager.transferFunds(validatorId, _amount, msg.sender), "Insufficent rewards");
+1191	 return _amount;
+1192	 }
+1193	 function _getRatePrecision() private view returns (uint256) {
+1194	 if (validatorId < 8) {
+1195	 return EXCHANGE_RATE_PRECISION;
+1196	 }
+1197	 return EXCHANGE_RATE_HIGH_PRECISION;
+1198	 }
+1199	 function _calculateRewardPerShareWithRewards(uint256 accumulatedReward) private view returns (uint256) {
+1200	 uint256 _rewardPerShare = rewardPerShare;
+1201	 if (accumulatedReward != 0) {
+1202	 uint256 totalShares = totalSupply();
+1203	 if (totalShares != 0) {
+1204	 _rewardPerShare = _rewardPerShare.add(accumulatedReward.mul(REWARD_PRECISION).div(totalShares));
+1205	 }
+1206	 }
+1207	 return _rewardPerShare;
+1208	 }
+1209	 function _calculateReward(address user, uint256 _rewardPerShare) private view returns (uint256) {
+1210	 uint256 shares = balanceOf(user);
+1211	 if (shares == 0) {
+1212	 return 0;
+1213	 }
+1214	 uint256 _initialRewardPerShare = initalRewardPerShare[user];
+1215	 if (_initialRewardPerShare == _rewardPerShare) {
+1216	 return 0;
+1217	 }
+1218	 return _rewardPerShare.sub(_initialRewardPerShare).mul(shares).div(REWARD_PRECISION);
+1219	 }
+1220	 function _withdrawReward(address user) private returns (uint256) {
+1221	 uint256 _rewardPerShare = _calculateRewardPerShareWithRewards( stakeManager.withdrawDelegatorsReward(validatorId) );
+1222	 uint256 liquidRewards = _calculateReward(user, _rewardPerShare);
+1223	 rewardPerShare = _rewardPerShare;
+1224	 initalRewardPerShare[user] = _rewardPerShare;
+1225	 return liquidRewards;
+1226	 }
+1227	 function _withdrawAndTransferReward(address user) private returns (uint256) {
+1228	 uint256 liquidRewards = _withdrawReward(user);
+1229	 if (liquidRewards != 0) {
+1230	 require(stakeManager.transferFunds(validatorId, liquidRewards, user), "Insufficent rewards");
+1231	 stakingLogger.logDelegatorClaimRewards(validatorId, user, liquidRewards);
+1232	 }
+1233	 return liquidRewards;
+1234	 }
+1235	 function _buyShares( uint256 _amount, uint256 _minSharesToMint, address user ) private onlyWhenUnlocked returns (uint256) {
+1236	 require(delegation, "Delegation is disabled");
+1237	 uint256 rate = exchangeRate();
+1238	 uint256 precision = _getRatePrecision();
+1239	 uint256 shares = _amount.mul(precision).div(rate);
+1240	 require(shares >= _minSharesToMint, "Too much slippage");
+1241	 require(unbonds[user].shares == 0, "Ongoing exit");
+1242	 _mint(user, shares);
+1243	 _amount = rate.mul(shares).div(precision);
+1244	 stakeManager.updateValidatorState(validatorId, int256(_amount));
+1245	 activeAmount = activeAmount.add(_amount);
+1246	 StakingInfo logger = stakingLogger;
+1247	 logger.logShareMinted(validatorId, user, _amount, shares);
+1248	 logger.logStakeUpdate(validatorId);
+1249	 return _amount;
+1250	 }
+1251	 function _transfer( address from, address to, uint256 value ) internal {
+1252	 _withdrawAndTransferReward(to);
+1253	 _withdrawAndTransferReward(from);
+1254	 super._transfer(from, to, value);
+1255	 }
+1256	 }
+1257	 pragma solidity ^0.5.2;
+1258	 contract ValidatorShareFactory {
+1259	 function create(uint256 validatorId, address loggerAddress, address registry) public returns (address) {
+1260	 ValidatorShareProxy proxy = new ValidatorShareProxy(registry);
+1261	 proxy.transferOwnership(msg.sender);
+1262	 address proxyAddr = address(proxy);
+1263	 (bool success, bytes memory data) = proxyAddr.call.gas(gasleft())( abi.encodeWithSelector( ValidatorShare(proxyAddr).initialize.selector, validatorId, loggerAddress, msg.sender ) );
+1264	 require(success, string(data));
+1265	 return proxyAddr;
+1266	 }
+1267	 }
+1268	 pragma solidity 0.5.17;
+1269	 contract StakeManagerStorage is GovernanceLockable, RootChainable {
+1270	 enum Status {
+1271	 Inactive, Active, Locked, Unstaked}
+1272	 struct Auction {
+1273	 uint256 amount;
+1274	 uint256 startEpoch;
+1275	 address user;
+1276	 bool acceptDelegation;
+1277	 bytes signerPubkey;
+1278	 }
+1279	 struct State {
+1280	 uint256 amount;
+1281	 uint256 stakerCount;
+1282	 }
+1283	 struct StateChange {
+1284	 int256 amount;
+1285	 int256 stakerCount;
+1286	 }
+1287	 struct Validator {
+1288	 uint256 amount;
+1289	 uint256 reward;
+1290	 uint256 activationEpoch;
+1291	 uint256 deactivationEpoch;
+1292	 uint256 jailTime;
+1293	 address signer;
+1294	 address contractAddress;
+1295	 Status status;
+1296	 uint256 commissionRate;
+1297	 uint256 lastCommissionUpdate;
+1298	 uint256 delegatorsReward;
+1299	 uint256 delegatedAmount;
+1300	 uint256 initialRewardPerStake;
+1301	 }
+1302	 uint256 constant MAX_COMMISION_RATE = 100;
+1303	 uint256 constant MAX_PROPOSER_BONUS = 100;
+1304	 uint256 constant REWARD_PRECISION = 10**25;
+1305	 uint256 internal constant INCORRECT_VALIDATOR_ID = 2**256 - 1;
+1306	 uint256 internal constant INITIALIZED_AMOUNT = 1;
+1307	 IERC20 public token;
+1308	 address public registry;
+1309	 StakingInfo public logger;
+1310	 StakingNFT public NFTContract;
+1311	 ValidatorShareFactory public validatorShareFactory;
+1312	 uint256 public WITHDRAWAL_DELAY;
+1313	 uint256 public currentEpoch;
+1314	 uint256 public dynasty;
+1315	 uint256 public CHECKPOINT_REWARD;
+1316	 uint256 public minDeposit;
+1317	 uint256 public minHeimdallFee;
+1318	 uint256 public checkPointBlockInterval;
+1319	 uint256 public signerUpdateLimit;
+1320	 uint256 public validatorThreshold;
+1321	 uint256 public totalStaked;
+1322	 uint256 public NFTCounter;
+1323	 uint256 public totalRewards;
+1324	 uint256 public totalRewardsLiquidated;
+1325	 uint256 public auctionPeriod;
+1326	 uint256 public proposerBonus;
+1327	 bytes32 public accountStateRoot;
+1328	 uint256 public replacementCoolDown;
+1329	 bool public delegationEnabled;
+1330	 mapping(uint256 => Validator) public validators;
+1331	 mapping(address => uint256) public signerToValidator;
+1332	 State public validatorState;
+1333	 mapping(uint256 => StateChange) public validatorStateChanges;
+1334	 mapping(address => uint256) public userFeeExit;
+1335	 mapping(uint256 => Auction) public validatorAuction;
+1336	 mapping(uint256 => uint256) public latestSignerUpdateEpoch;
+1337	 uint256 public totalHeimdallFee;
+1338	 }
+1339	 pragma solidity 0.5.17;
+1340	 contract StakeManagerStorageExtension {
+1341	 address public eventsHub;
+1342	 uint256 public rewardPerStake;
+1343	 address public extensionCode;
+1344	 address[] public signers;
+1345	 uint256 constant CHK_REWARD_PRECISION = 100;
+1346	 uint256 public prevBlockInterval;
+1347	 uint256 public rewardDecreasePerCheckpoint;
+1348	 uint256 public maxRewardedCheckpoints;
+1349	 uint256 public checkpointRewardDelta;
+1350	 }
+1351	 pragma solidity ^0.5.2;
+1352	 library Math {
+1353	 function max(uint256 a, uint256 b) internal pure returns (uint256) {
+1354	 return a >= b ? a : b;
+1355	 }
+1356	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+1357	 return a < b ? a : b;
+1358	 }
+1359	 function average(uint256 a, uint256 b) internal pure returns (uint256) {
+1360	 return (a / 2) + (b / 2) + ((a % 2 + b % 2) / 2);
+1361	 }
+1362	 }
+1363	 pragma solidity 0.5.17;
+1364	 contract StakeManagerExtension is StakeManagerStorage, Initializable, StakeManagerStorageExtension {
+1365	 using SafeMath for uint256;
+1366	 constructor() public GovernanceLockable(address(0x0)) {
+1367	 }
+1368	 function startAuction( uint256 validatorId, uint256 amount, bool _acceptDelegation, bytes calldata _signerPubkey ) external {
+1369	 uint256 currentValidatorAmount = validators[validatorId].amount;
+1370	 require( validators[validatorId].deactivationEpoch == 0 && currentValidatorAmount != 0, "Invalid validator for an auction" );
+1371	 uint256 senderValidatorId = signerToValidator[msg.sender];
+1372	 require( NFTContract.balanceOf(msg.sender) == 0 && senderValidatorId != INCORRECT_VALIDATOR_ID, "Already used address" );
+1373	 uint256 _currentEpoch = currentEpoch;
+1374	 uint256 _replacementCoolDown = replacementCoolDown;
+1375	 require(_replacementCoolDown == 0 || _replacementCoolDown <= _currentEpoch, "Cooldown period");
+1376	 require( (_currentEpoch.sub(validators[validatorId].activationEpoch) % dynasty.add(auctionPeriod)) < auctionPeriod, "Invalid auction period" );
+1377	 uint256 perceivedStake = currentValidatorAmount;
+1378	 perceivedStake = perceivedStake.add(validators[validatorId].delegatedAmount);
+1379	 Auction storage auction = validatorAuction[validatorId];
+1380	 uint256 currentAuctionAmount = auction.amount;
+1381	 perceivedStake = Math.max(perceivedStake, currentAuctionAmount);
+1382	 require(perceivedStake < amount, "Must bid higher");
+1383	 require(token.transferFrom(msg.sender, address(this), amount), "Transfer failed");
+1384	 if (currentAuctionAmount != 0) {
+1385	 require(token.transfer(auction.user, currentAuctionAmount), "Bid return failed");
+1386	 }
+1387	 auction.amount = amount;
+1388	 auction.user = msg.sender;
+1389	 auction.acceptDelegation = _acceptDelegation;
+1390	 auction.signerPubkey = _signerPubkey;
+1391	 logger.logStartAuction(validatorId, currentValidatorAmount, amount);
+1392	 }
+1393	 function confirmAuctionBid( uint256 validatorId, uint256 heimdallFee, IStakeManager stakeManager ) external {
+1394	 Auction storage auction = validatorAuction[validatorId];
+1395	 address auctionUser = auction.user;
+1396	 require( msg.sender == auctionUser || NFTContract.tokenOfOwnerByIndex(msg.sender, 0) == validatorId, "Only bidder can confirm" );
+1397	 uint256 _currentEpoch = currentEpoch;
+1398	 require( _currentEpoch.sub(auction.startEpoch) % auctionPeriod.add(dynasty) >= auctionPeriod, "Not allowed before auctionPeriod" );
+1399	 require(auction.user != address(0x0), "Invalid auction");
+1400	 uint256 validatorAmount = validators[validatorId].amount;
+1401	 uint256 perceivedStake = validatorAmount;
+1402	 uint256 auctionAmount = auction.amount;
+1403	 perceivedStake = perceivedStake.add(validators[validatorId].delegatedAmount);
+1404	 if (perceivedStake >= auctionAmount && validators[validatorId].deactivationEpoch == 0) {
+1405	 require(token.transfer(auctionUser, auctionAmount), "Bid return failed");
+1406	 auction.startEpoch = _currentEpoch;
+1407	 logger.logConfirmAuction(validatorId, validatorId, validatorAmount);
+1408	 }
+1409	 else {
+1410	 stakeManager.dethroneAndStake( auctionUser, heimdallFee, validatorId, auctionAmount, auction.acceptDelegation, auction.signerPubkey );
+1411	 }
+1412	 uint256 startEpoch = auction.startEpoch;
+1413	 delete validatorAuction[validatorId];
+1414	 validatorAuction[validatorId].startEpoch = startEpoch;
+1415	 }
+1416	 function migrateValidatorsData(uint256 validatorIdFrom, uint256 validatorIdTo) external {
+1417	 for (uint256 i = validatorIdFrom; i < validatorIdTo; ++i) {
+1418	 ValidatorShare contractAddress = ValidatorShare(validators[i].contractAddress);
+1419	 if (contractAddress != ValidatorShare(0)) {
+1420	 validators[i].reward = contractAddress.validatorRewards_deprecated().add(INITIALIZED_AMOUNT);
+1421	 validators[i].delegatedAmount = contractAddress.activeAmount();
+1422	 validators[i].commissionRate = contractAddress.commissionRate_deprecated();
+1423	 }
+1424	 else {
+1425	 validators[i].reward = validators[i].reward.add(INITIALIZED_AMOUNT);
+1426	 }
+1427	 validators[i].delegatorsReward = INITIALIZED_AMOUNT;
+1428	 }
+1429	 }
+1430	 function updateCheckpointRewardParams( uint256 _rewardDecreasePerCheckpoint, uint256 _maxRewardedCheckpoints, uint256 _checkpointRewardDelta ) external {
+1431	 require(_maxRewardedCheckpoints.mul(_rewardDecreasePerCheckpoint) <= CHK_REWARD_PRECISION);
+1432	 require(_checkpointRewardDelta <= CHK_REWARD_PRECISION);
+1433	 rewardDecreasePerCheckpoint = _rewardDecreasePerCheckpoint;
+1434	 maxRewardedCheckpoints = _maxRewardedCheckpoints;
+1435	 checkpointRewardDelta = _checkpointRewardDelta;
+1436	 _getOrCacheEventsHub().logRewardParams(_rewardDecreasePerCheckpoint, _maxRewardedCheckpoints, _checkpointRewardDelta);
+1437	 }
+1438	 function updateCommissionRate(uint256 validatorId, uint256 newCommissionRate) external {
+1439	 uint256 _epoch = currentEpoch;
+1440	 uint256 _lastCommissionUpdate = validators[validatorId].lastCommissionUpdate;
+1441	 require( (_lastCommissionUpdate.add(WITHDRAWAL_DELAY) <= _epoch) || _lastCommissionUpdate == 0, "Cooldown" );
+1442	 require(newCommissionRate <= MAX_COMMISION_RATE, "Incorrect value");
+1443	 _getOrCacheEventsHub().logUpdateCommissionRate(validatorId, newCommissionRate, validators[validatorId].commissionRate);
+1444	 validators[validatorId].commissionRate = newCommissionRate;
+1445	 validators[validatorId].lastCommissionUpdate = _epoch;
+1446	 }
+1447	 function _getOrCacheEventsHub() private returns(EventsHub) {
+1448	 EventsHub _eventsHub = EventsHub(eventsHub);
+1449	 if (_eventsHub == EventsHub(0x0)) {
+1450	 _eventsHub = EventsHub(Registry(registry).contractMap(keccak256("eventsHub")));
+1451	 eventsHub = address(_eventsHub);
+1452	 }
+1453	 return _eventsHub;
+1454	 }
+1455	 }

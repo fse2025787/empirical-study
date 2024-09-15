@@ -1,0 +1,667 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity >0.5.0 <0.8.0;
+3	 interface iOVM_StateManager {
+4	 enum ItemState {
+5	 ITEM_UNTOUCHED, ITEM_LOADED, ITEM_CHANGED, ITEM_COMMITTED }
+6	 function isAuthenticated(address _address) external view returns (bool);
+7	 function owner() external view returns (address _owner);
+8	 function ovmExecutionManager() external view returns (address _ovmExecutionManager);
+9	 function setExecutionManager(address _ovmExecutionManager) external;
+10	 function putAccount(address _address, Lib_OVMCodec.Account memory _account) external;
+11	 function putEmptyAccount(address _address) external;
+12	 function getAccount(address _address) external view returns (Lib_OVMCodec.Account memory _account);
+13	 function hasAccount(address _address) external view returns (bool _exists);
+14	 function hasEmptyAccount(address _address) external view returns (bool _exists);
+15	 function setAccountNonce(address _address, uint256 _nonce) external;
+16	 function getAccountNonce(address _address) external view returns (uint256 _nonce);
+17	 function getAccountEthAddress(address _address) external view returns (address _ethAddress);
+18	 function getAccountStorageRoot(address _address) external view returns (bytes32 _storageRoot);
+19	 function initPendingAccount(address _address) external;
+20	 function commitPendingAccount(address _address, address _ethAddress, bytes32 _codeHash) external;
+21	 function testAndSetAccountLoaded(address _address) external returns (bool _wasAccountAlreadyLoaded);
+22	 function testAndSetAccountChanged(address _address) external returns (bool _wasAccountAlreadyChanged);
+23	 function commitAccount(address _address) external returns (bool _wasAccountCommitted);
+24	 function incrementTotalUncommittedAccounts() external;
+25	 function getTotalUncommittedAccounts() external view returns (uint256 _total);
+26	 function wasAccountChanged(address _address) external view returns (bool);
+27	 function wasAccountCommitted(address _address) external view returns (bool);
+28	 function putContractStorage(address _contract, bytes32 _key, bytes32 _value) external;
+29	 function getContractStorage(address _contract, bytes32 _key) external view returns (bytes32 _value);
+30	 function hasContractStorage(address _contract, bytes32 _key) external view returns (bool _exists);
+31	 function testAndSetContractStorageLoaded(address _contract, bytes32 _key) external returns (bool _wasContractStorageAlreadyLoaded);
+32	 function testAndSetContractStorageChanged(address _contract, bytes32 _key) external returns (bool _wasContractStorageAlreadyChanged);
+33	 function commitContractStorage(address _contract, bytes32 _key) external returns (bool _wasContractStorageCommitted);
+34	 function incrementTotalUncommittedContractStorage() external;
+35	 function getTotalUncommittedContractStorage() external view returns (uint256 _total);
+36	 function wasContractStorageChanged(address _contract, bytes32 _key) external view returns (bool);
+37	 function wasContractStorageCommitted(address _contract, bytes32 _key) external view returns (bool);
+38	 }
+39	 pragma solidity >0.5.0 <0.8.0;
+40	 interface iOVM_StateManagerFactory {
+41	 function create( address _owner ) external returns ( iOVM_StateManager _ovmStateManager );
+42	 }
+43	 pragma solidity >0.5.0 <0.8.0;
+44	 contract OVM_StateManagerFactory is iOVM_StateManagerFactory {
+45	 function create( address _owner ) override public returns ( iOVM_StateManager ) {
+46	 return new OVM_StateManager(_owner);
+47	 }
+48	 }
+49	 pragma solidity >0.5.0 <0.8.0;
+50	 contract OVM_StateManager is iOVM_StateManager {
+51	 bytes32 constant internal EMPTY_ACCOUNT_STORAGE_ROOT = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421;
+52	 bytes32 constant internal EMPTY_ACCOUNT_CODE_HASH = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+53	 bytes32 constant internal STORAGE_XOR_VALUE = 0xFEEDFACECAFEBEEFFEEDFACECAFEBEEFFEEDFACECAFEBEEFFEEDFACECAFEBEEF;
+54	 address override public owner;
+55	 address override public ovmExecutionManager;
+56	 mapping (address => Lib_OVMCodec.Account) internal accounts;
+57	 mapping (address => mapping (bytes32 => bytes32)) internal contractStorage;
+58	 mapping (address => mapping (bytes32 => bool)) internal verifiedContractStorage;
+59	 mapping (bytes32 => ItemState) internal itemStates;
+60	 uint256 internal totalUncommittedAccounts;
+61	 uint256 internal totalUncommittedContractStorage;
+62	 constructor( address _owner ) {
+63	 owner = _owner;
+64	 }
+65	 modifier authenticated() {
+66	 require( msg.sender == owner || msg.sender == ovmExecutionManager, "Function can only be called by authenticated addresses" );
+67	 _;
+68	 }
+69	 function isAuthenticated( address _address ) override public view returns ( bool ) {
+70	 return (_address == owner || _address == ovmExecutionManager);
+71	 }
+72	 function setExecutionManager( address _ovmExecutionManager ) override public authenticated {
+73	 ovmExecutionManager = _ovmExecutionManager;
+74	 }
+75	 function putAccount( address _address, Lib_OVMCodec.Account memory _account ) override public authenticated {
+76	 accounts[_address] = _account;
+77	 }
+78	 function putEmptyAccount( address _address ) override public authenticated {
+79	 Lib_OVMCodec.Account storage account = accounts[_address];
+80	 account.storageRoot = EMPTY_ACCOUNT_STORAGE_ROOT;
+81	 account.codeHash = EMPTY_ACCOUNT_CODE_HASH;
+82	 }
+83	 function getAccount( address _address ) override public view returns ( Lib_OVMCodec.Account memory ) {
+84	 return accounts[_address];
+85	 }
+86	 function hasAccount( address _address ) override public view returns ( bool ) {
+87	 return accounts[_address].codeHash != bytes32(0);
+88	 }
+89	 function hasEmptyAccount( address _address ) override public view returns ( bool ) {
+90	 return ( accounts[_address].codeHash == EMPTY_ACCOUNT_CODE_HASH && accounts[_address].nonce == 0 );
+91	 }
+92	 function setAccountNonce( address _address, uint256 _nonce ) override public authenticated {
+93	 accounts[_address].nonce = _nonce;
+94	 }
+95	 function getAccountNonce( address _address ) override public view returns ( uint256 ) {
+96	 return accounts[_address].nonce;
+97	 }
+98	 function getAccountEthAddress( address _address ) override public view returns ( address ) {
+99	 return accounts[_address].ethAddress;
+100	 }
+101	 function getAccountStorageRoot( address _address ) override public view returns ( bytes32 ) {
+102	 return accounts[_address].storageRoot;
+103	 }
+104	 function initPendingAccount( address _address ) override public authenticated {
+105	 Lib_OVMCodec.Account storage account = accounts[_address];
+106	 account.nonce = 1;
+107	 account.storageRoot = EMPTY_ACCOUNT_STORAGE_ROOT;
+108	 account.codeHash = EMPTY_ACCOUNT_CODE_HASH;
+109	 account.isFresh = true;
+110	 }
+111	 function commitPendingAccount( address _address, address _ethAddress, bytes32 _codeHash ) override public authenticated {
+112	 Lib_OVMCodec.Account storage account = accounts[_address];
+113	 account.ethAddress = _ethAddress;
+114	 account.codeHash = _codeHash;
+115	 }
+116	 function testAndSetAccountLoaded( address _address ) override public authenticated returns ( bool ) {
+117	 return _testAndSetItemState( _getItemHash(_address), ItemState.ITEM_LOADED );
+118	 }
+119	 function testAndSetAccountChanged( address _address ) override public authenticated returns ( bool ) {
+120	 return _testAndSetItemState( _getItemHash(_address), ItemState.ITEM_CHANGED );
+121	 }
+122	 function commitAccount( address _address ) override public authenticated returns ( bool ) {
+123	 bytes32 item = _getItemHash(_address);
+124	 if (itemStates[item] != ItemState.ITEM_CHANGED) {
+125	 return false;
+126	 }
+127	 itemStates[item] = ItemState.ITEM_COMMITTED;
+128	 totalUncommittedAccounts -= 1;
+129	 return true;
+130	 }
+131	 function incrementTotalUncommittedAccounts() override public authenticated {
+132	 totalUncommittedAccounts += 1;
+133	 }
+134	 function getTotalUncommittedAccounts() override public view returns ( uint256 ) {
+135	 return totalUncommittedAccounts;
+136	 }
+137	 function wasAccountChanged( address _address ) override public view returns ( bool ) {
+138	 bytes32 item = _getItemHash(_address);
+139	 return itemStates[item] >= ItemState.ITEM_CHANGED;
+140	 }
+141	 function wasAccountCommitted( address _address ) override public view returns ( bool ) {
+142	 bytes32 item = _getItemHash(_address);
+143	 return itemStates[item] >= ItemState.ITEM_COMMITTED;
+144	 }
+145	 function putContractStorage( address _contract, bytes32 _key, bytes32 _value ) override public authenticated {
+146	 contractStorage[_contract][_key] = _value ^ STORAGE_XOR_VALUE;
+147	 if (verifiedContractStorage[_contract][_key] == false) {
+148	 verifiedContractStorage[_contract][_key] = true;
+149	 }
+150	 }
+151	 function getContractStorage( address _contract, bytes32 _key ) override public view returns ( bytes32 ) {
+152	 if ( verifiedContractStorage[_contract][_key] == false && accounts[_contract].isFresh ) {
+153	 return bytes32(0);
+154	 }
+155	 return contractStorage[_contract][_key] ^ STORAGE_XOR_VALUE;
+156	 }
+157	 function hasContractStorage( address _contract, bytes32 _key ) override public view returns ( bool ) {
+158	 return verifiedContractStorage[_contract][_key] || accounts[_contract].isFresh;
+159	 }
+160	 function testAndSetContractStorageLoaded( address _contract, bytes32 _key ) override public authenticated returns ( bool ) {
+161	 return _testAndSetItemState( _getItemHash(_contract, _key), ItemState.ITEM_LOADED );
+162	 }
+163	 function testAndSetContractStorageChanged( address _contract, bytes32 _key ) override public authenticated returns ( bool ) {
+164	 return _testAndSetItemState( _getItemHash(_contract, _key), ItemState.ITEM_CHANGED );
+165	 }
+166	 function commitContractStorage( address _contract, bytes32 _key ) override public authenticated returns ( bool ) {
+167	 bytes32 item = _getItemHash(_contract, _key);
+168	 if (itemStates[item] != ItemState.ITEM_CHANGED) {
+169	 return false;
+170	 }
+171	 itemStates[item] = ItemState.ITEM_COMMITTED;
+172	 totalUncommittedContractStorage -= 1;
+173	 return true;
+174	 }
+175	 function incrementTotalUncommittedContractStorage() override public authenticated {
+176	 totalUncommittedContractStorage += 1;
+177	 }
+178	 function getTotalUncommittedContractStorage() override public view returns ( uint256 ) {
+179	 return totalUncommittedContractStorage;
+180	 }
+181	 function wasContractStorageChanged( address _contract, bytes32 _key ) override public view returns ( bool ) {
+182	 bytes32 item = _getItemHash(_contract, _key);
+183	 return itemStates[item] >= ItemState.ITEM_CHANGED;
+184	 }
+185	 function wasContractStorageCommitted( address _contract, bytes32 _key ) override public view returns ( bool ) {
+186	 bytes32 item = _getItemHash(_contract, _key);
+187	 return itemStates[item] >= ItemState.ITEM_COMMITTED;
+188	 }
+189	 function _getItemHash( address _address ) internal pure returns ( bytes32 ) {
+190	 return keccak256(abi.encodePacked(_address));
+191	 }
+192	 function _getItemHash( address _contract, bytes32 _key ) internal pure returns ( bytes32 ) {
+193	 return keccak256(abi.encodePacked( _contract, _key ));
+194	 }
+195	 function _testAndSetItemState( bytes32 _item, ItemState _minItemState ) internal returns ( bool ) {
+196	 bool wasItemState = itemStates[_item] >= _minItemState;
+197	 if (wasItemState == false) {
+198	 itemStates[_item] = _minItemState;
+199	 }
+200	 return wasItemState;
+201	 }
+202	 }
+203	 pragma solidity >0.5.0 <0.8.0;
+204	 library Lib_OVMCodec {
+205	 enum QueueOrigin {
+206	 SEQUENCER_QUEUE, L1TOL2_QUEUE }
+207	 struct Account {
+208	 uint256 nonce;
+209	 uint256 balance;
+210	 bytes32 storageRoot;
+211	 bytes32 codeHash;
+212	 address ethAddress;
+213	 bool isFresh;
+214	 }
+215	 struct EVMAccount {
+216	 uint256 nonce;
+217	 uint256 balance;
+218	 bytes32 storageRoot;
+219	 bytes32 codeHash;
+220	 }
+221	 struct ChainBatchHeader {
+222	 uint256 batchIndex;
+223	 bytes32 batchRoot;
+224	 uint256 batchSize;
+225	 uint256 prevTotalElements;
+226	 bytes extraData;
+227	 }
+228	 struct ChainInclusionProof {
+229	 uint256 index;
+230	 bytes32[] siblings;
+231	 }
+232	 struct Transaction {
+233	 uint256 timestamp;
+234	 uint256 blockNumber;
+235	 QueueOrigin l1QueueOrigin;
+236	 address l1TxOrigin;
+237	 address entrypoint;
+238	 uint256 gasLimit;
+239	 bytes data;
+240	 }
+241	 struct TransactionChainElement {
+242	 bool isSequenced;
+243	 uint256 queueIndex;
+244	 uint256 timestamp;
+245	 uint256 blockNumber;
+246	 bytes txData;
+247	 }
+248	 struct QueueElement {
+249	 bytes32 transactionHash;
+250	 uint40 timestamp;
+251	 uint40 blockNumber;
+252	 }
+253	 function encodeTransaction( Transaction memory _transaction ) internal pure returns ( bytes memory ) {
+254	 return abi.encodePacked( _transaction.timestamp, _transaction.blockNumber, _transaction.l1QueueOrigin, _transaction.l1TxOrigin, _transaction.entrypoint, _transaction.gasLimit, _transaction.data );
+255	 }
+256	 function hashTransaction( Transaction memory _transaction ) internal pure returns ( bytes32 ) {
+257	 return keccak256(encodeTransaction(_transaction));
+258	 }
+259	 function toEVMAccount( Account memory _in ) internal pure returns ( EVMAccount memory ) {
+260	 return EVMAccount({
+261	 nonce: _in.nonce, balance: _in.balance, storageRoot: _in.storageRoot, codeHash: _in.codeHash }
+262	 );
+263	 }
+264	 function encodeEVMAccount( EVMAccount memory _account ) internal pure returns ( bytes memory ) {
+265	 bytes[] memory raw = new bytes[](4);
+266	 raw[0] = Lib_RLPWriter.writeBytes( Lib_Bytes32Utils.removeLeadingZeros( bytes32(_account.nonce) ) );
+267	 raw[1] = Lib_RLPWriter.writeBytes( Lib_Bytes32Utils.removeLeadingZeros( bytes32(_account.balance) ) );
+268	 raw[2] = Lib_RLPWriter.writeBytes(abi.encodePacked(_account.storageRoot));
+269	 raw[3] = Lib_RLPWriter.writeBytes(abi.encodePacked(_account.codeHash));
+270	 return Lib_RLPWriter.writeList(raw);
+271	 }
+272	 function decodeEVMAccount( bytes memory _encoded ) internal pure returns ( EVMAccount memory ) {
+273	 Lib_RLPReader.RLPItem[] memory accountState = Lib_RLPReader.readList(_encoded);
+274	 return EVMAccount({
+275	 nonce: Lib_RLPReader.readUint256(accountState[0]), balance: Lib_RLPReader.readUint256(accountState[1]), storageRoot: Lib_RLPReader.readBytes32(accountState[2]), codeHash: Lib_RLPReader.readBytes32(accountState[3]) }
+276	 );
+277	 }
+278	 function hashBatchHeader( Lib_OVMCodec.ChainBatchHeader memory _batchHeader ) internal pure returns ( bytes32 ) {
+279	 return keccak256( abi.encode( _batchHeader.batchRoot, _batchHeader.batchSize, _batchHeader.prevTotalElements, _batchHeader.extraData ) );
+280	 }
+281	 }
+282	 pragma solidity >0.5.0 <0.8.0;
+283	 library Lib_RLPReader {
+284	 uint256 constant internal MAX_LIST_LENGTH = 32;
+285	 enum RLPItemType {
+286	 DATA_ITEM, LIST_ITEM }
+287	 struct RLPItem {
+288	 uint256 length;
+289	 uint256 ptr;
+290	 }
+291	 function toRLPItem( bytes memory _in ) internal pure returns ( RLPItem memory ) {
+292	 uint256 ptr;
+293	 assembly {
+294	 ptr := add(_in, 32) }
+295	 return RLPItem({
+296	 length: _in.length, ptr: ptr }
+297	 );
+298	 }
+299	 function readList( RLPItem memory _in ) internal pure returns ( RLPItem[] memory ) {
+300	 ( uint256 listOffset, , RLPItemType itemType ) = _decodeLength(_in);
+301	 require( itemType == RLPItemType.LIST_ITEM, "Invalid RLP list value." );
+302	 RLPItem[] memory out = new RLPItem[](MAX_LIST_LENGTH);
+303	 uint256 itemCount = 0;
+304	 uint256 offset = listOffset;
+305	 while (offset < _in.length) {
+306	 require( itemCount < MAX_LIST_LENGTH, "Provided RLP list exceeds max list length." );
+307	 ( uint256 itemOffset, uint256 itemLength, ) = _decodeLength(RLPItem({
+308	 length: _in.length - offset, ptr: _in.ptr + offset }
+309	 ));
+310	 out[itemCount] = RLPItem({
+311	 length: itemLength + itemOffset, ptr: _in.ptr + offset }
+312	 );
+313	 itemCount += 1;
+314	 offset += itemOffset + itemLength;
+315	 }
+316	 assembly {
+317	 mstore(out, itemCount) }
+318	 return out;
+319	 }
+320	 function readList( bytes memory _in ) internal pure returns ( RLPItem[] memory ) {
+321	 return readList( toRLPItem(_in) );
+322	 }
+323	 function readBytes( RLPItem memory _in ) internal pure returns ( bytes memory ) {
+324	 ( uint256 itemOffset, uint256 itemLength, RLPItemType itemType ) = _decodeLength(_in);
+325	 require( itemType == RLPItemType.DATA_ITEM, "Invalid RLP bytes value." );
+326	 return _copy(_in.ptr, itemOffset, itemLength);
+327	 }
+328	 function readBytes( bytes memory _in ) internal pure returns ( bytes memory ) {
+329	 return readBytes( toRLPItem(_in) );
+330	 }
+331	 function readString( RLPItem memory _in ) internal pure returns ( string memory ) {
+332	 return string(readBytes(_in));
+333	 }
+334	 function readString( bytes memory _in ) internal pure returns ( string memory ) {
+335	 return readString( toRLPItem(_in) );
+336	 }
+337	 function readBytes32( RLPItem memory _in ) internal pure returns ( bytes32 ) {
+338	 require( _in.length <= 33, "Invalid RLP bytes32 value." );
+339	 ( uint256 itemOffset, uint256 itemLength, RLPItemType itemType ) = _decodeLength(_in);
+340	 require( itemType == RLPItemType.DATA_ITEM, "Invalid RLP bytes32 value." );
+341	 uint256 ptr = _in.ptr + itemOffset;
+342	 bytes32 out;
+343	 assembly {
+344	 out := mload(ptr) if lt(itemLength, 32) {
+345	 out := div(out, exp(256, sub(32, itemLength))) }
+346	 }
+347	 return out;
+348	 }
+349	 function readBytes32( bytes memory _in ) internal pure returns ( bytes32 ) {
+350	 return readBytes32( toRLPItem(_in) );
+351	 }
+352	 function readUint256( RLPItem memory _in ) internal pure returns ( uint256 ) {
+353	 return uint256(readBytes32(_in));
+354	 }
+355	 function readUint256( bytes memory _in ) internal pure returns ( uint256 ) {
+356	 return readUint256( toRLPItem(_in) );
+357	 }
+358	 function readBool( RLPItem memory _in ) internal pure returns ( bool ) {
+359	 require( _in.length == 1, "Invalid RLP boolean value." );
+360	 uint256 ptr = _in.ptr;
+361	 uint256 out;
+362	 assembly {
+363	 out := byte(0, mload(ptr)) }
+364	 require( out == 0 || out == 1, "Lib_RLPReader: Invalid RLP boolean value, must be 0 or 1" );
+365	 return out != 0;
+366	 }
+367	 function readBool( bytes memory _in ) internal pure returns ( bool ) {
+368	 return readBool( toRLPItem(_in) );
+369	 }
+370	 function readAddress( RLPItem memory _in ) internal pure returns ( address ) {
+371	 if (_in.length == 1) {
+372	 return address(0);
+373	 }
+374	 require( _in.length == 21, "Invalid RLP address value." );
+375	 return address(readUint256(_in));
+376	 }
+377	 function readAddress( bytes memory _in ) internal pure returns ( address ) {
+378	 return readAddress( toRLPItem(_in) );
+379	 }
+380	 function readRawBytes( RLPItem memory _in ) internal pure returns ( bytes memory ) {
+381	 return _copy(_in);
+382	 }
+383	 function _decodeLength( RLPItem memory _in ) private pure returns ( uint256, uint256, RLPItemType ) {
+384	 require( _in.length > 0, "RLP item cannot be null." );
+385	 uint256 ptr = _in.ptr;
+386	 uint256 prefix;
+387	 assembly {
+388	 prefix := byte(0, mload(ptr)) }
+389	 if (prefix <= 0x7f) {
+390	 return (0, 1, RLPItemType.DATA_ITEM);
+391	 }
+392	 else if (prefix <= 0xb7) {
+393	 uint256 strLen = prefix - 0x80;
+394	 require( _in.length > strLen, "Invalid RLP short string." );
+395	 return (1, strLen, RLPItemType.DATA_ITEM);
+396	 }
+397	 else if (prefix <= 0xbf) {
+398	 uint256 lenOfStrLen = prefix - 0xb7;
+399	 require( _in.length > lenOfStrLen, "Invalid RLP long string length." );
+400	 uint256 strLen;
+401	 assembly {
+402	 strLen := div( mload(add(ptr, 1)), exp(256, sub(32, lenOfStrLen)) ) }
+403	 require( _in.length > lenOfStrLen + strLen, "Invalid RLP long string." );
+404	 return (1 + lenOfStrLen, strLen, RLPItemType.DATA_ITEM);
+405	 }
+406	 else if (prefix <= 0xf7) {
+407	 uint256 listLen = prefix - 0xc0;
+408	 require( _in.length > listLen, "Invalid RLP short list." );
+409	 return (1, listLen, RLPItemType.LIST_ITEM);
+410	 }
+411	 else {
+412	 uint256 lenOfListLen = prefix - 0xf7;
+413	 require( _in.length > lenOfListLen, "Invalid RLP long list length." );
+414	 uint256 listLen;
+415	 assembly {
+416	 listLen := div( mload(add(ptr, 1)), exp(256, sub(32, lenOfListLen)) ) }
+417	 require( _in.length > lenOfListLen + listLen, "Invalid RLP long list." );
+418	 return (1 + lenOfListLen, listLen, RLPItemType.LIST_ITEM);
+419	 }
+420	 }
+421	 function _copy( uint256 _src, uint256 _offset, uint256 _length ) private pure returns ( bytes memory ) {
+422	 bytes memory out = new bytes(_length);
+423	 if (out.length == 0) {
+424	 return out;
+425	 }
+426	 uint256 src = _src + _offset;
+427	 uint256 dest;
+428	 assembly {
+429	 dest := add(out, 32) }
+430	 for (uint256 i = 0; i < _length / 32; i++) {
+431	 assembly {
+432	 mstore(dest, mload(src)) }
+433	 src += 32;
+434	 dest += 32;
+435	 }
+436	 uint256 mask = 256 ** (32 - (_length % 32)) - 1;
+437	 assembly {
+438	 mstore( dest, or( and(mload(src), not(mask)), and(mload(dest), mask) ) ) }
+439	 return out;
+440	 }
+441	 function _copy( RLPItem memory _in ) private pure returns ( bytes memory ) {
+442	 return _copy(_in.ptr, 0, _in.length);
+443	 }
+444	 }
+445	 pragma solidity >0.5.0 <0.8.0;
+446	 library Lib_RLPWriter {
+447	 function writeBytes( bytes memory _in ) internal pure returns ( bytes memory ) {
+448	 bytes memory encoded;
+449	 if (_in.length == 1 && uint8(_in[0]) < 128) {
+450	 encoded = _in;
+451	 }
+452	 else {
+453	 encoded = abi.encodePacked(_writeLength(_in.length, 128), _in);
+454	 }
+455	 return encoded;
+456	 }
+457	 function writeList( bytes[] memory _in ) internal pure returns ( bytes memory ) {
+458	 bytes memory list = _flatten(_in);
+459	 return abi.encodePacked(_writeLength(list.length, 192), list);
+460	 }
+461	 function writeString( string memory _in ) internal pure returns ( bytes memory ) {
+462	 return writeBytes(bytes(_in));
+463	 }
+464	 function writeAddress( address _in ) internal pure returns ( bytes memory ) {
+465	 return writeBytes(abi.encodePacked(_in));
+466	 }
+467	 function writeBytes32( bytes32 _in ) internal pure returns ( bytes memory _out ) {
+468	 return writeBytes(abi.encodePacked(_in));
+469	 }
+470	 function writeUint( uint256 _in ) internal pure returns ( bytes memory ) {
+471	 return writeBytes(_toBinary(_in));
+472	 }
+473	 function writeBool( bool _in ) internal pure returns ( bytes memory ) {
+474	 bytes memory encoded = new bytes(1);
+475	 encoded[0] = (_in ? bytes1(0x01) : bytes1(0x80));
+476	 return encoded;
+477	 }
+478	 function _writeLength( uint256 _len, uint256 _offset ) private pure returns ( bytes memory ) {
+479	 bytes memory encoded;
+480	 if (_len < 56) {
+481	 encoded = new bytes(1);
+482	 encoded[0] = byte(uint8(_len) + uint8(_offset));
+483	 }
+484	 else {
+485	 uint256 lenLen;
+486	 uint256 i = 1;
+487	 while (_len / i != 0) {
+488	 lenLen++;
+489	 i *= 256;
+490	 }
+491	 encoded = new bytes(lenLen + 1);
+492	 encoded[0] = byte(uint8(lenLen) + uint8(_offset) + 55);
+493	 for(i = 1; i <= lenLen; i++) {
+494	 encoded[i] = byte(uint8((_len / (256**(lenLen-i))) % 256));
+495	 }
+496	 }
+497	 return encoded;
+498	 }
+499	 function _toBinary( uint256 _x ) private pure returns ( bytes memory ) {
+500	 bytes memory b = abi.encodePacked(_x);
+501	 uint256 i = 0;
+502	 for (; i < 32; i++) {
+503	 if (b[i] != 0) {
+504	 break;
+505	 }
+506	 }
+507	 bytes memory res = new bytes(32 - i);
+508	 for (uint256 j = 0; j < res.length; j++) {
+509	 res[j] = b[i++];
+510	 }
+511	 return res;
+512	 }
+513	 function _memcpy( uint256 _dest, uint256 _src, uint256 _len ) private pure {
+514	 uint256 dest = _dest;
+515	 uint256 src = _src;
+516	 uint256 len = _len;
+517	 for(; len >= 32; len -= 32) {
+518	 assembly {
+519	 mstore(dest, mload(src)) }
+520	 dest += 32;
+521	 src += 32;
+522	 }
+523	 uint256 mask = 256 ** (32 - len) - 1;
+524	 assembly {
+525	 let srcpart := and(mload(src), not(mask)) let destpart := and(mload(dest), mask) mstore(dest, or(destpart, srcpart)) }
+526	 }
+527	 function _flatten( bytes[] memory _list ) private pure returns ( bytes memory ) {
+528	 if (_list.length == 0) {
+529	 return new bytes(0);
+530	 }
+531	 uint256 len;
+532	 uint256 i = 0;
+533	 for (; i < _list.length; i++) {
+534	 len += _list[i].length;
+535	 }
+536	 bytes memory flattened = new bytes(len);
+537	 uint256 flattenedPtr;
+538	 assembly {
+539	 flattenedPtr := add(flattened, 0x20) }
+540	 for(i = 0; i < _list.length; i++) {
+541	 bytes memory item = _list[i];
+542	 uint256 listPtr;
+543	 assembly {
+544	 listPtr := add(item, 0x20)}
+545	 _memcpy(flattenedPtr, listPtr, item.length);
+546	 flattenedPtr += _list[i].length;
+547	 }
+548	 return flattened;
+549	 }
+550	 }
+551	 pragma solidity >0.5.0 <0.8.0;
+552	 library Lib_BytesUtils {
+553	 function slice( bytes memory _bytes, uint256 _start, uint256 _length ) internal pure returns ( bytes memory ) {
+554	 require(_length + 31 >= _length, "slice_overflow");
+555	 require(_start + _length >= _start, "slice_overflow");
+556	 require(_bytes.length >= _start + _length, "slice_outOfBounds");
+557	 bytes memory tempBytes;
+558	 assembly {
+559	 switch iszero(_length) case 0 {
+560	 tempBytes := mload(0x40) let lengthmod := and(_length, 31) let mc := add(add(tempBytes, lengthmod), mul(0x20, iszero(lengthmod))) let end := add(mc, _length) for {
+561	 let cc := add(add(add(_bytes, lengthmod), mul(0x20, iszero(lengthmod))), _start) }
+562	 lt(mc, end) {
+563	 mc := add(mc, 0x20) cc := add(cc, 0x20) }
+564	 {
+565	 mstore(mc, mload(cc)) }
+566	 mstore(tempBytes, _length) mstore(0x40, and(add(mc, 31), not(31))) }
+567	 default {
+568	 tempBytes := mload(0x40) mstore(tempBytes, 0) mstore(0x40, add(tempBytes, 0x20)) }
+569	 }
+570	 return tempBytes;
+571	 }
+572	 function slice( bytes memory _bytes, uint256 _start ) internal pure returns ( bytes memory ) {
+573	 if (_start >= _bytes.length) {
+574	 return bytes("");
+575	 }
+576	 return slice(_bytes, _start, _bytes.length - _start);
+577	 }
+578	 function toBytes32PadLeft( bytes memory _bytes ) internal pure returns ( bytes32 ) {
+579	 bytes32 ret;
+580	 uint256 len = _bytes.length <= 32 ? _bytes.length : 32;
+581	 assembly {
+582	 ret := shr(mul(sub(32, len), 8), mload(add(_bytes, 32))) }
+583	 return ret;
+584	 }
+585	 function toBytes32( bytes memory _bytes ) internal pure returns ( bytes32 ) {
+586	 if (_bytes.length < 32) {
+587	 bytes32 ret;
+588	 assembly {
+589	 ret := mload(add(_bytes, 32)) }
+590	 return ret;
+591	 }
+592	 return abi.decode(_bytes,(bytes32));
+593	 }
+594	 function toUint256( bytes memory _bytes ) internal pure returns ( uint256 ) {
+595	 return uint256(toBytes32(_bytes));
+596	 }
+597	 function toUint24( bytes memory _bytes, uint256 _start ) internal pure returns ( uint24 ) {
+598	 require(_start + 3 >= _start, "toUint24_overflow");
+599	 require(_bytes.length >= _start + 3 , "toUint24_outOfBounds");
+600	 uint24 tempUint;
+601	 assembly {
+602	 tempUint := mload(add(add(_bytes, 0x3), _start)) }
+603	 return tempUint;
+604	 }
+605	 function toUint8( bytes memory _bytes, uint256 _start ) internal pure returns ( uint8 ) {
+606	 require(_start + 1 >= _start, "toUint8_overflow");
+607	 require(_bytes.length >= _start + 1 , "toUint8_outOfBounds");
+608	 uint8 tempUint;
+609	 assembly {
+610	 tempUint := mload(add(add(_bytes, 0x1), _start)) }
+611	 return tempUint;
+612	 }
+613	 function toAddress( bytes memory _bytes, uint256 _start ) internal pure returns ( address ) {
+614	 require(_start + 20 >= _start, "toAddress_overflow");
+615	 require(_bytes.length >= _start + 20, "toAddress_outOfBounds");
+616	 address tempAddress;
+617	 assembly {
+618	 tempAddress := div(mload(add(add(_bytes, 0x20), _start)), 0x1000000000000000000000000) }
+619	 return tempAddress;
+620	 }
+621	 function toNibbles( bytes memory _bytes ) internal pure returns ( bytes memory ) {
+622	 bytes memory nibbles = new bytes(_bytes.length * 2);
+623	 for (uint256 i = 0; i < _bytes.length; i++) {
+624	 nibbles[i * 2] = _bytes[i] >> 4;
+625	 nibbles[i * 2 + 1] = bytes1(uint8(_bytes[i]) % 16);
+626	 }
+627	 return nibbles;
+628	 }
+629	 function fromNibbles( bytes memory _bytes ) internal pure returns ( bytes memory ) {
+630	 bytes memory ret = new bytes(_bytes.length / 2);
+631	 for (uint256 i = 0; i < ret.length; i++) {
+632	 ret[i] = (_bytes[i * 2] << 4) | (_bytes[i * 2 + 1]);
+633	 }
+634	 return ret;
+635	 }
+636	 function equal( bytes memory _bytes, bytes memory _other ) internal pure returns ( bool ) {
+637	 return keccak256(_bytes) == keccak256(_other);
+638	 }
+639	 }
+640	 pragma solidity >0.5.0 <0.8.0;
+641	 library Lib_Bytes32Utils {
+642	 function toBool( bytes32 _in ) internal pure returns ( bool ) {
+643	 return _in != 0;
+644	 }
+645	 function fromBool( bool _in ) internal pure returns ( bytes32 ) {
+646	 return bytes32(uint256(_in ? 1 : 0));
+647	 }
+648	 function toAddress( bytes32 _in ) internal pure returns ( address ) {
+649	 return address(uint160(uint256(_in)));
+650	 }
+651	 function fromAddress( address _in ) internal pure returns ( bytes32 ) {
+652	 return bytes32(uint256(_in));
+653	 }
+654	 function removeLeadingZeros( bytes32 _in ) internal pure returns ( bytes memory ) {
+655	 bytes memory out;
+656	 assembly {
+657	 let shift := 0 for {
+658	 let i := 0 }
+659	 and(lt(i, 32), eq(byte(i, _in), 0)) {
+660	 i := add(i, 1) }
+661	 {
+662	 shift := add(shift, 1) }
+663	 out := mload(0x40) mstore(0x40, add(out, 0x40)) mstore(add(out, 0x20), shl(mul(shift, 8), _in)) mstore(out, sub(32, shift)) }
+664	 return out;
+665	 }
+666	 }

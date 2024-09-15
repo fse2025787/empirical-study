@@ -1,0 +1,192 @@
+row number 
+1	   pragma solidity ^0.4.23;
+2	 contract NokuPricingPlan {
+3	 function payFee(bytes32 serviceName, uint256 multiplier, address client) public returns(bool paid);
+4	 function usageFee(bytes32 serviceName, uint256 multiplier) public view returns(uint fee);
+5	 }
+6	 contract Ownable {
+7	 address public owner;
+8	 event OwnershipRenounced(address indexed previousOwner);
+9	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+10	 constructor() public {
+11	 owner = msg.sender;
+12	 }
+13	 modifier onlyOwner() {
+14	 require(msg.sender == owner);
+15	 _;
+16	 }
+17	 function renounceOwnership() public onlyOwner {
+18	 emit OwnershipRenounced(owner);
+19	 owner = address(0);
+20	 }
+21	 function transferOwnership(address _newOwner) public onlyOwner {
+22	 _transferOwnership(_newOwner);
+23	 }
+24	 function _transferOwnership(address _newOwner) internal {
+25	 require(_newOwner != address(0));
+26	 emit OwnershipTransferred(owner, _newOwner);
+27	 owner = _newOwner;
+28	 }
+29	 }
+30	 contract Pausable is Ownable {
+31	 event Pause();
+32	 event Unpause();
+33	 bool public paused = false;
+34	 modifier whenNotPaused() {
+35	 require(!paused);
+36	 _;
+37	 }
+38	 modifier whenPaused() {
+39	 require(paused);
+40	 _;
+41	 }
+42	 function pause() onlyOwner whenNotPaused public {
+43	 paused = true;
+44	 emit Pause();
+45	 }
+46	 function unpause() onlyOwner whenPaused public {
+47	 paused = false;
+48	 emit Unpause();
+49	 }
+50	 }
+51	 library SafeMath {
+52	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+53	 if (a == 0) {
+54	 return 0;
+55	 }
+56	 c = a * b;
+57	 assert(c / a == b);
+58	 return c;
+59	 }
+60	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+61	 return a / b;
+62	 }
+63	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+64	 assert(b <= a);
+65	 return a - b;
+66	 }
+67	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+68	 c = a + b;
+69	 assert(c >= a);
+70	 return c;
+71	 }
+72	 }
+73	 contract ERC20Basic {
+74	 function totalSupply() public view returns (uint256);
+75	 function balanceOf(address who) public view returns (uint256);
+76	 function transfer(address to, uint256 value) public returns (bool);
+77	 event Transfer(address indexed from, address indexed to, uint256 value);
+78	 }
+79	 contract ERC20 is ERC20Basic {
+80	 function allowance(address owner, address spender) public view returns (uint256);
+81	 function transferFrom(address from, address to, uint256 value) public returns (bool);
+82	 function approve(address spender, uint256 value) public returns (bool);
+83	 event Approval( address indexed owner, address indexed spender, uint256 value );
+84	 }
+85	 contract BurnableERC20 is ERC20 {
+86	 function burn(uint256 amount) public returns (bool burned);
+87	 }
+88	 contract NokuTokenBurner is Pausable {
+89	 using SafeMath for uint256;
+90	 event LogNokuTokenBurnerCreated(address indexed caller, address indexed wallet);
+91	 event LogBurningPercentageChanged(address indexed caller, uint256 indexed burningPercentage);
+92	 address public wallet;
+93	 uint256 public burningPercentage;
+94	 uint256 public burnedTokens;
+95	 uint256 public transferredTokens;
+96	 constructor(address _wallet) public {
+97	 require(_wallet != address(0), "_wallet is zero");
+98	 wallet = _wallet;
+99	 burningPercentage = 100;
+100	 emit LogNokuTokenBurnerCreated(msg.sender, _wallet);
+101	 }
+102	 function setBurningPercentage(uint256 _burningPercentage) public onlyOwner {
+103	 require(0 <= _burningPercentage && _burningPercentage <= 100, "_burningPercentage not in [0, 100]");
+104	 require(_burningPercentage != burningPercentage, "_burningPercentage equal to current one");
+105	 burningPercentage = _burningPercentage;
+106	 emit LogBurningPercentageChanged(msg.sender, _burningPercentage);
+107	 }
+108	 function tokenReceived(address _token, uint256 _amount) public whenNotPaused {
+109	 require(_token != address(0), "_token is zero");
+110	 require(_amount > 0, "_amount is zero");
+111	 uint256 amountToBurn = _amount.mul(burningPercentage).div(100);
+112	 if (amountToBurn > 0) {
+113	 assert(BurnableERC20(_token).burn(amountToBurn));
+114	 burnedTokens = burnedTokens.add(amountToBurn);
+115	 }
+116	 uint256 amountToTransfer = _amount.sub(amountToBurn);
+117	 if (amountToTransfer > 0) {
+118	 assert(BurnableERC20(_token).transfer(wallet, amountToTransfer));
+119	 transferredTokens = transferredTokens.add(amountToTransfer);
+120	 }
+121	 }
+122	 }
+123	 contract NokuConsumptionPlan is NokuPricingPlan, Ownable {
+124	 using SafeMath for uint256;
+125	 event LogNokuConsumptionPlanCreated(address indexed caller, address indexed nokuMasterToken, address indexed tokenBurner);
+126	 event LogServiceAdded(bytes32 indexed serviceName, uint indexed index, uint indexed serviceFee);
+127	 event LogServiceChanged(bytes32 indexed serviceName, uint indexed index, uint indexed serviceFee);
+128	 event LogServiceRemoved(bytes32 indexed serviceName, uint indexed index);
+129	 struct NokuService {
+130	 uint serviceFee;
+131	 uint index;
+132	 }
+133	 bytes32[] private serviceIndex;
+134	 mapping(bytes32 => NokuService) private services;
+135	 address public nokuMasterToken;
+136	 address public tokenBurner;
+137	 constructor(address _nokuMasterToken, address _tokenBurner) public {
+138	 require(_nokuMasterToken != 0, "_nokuMasterToken is zero");
+139	 require(_tokenBurner != 0, "_tokenBurner is zero");
+140	 nokuMasterToken = _nokuMasterToken;
+141	 tokenBurner = _tokenBurner;
+142	 emit LogNokuConsumptionPlanCreated(msg.sender, _nokuMasterToken, _tokenBurner);
+143	 }
+144	 function isService(bytes32 _serviceName) public view returns(bool isIndeed) {
+145	 if (serviceIndex.length == 0) return false;
+146	 else return (serviceIndex[services[_serviceName].index] == _serviceName);
+147	 }
+148	 function addService(bytes32 _serviceName, uint _serviceFee) public onlyOwner returns(uint index) {
+149	 require(!isService(_serviceName), "_serviceName already present");
+150	 services[_serviceName].serviceFee = _serviceFee;
+151	 services[_serviceName].index = serviceIndex.push(_serviceName)-1;
+152	 emit LogServiceAdded(_serviceName, serviceIndex.length-1, _serviceFee);
+153	 return serviceIndex.length-1;
+154	 }
+155	 function removeService(bytes32 _serviceName) public onlyOwner returns(uint index) {
+156	 require(isService(_serviceName), "_serviceName not present");
+157	 uint rowToDelete = services[_serviceName].index;
+158	 bytes32 keyToMove = serviceIndex[serviceIndex.length-1];
+159	 serviceIndex[rowToDelete] = keyToMove;
+160	 services[keyToMove].index = rowToDelete;
+161	 serviceIndex.length--;
+162	 emit LogServiceRemoved(_serviceName, rowToDelete);
+163	 emit LogServiceChanged(keyToMove, rowToDelete, services[keyToMove].serviceFee);
+164	 return rowToDelete;
+165	 }
+166	 function updateServiceFee(bytes32 _serviceName, uint _serviceFee) public onlyOwner returns(bool success) {
+167	 require(isService(_serviceName), "_serviceName not present");
+168	 services[_serviceName].serviceFee = _serviceFee;
+169	 emit LogServiceChanged(_serviceName, services[_serviceName].index, _serviceFee);
+170	 return true;
+171	 }
+172	 function payFee(bytes32 _serviceName, uint256 _amount, address _client) public returns(bool paid) {
+173	 require(isService(_serviceName), "_serviceName not present");
+174	 require(_amount != 0, "_amount is zero");
+175	 require(_client != 0, "_client is zero");
+176	 uint256 fee = usageFee(_serviceName, _amount);
+177	 if (fee == 0) return true;
+178	 require(ERC20(nokuMasterToken).transferFrom(_client, tokenBurner, fee), "NOKU fee payment failed");
+179	 NokuTokenBurner(tokenBurner).tokenReceived(nokuMasterToken, fee);
+180	 return true;
+181	 }
+182	 function usageFee(bytes32 _serviceName, uint256 _amount) public view returns(uint fee) {
+183	 return _amount.mul(services[_serviceName].serviceFee).div(10**18);
+184	 }
+185	 function serviceCount() public view returns(uint count) {
+186	 return serviceIndex.length;
+187	 }
+188	 function serviceAtIndex(uint _index) public view returns(bytes32 serviceName) {
+189	 return serviceIndex[_index];
+190	 }
+191	 }

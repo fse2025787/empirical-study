@@ -1,0 +1,247 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.7.6;
+3	 contract DSMath {
+4	 uint256 constant WAD = 10**18;
+5	 uint256 constant RAY = 10**27;
+6	 function add(uint256 x, uint256 y) internal pure returns (uint256 z) {
+7	 z = SafeMath.add(x, y);
+8	 }
+9	 function sub(uint256 x, uint256 y) internal pure virtual returns (uint256 z) {
+10	 z = SafeMath.sub(x, y);
+11	 }
+12	 function mul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+13	 z = SafeMath.mul(x, y);
+14	 }
+15	 function div(uint256 x, uint256 y) internal pure returns (uint256 z) {
+16	 z = SafeMath.div(x, y);
+17	 }
+18	 function wmul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+19	 z = SafeMath.add(SafeMath.mul(x, y), WAD / 2) / WAD;
+20	 }
+21	 function wdiv(uint256 x, uint256 y) internal pure returns (uint256 z) {
+22	 z = SafeMath.add(SafeMath.mul(x, WAD), y / 2) / y;
+23	 }
+24	 function rdiv(uint256 x, uint256 y) internal pure returns (uint256 z) {
+25	 z = SafeMath.add(SafeMath.mul(x, RAY), y / 2) / y;
+26	 }
+27	 function rmul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+28	 z = SafeMath.add(SafeMath.mul(x, y), RAY / 2) / RAY;
+29	 }
+30	 function toInt(uint256 x) internal pure returns (int256 y) {
+31	 y = int256(x);
+32	 require(y >= 0, "int-overflow");
+33	 }
+34	 function toRad(uint256 wad) internal pure returns (uint256 rad) {
+35	 rad = mul(wad, 10**27);
+36	 }
+37	 }
+38	 pragma solidity ^0.7.6;
+39	 abstract contract Stores {
+40	 address internal constant ethAddr = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+41	 address internal constant wethAddr = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+42	 MemoryInterface internal constant stakeAllMemory = MemoryInterface(0x0A25F019be4C4aAa0B04C0d43dff519dc720D275);
+43	 uint256 public constant PORTIONS_SUM = 1000000;
+44	 function getUint(uint256 getId, uint256 val) internal returns (uint256 returnVal) {
+45	 returnVal = getId == 0 ? val : stakeAllMemory.getUint(getId);
+46	 }
+47	 function setUint(uint256 setId, uint256 val) internal virtual {
+48	 if (setId != 0) stakeAllMemory.setUint(setId, val);
+49	 }
+50	 }
+51	 pragma solidity ^0.7.6;
+52	 abstract contract Basic is DSMath, Stores {
+53	 function convert18ToDec(uint256 _dec, uint256 _amt) internal pure returns (uint256 amt) {
+54	 amt = (_amt / 10**(18 - _dec));
+55	 }
+56	 function convertTo18(uint256 _dec, uint256 _amt) internal pure returns (uint256 amt) {
+57	 amt = mul(_amt, 10**(18 - _dec));
+58	 }
+59	 function getTokenBal(TokenInterface token) internal view returns (uint256 _amt) {
+60	 _amt = address(token) == ethAddr ? address(this).balance : token.balanceOf(address(this));
+61	 }
+62	 function getTokensDec(TokenInterface buyAddr, TokenInterface sellAddr) internal view returns (uint256 buyDec, uint256 sellDec) {
+63	 buyDec = address(buyAddr) == ethAddr ? 18 : buyAddr.decimals();
+64	 sellDec = address(sellAddr) == ethAddr ? 18 : sellAddr.decimals();
+65	 }
+66	 function encodeEvent(string memory eventName, bytes memory eventParam) internal pure returns (bytes memory) {
+67	 return abi.encode(eventName, eventParam);
+68	 }
+69	 function approve( TokenInterface token, address spender, uint256 amount ) internal {
+70	 try token.approve(spender, amount) {
+71	 }
+72	 catch {
+73	 token.approve(spender, 0);
+74	 token.approve(spender, amount);
+75	 }
+76	 }
+77	 function changeEthAddress(address buy, address sell) internal pure returns (TokenInterface _buy, TokenInterface _sell) {
+78	 _buy = buy == ethAddr ? TokenInterface(wethAddr) : TokenInterface(buy);
+79	 _sell = sell == ethAddr ? TokenInterface(wethAddr) : TokenInterface(sell);
+80	 }
+81	 function convertEthToWeth( bool isEth, TokenInterface token, uint256 amount ) internal {
+82	 if (isEth) token.deposit{
+83	 value: amount}
+84	 ();
+85	 }
+86	 function convertWethToEth( bool isEth, TokenInterface token, uint256 amount ) internal {
+87	 if (isEth) {
+88	 approve(token, address(token), amount);
+89	 token.withdraw(amount);
+90	 }
+91	 }
+92	 }
+93	 pragma solidity ^0.7.6;
+94	 abstract contract Helpers is DSMath, Basic {
+95	 IGraphProtocolInterface public constant graphProxy = IGraphProtocolInterface(0xF55041E37E12cD407ad00CE2910B8269B01263b9);
+96	 TokenInterface public constant grtTokenAddress = TokenInterface(0xc944E90C64B2c07662A292be6244BDf05Cda44a7);
+97	 }
+98	 pragma solidity ^0.7.6;
+99	 contract GraphProtocolStaking is Helpers {
+100	 string public constant name = "GraphProtocol-v1";
+101	 using SafeMath for uint256;
+102	 function delegate( address indexer, uint256 amount, uint256 getId ) external {
+103	 require(indexer != address(0));
+104	 uint256 delegationAmount = getUint(getId, amount);
+105	 grtTokenAddress.approve(address(graphProxy), delegationAmount);
+106	 graphProxy.delegate(indexer, delegationAmount);
+107	 }
+108	 function delegateMultiple( address[] memory indexers, uint256 amount, uint256[] memory portions, uint256 getId ) external payable {
+109	 require(amount > 0, "Invalid amount");
+110	 require( portions.length == indexers.length, "Indexer and Portion length doesnt match" );
+111	 uint256 delegationAmount = getUint(getId, amount);
+112	 uint256 totalPortions = 0;
+113	 uint256[] memory indexersAmount = new uint256[](indexers.length);
+114	 uint256 portionsSize = portions.length;
+115	 for (uint256 position = 0; position < portionsSize; position++) {
+116	 indexersAmount[position] = portions[position] .mul(delegationAmount) .div(PORTIONS_SUM);
+117	 totalPortions = totalPortions + portions[position];
+118	 }
+119	 require(totalPortions == PORTIONS_SUM, "Portion Mismatch");
+120	 grtTokenAddress.approve(address(graphProxy), delegationAmount);
+121	 for (uint256 i = 0; i < portionsSize; i++) {
+122	 require(indexers[i] != address(0), "Invalid indexer");
+123	 graphProxy.delegate(indexers[i], indexersAmount[i]);
+124	 }
+125	 }
+126	 function undelegate(address _indexer, uint256 _shares) external payable {
+127	 require(_indexer != address(0), "!Invalid Address");
+128	 graphProxy.undelegate(_indexer, _shares);
+129	 }
+130	 function undelegateMultiple( address[] memory _indexers, uint256[] memory _shares ) external payable {
+131	 require( _indexers.length == _shares.length, "Indexers & shares mismatch" );
+132	 uint256 indexersSize = _indexers.length;
+133	 for (uint256 i = 0; i < indexersSize; i++) {
+134	 require(_indexers[i] != address(0), "Invalid indexer");
+135	 graphProxy.undelegate(_indexers[i], _shares[i]);
+136	 }
+137	 }
+138	 function withdrawDelegated(address _indexer, address _delegateToIndexer) external payable {
+139	 require(_indexer != address(0), "Invalid indexer address");
+140	 graphProxy.withdrawDelegated(_indexer, _delegateToIndexer);
+141	 }
+142	 function withdrawMultipleDelegate( address[] memory _indexers, address[] memory _delegateToIndexers ) external payable {
+143	 uint256 indexersSize = _indexers.length;
+144	 for (uint256 i = 0; i < indexersSize; i++) {
+145	 require(_indexers[i] != address(0), "Invalid indexer");
+146	 graphProxy.withdrawDelegated(_indexers[i], _delegateToIndexers[i]);
+147	 }
+148	 }
+149	 }
+150	 pragma solidity ^0.7.6;
+151	 interface IGraphProtocolInterface {
+152	 function delegate(address _indexer, uint256 _tokens) external payable returns (uint256 shares_);
+153	 function undelegate(address _indexer, uint256 _shares) external returns (uint256 tokens_);
+154	 function withdrawDelegated(address _indexer, address _delegateToIndexer) external returns (uint256 tokens_);
+155	 }
+156	 pragma solidity >=0.6.0 <0.8.0;
+157	 interface IERC20 {
+158	 function totalSupply() external view returns (uint256);
+159	 function balanceOf(address account) external view returns (uint256);
+160	 function transfer(address recipient, uint256 amount) external returns (bool);
+161	 function allowance(address owner, address spender) external view returns (uint256);
+162	 function approve(address spender, uint256 amount) external returns (bool);
+163	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+164	 event Transfer(address indexed from, address indexed to, uint256 value);
+165	 event Approval(address indexed owner, address indexed spender, uint256 value);
+166	 }
+167	 pragma solidity >=0.6.0 <0.8.0;
+168	 library SafeMath {
+169	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+170	 uint256 c = a + b;
+171	 if (c < a) return (false, 0);
+172	 return (true, c);
+173	 }
+174	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+175	 if (b > a) return (false, 0);
+176	 return (true, a - b);
+177	 }
+178	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+179	 if (a == 0) return (true, 0);
+180	 uint256 c = a * b;
+181	 if (c / a != b) return (false, 0);
+182	 return (true, c);
+183	 }
+184	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+185	 if (b == 0) return (false, 0);
+186	 return (true, a / b);
+187	 }
+188	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+189	 if (b == 0) return (false, 0);
+190	 return (true, a % b);
+191	 }
+192	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+193	 uint256 c = a + b;
+194	 require(c >= a, "SafeMath: addition overflow");
+195	 return c;
+196	 }
+197	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+198	 require(b <= a, "SafeMath: subtraction overflow");
+199	 return a - b;
+200	 }
+201	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+202	 if (a == 0) return 0;
+203	 uint256 c = a * b;
+204	 require(c / a == b, "SafeMath: multiplication overflow");
+205	 return c;
+206	 }
+207	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+208	 require(b > 0, "SafeMath: division by zero");
+209	 return a / b;
+210	 }
+211	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+212	 require(b > 0, "SafeMath: modulo by zero");
+213	 return a % b;
+214	 }
+215	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+216	 require(b <= a, errorMessage);
+217	 return a - b;
+218	 }
+219	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+220	 require(b > 0, errorMessage);
+221	 return a / b;
+222	 }
+223	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+224	 require(b > 0, errorMessage);
+225	 return a % b;
+226	 }
+227	 }
+228	 pragma solidity ^0.7.6;
+229	 interface TokenInterface {
+230	 function approve(address, uint256) external;
+231	 function transfer(address, uint256) external;
+232	 function transferFrom( address, address, uint256 ) external;
+233	 function deposit() external payable;
+234	 function withdraw(uint256) external;
+235	 function balanceOf(address) external view returns (uint256);
+236	 function decimals() external view returns (uint256);
+237	 }
+238	 interface MemoryInterface {
+239	 function getUint(uint256 id) external returns (uint256 num);
+240	 function setUint(uint256 id, uint256 val) external;
+241	 }
+242	 interface AccountInterface {
+243	 function enable(address) external;
+244	 function disable(address) external;
+245	 function isAuth(address) external view returns (bool);
+246	 }

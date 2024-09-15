@@ -1,0 +1,939 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity 0.7.6;
+3	 interface InterfaceCommon {
+4	 enum ModuleType {
+5	 Version, Controller, Strategy, MintMaster, Oracle }
+6	 }
+7	 pragma solidity 0.7.6;
+8	 interface IICHIOwnable {
+9	 function renounceOwnership() external;
+10	 function transferOwnership(address newOwner) external;
+11	 function owner() external view returns (address);
+12	 }
+13	 pragma solidity >=0.6.0 <0.8.0;
+14	 abstract contract Context {
+15	 function _msgSender() internal view virtual returns (address payable) {
+16	 return msg.sender;
+17	 }
+18	 function _msgData() internal view virtual returns (bytes memory) {
+19	 this;
+20	 return msg.data;
+21	 }
+22	 }
+23	 pragma solidity 0.7.6;
+24	 interface IICHICommon is IICHIOwnable, InterfaceCommon {
+25	 }
+26	 pragma solidity >=0.6.0 <0.8.0;
+27	 contract ICHIOwnable is IICHIOwnable, Context {
+28	 address private _owner;
+29	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+30	 modifier onlyOwner() {
+31	 require(owner() == _msgSender(), "ICHIOwnable: caller is not the owner");
+32	 _;
+33	 }
+34	 constructor() {
+35	 _transferOwnership(msg.sender);
+36	 }
+37	 function initOwnable() internal {
+38	 require(owner() == address(0), "ICHIOwnable: already initialized");
+39	 _transferOwnership(msg.sender);
+40	 }
+41	 function owner() public view virtual override returns (address) {
+42	 return _owner;
+43	 }
+44	 function renounceOwnership() public virtual override onlyOwner {
+45	 emit OwnershipTransferred(_owner, address(0));
+46	 _owner = address(0);
+47	 }
+48	 function transferOwnership(address newOwner) public virtual override onlyOwner {
+49	 _transferOwnership(newOwner);
+50	 }
+51	 function _transferOwnership(address newOwner) internal {
+52	 require(newOwner != address(0), "ICHIOwnable: new owner is the zero address");
+53	 emit OwnershipTransferred(_owner, newOwner);
+54	 _owner = newOwner;
+55	 }
+56	 }
+57	 pragma solidity 0.7.6;
+58	 contract ICHIInitializable {
+59	 bool private _initialized;
+60	 bool private _initializing;
+61	 modifier initializer() {
+62	 require(_initializing || _isConstructor() || !_initialized, "ICHIInitializable: contract is already initialized");
+63	 bool isTopLevelCall = !_initializing;
+64	 if (isTopLevelCall) {
+65	 _initializing = true;
+66	 _initialized = true;
+67	 }
+68	 _;
+69	 if (isTopLevelCall) {
+70	 _initializing = false;
+71	 }
+72	 }
+73	 modifier initialized {
+74	 require(_initialized, "ICHIInitializable: contract is not initialized");
+75	 _;
+76	 }
+77	 function _isConstructor() private view returns (bool) {
+78	 return !Address.isContract(address(this));
+79	 }
+80	 }
+81	 pragma solidity 0.7.6;
+82	 interface IModule is IICHICommon {
+83	 function oneTokenFactory() external view returns(address);
+84	 function updateDescription(string memory description) external;
+85	 function moduleDescription() external view returns(string memory);
+86	 function MODULE_TYPE() external view returns(bytes32);
+87	 function moduleType() external view returns(ModuleType);
+88	 }
+89	 pragma solidity 0.7.6;
+90	 contract ICHICommon is IICHICommon, ICHIOwnable, ICHIInitializable {
+91	 uint256 constant PRECISION = 10 ** 18;
+92	 uint256 constant INFINITE = uint256(0-1);
+93	 address constant NULL_ADDRESS = address(0);
+94	 bytes32 constant COMPONENT_CONTROLLER = keccak256(abi.encodePacked("ICHI V1 Controller"));
+95	 bytes32 constant COMPONENT_VERSION = keccak256(abi.encodePacked("ICHI V1 OneToken Implementation"));
+96	 bytes32 constant COMPONENT_STRATEGY = keccak256(abi.encodePacked("ICHI V1 Strategy Implementation"));
+97	 bytes32 constant COMPONENT_MINTMASTER = keccak256(abi.encodePacked("ICHI V1 MintMaster Implementation"));
+98	 bytes32 constant COMPONENT_ORACLE = keccak256(abi.encodePacked("ICHI V1 Oracle Implementation"));
+99	 bytes32 constant COMPONENT_VOTERROLL = keccak256(abi.encodePacked("ICHI V1 VoterRoll Implementation"));
+100	 bytes32 constant COMPONENT_FACTORY = keccak256(abi.encodePacked("ICHI OneToken Factory"));
+101	 }
+102	 pragma solidity 0.7.6;
+103	 interface IOracle is IModule {
+104	 function init(address baseToken) external;
+105	 function update(address token) external;
+106	 function indexToken() external view returns(address);
+107	 function read(address token, uint amountTokens) external view returns(uint amountUsd, uint volatility);
+108	 function amountRequired(address token, uint amountUsd) external view returns(uint amountTokens, uint volatility);
+109	 function normalizedToTokens(address token, uint amountNormal) external view returns(uint amountTokens);
+110	 function tokensToNormalized(address token, uint amountTokens) external view returns(uint amountNormal);
+111	 }
+112	 pragma solidity 0.7.6;
+113	 abstract contract ICHIModuleCommon is IModule, ICHICommon {
+114	 ModuleType public immutable override moduleType;
+115	 string public override moduleDescription;
+116	 address public immutable override oneTokenFactory;
+117	 event ModuleDeployed(address sender, ModuleType moduleType, string description);
+118	 event DescriptionUpdated(address sender, string description);
+119	 modifier onlyKnownToken {
+120	 require(IOneTokenFactory(oneTokenFactory).isOneToken(msg.sender), "ICHIModuleCommon: msg.sender is not a known oneToken");
+121	 _;
+122	 }
+123	 modifier onlyTokenOwner (address oneToken) {
+124	 require(msg.sender == IOneTokenV1Base(oneToken).owner(), "ICHIModuleCommon: msg.sender is not oneToken owner");
+125	 _;
+126	 }
+127	 modifier onlyModuleOrFactory {
+128	 if(!IOneTokenFactory(oneTokenFactory).isModule(msg.sender)) {
+129	 require(msg.sender == oneTokenFactory, "ICHIModuleCommon: msg.sender is not module owner, token factory or registed module");
+130	 }
+131	 _;
+132	 }
+133	 constructor (address oneTokenFactory_, ModuleType moduleType_, string memory description_) {
+134	 require(oneTokenFactory_ != NULL_ADDRESS, "ICHIModuleCommon: oneTokenFactory cannot be empty");
+135	 require(bytes(description_).length > 0, "ICHIModuleCommon: description cannot be empty");
+136	 oneTokenFactory = oneTokenFactory_;
+137	 moduleType = moduleType_;
+138	 moduleDescription = description_;
+139	 emit ModuleDeployed(msg.sender, moduleType_, description_);
+140	 }
+141	 function updateDescription(string memory description) external onlyOwner override {
+142	 require(bytes(description).length > 0, "ICHIModuleCommon: description cannot be empty");
+143	 moduleDescription = description;
+144	 emit DescriptionUpdated(msg.sender, description);
+145	 }
+146	 }
+147	 pragma solidity 0.7.6;
+148	 abstract contract OracleCommon is IOracle, ICHIModuleCommon {
+149	 uint256 constant NORMAL = 18;
+150	 bytes32 constant public override MODULE_TYPE = keccak256(abi.encodePacked("ICHI V1 Oracle Implementation"));
+151	 address public override indexToken;
+152	 event OracleDeployed(address sender, string description, address indexToken);
+153	 event OracleInitialized(address sender, address baseToken, address indexToken);
+154	 constructor(address oneTokenFactory_, string memory description_, address indexToken_) ICHIModuleCommon(oneTokenFactory_, ModuleType.Oracle, description_) {
+155	 require(indexToken_ != NULL_ADDRESS, "OracleCommon: indexToken cannot be empty");
+156	 indexToken = indexToken_;
+157	 emit OracleDeployed(msg.sender, description_, indexToken_);
+158	 }
+159	 function init(address baseToken) external onlyModuleOrFactory virtual override {
+160	 emit OracleInitialized(msg.sender, baseToken, indexToken);
+161	 }
+162	 function normalizedToTokens(address token, uint256 amountNormal) public view override returns(uint256 amountTokens) {
+163	 IERC20Extended t = IERC20Extended(token);
+164	 uint256 nativeDecimals = t.decimals();
+165	 require(nativeDecimals <= 18, "OracleCommon: unsupported token precision (greater than 18)");
+166	 if(nativeDecimals == NORMAL) return amountNormal;
+167	 return amountNormal / ( 10 ** (NORMAL - nativeDecimals));
+168	 }
+169	 function tokensToNormalized(address token, uint256 amountTokens) public view override returns(uint256 amountNormal) {
+170	 IERC20Extended t = IERC20Extended(token);
+171	 uint256 nativeDecimals = t.decimals();
+172	 require(nativeDecimals <= 18, "OracleCommon: unsupported token precision (greater than 18)");
+173	 if(nativeDecimals == NORMAL) return amountTokens;
+174	 return amountTokens * ( 10 ** (NORMAL - nativeDecimals));
+175	 }
+176	 }
+177	 pragma solidity =0.7.6;
+178	 interface IUniswapV2Pair {
+179	 event Sync(uint112 reserve0, uint112 reserve1);
+180	 function token0() external view returns (address);
+181	 function token1() external view returns (address);
+182	 function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+183	 function price0CumulativeLast() external view returns (uint256);
+184	 function price1CumulativeLast() external view returns (uint256);
+185	 function sync() external;
+186	 function initialize(address, address) external;
+187	 }
+188	 pragma solidity >=0.6.0 <0.8.0;
+189	 interface IERC20 {
+190	 function totalSupply() external view returns (uint256);
+191	 function balanceOf(address account) external view returns (uint256);
+192	 function transfer(address recipient, uint256 amount) external returns (bool);
+193	 function allowance(address owner, address spender) external view returns (uint256);
+194	 function approve(address spender, uint256 amount) external returns (bool);
+195	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+196	 event Transfer(address indexed from, address indexed to, uint256 value);
+197	 event Approval(address indexed owner, address indexed spender, uint256 value);
+198	 }
+199	 pragma solidity 0.7.6;
+200	 contract UniswapOracleTWAPCompare is OracleCommon {
+201	 using FixedPoint for *;
+202	 using SafeMath for uint256;
+203	 uint256 public immutable PERIOD_1;
+204	 uint256 public immutable PERIOD_2;
+205	 address public immutable uniswapFactory;
+206	 struct Pair {
+207	 address token0;
+208	 address token1;
+209	 uint256 price0CumulativeLast;
+210	 uint256 price1CumulativeLast;
+211	 uint32 blockTimestampLast;
+212	 FixedPoint.uq112x112 price0Average;
+213	 FixedPoint.uq112x112 price1Average;
+214	 }
+215	 mapping(address => Pair) period_1_pairs;
+216	 mapping(address => Pair) period_2_pairs;
+217	 constructor(address oneTokenFactory_, address uniswapFactory_, address indexToken_, uint256 period_1_, uint256 period_2_) OracleCommon(oneTokenFactory_, "ICHI TWAP Compare Uniswap Oracle", indexToken_) {
+218	 require(uniswapFactory_ != NULL_ADDRESS, "UniswapOracleTWAPCompare: uniswapFactory cannot be empty");
+219	 require(period_1_ > 0, "UniswapOracleTWAPCompare: period must be > 0");
+220	 require(period_2_ > 0, "UniswapOracleTWAPCompare: period must be > 0");
+221	 uniswapFactory = uniswapFactory_;
+222	 PERIOD_1 = period_1_;
+223	 PERIOD_2 = period_2_;
+224	 indexToken = indexToken_;
+225	 }
+226	 function init(address token) external onlyModuleOrFactory override {
+227	 require(token != NULL_ADDRESS, "UniswapOracleTWAPCompare: token cannot be null");
+228	 IUniswapV2Pair _pair = IUniswapV2Pair(UniswapV2Library.pairFor(uniswapFactory, token, indexToken));
+229	 require(address(_pair) != NULL_ADDRESS, "UniswapOracleTWAPCompare: unknown pair");
+230	 Pair storage p1 = period_1_pairs[address(_pair)];
+231	 Pair storage p2 = period_2_pairs[address(_pair)];
+232	 if(p1.token0 == NULL_ADDRESS && p2.token0 == NULL_ADDRESS) {
+233	 p1.token0 = _pair.token0();
+234	 p2.token0 = _pair.token0();
+235	 p1.token1 = _pair.token1();
+236	 p2.token1 = _pair.token1();
+237	 p1.price0CumulativeLast = _pair.price0CumulativeLast();
+238	 p2.price0CumulativeLast = _pair.price0CumulativeLast();
+239	 p1.price1CumulativeLast = _pair.price1CumulativeLast();
+240	 p2.price1CumulativeLast = _pair.price1CumulativeLast();
+241	 uint112 reserve0;
+242	 uint112 reserve1;
+243	 (reserve0, reserve1, p1.blockTimestampLast) = _pair.getReserves();
+244	 p2.blockTimestampLast = p1.blockTimestampLast;
+245	 require(reserve0 != 0 && reserve1 != 0, 'UniswapOracleTWAPCompare: NO_RESERVES');
+246	 emit OracleInitialized(msg.sender, token, indexToken);
+247	 }
+248	 }
+249	 function read(address token, uint256 amountTokens) external view override returns(uint256 amountUsd, uint256 volatility) {
+250	 amountUsd = tokensToNormalized(indexToken, consult(token, amountTokens));
+251	 volatility = 1;
+252	 }
+253	 function amountRequired(address token, uint256 amountUsd) external view override returns(uint256 amountTokens, uint256 volatility) {
+254	 IUniswapV2Pair _pair = IUniswapV2Pair(UniswapV2Library.pairFor(uniswapFactory, token, indexToken));
+255	 Pair storage p1 = period_1_pairs[address(_pair)];
+256	 Pair storage p2 = period_2_pairs[address(_pair)];
+257	 require(token == p1.token0 || token == p1.token1, 'UniswapOracleTWAPCompare: INVALID_TOKEN');
+258	 require(p1.price0CumulativeLast > 0 && p2.price0CumulativeLast > 0, "UniswapOracleTWAPCompare: Gathering history. Try again later");
+259	 amountUsd = normalizedToTokens(indexToken, amountUsd);
+260	 uint256 p1Tokens = (token == p1.token0 ? p1.price0Average : p1.price1Average).reciprocal().mul(amountUsd).decode144();
+261	 uint256 p2Tokens = (token == p2.token0 ? p2.price0Average : p2.price1Average).reciprocal().mul(amountUsd).decode144();
+262	 if (p1Tokens > p2Tokens) {
+263	 amountTokens = p1Tokens;
+264	 }
+265	 else {
+266	 amountTokens = p2Tokens;
+267	 }
+268	 volatility = 1;
+269	 }
+270	 function update(address token) external override {
+271	 IUniswapV2Pair _pair = IUniswapV2Pair(UniswapV2Library.pairFor(uniswapFactory, token, indexToken));
+272	 Pair storage p1 = period_1_pairs[address(_pair)];
+273	 Pair storage p2 = period_2_pairs[address(_pair)];
+274	 if(p1.token0 != NULL_ADDRESS) {
+275	 (uint256 price0Cumulative, uint256 price1Cumulative, uint32 blockTimestamp) = UniswapV2OracleLibrary.currentCumulativePrices(address(_pair));
+276	 uint32 timeElapsed_1 = blockTimestamp - p1.blockTimestampLast;
+277	 uint32 timeElapsed_2 = blockTimestamp - p2.blockTimestampLast;
+278	 if(timeElapsed_1 >= PERIOD_1) {
+279	 p1.price0Average = FixedPoint.uq112x112(uint224((price0Cumulative - p1.price0CumulativeLast) / timeElapsed_1));
+280	 p1.price1Average = FixedPoint.uq112x112(uint224((price1Cumulative - p1.price1CumulativeLast) / timeElapsed_1));
+281	 p1.price0CumulativeLast = price0Cumulative;
+282	 p1.price1CumulativeLast = price1Cumulative;
+283	 p1.blockTimestampLast = blockTimestamp;
+284	 }
+285	 if(timeElapsed_2 >= PERIOD_2) {
+286	 p2.price0Average = FixedPoint.uq112x112(uint224((price0Cumulative - p2.price0CumulativeLast) / timeElapsed_2));
+287	 p2.price1Average = FixedPoint.uq112x112(uint224((price1Cumulative - p2.price1CumulativeLast) / timeElapsed_2));
+288	 p2.price0CumulativeLast = price0Cumulative;
+289	 p2.price1CumulativeLast = price1Cumulative;
+290	 p2.blockTimestampLast = blockTimestamp;
+291	 }
+292	 }
+293	 }
+294	 function consult(address token, uint256 amountTokens) public view returns (uint256 amountOut) {
+295	 IUniswapV2Pair _pair = IUniswapV2Pair(UniswapV2Library.pairFor(uniswapFactory, token, indexToken));
+296	 Pair storage p1 = period_1_pairs[address(_pair)];
+297	 Pair storage p2 = period_2_pairs[address(_pair)];
+298	 require(token == p1.token0 || token == p1.token1, 'UniswapOracleTWAPCompare: INVALID_TOKEN');
+299	 require(p1.price0CumulativeLast > 0 && p2.price0CumulativeLast > 0, "UniswapOracleTWAPCompare: Gathering history. Try again later");
+300	 uint256 p1Out = (token == p1.token0 ? p1.price0Average : p1.price1Average).mul(amountTokens).decode144();
+301	 uint256 p2Out = (token == p2.token0 ? p2.price0Average : p2.price1Average).mul(amountTokens).decode144();
+302	 if (p1Out > p2Out) {
+303	 amountOut = p2Out;
+304	 }
+305	 else {
+306	 amountOut = p1Out;
+307	 }
+308	 }
+309	 function pair1Info(address token) external view returns ( address token0, address token1, uint256 price0CumulativeLast, uint256 price1CumulativeLast, uint256 price0Average, uint256 price1Average, uint32 blockTimestampLast, uint256 period ) {
+310	 IUniswapV2Pair _pair = IUniswapV2Pair(UniswapV2Library.pairFor(uniswapFactory, token, indexToken));
+311	 Pair storage p = period_1_pairs[address(_pair)];
+312	 return( p.token0, p.token1, p.price0CumulativeLast, p.price1CumulativeLast, p.price0Average.mul(PRECISION).decode144(), p.price1Average.mul(PRECISION).decode144(), p.blockTimestampLast, PERIOD_1 );
+313	 }
+314	 function pair2Info(address token) external view returns ( address token0, address token1, uint256 price0CumulativeLast, uint256 price1CumulativeLast, uint256 price0Average, uint256 price1Average, uint32 blockTimestampLast, uint256 period ) {
+315	 IUniswapV2Pair _pair = IUniswapV2Pair(UniswapV2Library.pairFor(uniswapFactory, token, indexToken));
+316	 Pair storage p = period_2_pairs[address(_pair)];
+317	 return( p.token0, p.token1, p.price0CumulativeLast, p.price1CumulativeLast, p.price0Average.mul(PRECISION).decode144(), p.price1Average.mul(PRECISION).decode144(), p.blockTimestampLast, PERIOD_2 );
+318	 }
+319	 }
+320	 pragma solidity >=0.6.0 <0.8.0;
+321	 library SafeMath {
+322	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+323	 uint256 c = a + b;
+324	 if (c < a) return (false, 0);
+325	 return (true, c);
+326	 }
+327	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+328	 if (b > a) return (false, 0);
+329	 return (true, a - b);
+330	 }
+331	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+332	 if (a == 0) return (true, 0);
+333	 uint256 c = a * b;
+334	 if (c / a != b) return (false, 0);
+335	 return (true, c);
+336	 }
+337	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+338	 if (b == 0) return (false, 0);
+339	 return (true, a / b);
+340	 }
+341	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+342	 if (b == 0) return (false, 0);
+343	 return (true, a % b);
+344	 }
+345	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+346	 uint256 c = a + b;
+347	 require(c >= a, "SafeMath: addition overflow");
+348	 return c;
+349	 }
+350	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+351	 require(b <= a, "SafeMath: subtraction overflow");
+352	 return a - b;
+353	 }
+354	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+355	 if (a == 0) return 0;
+356	 uint256 c = a * b;
+357	 require(c / a == b, "SafeMath: multiplication overflow");
+358	 return c;
+359	 }
+360	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+361	 require(b > 0, "SafeMath: division by zero");
+362	 return a / b;
+363	 }
+364	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+365	 require(b > 0, "SafeMath: modulo by zero");
+366	 return a % b;
+367	 }
+368	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+369	 require(b <= a, errorMessage);
+370	 return a - b;
+371	 }
+372	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+373	 require(b > 0, errorMessage);
+374	 return a / b;
+375	 }
+376	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+377	 require(b > 0, errorMessage);
+378	 return a % b;
+379	 }
+380	 }
+381	 pragma solidity >=0.5.0;
+382	 interface IUniswapV2Factory {
+383	 function allPairsLength() external view returns (uint256);
+384	 function createPair(address tokenA, address tokenB) external returns (address pair);
+385	 function setFeeTo(address) external;
+386	 function setFeeToSetter(address) external;
+387	 }
+388	 pragma solidity >=0.4.0;
+389	 library FixedPoint {
+390	 struct uq112x112 {
+391	 uint224 _x;
+392	 }
+393	 struct uq144x112 {
+394	 uint256 _x;
+395	 }
+396	 uint8 public constant RESOLUTION = 112;
+397	 uint256 public constant Q112 = 0x10000000000000000000000000000;
+398	 uint256 private constant Q224 = 0x100000000000000000000000000000000000000000000000000000000;
+399	 uint256 private constant LOWER_MASK = 0xffffffffffffffffffffffffffff;
+400	 function encode(uint112 x) internal pure returns (uq112x112 memory) {
+401	 return uq112x112(uint224(x) << RESOLUTION);
+402	 }
+403	 function encode144(uint144 x) internal pure returns (uq144x112 memory) {
+404	 return uq144x112(uint256(x) << RESOLUTION);
+405	 }
+406	 function decode(uq112x112 memory self) internal pure returns (uint112) {
+407	 return uint112(self._x >> RESOLUTION);
+408	 }
+409	 function decode144(uq144x112 memory self) internal pure returns (uint144) {
+410	 return uint144(self._x >> RESOLUTION);
+411	 }
+412	 function mul(uq112x112 memory self, uint256 y) internal pure returns (uq144x112 memory) {
+413	 uint256 z = 0;
+414	 require(y == 0 || (z = self._x * y) / y == self._x, 'FixedPoint::mul: overflow');
+415	 return uq144x112(z);
+416	 }
+417	 function muli(uq112x112 memory self, int256 y) internal pure returns (int256) {
+418	 uint256 z = FullMath.mulDiv(self._x, uint256(y < 0 ? -y : y), Q112);
+419	 require(z < 2**255, 'FixedPoint::muli: overflow');
+420	 return y < 0 ? -int256(z) : int256(z);
+421	 }
+422	 function muluq(uq112x112 memory self, uq112x112 memory other) internal pure returns (uq112x112 memory) {
+423	 if (self._x == 0 || other._x == 0) {
+424	 return uq112x112(0);
+425	 }
+426	 uint112 upper_self = uint112(self._x >> RESOLUTION);
+427	 uint112 lower_self = uint112(self._x & LOWER_MASK);
+428	 uint112 upper_other = uint112(other._x >> RESOLUTION);
+429	 uint112 lower_other = uint112(other._x & LOWER_MASK);
+430	 uint224 upper = uint224(upper_self) * upper_other;
+431	 uint224 lower = uint224(lower_self) * lower_other;
+432	 uint224 uppers_lowero = uint224(upper_self) * lower_other;
+433	 uint224 uppero_lowers = uint224(upper_other) * lower_self;
+434	 require(upper <= uint112(-1), 'FixedPoint::muluq: upper overflow');
+435	 uint256 sum = uint256(upper << RESOLUTION) + uppers_lowero + uppero_lowers + (lower >> RESOLUTION);
+436	 require(sum <= uint224(-1), 'FixedPoint::muluq: sum overflow');
+437	 return uq112x112(uint224(sum));
+438	 }
+439	 function divuq(uq112x112 memory self, uq112x112 memory other) internal pure returns (uq112x112 memory) {
+440	 require(other._x > 0, 'FixedPoint::divuq: division by zero');
+441	 if (self._x == other._x) {
+442	 return uq112x112(uint224(Q112));
+443	 }
+444	 if (self._x <= uint144(-1)) {
+445	 uint256 value = (uint256(self._x) << RESOLUTION) / other._x;
+446	 require(value <= uint224(-1), 'FixedPoint::divuq: overflow');
+447	 return uq112x112(uint224(value));
+448	 }
+449	 uint256 result = FullMath.mulDiv(Q112, self._x, other._x);
+450	 require(result <= uint224(-1), 'FixedPoint::divuq: overflow');
+451	 return uq112x112(uint224(result));
+452	 }
+453	 function fraction(uint256 numerator, uint256 denominator) internal pure returns (uq112x112 memory) {
+454	 require(denominator > 0, 'FixedPoint::fraction: division by zero');
+455	 if (numerator == 0) return FixedPoint.uq112x112(0);
+456	 if (numerator <= uint144(-1)) {
+457	 uint256 result = (numerator << RESOLUTION) / denominator;
+458	 require(result <= uint224(-1), 'FixedPoint::fraction: overflow');
+459	 return uq112x112(uint224(result));
+460	 }
+461	 else {
+462	 uint256 result = FullMath.mulDiv(numerator, Q112, denominator);
+463	 require(result <= uint224(-1), 'FixedPoint::fraction: overflow');
+464	 return uq112x112(uint224(result));
+465	 }
+466	 }
+467	 function reciprocal(uq112x112 memory self) internal pure returns (uq112x112 memory) {
+468	 require(self._x != 0, 'FixedPoint::reciprocal: reciprocal of zero');
+469	 require(self._x != 1, 'FixedPoint::reciprocal: overflow');
+470	 return uq112x112(uint224(Q224 / self._x));
+471	 }
+472	 function sqrt(uq112x112 memory self) internal pure returns (uq112x112 memory) {
+473	 if (self._x <= uint144(-1)) {
+474	 return uq112x112(uint224(Babylonian.sqrt(uint256(self._x) << 112)));
+475	 }
+476	 uint8 safeShiftBits = 255 - BitMath.mostSignificantBit(self._x);
+477	 safeShiftBits -= safeShiftBits % 2;
+478	 return uq112x112(uint224(Babylonian.sqrt(uint256(self._x) << safeShiftBits) << ((112 - safeShiftBits) / 2)));
+479	 }
+480	 }
+481	 pragma solidity 0.7.6;
+482	 library UniswapV2OracleLibrary {
+483	 using FixedPoint for *;
+484	 function currentBlockTimestamp() internal view returns (uint32) {
+485	 return uint32(block.timestamp % 2 ** 32);
+486	 }
+487	 function currentCumulativePrices( address pair ) internal view returns (uint256 price0Cumulative, uint256 price1Cumulative, uint32 blockTimestamp) {
+488	 blockTimestamp = currentBlockTimestamp();
+489	 price0Cumulative = IUniswapV2Pair(pair).price0CumulativeLast();
+490	 price1Cumulative = IUniswapV2Pair(pair).price1CumulativeLast();
+491	 (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast) = IUniswapV2Pair(pair).getReserves();
+492	 if (blockTimestampLast != blockTimestamp) {
+493	 uint32 timeElapsed = blockTimestamp - blockTimestampLast;
+494	 price0Cumulative += uint256(FixedPoint.fraction(reserve1, reserve0)._x) * timeElapsed;
+495	 price1Cumulative += uint256(FixedPoint.fraction(reserve0, reserve1)._x) * timeElapsed;
+496	 }
+497	 }
+498	 }
+499	 pragma solidity 0.7.6;
+500	 library UniswapV2Library {
+501	 using UniswapSafeMath for uint256;
+502	 function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+503	 require(tokenA != tokenB, 'UniswapV2Library: IDENTICAL_ADDRESSES');
+504	 (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+505	 require(token0 != address(0), 'UniswapV2Library: ZERO_ADDRESS');
+506	 }
+507	 function getInitHash() public pure returns (bytes32){
+508	 bytes memory bytecode = type(UniswapV2Pair).creationCode;
+509	 return keccak256(abi.encodePacked(bytecode));
+510	 }
+511	 function pairFor(address factory, address tokenA, address tokenB) internal pure returns (address pair) {
+512	 (address token0, address token1) = sortTokens(tokenA, tokenB);
+513	 pair = address(uint256(keccak256(abi.encodePacked( hex'ff', factory, keccak256(abi.encodePacked(token0, token1)), hex'96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f' ))));
+514	 }
+515	 function getReserves(address factory, address tokenA, address tokenB) internal view returns (uint256 reserveA, uint256 reserveB) {
+516	 (address token0,) = sortTokens(tokenA, tokenB);
+517	 (uint256 reserve0, uint256 reserve1,) = IUniswapV2Pair(pairFor(factory, tokenA, tokenB)).getReserves();
+518	 (reserveA, reserveB) = tokenA == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
+519	 }
+520	 function quote(uint256 amountA, uint256 reserveA, uint256 reserveB) internal pure returns (uint256 amountB) {
+521	 require(amountA > 0, 'UniswapV2Library: INSUFFICIENT_AMOUNT');
+522	 require(reserveA > 0 && reserveB > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+523	 amountB = amountA.mul(reserveB) / reserveA;
+524	 }
+525	 function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut) internal pure returns (uint256 amountOut) {
+526	 require(amountIn > 0, 'UniswapV2Library: INSUFFICIENT_INPUT_AMOUNT');
+527	 require(reserveIn > 0 && reserveOut > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+528	 uint256 amountInWithFee = amountIn.mul(997);
+529	 uint256 numerator = amountInWithFee.mul(reserveOut);
+530	 uint256 denominator = reserveIn.mul(1000).add(amountInWithFee);
+531	 amountOut = numerator / denominator;
+532	 }
+533	 function getAmountIn(uint256 amountOut, uint256 reserveIn, uint256 reserveOut) internal pure returns (uint256 amountIn) {
+534	 require(amountOut > 0, 'UniswapV2Library: INSUFFICIENT_OUTPUT_AMOUNT');
+535	 require(reserveIn > 0 && reserveOut > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+536	 uint256 numerator = reserveIn.mul(amountOut).mul(1000);
+537	 uint256 denominator = reserveOut.sub(amountOut).mul(997);
+538	 amountIn = (numerator / denominator).add(1);
+539	 }
+540	 function getAmountsOut(address factory, uint256 amountIn, address[] memory path) internal view returns (uint256[] memory amounts) {
+541	 require(path.length >= 2, 'UniswapV2Library: INVALID_PATH');
+542	 amounts = new uint256[](path.length);
+543	 amounts[0] = amountIn;
+544	 for (uint256 i; i < path.length - 1; i++) {
+545	 (uint256 reserveIn, uint256 reserveOut) = getReserves(factory, path[i], path[i + 1]);
+546	 amounts[i + 1] = getAmountOut(amounts[i], reserveIn, reserveOut);
+547	 }
+548	 }
+549	 function getAmountsIn(address factory, uint256 amountOut, address[] memory path) internal view returns (uint256[] memory amounts) {
+550	 require(path.length >= 2, 'UniswapV2Library: INVALID_PATH');
+551	 amounts = new uint256[](path.length);
+552	 amounts[amounts.length - 1] = amountOut;
+553	 for (uint256 i = path.length - 1; i > 0; i--) {
+554	 (uint256 reserveIn, uint256 reserveOut) = getReserves(factory, path[i - 1], path[i]);
+555	 amounts[i - 1] = getAmountIn(amounts[i], reserveIn, reserveOut);
+556	 }
+557	 }
+558	 }
+559	 pragma solidity 0.7.6;
+560	 interface IOneTokenFactory is InterfaceCommon {
+561	 function oneTokenProxyAdmins(address) external returns(address);
+562	 function deployOneTokenProxy( string memory name, string memory symbol, address governance, address version, address controller, address mintMaster, address memberToken, address collateral, address oneTokenOracle ) external returns(address newOneTokenProxy, address proxyAdmin);
+563	 function admitModule(address module, ModuleType moduleType, string memory name, string memory url) external;
+564	 function updateModule(address module, string memory name, string memory url) external;
+565	 function removeModule(address module) external;
+566	 function admitForeignToken(address foreignToken, bool collateral, address oracle) external;
+567	 function updateForeignToken(address foreignToken, bool collateral) external;
+568	 function removeForeignToken(address foreignToken) external;
+569	 function assignOracle(address foreignToken, address oracle) external;
+570	 function removeOracle(address foreignToken, address oracle) external;
+571	 function MODULE_TYPE() external view returns(bytes32);
+572	 function oneTokenCount() external view returns(uint256);
+573	 function oneTokenAtIndex(uint256 index) external view returns(address);
+574	 function isOneToken(address oneToken) external view returns(bool);
+575	 function moduleCount() external view returns(uint256);
+576	 function moduleAtIndex(uint256 index) external view returns(address module);
+577	 function isModule(address module) external view returns(bool);
+578	 function isValidModuleType(address module, ModuleType moduleType) external view returns(bool);
+579	 function foreignTokenCount() external view returns(uint256);
+580	 function foreignTokenAtIndex(uint256 index) external view returns(address);
+581	 function foreignTokenInfo(address foreignToken) external view returns(bool collateral, uint256 oracleCount);
+582	 function foreignTokenOracleCount(address foreignToken) external view returns(uint256);
+583	 function foreignTokenOracleAtIndex(address foreignToken, uint256 index) external view returns(address);
+584	 function isOracle(address foreignToken, address oracle) external view returns(bool);
+585	 function isForeignToken(address foreignToken) external view returns(bool);
+586	 function isCollateral(address foreignToken) external view returns(bool);
+587	 }
+588	 pragma solidity 0.7.6;
+589	 interface IOneTokenV1Base is IICHICommon, IERC20 {
+590	 function init(string memory name_, string memory symbol_, address oneTokenOracle_, address controller_, address mintMaster_, address memberToken_, address collateral_) external;
+591	 function changeController(address controller_) external;
+592	 function changeMintMaster(address mintMaster_, address oneTokenOracle) external;
+593	 function addAsset(address token, address oracle) external;
+594	 function removeAsset(address token) external;
+595	 function setStrategy(address token, address strategy, uint256 allowance) external;
+596	 function executeStrategy(address token) external;
+597	 function removeStrategy(address token) external;
+598	 function closeStrategy(address token) external;
+599	 function increaseStrategyAllowance(address token, uint256 amount) external;
+600	 function decreaseStrategyAllowance(address token, uint256 amount) external;
+601	 function setFactory(address newFactory) external;
+602	 function MODULE_TYPE() external view returns(bytes32);
+603	 function oneTokenFactory() external view returns(address);
+604	 function controller() external view returns(address);
+605	 function mintMaster() external view returns(address);
+606	 function memberToken() external view returns(address);
+607	 function assets(address) external view returns(address, address);
+608	 function balances(address token) external view returns(uint256 inVault, uint256 inStrategy);
+609	 function collateralTokenCount() external view returns(uint256);
+610	 function collateralTokenAtIndex(uint256 index) external view returns(address);
+611	 function isCollateral(address token) external view returns(bool);
+612	 function otherTokenCount() external view returns(uint256);
+613	 function otherTokenAtIndex(uint256 index) external view returns(address);
+614	 function isOtherToken(address token) external view returns(bool);
+615	 function assetCount() external view returns(uint256);
+616	 function assetAtIndex(uint256 index) external view returns(address);
+617	 function isAsset(address token) external view returns(bool);
+618	 }
+619	 pragma solidity 0.7.6;
+620	 interface IERC20Extended is IERC20 {
+621	 function decimals() external view returns(uint8);
+622	 function symbol() external view returns(string memory);
+623	 function name() external view returns(string memory);
+624	 }
+625	 pragma solidity >=0.6.2 <0.8.0;
+626	 library Address {
+627	 function isContract(address account) internal view returns (bool) {
+628	 uint256 size;
+629	 assembly {
+630	 size := extcodesize(account) }
+631	 return size > 0;
+632	 }
+633	 function sendValue(address payable recipient, uint256 amount) internal {
+634	 require(address(this).balance >= amount, "Address: insufficient balance");
+635	 (bool success, ) = recipient.call{
+636	 value: amount }
+637	 ("");
+638	 require(success, "Address: unable to send value, recipient may have reverted");
+639	 }
+640	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+641	 return functionCall(target, data, "Address: low-level call failed");
+642	 }
+643	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+644	 return functionCallWithValue(target, data, 0, errorMessage);
+645	 }
+646	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+647	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+648	 }
+649	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+650	 require(address(this).balance >= value, "Address: insufficient balance for call");
+651	 require(isContract(target), "Address: call to non-contract");
+652	 (bool success, bytes memory returndata) = target.call{
+653	 value: value }
+654	 (data);
+655	 return _verifyCallResult(success, returndata, errorMessage);
+656	 }
+657	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+658	 return functionStaticCall(target, data, "Address: low-level static call failed");
+659	 }
+660	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+661	 require(isContract(target), "Address: static call to non-contract");
+662	 (bool success, bytes memory returndata) = target.staticcall(data);
+663	 return _verifyCallResult(success, returndata, errorMessage);
+664	 }
+665	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+666	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+667	 }
+668	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+669	 require(isContract(target), "Address: delegate call to non-contract");
+670	 (bool success, bytes memory returndata) = target.delegatecall(data);
+671	 return _verifyCallResult(success, returndata, errorMessage);
+672	 }
+673	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+674	 if (success) {
+675	 return returndata;
+676	 }
+677	 else {
+678	 if (returndata.length > 0) {
+679	 assembly {
+680	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+681	 }
+682	 else {
+683	 revert(errorMessage);
+684	 }
+685	 }
+686	 }
+687	 }
+688	 pragma solidity >=0.4.0;
+689	 library FullMath {
+690	 function fullMul(uint256 x, uint256 y) internal pure returns (uint256 l, uint256 h) {
+691	 uint256 mm = mulmod(x, y, uint256(-1));
+692	 l = x * y;
+693	 h = mm - l;
+694	 if (mm < l) h -= 1;
+695	 }
+696	 function fullDiv( uint256 l, uint256 h, uint256 d ) private pure returns (uint256) {
+697	 uint256 pow2 = d & -d;
+698	 d /= pow2;
+699	 l /= pow2;
+700	 l += h * ((-pow2) / pow2 + 1);
+701	 uint256 r = 1;
+702	 r *= 2 - d * r;
+703	 r *= 2 - d * r;
+704	 r *= 2 - d * r;
+705	 r *= 2 - d * r;
+706	 r *= 2 - d * r;
+707	 r *= 2 - d * r;
+708	 r *= 2 - d * r;
+709	 r *= 2 - d * r;
+710	 return l * r;
+711	 }
+712	 function mulDiv( uint256 x, uint256 y, uint256 d ) internal pure returns (uint256) {
+713	 (uint256 l, uint256 h) = fullMul(x, y);
+714	 uint256 mm = mulmod(x, y, d);
+715	 if (mm > l) h -= 1;
+716	 l -= mm;
+717	 if (h == 0) return l / d;
+718	 require(h < d, 'FullMath: FULLDIV_OVERFLOW');
+719	 return fullDiv(l, h, d);
+720	 }
+721	 }
+722	 pragma solidity >=0.4.0;
+723	 library Babylonian {
+724	 function sqrt(uint256 x) internal pure returns (uint256) {
+725	 if (x == 0) return 0;
+726	 uint256 xx = x;
+727	 uint256 r = 1;
+728	 if (xx >= 0x100000000000000000000000000000000) {
+729	 xx >>= 128;
+730	 r <<= 64;
+731	 }
+732	 if (xx >= 0x10000000000000000) {
+733	 xx >>= 64;
+734	 r <<= 32;
+735	 }
+736	 if (xx >= 0x100000000) {
+737	 xx >>= 32;
+738	 r <<= 16;
+739	 }
+740	 if (xx >= 0x10000) {
+741	 xx >>= 16;
+742	 r <<= 8;
+743	 }
+744	 if (xx >= 0x100) {
+745	 xx >>= 8;
+746	 r <<= 4;
+747	 }
+748	 if (xx >= 0x10) {
+749	 xx >>= 4;
+750	 r <<= 2;
+751	 }
+752	 if (xx >= 0x8) {
+753	 r <<= 1;
+754	 }
+755	 r = (r + x / r) >> 1;
+756	 r = (r + x / r) >> 1;
+757	 r = (r + x / r) >> 1;
+758	 r = (r + x / r) >> 1;
+759	 r = (r + x / r) >> 1;
+760	 r = (r + x / r) >> 1;
+761	 r = (r + x / r) >> 1;
+762	 uint256 r1 = x / r;
+763	 return (r < r1 ? r : r1);
+764	 }
+765	 }
+766	 pragma solidity >=0.5.0;
+767	 library BitMath {
+768	 function mostSignificantBit(uint256 x) internal pure returns (uint8 r) {
+769	 require(x > 0, 'BitMath::mostSignificantBit: zero');
+770	 if (x >= 0x100000000000000000000000000000000) {
+771	 x >>= 128;
+772	 r += 128;
+773	 }
+774	 if (x >= 0x10000000000000000) {
+775	 x >>= 64;
+776	 r += 64;
+777	 }
+778	 if (x >= 0x100000000) {
+779	 x >>= 32;
+780	 r += 32;
+781	 }
+782	 if (x >= 0x10000) {
+783	 x >>= 16;
+784	 r += 16;
+785	 }
+786	 if (x >= 0x100) {
+787	 x >>= 8;
+788	 r += 8;
+789	 }
+790	 if (x >= 0x10) {
+791	 x >>= 4;
+792	 r += 4;
+793	 }
+794	 if (x >= 0x4) {
+795	 x >>= 2;
+796	 r += 2;
+797	 }
+798	 if (x >= 0x2) r += 1;
+799	 }
+800	 function leastSignificantBit(uint256 x) internal pure returns (uint8 r) {
+801	 require(x > 0, 'BitMath::leastSignificantBit: zero');
+802	 r = 255;
+803	 if (x & uint128(-1) > 0) {
+804	 r -= 128;
+805	 }
+806	 else {
+807	 x >>= 128;
+808	 }
+809	 if (x & uint64(-1) > 0) {
+810	 r -= 64;
+811	 }
+812	 else {
+813	 x >>= 64;
+814	 }
+815	 if (x & uint32(-1) > 0) {
+816	 r -= 32;
+817	 }
+818	 else {
+819	 x >>= 32;
+820	 }
+821	 if (x & uint16(-1) > 0) {
+822	 r -= 16;
+823	 }
+824	 else {
+825	 x >>= 16;
+826	 }
+827	 if (x & uint8(-1) > 0) {
+828	 r -= 8;
+829	 }
+830	 else {
+831	 x >>= 8;
+832	 }
+833	 if (x & 0xf > 0) {
+834	 r -= 4;
+835	 }
+836	 else {
+837	 x >>= 4;
+838	 }
+839	 if (x & 0x3 > 0) {
+840	 r -= 2;
+841	 }
+842	 else {
+843	 x >>= 2;
+844	 }
+845	 if (x & 0x1 > 0) r -= 1;
+846	 }
+847	 }
+848	 pragma solidity =0.7.6;
+849	 contract UniswapV2Pair is IUniswapV2Pair {
+850	 using UniSafeMath for uint256;
+851	 using UQ112x112 for uint224;
+852	 uint256 public constant MINIMUM_LIQUIDITY = 10 ** 3;
+853	 bytes4 private constant SELECTOR = bytes4(keccak256(bytes('transfer(address,uint256)')));
+854	 address public factory;
+855	 address public _token0;
+856	 address public _token1;
+857	 uint112 private reserve0;
+858	 uint112 private reserve1;
+859	 uint32 private blockTimestampLast;
+860	 uint256 public _price0CumulativeLast;
+861	 uint256 public _price1CumulativeLast;
+862	 uint256 public kLast;
+863	 constructor() {
+864	 factory = msg.sender;
+865	 }
+866	 function initialize(address __token0, address __token1) override external {
+867	 require(msg.sender == factory, 'UniswapV2: FORBIDDEN');
+868	 _token0 = __token0;
+869	 _token1 = __token1;
+870	 }
+871	 function getReserves() override public view returns (uint112 _reserve0, uint112 _reserve1, uint32 _blockTimestampLast) {
+872	 _reserve0 = reserve0;
+873	 _reserve1 = reserve1;
+874	 _blockTimestampLast = blockTimestampLast;
+875	 }
+876	 function token0() override external view returns (address){
+877	 return _token0;
+878	 }
+879	 function token1() override external view returns (address){
+880	 return _token1;
+881	 }
+882	 function price0CumulativeLast() override external view returns (uint256){
+883	 return _price0CumulativeLast;
+884	 }
+885	 function price1CumulativeLast() override external view returns (uint256){
+886	 return _price1CumulativeLast;
+887	 }
+888	 function _update(uint256 balance0, uint256 balance1, uint112 _reserve0, uint112 _reserve1) private {
+889	 require(balance0 <= uint112(-1) && balance1 <= uint112(-1), 'UniswapV2: OVERFLOW');
+890	 uint32 blockTimestamp = uint32(block.timestamp % 2**32);
+891	 uint32 timeElapsed = blockTimestamp - blockTimestampLast;
+892	 if (timeElapsed > 0 && _reserve0 != 0 && _reserve1 != 0) {
+893	 _price0CumulativeLast += uint256(UQ112x112.encode(_reserve1).uqdiv(_reserve0)) * timeElapsed;
+894	 _price1CumulativeLast += uint256(UQ112x112.encode(_reserve0).uqdiv(_reserve1)) * timeElapsed;
+895	 }
+896	 reserve0 = uint112(balance0);
+897	 reserve1 = uint112(balance1);
+898	 blockTimestampLast = blockTimestamp;
+899	 emit Sync(reserve0, reserve1);
+900	 }
+901	 function sync() override external {
+902	 _update(IERC20(_token0).balanceOf(address(this)), IERC20(_token1).balanceOf(address(this)), reserve0, reserve1);
+903	 }
+904	 }
+905	 pragma solidity 0.7.6;
+906	 library UniswapSafeMath {
+907	 function add(uint256 x, uint256 y) internal pure returns (uint256 z) {
+908	 require((z = x + y) >= x, 'ds-math-add-overflow');
+909	 }
+910	 function sub(uint256 x, uint256 y) internal pure returns (uint256 z) {
+911	 require((z = x - y) <= x, 'ds-math-sub-underflow');
+912	 }
+913	 function mul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+914	 require(y == 0 || (z = x * y) / y == x, 'ds-math-mul-overflow');
+915	 }
+916	 }
+917	 pragma solidity =0.7.6;
+918	 library UQ112x112 {
+919	 uint224 constant Q112 = 2**112;
+920	 function encode(uint112 y) internal pure returns (uint224 z) {
+921	 z = uint224(y) * Q112;
+922	 }
+923	 function uqdiv(uint224 x, uint112 y) internal pure returns (uint224 z) {
+924	 z = x / uint224(y);
+925	 }
+926	 }
+927	 pragma solidity =0.7.6;
+928	 library UniSafeMath {
+929	 function add(uint256 x, uint256 y) internal pure returns (uint256 z) {
+930	 require((z = x + y) >= x, 'ds-math-add-overflow');
+931	 }
+932	 function sub(uint256 x, uint256 y) internal pure returns (uint256 z) {
+933	 require((z = x - y) <= x, 'ds-math-sub-underflow');
+934	 }
+935	 function mul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+936	 require(y == 0 || (z = x * y) / y == x, 'ds-math-mul-overflow');
+937	 }
+938	 }

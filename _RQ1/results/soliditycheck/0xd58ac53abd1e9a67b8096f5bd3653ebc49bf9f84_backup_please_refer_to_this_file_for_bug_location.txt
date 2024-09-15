@@ -1,0 +1,663 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract F3Devents {
+3	 event onNewName ( uint256 indexed playerID, address indexed playerAddress, bytes32 indexed playerName, bool isNewPlayer, uint256 affiliateID, address affiliateAddress, bytes32 affiliateName, uint256 amountPaid, uint256 timeStamp );
+4	 event onEndTx ( uint256 compressedData, uint256 compressedIDs, bytes32 playerName, address playerAddress, uint256 ethIn, uint256 keysBought, address winnerAddr, bytes32 winnerName, uint256 amountWon, uint256 newPot, uint256 P3DAmount, uint256 genAmount, uint256 potAmount, uint256 airDropPot );
+5	 event onWithdraw ( uint256 indexed playerID, address playerAddress, bytes32 playerName, uint256 ethOut, uint256 timeStamp );
+6	 event onWithdrawAndDistribute ( address playerAddress, bytes32 playerName, uint256 ethOut, uint256 compressedData, uint256 compressedIDs, address winnerAddr, bytes32 winnerName, uint256 amountWon, uint256 newPot, uint256 P3DAmount, uint256 genAmount );
+7	 event onBuyAndDistribute ( address playerAddress, bytes32 playerName, uint256 ethIn, uint256 compressedData, uint256 compressedIDs, address winnerAddr, bytes32 winnerName, uint256 amountWon, uint256 newPot, uint256 P3DAmount, uint256 genAmount );
+8	 event onReLoadAndDistribute ( address playerAddress, bytes32 playerName, uint256 compressedData, uint256 compressedIDs, address winnerAddr, bytes32 winnerName, uint256 amountWon, uint256 newPot, uint256 P3DAmount, uint256 genAmount );
+9	 event onAffiliatePayout ( uint256 indexed affiliateID, address affiliateAddress, bytes32 affiliateName, uint256 indexed roundID, uint256 indexed buyerID, uint256 amount, uint256 timeStamp );
+10	 event onPotSwapDeposit ( uint256 roundID, uint256 amountAddedToPot );
+11	 }
+12	 contract modularShort is F3Devents {
+13	 }
+14	 contract F5D is modularShort {
+15	 using SafeMath for *;
+16	 using NameFilter for string;
+17	 using F3DKeysCalcShort for uint256;
+18	 PlayerBookInterface constant private PlayerBook = PlayerBookInterface(0x4e369A53c989CE99475814aa0ad81Ad8eBE346E8);
+19	 address private admin = 0xAbcd3976464519C648758233f6Fd19fecdf70Eb6;
+20	 address private coin_base = 0xe2300D461B62c8482C21e6E77E6DDf3F5B902478;
+21	 string constant public name = "F5D";
+22	 string constant public symbol = "F5D";
+23	 uint256 private rndExtra_ = 0;
+24	 uint256 private rndGap_ = 2 minutes;
+25	 uint256 constant private rndInit_ = 1 hours;
+26	 uint256 constant private rndInc_ = 30 seconds;
+27	 uint256 constant private rndMax_ = 24 hours;
+28	 uint256 public airDropPot_;
+29	 uint256 public airDropTracker_ = 0;
+30	 uint256 public rID_;
+31	 mapping (address => uint256) public pIDxAddr_;
+32	 mapping (bytes32 => uint256) public pIDxName_;
+33	 mapping (uint256 => F3Ddatasets.Player) public plyr_;
+34	 mapping (uint256 => mapping (uint256 => F3Ddatasets.PlayerRounds)) public plyrRnds_;
+35	 mapping (uint256 => mapping (bytes32 => bool)) public plyrNames_;
+36	 mapping (uint256 => F3Ddatasets.Round) public round_;
+37	 mapping (uint256 => mapping(uint256 => uint256)) public rndTmEth_;
+38	 mapping (uint256 => F3Ddatasets.TeamFee) public fees_;
+39	 mapping (uint256 => F3Ddatasets.PotSplit) public potSplit_;
+40	 constructor() public {
+41	 fees_[0] = F3Ddatasets.TeamFee(22,6);
+42	 fees_[1] = F3Ddatasets.TeamFee(38,0);
+43	 fees_[2] = F3Ddatasets.TeamFee(52,10);
+44	 fees_[3] = F3Ddatasets.TeamFee(68,8);
+45	 potSplit_[0] = F3Ddatasets.PotSplit(15,10);
+46	 potSplit_[1] = F3Ddatasets.PotSplit(25,0);
+47	 potSplit_[2] = F3Ddatasets.PotSplit(20,20);
+48	 potSplit_[3] = F3Ddatasets.PotSplit(30,10);
+49	 }
+50	 modifier isActivated() {
+51	 require(activated_ == true, "its not ready yet. check ?eta in discord");
+52	 _;
+53	 }
+54	 modifier isHuman() {
+55	 address _addr = msg.sender;
+56	 uint256 _codeLength;
+57	 assembly {
+58	 _codeLength := extcodesize(_addr)}
+59	 require(_codeLength == 0, "sorry humans only");
+60	 _;
+61	 }
+62	 modifier isWithinLimits(uint256 _eth) {
+63	 require(_eth >= 1000000000, "pocket lint: not a valid currency");
+64	 require(_eth <= 100000000000000000000000, "no vitalik, no");
+65	 _;
+66	 }
+67	 function() isActivated() isHuman() isWithinLimits(msg.value) public payable {
+68	 F3Ddatasets.EventReturns memory _eventData_ = determinePID(_eventData_);
+69	 uint256 _pID = pIDxAddr_[msg.sender];
+70	 buyCore(_pID, plyr_[_pID].laff, 2, _eventData_);
+71	 }
+72	 function buyXid(uint256 _affCode, uint256 _team) isActivated() isHuman() isWithinLimits(msg.value) public payable {
+73	 F3Ddatasets.EventReturns memory _eventData_ = determinePID(_eventData_);
+74	 uint256 _pID = pIDxAddr_[msg.sender];
+75	 if (_affCode == 0 || _affCode == _pID) {
+76	 _affCode = plyr_[_pID].laff;
+77	 }
+78	 else if (_affCode != plyr_[_pID].laff) {
+79	 plyr_[_pID].laff = _affCode;
+80	 }
+81	 _team = verifyTeam(_team);
+82	 buyCore(_pID, _affCode, _team, _eventData_);
+83	 }
+84	 function buyXaddr(address _affCode, uint256 _team) isActivated() isHuman() isWithinLimits(msg.value) public payable {
+85	 F3Ddatasets.EventReturns memory _eventData_ = determinePID(_eventData_);
+86	 uint256 _pID = pIDxAddr_[msg.sender];
+87	 uint256 _affID;
+88	 if (_affCode == address(0) || _affCode == msg.sender) {
+89	 _affID = plyr_[_pID].laff;
+90	 }
+91	 else {
+92	 _affID = pIDxAddr_[_affCode];
+93	 if (_affID != plyr_[_pID].laff) {
+94	 plyr_[_pID].laff = _affID;
+95	 }
+96	 }
+97	 _team = verifyTeam(_team);
+98	 buyCore(_pID, _affID, _team, _eventData_);
+99	 }
+100	 function buyXname(bytes32 _affCode, uint256 _team) isActivated() isHuman() isWithinLimits(msg.value) public payable {
+101	 F3Ddatasets.EventReturns memory _eventData_ = determinePID(_eventData_);
+102	 uint256 _pID = pIDxAddr_[msg.sender];
+103	 uint256 _affID;
+104	 if (_affCode == '' || _affCode == plyr_[_pID].name) {
+105	 _affID = plyr_[_pID].laff;
+106	 }
+107	 else {
+108	 _affID = pIDxName_[_affCode];
+109	 if (_affID != plyr_[_pID].laff) {
+110	 plyr_[_pID].laff = _affID;
+111	 }
+112	 }
+113	 _team = verifyTeam(_team);
+114	 buyCore(_pID, _affID, _team, _eventData_);
+115	 }
+116	 function reLoadXid(uint256 _affCode, uint256 _team, uint256 _eth) isActivated() isHuman() isWithinLimits(_eth) public {
+117	 F3Ddatasets.EventReturns memory _eventData_;
+118	 uint256 _pID = pIDxAddr_[msg.sender];
+119	 if (_affCode == 0 || _affCode == _pID) {
+120	 _affCode = plyr_[_pID].laff;
+121	 }
+122	 else if (_affCode != plyr_[_pID].laff) {
+123	 plyr_[_pID].laff = _affCode;
+124	 }
+125	 _team = verifyTeam(_team);
+126	 reLoadCore(_pID, _affCode, _team, _eth, _eventData_);
+127	 }
+128	 function reLoadXaddr(address _affCode, uint256 _team, uint256 _eth) isActivated() isHuman() isWithinLimits(_eth) public {
+129	 F3Ddatasets.EventReturns memory _eventData_;
+130	 uint256 _pID = pIDxAddr_[msg.sender];
+131	 uint256 _affID;
+132	 if (_affCode == address(0) || _affCode == msg.sender) {
+133	 _affID = plyr_[_pID].laff;
+134	 }
+135	 else {
+136	 _affID = pIDxAddr_[_affCode];
+137	 if (_affID != plyr_[_pID].laff) {
+138	 plyr_[_pID].laff = _affID;
+139	 }
+140	 }
+141	 _team = verifyTeam(_team);
+142	 reLoadCore(_pID, _affID, _team, _eth, _eventData_);
+143	 }
+144	 function reLoadXname(bytes32 _affCode, uint256 _team, uint256 _eth) isActivated() isHuman() isWithinLimits(_eth) public {
+145	 F3Ddatasets.EventReturns memory _eventData_;
+146	 uint256 _pID = pIDxAddr_[msg.sender];
+147	 uint256 _affID;
+148	 if (_affCode == '' || _affCode == plyr_[_pID].name) {
+149	 _affID = plyr_[_pID].laff;
+150	 }
+151	 else {
+152	 _affID = pIDxName_[_affCode];
+153	 if (_affID != plyr_[_pID].laff) {
+154	 plyr_[_pID].laff = _affID;
+155	 }
+156	 }
+157	 _team = verifyTeam(_team);
+158	 reLoadCore(_pID, _affID, _team, _eth, _eventData_);
+159	 }
+160	 function withdraw() isActivated() isHuman() public {
+161	 uint256 _rID = rID_;
+162	 uint256 _now = now;
+163	 uint256 _pID = pIDxAddr_[msg.sender];
+164	 uint256 _eth;
+165	 if (_now > round_[_rID].end && round_[_rID].ended == false && round_[_rID].plyr != 0) {
+166	 F3Ddatasets.EventReturns memory _eventData_;
+167	 round_[_rID].ended = true;
+168	 _eventData_ = endRound(_eventData_);
+169	 _eth = withdrawEarnings(_pID);
+170	 if (_eth > 0) plyr_[_pID].addr.transfer(_eth);
+171	 _eventData_.compressedData = _eventData_.compressedData + (_now * 1000000000000000000);
+172	 _eventData_.compressedIDs = _eventData_.compressedIDs + _pID;
+173	 emit F3Devents.onWithdrawAndDistribute ( msg.sender, plyr_[_pID].name, _eth, _eventData_.compressedData, _eventData_.compressedIDs, _eventData_.winnerAddr, _eventData_.winnerName, _eventData_.amountWon, _eventData_.newPot, _eventData_.P3DAmount, _eventData_.genAmount );
+174	 }
+175	 else {
+176	 _eth = withdrawEarnings(_pID);
+177	 if (_eth > 0) plyr_[_pID].addr.transfer(_eth);
+178	 emit F3Devents.onWithdraw(_pID, msg.sender, plyr_[_pID].name, _eth, _now);
+179	 }
+180	 }
+181	 function registerNameXID(string _nameString, uint256 _affCode, bool _all) isHuman() public payable {
+182	 bytes32 _name = _nameString.nameFilter();
+183	 address _addr = msg.sender;
+184	 uint256 _paid = msg.value;
+185	 (bool _isNewPlayer, uint256 _affID) = PlayerBook.registerNameXIDFromDapp.value(_paid)(_addr, _name, _affCode, _all);
+186	 uint256 _pID = pIDxAddr_[_addr];
+187	 emit F3Devents.onNewName(_pID, _addr, _name, _isNewPlayer, _affID, plyr_[_affID].addr, plyr_[_affID].name, _paid, now);
+188	 }
+189	 function registerNameXaddr(string _nameString, address _affCode, bool _all) isHuman() public payable {
+190	 bytes32 _name = _nameString.nameFilter();
+191	 address _addr = msg.sender;
+192	 uint256 _paid = msg.value;
+193	 (bool _isNewPlayer, uint256 _affID) = PlayerBook.registerNameXaddrFromDapp.value(msg.value)(msg.sender, _name, _affCode, _all);
+194	 uint256 _pID = pIDxAddr_[_addr];
+195	 emit F3Devents.onNewName(_pID, _addr, _name, _isNewPlayer, _affID, plyr_[_affID].addr, plyr_[_affID].name, _paid, now);
+196	 }
+197	 function registerNameXname(string _nameString, bytes32 _affCode, bool _all) isHuman() public payable {
+198	 bytes32 _name = _nameString.nameFilter();
+199	 address _addr = msg.sender;
+200	 uint256 _paid = msg.value;
+201	 (bool _isNewPlayer, uint256 _affID) = PlayerBook.registerNameXnameFromDapp.value(msg.value)(msg.sender, _name, _affCode, _all);
+202	 uint256 _pID = pIDxAddr_[_addr];
+203	 emit F3Devents.onNewName(_pID, _addr, _name, _isNewPlayer, _affID, plyr_[_affID].addr, plyr_[_affID].name, _paid, now);
+204	 }
+205	 function getBuyPrice() public view returns(uint256) {
+206	 uint256 _rID = rID_;
+207	 uint256 _now = now;
+208	 if (_now > round_[_rID].strt + rndGap_ && (_now <= round_[_rID].end || (_now > round_[_rID].end && round_[_rID].plyr == 0))) return ( (round_[_rID].keys.add(1000000000000000000)).ethRec(1000000000000000000) );
+209	 else return ( 75000000000000 );
+210	 }
+211	 function getTimeLeft() public view returns(uint256) {
+212	 uint256 _rID = rID_;
+213	 uint256 _now = now;
+214	 if (_now < round_[_rID].end) if (_now > round_[_rID].strt + rndGap_) return( (round_[_rID].end).sub(_now) );
+215	 else return( (round_[_rID].strt + rndGap_).sub(_now) );
+216	 else return(0);
+217	 }
+218	 function getPlayerVaults(uint256 _pID) public view returns(uint256 ,uint256, uint256) {
+219	 uint256 _rID = rID_;
+220	 if (now > round_[_rID].end && round_[_rID].ended == false && round_[_rID].plyr != 0) {
+221	 if (round_[_rID].plyr == _pID) {
+222	 return ( (plyr_[_pID].win).add( ((round_[_rID].pot).mul(48)) / 100 ), (plyr_[_pID].gen).add( getPlayerVaultsHelper(_pID, _rID).sub(plyrRnds_[_pID][_rID].mask) ), plyr_[_pID].aff );
+223	 }
+224	 else {
+225	 return ( plyr_[_pID].win, (plyr_[_pID].gen).add( getPlayerVaultsHelper(_pID, _rID).sub(plyrRnds_[_pID][_rID].mask) ), plyr_[_pID].aff );
+226	 }
+227	 }
+228	 else {
+229	 return ( plyr_[_pID].win, (plyr_[_pID].gen).add(calcUnMaskedEarnings(_pID, plyr_[_pID].lrnd)), plyr_[_pID].aff );
+230	 }
+231	 }
+232	 function getPlayerVaultsHelper(uint256 _pID, uint256 _rID) private view returns(uint256) {
+233	 return( ((((round_[_rID].mask).add(((((round_[_rID].pot).mul(potSplit_[round_[_rID].team].gen)) / 100).mul(1000000000000000000)) / (round_[_rID].keys))).mul(plyrRnds_[_pID][_rID].keys)) / 1000000000000000000) );
+234	 }
+235	 function getCurrentRoundInfo() public view returns(uint256, uint256, uint256, uint256, uint256, uint256, uint256, address, bytes32, uint256, uint256, uint256, uint256, uint256) {
+236	 uint256 _rID = rID_;
+237	 return ( round_[_rID].ico, _rID, round_[_rID].keys, round_[_rID].end, round_[_rID].strt, round_[_rID].pot, (round_[_rID].team + (round_[_rID].plyr * 10)), plyr_[round_[_rID].plyr].addr, plyr_[round_[_rID].plyr].name, rndTmEth_[_rID][0], rndTmEth_[_rID][1], rndTmEth_[_rID][2], rndTmEth_[_rID][3], airDropTracker_ + (airDropPot_ * 1000) );
+238	 }
+239	 function getPlayerInfoByAddress(address _addr) public view returns(uint256, bytes32, uint256, uint256, uint256, uint256, uint256) {
+240	 uint256 _rID = rID_;
+241	 if (_addr == address(0)) {
+242	 _addr == msg.sender;
+243	 }
+244	 uint256 _pID = pIDxAddr_[_addr];
+245	 return ( _pID, plyr_[_pID].name, plyrRnds_[_pID][_rID].keys, plyr_[_pID].win, (plyr_[_pID].gen).add(calcUnMaskedEarnings(_pID, plyr_[_pID].lrnd)), plyr_[_pID].aff, plyrRnds_[_pID][_rID].eth );
+246	 }
+247	 function buyCore(uint256 _pID, uint256 _affID, uint256 _team, F3Ddatasets.EventReturns memory _eventData_) private {
+248	 uint256 _rID = rID_;
+249	 uint256 _now = now;
+250	 if (_now > round_[_rID].strt + rndGap_ && (_now <= round_[_rID].end || (_now > round_[_rID].end && round_[_rID].plyr == 0))) {
+251	 core(_rID, _pID, msg.value, _affID, _team, _eventData_);
+252	 }
+253	 else {
+254	 if (_now > round_[_rID].end && round_[_rID].ended == false) {
+255	 round_[_rID].ended = true;
+256	 _eventData_ = endRound(_eventData_);
+257	 _eventData_.compressedData = _eventData_.compressedData + (_now * 1000000000000000000);
+258	 _eventData_.compressedIDs = _eventData_.compressedIDs + _pID;
+259	 emit F3Devents.onBuyAndDistribute ( msg.sender, plyr_[_pID].name, msg.value, _eventData_.compressedData, _eventData_.compressedIDs, _eventData_.winnerAddr, _eventData_.winnerName, _eventData_.amountWon, _eventData_.newPot, _eventData_.P3DAmount, _eventData_.genAmount );
+260	 }
+261	 plyr_[_pID].gen = plyr_[_pID].gen.add(msg.value);
+262	 }
+263	 }
+264	 function reLoadCore(uint256 _pID, uint256 _affID, uint256 _team, uint256 _eth, F3Ddatasets.EventReturns memory _eventData_) private {
+265	 uint256 _rID = rID_;
+266	 uint256 _now = now;
+267	 if (_now > round_[_rID].strt + rndGap_ && (_now <= round_[_rID].end || (_now > round_[_rID].end && round_[_rID].plyr == 0))) {
+268	 plyr_[_pID].gen = withdrawEarnings(_pID).sub(_eth);
+269	 core(_rID, _pID, _eth, _affID, _team, _eventData_);
+270	 }
+271	 else if (_now > round_[_rID].end && round_[_rID].ended == false) {
+272	 round_[_rID].ended = true;
+273	 _eventData_ = endRound(_eventData_);
+274	 _eventData_.compressedData = _eventData_.compressedData + (_now * 1000000000000000000);
+275	 _eventData_.compressedIDs = _eventData_.compressedIDs + _pID;
+276	 emit F3Devents.onReLoadAndDistribute ( msg.sender, plyr_[_pID].name, _eventData_.compressedData, _eventData_.compressedIDs, _eventData_.winnerAddr, _eventData_.winnerName, _eventData_.amountWon, _eventData_.newPot, _eventData_.P3DAmount, _eventData_.genAmount );
+277	 }
+278	 }
+279	 function core(uint256 _rID, uint256 _pID, uint256 _eth, uint256 _affID, uint256 _team, F3Ddatasets.EventReturns memory _eventData_) private {
+280	 if (plyrRnds_[_pID][_rID].keys == 0) _eventData_ = managePlayer(_pID, _eventData_);
+281	 if (round_[_rID].eth < 100000000000000000000 && plyrRnds_[_pID][_rID].eth.add(_eth) > 1000000000000000000) {
+282	 uint256 _availableLimit = (1000000000000000000).sub(plyrRnds_[_pID][_rID].eth);
+283	 uint256 _refund = _eth.sub(_availableLimit);
+284	 plyr_[_pID].gen = plyr_[_pID].gen.add(_refund);
+285	 _eth = _availableLimit;
+286	 }
+287	 if (_eth > 1000000000) {
+288	 uint256 _keys = (round_[_rID].eth).keysRec(_eth);
+289	 if (_keys >= 1000000000000000000) {
+290	 updateTimer(_keys, _rID);
+291	 if (round_[_rID].plyr != _pID) round_[_rID].plyr = _pID;
+292	 if (round_[_rID].team != _team) round_[_rID].team = _team;
+293	 _eventData_.compressedData = _eventData_.compressedData + 100;
+294	 }
+295	 if (_eth >= 100000000000000000) {
+296	 airDropTracker_++;
+297	 if (airdrop() == true) {
+298	 uint256 _prize;
+299	 if (_eth >= 10000000000000000000) {
+300	 _prize = ((airDropPot_).mul(75)) / 100;
+301	 plyr_[_pID].win = (plyr_[_pID].win).add(_prize);
+302	 airDropPot_ = (airDropPot_).sub(_prize);
+303	 _eventData_.compressedData += 300000000000000000000000000000000;
+304	 }
+305	 else if (_eth >= 1000000000000000000 && _eth < 10000000000000000000) {
+306	 _prize = ((airDropPot_).mul(50)) / 100;
+307	 plyr_[_pID].win = (plyr_[_pID].win).add(_prize);
+308	 airDropPot_ = (airDropPot_).sub(_prize);
+309	 _eventData_.compressedData += 200000000000000000000000000000000;
+310	 }
+311	 else if (_eth >= 100000000000000000 && _eth < 1000000000000000000) {
+312	 _prize = ((airDropPot_).mul(25)) / 100;
+313	 plyr_[_pID].win = (plyr_[_pID].win).add(_prize);
+314	 airDropPot_ = (airDropPot_).sub(_prize);
+315	 _eventData_.compressedData += 300000000000000000000000000000000;
+316	 }
+317	 _eventData_.compressedData += 10000000000000000000000000000000;
+318	 _eventData_.compressedData += _prize * 1000000000000000000000000000000000;
+319	 airDropTracker_ = 0;
+320	 }
+321	 }
+322	 _eventData_.compressedData = _eventData_.compressedData + (airDropTracker_ * 1000);
+323	 plyrRnds_[_pID][_rID].keys = _keys.add(plyrRnds_[_pID][_rID].keys);
+324	 plyrRnds_[_pID][_rID].eth = _eth.add(plyrRnds_[_pID][_rID].eth);
+325	 round_[_rID].keys = _keys.add(round_[_rID].keys);
+326	 round_[_rID].eth = _eth.add(round_[_rID].eth);
+327	 rndTmEth_[_rID][_team] = _eth.add(rndTmEth_[_rID][_team]);
+328	 _eventData_ = distributeExternal(_rID, _pID, _eth, _affID, _team, _eventData_);
+329	 _eventData_ = distributeInternal(_rID, _pID, _eth, _team, _keys, _eventData_);
+330	 endTx(_pID, _team, _eth, _keys, _eventData_);
+331	 }
+332	 }
+333	 function calcUnMaskedEarnings(uint256 _pID, uint256 _rIDlast) private view returns(uint256) {
+334	 return( (((round_[_rIDlast].mask).mul(plyrRnds_[_pID][_rIDlast].keys)) / (1000000000000000000)).sub(plyrRnds_[_pID][_rIDlast].mask) );
+335	 }
+336	 function calcKeysReceived(uint256 _rID, uint256 _eth) public view returns(uint256) {
+337	 uint256 _now = now;
+338	 if (_now > round_[_rID].strt + rndGap_ && (_now <= round_[_rID].end || (_now > round_[_rID].end && round_[_rID].plyr == 0))) return ( (round_[_rID].eth).keysRec(_eth) );
+339	 else return ( (_eth).keys() );
+340	 }
+341	 function iWantXKeys(uint256 _keys) public view returns(uint256) {
+342	 uint256 _rID = rID_;
+343	 uint256 _now = now;
+344	 if (_now > round_[_rID].strt + rndGap_ && (_now <= round_[_rID].end || (_now > round_[_rID].end && round_[_rID].plyr == 0))) return ( (round_[_rID].keys.add(_keys)).ethRec(_keys) );
+345	 else return ( (_keys).eth() );
+346	 }
+347	 function receivePlayerInfo(uint256 _pID, address _addr, bytes32 _name, uint256 _laff) external {
+348	 require (msg.sender == address(PlayerBook), "your not playerNames contract... hmmm..");
+349	 if (pIDxAddr_[_addr] != _pID) pIDxAddr_[_addr] = _pID;
+350	 if (pIDxName_[_name] != _pID) pIDxName_[_name] = _pID;
+351	 if (plyr_[_pID].addr != _addr) plyr_[_pID].addr = _addr;
+352	 if (plyr_[_pID].name != _name) plyr_[_pID].name = _name;
+353	 if (plyr_[_pID].laff != _laff) plyr_[_pID].laff = _laff;
+354	 if (plyrNames_[_pID][_name] == false) plyrNames_[_pID][_name] = true;
+355	 }
+356	 function receivePlayerNameList(uint256 _pID, bytes32 _name) external {
+357	 require (msg.sender == address(PlayerBook), "your not playerNames contract... hmmm..");
+358	 if(plyrNames_[_pID][_name] == false) plyrNames_[_pID][_name] = true;
+359	 }
+360	 function determinePID(F3Ddatasets.EventReturns memory _eventData_) private returns (F3Ddatasets.EventReturns) {
+361	 uint256 _pID = pIDxAddr_[msg.sender];
+362	 if (_pID == 0) {
+363	 _pID = PlayerBook.getPlayerID(msg.sender);
+364	 bytes32 _name = PlayerBook.getPlayerName(_pID);
+365	 uint256 _laff = PlayerBook.getPlayerLAff(_pID);
+366	 pIDxAddr_[msg.sender] = _pID;
+367	 plyr_[_pID].addr = msg.sender;
+368	 if (_name != "") {
+369	 pIDxName_[_name] = _pID;
+370	 plyr_[_pID].name = _name;
+371	 plyrNames_[_pID][_name] = true;
+372	 }
+373	 if (_laff != 0 && _laff != _pID) plyr_[_pID].laff = _laff;
+374	 _eventData_.compressedData = _eventData_.compressedData + 1;
+375	 }
+376	 return (_eventData_);
+377	 }
+378	 function verifyTeam(uint256 _team) private pure returns (uint256) {
+379	 if (_team < 0 || _team > 3) return(2);
+380	 else return(_team);
+381	 }
+382	 function managePlayer(uint256 _pID, F3Ddatasets.EventReturns memory _eventData_) private returns (F3Ddatasets.EventReturns) {
+383	 if (plyr_[_pID].lrnd != 0) updateGenVault(_pID, plyr_[_pID].lrnd);
+384	 plyr_[_pID].lrnd = rID_;
+385	 _eventData_.compressedData = _eventData_.compressedData + 10;
+386	 return(_eventData_);
+387	 }
+388	 function endRound(F3Ddatasets.EventReturns memory _eventData_) private returns (F3Ddatasets.EventReturns) {
+389	 uint256 _rID = rID_;
+390	 uint256 _winPID = round_[_rID].plyr;
+391	 uint256 _winTID = round_[_rID].team;
+392	 uint256 _pot = round_[_rID].pot;
+393	 uint256 _win = (_pot.mul(48)) / 100;
+394	 uint256 _com = (_pot / 50);
+395	 uint256 _gen = (_pot.mul(potSplit_[_winTID].gen)) / 100;
+396	 uint256 _p3d = (_pot.mul(potSplit_[_winTID].p3d)) / 100;
+397	 uint256 _res = (((_pot.sub(_win)).sub(_com)).sub(_gen)).sub(_p3d);
+398	 uint256 _ppt = (_gen.mul(1000000000000000000)) / (round_[_rID].keys);
+399	 uint256 _dust = _gen.sub((_ppt.mul(round_[_rID].keys)) / 1000000000000000000);
+400	 if (_dust > 0) {
+401	 _gen = _gen.sub(_dust);
+402	 _res = _res.add(_dust);
+403	 }
+404	 plyr_[_winPID].win = _win.add(plyr_[_winPID].win);
+405	 _com = _com.add(_p3d.sub(_p3d / 100 ));
+406	 coin_base.transfer(_com);
+407	 _res = _res.add(_p3d / 100);
+408	 round_[_rID].mask = _ppt.add(round_[_rID].mask);
+409	 _eventData_.compressedData = _eventData_.compressedData + (round_[_rID].end * 1000000);
+410	 _eventData_.compressedIDs = _eventData_.compressedIDs + (_winPID * 100000000000000000000000000) + (_winTID * 100000000000000000);
+411	 _eventData_.winnerAddr = plyr_[_winPID].addr;
+412	 _eventData_.winnerName = plyr_[_winPID].name;
+413	 _eventData_.amountWon = _win;
+414	 _eventData_.genAmount = _gen;
+415	 _eventData_.P3DAmount = _p3d;
+416	 _eventData_.newPot = _res;
+417	 rID_++;
+418	 _rID++;
+419	 round_[_rID].strt = now;
+420	 round_[_rID].end = now.add(rndInit_).add(rndGap_);
+421	 round_[_rID].pot = _res;
+422	 return(_eventData_);
+423	 }
+424	 function updateGenVault(uint256 _pID, uint256 _rIDlast) private {
+425	 uint256 _earnings = calcUnMaskedEarnings(_pID, _rIDlast);
+426	 if (_earnings > 0) {
+427	 plyr_[_pID].gen = _earnings.add(plyr_[_pID].gen);
+428	 plyrRnds_[_pID][_rIDlast].mask = _earnings.add(plyrRnds_[_pID][_rIDlast].mask);
+429	 }
+430	 }
+431	 function updateTimer(uint256 _keys, uint256 _rID) private {
+432	 uint256 _now = now;
+433	 uint256 _newTime;
+434	 if (_now > round_[_rID].end && round_[_rID].plyr == 0) _newTime = (((_keys) / (1000000000000000000)).mul(rndInc_)).add(_now);
+435	 else _newTime = (((_keys) / (1000000000000000000)).mul(rndInc_)).add(round_[_rID].end);
+436	 if (_newTime < (rndMax_).add(_now)) round_[_rID].end = _newTime;
+437	 else round_[_rID].end = rndMax_.add(_now);
+438	 }
+439	 function airdrop() private view returns(bool) {
+440	 uint256 seed = uint256(keccak256(abi.encodePacked( (block.timestamp).add (block.difficulty).add ((uint256(keccak256(abi.encodePacked(block.coinbase)))) / (now)).add (block.gaslimit).add ((uint256(keccak256(abi.encodePacked(msg.sender)))) / (now)).add (block.number) )));
+441	 if((seed - ((seed / 1000) * 1000)) < airDropTracker_) return(true);
+442	 else return(false);
+443	 }
+444	 function distributeExternal(uint256 _rID, uint256 _pID, uint256 _eth, uint256 _affID, uint256 _team, F3Ddatasets.EventReturns memory _eventData_) private returns(F3Ddatasets.EventReturns) {
+445	 uint256 _p1 = _eth / 100;
+446	 uint256 _com = _eth / 50;
+447	 _com = _com.add(_p1);
+448	 uint256 _p3d;
+449	 if (!address(coin_base).call.value(_com)()) {
+450	 _p3d = _com;
+451	 _com = 0;
+452	 }
+453	 uint256 _aff = _eth / 100 * 17;
+454	 if (_affID != _pID && plyr_[_affID].name != '') {
+455	 plyr_[_affID].aff = _aff.add(plyr_[_affID].aff);
+456	 emit F3Devents.onAffiliatePayout(_affID, plyr_[_affID].addr, plyr_[_affID].name, _rID, _pID, _aff, now);
+457	 }
+458	 else {
+459	 _p3d = _p3d.add(_aff);
+460	 }
+461	 _p3d = _p3d.add((_eth.mul(fees_[_team].p3d)) / (100));
+462	 if (_p3d > 0) {
+463	 uint256 _potAmount = _p3d / 2;
+464	 coin_base.transfer(_p3d.sub(_potAmount));
+465	 round_[_rID].pot = round_[_rID].pot.add(_potAmount);
+466	 _eventData_.P3DAmount = _p3d.add(_eventData_.P3DAmount);
+467	 }
+468	 return(_eventData_);
+469	 }
+470	 function potSwap() external payable {
+471	 uint256 _rID = rID_ + 1;
+472	 round_[_rID].pot = round_[_rID].pot.add(msg.value);
+473	 emit F3Devents.onPotSwapDeposit(_rID, msg.value);
+474	 }
+475	 function distributeInternal(uint256 _rID, uint256 _pID, uint256 _eth, uint256 _team, uint256 _keys, F3Ddatasets.EventReturns memory _eventData_) private returns(F3Ddatasets.EventReturns) {
+476	 uint256 _gen = (_eth.mul(fees_[_team].gen)) / 100;
+477	 uint256 _air = (_eth / 100);
+478	 airDropPot_ = airDropPot_.add(_air);
+479	 _eth = _eth.sub(((_eth.mul(14)) / 100).add((_eth.mul(fees_[_team].p3d)) / 100));
+480	 uint256 _pot = _eth.sub(_gen);
+481	 uint256 _dust = updateMasks(_rID, _pID, _gen, _keys);
+482	 if (_dust > 0) _gen = _gen.sub(_dust);
+483	 round_[_rID].pot = _pot.add(_dust).add(round_[_rID].pot);
+484	 _eventData_.genAmount = _gen.add(_eventData_.genAmount);
+485	 _eventData_.potAmount = _pot;
+486	 return(_eventData_);
+487	 }
+488	 function updateMasks(uint256 _rID, uint256 _pID, uint256 _gen, uint256 _keys) private returns(uint256) {
+489	 uint256 _ppt = (_gen.mul(1000000000000000000)) / (round_[_rID].keys);
+490	 round_[_rID].mask = _ppt.add(round_[_rID].mask);
+491	 uint256 _pearn = (_ppt.mul(_keys)) / (1000000000000000000);
+492	 plyrRnds_[_pID][_rID].mask = (((round_[_rID].mask.mul(_keys)) / (1000000000000000000)).sub(_pearn)).add(plyrRnds_[_pID][_rID].mask);
+493	 return(_gen.sub((_ppt.mul(round_[_rID].keys)) / (1000000000000000000)));
+494	 }
+495	 function withdrawEarnings(uint256 _pID) private returns(uint256) {
+496	 updateGenVault(_pID, plyr_[_pID].lrnd);
+497	 uint256 _earnings = (plyr_[_pID].win).add(plyr_[_pID].gen).add(plyr_[_pID].aff);
+498	 if (_earnings > 0) {
+499	 plyr_[_pID].win = 0;
+500	 plyr_[_pID].gen = 0;
+501	 plyr_[_pID].aff = 0;
+502	 }
+503	 return(_earnings);
+504	 }
+505	 function endTx(uint256 _pID, uint256 _team, uint256 _eth, uint256 _keys, F3Ddatasets.EventReturns memory _eventData_) private {
+506	 _eventData_.compressedData = _eventData_.compressedData + (now * 1000000000000000000) + (_team * 100000000000000000000000000000);
+507	 _eventData_.compressedIDs = _eventData_.compressedIDs + _pID + (rID_ * 10000000000000000000000000000000000000000000000000000);
+508	 emit F3Devents.onEndTx ( _eventData_.compressedData, _eventData_.compressedIDs, plyr_[_pID].name, msg.sender, _eth, _keys, _eventData_.winnerAddr, _eventData_.winnerName, _eventData_.amountWon, _eventData_.newPot, _eventData_.P3DAmount, _eventData_.genAmount, _eventData_.potAmount, airDropPot_ );
+509	 }
+510	 bool public activated_ = false;
+511	 function activate() public {
+512	 require(msg.sender == admin, "only admin can activate");
+513	 require(activated_ == false, "FOMO Short already activated");
+514	 activated_ = true;
+515	 rID_ = 1;
+516	 round_[1].strt = now + rndExtra_ - rndGap_;
+517	 round_[1].end = now + rndInit_ + rndExtra_;
+518	 }
+519	 }
+520	 library F3Ddatasets {
+521	 struct EventReturns {
+522	 uint256 compressedData;
+523	 uint256 compressedIDs;
+524	 address winnerAddr;
+525	 bytes32 winnerName;
+526	 uint256 amountWon;
+527	 uint256 newPot;
+528	 uint256 P3DAmount;
+529	 uint256 genAmount;
+530	 uint256 potAmount;
+531	 }
+532	 struct Player {
+533	 address addr;
+534	 bytes32 name;
+535	 uint256 win;
+536	 uint256 gen;
+537	 uint256 aff;
+538	 uint256 lrnd;
+539	 uint256 laff;
+540	 }
+541	 struct PlayerRounds {
+542	 uint256 eth;
+543	 uint256 keys;
+544	 uint256 mask;
+545	 uint256 ico;
+546	 }
+547	 struct Round {
+548	 uint256 plyr;
+549	 uint256 team;
+550	 uint256 end;
+551	 bool ended;
+552	 uint256 strt;
+553	 uint256 keys;
+554	 uint256 eth;
+555	 uint256 pot;
+556	 uint256 mask;
+557	 uint256 ico;
+558	 uint256 icoGen;
+559	 uint256 icoAvg;
+560	 }
+561	 struct TeamFee {
+562	 uint256 gen;
+563	 uint256 p3d;
+564	 }
+565	 struct PotSplit {
+566	 uint256 gen;
+567	 uint256 p3d;
+568	 }
+569	 }
+570	 library F3DKeysCalcShort {
+571	 using SafeMath for *;
+572	 function keysRec(uint256 _curEth, uint256 _newEth) internal pure returns (uint256) {
+573	 return(keys((_curEth).add(_newEth)).sub(keys(_curEth)));
+574	 }
+575	 function ethRec(uint256 _curKeys, uint256 _sellKeys) internal pure returns (uint256) {
+576	 return((eth(_curKeys)).sub(eth(_curKeys.sub(_sellKeys))));
+577	 }
+578	 function keys(uint256 _eth) internal pure returns(uint256) {
+579	 return ((((((_eth).mul(1000000000000000000)).mul(312500000000000000000000000)).add(5624988281256103515625000000000000000000000000000000000000000000)).sqrt()).sub(74999921875000000000000000000000)) / (156250000);
+580	 }
+581	 function eth(uint256 _keys) internal pure returns(uint256) {
+582	 return ((78125000).mul(_keys.sq()).add(((149999843750000).mul(_keys.mul(1000000000000000000))) / (2))) / ((1000000000000000000).sq());
+583	 }
+584	 }
+585	 interface PlayerBookInterface {
+586	 function getPlayerID(address _addr) external returns (uint256);
+587	 function getPlayerName(uint256 _pID) external view returns (bytes32);
+588	 function getPlayerLAff(uint256 _pID) external view returns (uint256);
+589	 function getPlayerAddr(uint256 _pID) external view returns (address);
+590	 function getNameFee() external view returns (uint256);
+591	 function registerNameXIDFromDapp(address _addr, bytes32 _name, uint256 _affCode, bool _all) external payable returns(bool, uint256);
+592	 function registerNameXaddrFromDapp(address _addr, bytes32 _name, address _affCode, bool _all) external payable returns(bool, uint256);
+593	 function registerNameXnameFromDapp(address _addr, bytes32 _name, bytes32 _affCode, bool _all) external payable returns(bool, uint256);
+594	 }
+595	 library NameFilter {
+596	 function nameFilter(string _input) internal pure returns(bytes32) {
+597	 bytes memory _temp = bytes(_input);
+598	 uint256 _length = _temp.length;
+599	 require (_length <= 32 && _length > 0, "string must be between 1 and 32 characters");
+600	 require(_temp[0] != 0x20 && _temp[_length-1] != 0x20, "string cannot start or end with space");
+601	 if (_temp[0] == 0x30) {
+602	 require(_temp[1] != 0x78, "string cannot start with 0x");
+603	 require(_temp[1] != 0x58, "string cannot start with 0X");
+604	 }
+605	 bool _hasNonNumber;
+606	 for (uint256 i = 0; i < _length; i++) {
+607	 if (_temp[i] > 0x40 && _temp[i] < 0x5b) {
+608	 _temp[i] = byte(uint(_temp[i]) + 32);
+609	 if (_hasNonNumber == false) _hasNonNumber = true;
+610	 }
+611	 else {
+612	 require ( _temp[i] == 0x20 || (_temp[i] > 0x60 && _temp[i] < 0x7b) || (_temp[i] > 0x2f && _temp[i] < 0x3a), "string contains invalid characters" );
+613	 if (_temp[i] == 0x20) require( _temp[i+1] != 0x20, "string cannot contain consecutive spaces");
+614	 if (_hasNonNumber == false && (_temp[i] < 0x30 || _temp[i] > 0x39)) _hasNonNumber = true;
+615	 }
+616	 }
+617	 require(_hasNonNumber == true, "string cannot be only numbers");
+618	 bytes32 _ret;
+619	 assembly {
+620	 _ret := mload(add(_temp, 32)) }
+621	 return (_ret);
+622	 }
+623	 }
+624	 library SafeMath {
+625	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+626	 if (a == 0) {
+627	 return 0;
+628	 }
+629	 c = a * b;
+630	 require(c / a == b, "SafeMath mul failed");
+631	 return c;
+632	 }
+633	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+634	 require(b <= a, "SafeMath sub failed");
+635	 return a - b;
+636	 }
+637	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+638	 c = a + b;
+639	 require(c >= a, "SafeMath add failed");
+640	 return c;
+641	 }
+642	 function sqrt(uint256 x) internal pure returns (uint256 y) {
+643	 uint256 z = ((add(x,1)) / 2);
+644	 y = x;
+645	 while (z < y) {
+646	 y = z;
+647	 z = ((add((x / z),z)) / 2);
+648	 }
+649	 }
+650	 function sq(uint256 x) internal pure returns (uint256) {
+651	 return (mul(x,x));
+652	 }
+653	 function pwr(uint256 x, uint256 y) internal pure returns (uint256) {
+654	 if (x==0) return (0);
+655	 else if (y==0) return (1);
+656	 else {
+657	 uint256 z = x;
+658	 for (uint256 i=1; i < y; i++) z = mul(z,x);
+659	 return (z);
+660	 }
+661	 }
+662	 }

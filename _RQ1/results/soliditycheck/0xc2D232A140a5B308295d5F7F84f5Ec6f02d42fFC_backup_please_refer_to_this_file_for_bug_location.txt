@@ -1,0 +1,1307 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity =0.7.6;
+3	 interface IHotPotV2FundFactory {
+4	 event FundCreated( address indexed manager, address indexed token, address indexed fund );
+5	 function WETH9() external view returns (address);
+6	 function uniV3Factory() external view returns (address);
+7	 function uniV3Router() external view returns (address);
+8	 function controller() external view returns(address);
+9	 function getFund(address manager, address token) external view returns (address fund);
+10	 function createFund(address token, bytes32 descriptor) external returns (address fund);
+11	 }
+12	 interface IHotPotV2FundManagerActions {
+13	 function setPath( address distToken, bytes memory buy, bytes memory sell ) external;
+14	 function init( address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint amount ) external;
+15	 function add( uint poolIndex, uint positionIndex, uint amount, bool collect ) external;
+16	 function sub( uint poolIndex, uint positionIndex, uint proportionX128 ) external;
+17	 function move( uint poolIndex, uint subIndex, uint addIndex, uint proportionX128 ) external;
+18	 }
+19	 interface IManagerActions {
+20	 function setPath( address fund, address distToken, bytes memory path ) external;
+21	 function init( address fund, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint amount ) external;
+22	 function add( address fund, uint poolIndex, uint positionIndex, uint amount, bool collect ) external;
+23	 function sub( address fund, uint poolIndex, uint positionIndex, uint proportionX128 ) external;
+24	 function move( address fund, uint poolIndex, uint subIndex, uint addIndex, uint proportionX128 ) external;
+25	 }
+26	 interface IGovernanceActions {
+27	 function setGovernance(address account) external;
+28	 function setVerifiedToken(address token, bool isVerified) external;
+29	 function setHarvestPath(address token, bytes memory path) external;
+30	 function setMaxHarvestSlippage(uint slippage) external;
+31	 }
+32	 interface IControllerState {
+33	 function uniV3Router() external view returns (address);
+34	 function uniV3Factory() external view returns (address);
+35	 function hotpot() external view returns (address);
+36	 function governance() external view returns (address);
+37	 function WETH9() external view returns (address);
+38	 function verifiedToken(address token) external view returns (bool);
+39	 function harvestPath(address token) external view returns (bytes memory);
+40	 function maxHarvestSlippage() external view returns (uint);
+41	 }
+42	 interface IControllerEvents {
+43	 event ChangeVerifiedToken(address indexed token, bool isVerified);
+44	 event Harvest(address indexed token, uint amount, uint burned);
+45	 event SetHarvestPath(address indexed token, bytes path);
+46	 event SetGovernance(address indexed account);
+47	 event SetPath(address indexed fund, address indexed distToken, bytes path);
+48	 event SetMaxHarvestSlippage(uint slippage);
+49	 }
+50	 interface IHotPotV2FundController is IManagerActions, IGovernanceActions, IControllerState, IControllerEvents {
+51	 function harvest(address token, uint amount) external returns(uint burned);
+52	 }
+53	 interface IHotPotV2FundDeployer {
+54	 function parameters() external view returns ( address weth9, address uniV3Factory, address uniswapV3Router, address controller, address manager, address token, bytes32 descriptor );
+55	 }
+56	 interface IUniswapV3MintCallback {
+57	 function uniswapV3MintCallback( uint256 amount0Owed, uint256 amount1Owed, bytes calldata data ) external;
+58	 }
+59	 interface IUniswapV3Factory {
+60	 event OwnerChanged(address indexed oldOwner, address indexed newOwner);
+61	 event PoolCreated( address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool );
+62	 event FeeAmountEnabled(uint24 indexed fee, int24 indexed tickSpacing);
+63	 function owner() external view returns (address);
+64	 function feeAmountTickSpacing(uint24 fee) external view returns (int24);
+65	 function getPool( address tokenA, address tokenB, uint24 fee ) external view returns (address pool);
+66	 function createPool( address tokenA, address tokenB, uint24 fee ) external returns (address pool);
+67	 function setOwner(address _owner) external;
+68	 function enableFeeAmount(uint24 fee, int24 tickSpacing) external;
+69	 }
+70	 interface IUniswapV3PoolImmutables {
+71	 function factory() external view returns (address);
+72	 function token0() external view returns (address);
+73	 function token1() external view returns (address);
+74	 function fee() external view returns (uint24);
+75	 function tickSpacing() external view returns (int24);
+76	 function maxLiquidityPerTick() external view returns (uint128);
+77	 }
+78	 interface IUniswapV3PoolState {
+79	 function slot0() external view returns ( uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked );
+80	 function feeGrowthGlobal0X128() external view returns (uint256);
+81	 function feeGrowthGlobal1X128() external view returns (uint256);
+82	 function protocolFees() external view returns (uint128 token0, uint128 token1);
+83	 function liquidity() external view returns (uint128);
+84	 function ticks(int24 tick) external view returns ( uint128 liquidityGross, int128 liquidityNet, uint256 feeGrowthOutside0X128, uint256 feeGrowthOutside1X128, int56 tickCumulativeOutside, uint160 secondsPerLiquidityOutsideX128, uint32 secondsOutside, bool initialized );
+85	 function tickBitmap(int16 wordPosition) external view returns (uint256);
+86	 function positions(bytes32 key) external view returns ( uint128 _liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1 );
+87	 function observations(uint256 index) external view returns ( uint32 blockTimestamp, int56 tickCumulative, uint160 secondsPerLiquidityCumulativeX128, bool initialized );
+88	 }
+89	 interface IUniswapV3PoolDerivedState {
+90	 function observe(uint32[] calldata secondsAgos) external view returns (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidityCumulativeX128s);
+91	 function snapshotCumulativesInside(int24 tickLower, int24 tickUpper) external view returns ( int56 tickCumulativeInside, uint160 secondsPerLiquidityInsideX128, uint32 secondsInside );
+92	 }
+93	 interface IUniswapV3PoolActions {
+94	 function initialize(uint160 sqrtPriceX96) external;
+95	 function mint( address recipient, int24 tickLower, int24 tickUpper, uint128 amount, bytes calldata data ) external returns (uint256 amount0, uint256 amount1);
+96	 function collect( address recipient, int24 tickLower, int24 tickUpper, uint128 amount0Requested, uint128 amount1Requested ) external returns (uint128 amount0, uint128 amount1);
+97	 function burn( int24 tickLower, int24 tickUpper, uint128 amount ) external returns (uint256 amount0, uint256 amount1);
+98	 function swap( address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes calldata data ) external returns (int256 amount0, int256 amount1);
+99	 function flash( address recipient, uint256 amount0, uint256 amount1, bytes calldata data ) external;
+100	 function increaseObservationCardinalityNext(uint16 observationCardinalityNext) external;
+101	 }
+102	 interface IUniswapV3PoolOwnerActions {
+103	 function setFeeProtocol(uint8 feeProtocol0, uint8 feeProtocol1) external;
+104	 function collectProtocol( address recipient, uint128 amount0Requested, uint128 amount1Requested ) external returns (uint128 amount0, uint128 amount1);
+105	 }
+106	 interface IUniswapV3PoolEvents {
+107	 event Initialize(uint160 sqrtPriceX96, int24 tick);
+108	 event Mint( address sender, address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1 );
+109	 event Collect( address indexed owner, address recipient, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount0, uint128 amount1 );
+110	 event Burn( address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1 );
+111	 event Swap( address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick );
+112	 event Flash( address indexed sender, address indexed recipient, uint256 amount0, uint256 amount1, uint256 paid0, uint256 paid1 );
+113	 event IncreaseObservationCardinalityNext( uint16 observationCardinalityNextOld, uint16 observationCardinalityNextNew );
+114	 event SetFeeProtocol(uint8 feeProtocol0Old, uint8 feeProtocol1Old, uint8 feeProtocol0New, uint8 feeProtocol1New);
+115	 event CollectProtocol(address indexed sender, address indexed recipient, uint128 amount0, uint128 amount1);
+116	 }
+117	 interface IUniswapV3Pool is IUniswapV3PoolImmutables, IUniswapV3PoolState, IUniswapV3PoolDerivedState, IUniswapV3PoolActions, IUniswapV3PoolOwnerActions, IUniswapV3PoolEvents {
+118	 }
+119	 library TickMath {
+120	 int24 internal constant MIN_TICK = -887272;
+121	 int24 internal constant MAX_TICK = -MIN_TICK;
+122	 uint160 internal constant MIN_SQRT_RATIO = 4295128739;
+123	 uint160 internal constant MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342;
+124	 function getSqrtRatioAtTick(int24 tick) internal pure returns (uint160 sqrtPriceX96) {
+125	 uint256 absTick = tick < 0 ? uint256(-int256(tick)) : uint256(int256(tick));
+126	 require(absTick <= uint256(MAX_TICK), 'T');
+127	 uint256 ratio = absTick & 0x1 != 0 ? 0xfffcb933bd6fad37aa2d162d1a594001 : 0x100000000000000000000000000000000;
+128	 if (absTick & 0x2 != 0) ratio = (ratio * 0xfff97272373d413259a46990580e213a) >> 128;
+129	 if (absTick & 0x4 != 0) ratio = (ratio * 0xfff2e50f5f656932ef12357cf3c7fdcc) >> 128;
+130	 if (absTick & 0x8 != 0) ratio = (ratio * 0xffe5caca7e10e4e61c3624eaa0941cd0) >> 128;
+131	 if (absTick & 0x10 != 0) ratio = (ratio * 0xffcb9843d60f6159c9db58835c926644) >> 128;
+132	 if (absTick & 0x20 != 0) ratio = (ratio * 0xff973b41fa98c081472e6896dfb254c0) >> 128;
+133	 if (absTick & 0x40 != 0) ratio = (ratio * 0xff2ea16466c96a3843ec78b326b52861) >> 128;
+134	 if (absTick & 0x80 != 0) ratio = (ratio * 0xfe5dee046a99a2a811c461f1969c3053) >> 128;
+135	 if (absTick & 0x100 != 0) ratio = (ratio * 0xfcbe86c7900a88aedcffc83b479aa3a4) >> 128;
+136	 if (absTick & 0x200 != 0) ratio = (ratio * 0xf987a7253ac413176f2b074cf7815e54) >> 128;
+137	 if (absTick & 0x400 != 0) ratio = (ratio * 0xf3392b0822b70005940c7a398e4b70f3) >> 128;
+138	 if (absTick & 0x800 != 0) ratio = (ratio * 0xe7159475a2c29b7443b29c7fa6e889d9) >> 128;
+139	 if (absTick & 0x1000 != 0) ratio = (ratio * 0xd097f3bdfd2022b8845ad8f792aa5825) >> 128;
+140	 if (absTick & 0x2000 != 0) ratio = (ratio * 0xa9f746462d870fdf8a65dc1f90e061e5) >> 128;
+141	 if (absTick & 0x4000 != 0) ratio = (ratio * 0x70d869a156d2a1b890bb3df62baf32f7) >> 128;
+142	 if (absTick & 0x8000 != 0) ratio = (ratio * 0x31be135f97d08fd981231505542fcfa6) >> 128;
+143	 if (absTick & 0x10000 != 0) ratio = (ratio * 0x9aa508b5b7a84e1c677de54f3e99bc9) >> 128;
+144	 if (absTick & 0x20000 != 0) ratio = (ratio * 0x5d6af8dedb81196699c329225ee604) >> 128;
+145	 if (absTick & 0x40000 != 0) ratio = (ratio * 0x2216e584f5fa1ea926041bedfe98) >> 128;
+146	 if (absTick & 0x80000 != 0) ratio = (ratio * 0x48a170391f7dc42444e8fa2) >> 128;
+147	 if (tick > 0) ratio = type(uint256).max / ratio;
+148	 sqrtPriceX96 = uint160((ratio >> 32) + (ratio % (1 << 32) == 0 ? 0 : 1));
+149	 }
+150	 function getTickAtSqrtRatio(uint160 sqrtPriceX96) internal pure returns (int24 tick) {
+151	 require(sqrtPriceX96 >= MIN_SQRT_RATIO && sqrtPriceX96 < MAX_SQRT_RATIO, 'R');
+152	 uint256 ratio = uint256(sqrtPriceX96) << 32;
+153	 uint256 r = ratio;
+154	 uint256 msb = 0;
+155	 assembly {
+156	 let f := shl(7, gt(r, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+157	 assembly {
+158	 let f := shl(6, gt(r, 0xFFFFFFFFFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+159	 assembly {
+160	 let f := shl(5, gt(r, 0xFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+161	 assembly {
+162	 let f := shl(4, gt(r, 0xFFFF)) msb := or(msb, f) r := shr(f, r) }
+163	 assembly {
+164	 let f := shl(3, gt(r, 0xFF)) msb := or(msb, f) r := shr(f, r) }
+165	 assembly {
+166	 let f := shl(2, gt(r, 0xF)) msb := or(msb, f) r := shr(f, r) }
+167	 assembly {
+168	 let f := shl(1, gt(r, 0x3)) msb := or(msb, f) r := shr(f, r) }
+169	 assembly {
+170	 let f := gt(r, 0x1) msb := or(msb, f) }
+171	 if (msb >= 128) r = ratio >> (msb - 127);
+172	 else r = ratio << (127 - msb);
+173	 int256 log_2 = (int256(msb) - 128) << 64;
+174	 assembly {
+175	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(63, f)) r := shr(f, r) }
+176	 assembly {
+177	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(62, f)) r := shr(f, r) }
+178	 assembly {
+179	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(61, f)) r := shr(f, r) }
+180	 assembly {
+181	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(60, f)) r := shr(f, r) }
+182	 assembly {
+183	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(59, f)) r := shr(f, r) }
+184	 assembly {
+185	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(58, f)) r := shr(f, r) }
+186	 assembly {
+187	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(57, f)) r := shr(f, r) }
+188	 assembly {
+189	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(56, f)) r := shr(f, r) }
+190	 assembly {
+191	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(55, f)) r := shr(f, r) }
+192	 assembly {
+193	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(54, f)) r := shr(f, r) }
+194	 assembly {
+195	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(53, f)) r := shr(f, r) }
+196	 assembly {
+197	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(52, f)) r := shr(f, r) }
+198	 assembly {
+199	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(51, f)) r := shr(f, r) }
+200	 assembly {
+201	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(50, f)) }
+202	 int256 log_sqrt10001 = log_2 * 255738958999603826347141;
+203	 int24 tickLow = int24((log_sqrt10001 - 3402992956809132418596140100660247210) >> 128);
+204	 int24 tickHi = int24((log_sqrt10001 + 291339464771989622907027621153398088495) >> 128);
+205	 tick = tickLow == tickHi ? tickLow : getSqrtRatioAtTick(tickHi) <= sqrtPriceX96 ? tickHi : tickLow;
+206	 }
+207	 }
+208	 library FullMath {
+209	 function mulDiv( uint256 a, uint256 b, uint256 denominator ) internal pure returns (uint256 result) {
+210	 uint256 prod0;
+211	 uint256 prod1;
+212	 assembly {
+213	 let mm := mulmod(a, b, not(0)) prod0 := mul(a, b) prod1 := sub(sub(mm, prod0), lt(mm, prod0)) }
+214	 if (prod1 == 0) {
+215	 require(denominator > 0);
+216	 assembly {
+217	 result := div(prod0, denominator) }
+218	 return result;
+219	 }
+220	 require(denominator > prod1);
+221	 uint256 remainder;
+222	 assembly {
+223	 remainder := mulmod(a, b, denominator) }
+224	 assembly {
+225	 prod1 := sub(prod1, gt(remainder, prod0)) prod0 := sub(prod0, remainder) }
+226	 uint256 twos = -denominator & denominator;
+227	 assembly {
+228	 denominator := div(denominator, twos) }
+229	 assembly {
+230	 prod0 := div(prod0, twos) }
+231	 assembly {
+232	 twos := add(div(sub(0, twos), twos), 1) }
+233	 prod0 |= prod1 * twos;
+234	 uint256 inv = (3 * denominator) ^ 2;
+235	 inv *= 2 - denominator * inv;
+236	 inv *= 2 - denominator * inv;
+237	 inv *= 2 - denominator * inv;
+238	 inv *= 2 - denominator * inv;
+239	 inv *= 2 - denominator * inv;
+240	 inv *= 2 - denominator * inv;
+241	 result = prod0 * inv;
+242	 return result;
+243	 }
+244	 function mulDivRoundingUp( uint256 a, uint256 b, uint256 denominator ) internal pure returns (uint256 result) {
+245	 result = mulDiv(a, b, denominator);
+246	 if (mulmod(a, b, denominator) > 0) {
+247	 require(result < type(uint256).max);
+248	 result++;
+249	 }
+250	 }
+251	 }
+252	 library FixedPoint128 {
+253	 uint256 internal constant Q128 = 0x100000000000000000000000000000000;
+254	 }
+255	 library LowGasSafeMath {
+256	 function add(uint256 x, uint256 y) internal pure returns (uint256 z) {
+257	 require((z = x + y) >= x);
+258	 }
+259	 function sub(uint256 x, uint256 y) internal pure returns (uint256 z) {
+260	 require((z = x - y) <= x);
+261	 }
+262	 function mul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+263	 require(x == 0 || (z = x * y) / x == y);
+264	 }
+265	 function add(int256 x, int256 y) internal pure returns (int256 z) {
+266	 require((z = x + y) >= x == (y >= 0));
+267	 }
+268	 function sub(int256 x, int256 y) internal pure returns (int256 z) {
+269	 require((z = x - y) <= x == (y >= 0));
+270	 }
+271	 }
+272	 library SafeCast {
+273	 function toUint160(uint256 y) internal pure returns (uint160 z) {
+274	 require((z = uint160(y)) == y);
+275	 }
+276	 function toInt128(int256 y) internal pure returns (int128 z) {
+277	 require((z = int128(y)) == y);
+278	 }
+279	 function toInt256(uint256 y) internal pure returns (int256 z) {
+280	 require(y < 2**255);
+281	 z = int256(y);
+282	 }
+283	 }
+284	 library UnsafeMath {
+285	 function divRoundingUp(uint256 x, uint256 y) internal pure returns (uint256 z) {
+286	 assembly {
+287	 z := add(div(x, y), gt(mod(x, y), 0)) }
+288	 }
+289	 }
+290	 library FixedPoint96 {
+291	 uint8 internal constant RESOLUTION = 96;
+292	 uint256 internal constant Q96 = 0x1000000000000000000000000;
+293	 }
+294	 library SqrtPriceMath {
+295	 using LowGasSafeMath for uint256;
+296	 using SafeCast for uint256;
+297	 function getNextSqrtPriceFromAmount0RoundingUp( uint160 sqrtPX96, uint128 liquidity, uint256 amount, bool add ) internal pure returns (uint160) {
+298	 if (amount == 0) return sqrtPX96;
+299	 uint256 numerator1 = uint256(liquidity) << FixedPoint96.RESOLUTION;
+300	 if (add) {
+301	 uint256 product;
+302	 if ((product = amount * sqrtPX96) / amount == sqrtPX96) {
+303	 uint256 denominator = numerator1 + product;
+304	 if (denominator >= numerator1) return uint160(FullMath.mulDivRoundingUp(numerator1, sqrtPX96, denominator));
+305	 }
+306	 return uint160(UnsafeMath.divRoundingUp(numerator1, (numerator1 / sqrtPX96).add(amount)));
+307	 }
+308	 else {
+309	 uint256 product;
+310	 require((product = amount * sqrtPX96) / amount == sqrtPX96 && numerator1 > product);
+311	 uint256 denominator = numerator1 - product;
+312	 return FullMath.mulDivRoundingUp(numerator1, sqrtPX96, denominator).toUint160();
+313	 }
+314	 }
+315	 function getNextSqrtPriceFromAmount1RoundingDown( uint160 sqrtPX96, uint128 liquidity, uint256 amount, bool add ) internal pure returns (uint160) {
+316	 if (add) {
+317	 uint256 quotient = ( amount <= type(uint160).max ? (amount << FixedPoint96.RESOLUTION) / liquidity : FullMath.mulDiv(amount, FixedPoint96.Q96, liquidity) );
+318	 return uint256(sqrtPX96).add(quotient).toUint160();
+319	 }
+320	 else {
+321	 uint256 quotient = ( amount <= type(uint160).max ? UnsafeMath.divRoundingUp(amount << FixedPoint96.RESOLUTION, liquidity) : FullMath.mulDivRoundingUp(amount, FixedPoint96.Q96, liquidity) );
+322	 require(sqrtPX96 > quotient);
+323	 return uint160(sqrtPX96 - quotient);
+324	 }
+325	 }
+326	 function getNextSqrtPriceFromInput( uint160 sqrtPX96, uint128 liquidity, uint256 amountIn, bool zeroForOne ) internal pure returns (uint160 sqrtQX96) {
+327	 require(sqrtPX96 > 0);
+328	 require(liquidity > 0);
+329	 return zeroForOne ? getNextSqrtPriceFromAmount0RoundingUp(sqrtPX96, liquidity, amountIn, true) : getNextSqrtPriceFromAmount1RoundingDown(sqrtPX96, liquidity, amountIn, true);
+330	 }
+331	 function getNextSqrtPriceFromOutput( uint160 sqrtPX96, uint128 liquidity, uint256 amountOut, bool zeroForOne ) internal pure returns (uint160 sqrtQX96) {
+332	 require(sqrtPX96 > 0);
+333	 require(liquidity > 0);
+334	 return zeroForOne ? getNextSqrtPriceFromAmount1RoundingDown(sqrtPX96, liquidity, amountOut, false) : getNextSqrtPriceFromAmount0RoundingUp(sqrtPX96, liquidity, amountOut, false);
+335	 }
+336	 function getAmount0Delta( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity, bool roundUp ) internal pure returns (uint256 amount0) {
+337	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+338	 uint256 numerator1 = uint256(liquidity) << FixedPoint96.RESOLUTION;
+339	 uint256 numerator2 = sqrtRatioBX96 - sqrtRatioAX96;
+340	 require(sqrtRatioAX96 > 0);
+341	 return roundUp ? UnsafeMath.divRoundingUp( FullMath.mulDivRoundingUp(numerator1, numerator2, sqrtRatioBX96), sqrtRatioAX96 ) : FullMath.mulDiv(numerator1, numerator2, sqrtRatioBX96) / sqrtRatioAX96;
+342	 }
+343	 function getAmount1Delta( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity, bool roundUp ) internal pure returns (uint256 amount1) {
+344	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+345	 return roundUp ? FullMath.mulDivRoundingUp(liquidity, sqrtRatioBX96 - sqrtRatioAX96, FixedPoint96.Q96) : FullMath.mulDiv(liquidity, sqrtRatioBX96 - sqrtRatioAX96, FixedPoint96.Q96);
+346	 }
+347	 function getAmount0Delta( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, int128 liquidity ) internal pure returns (int256 amount0) {
+348	 return liquidity < 0 ? -getAmount0Delta(sqrtRatioAX96, sqrtRatioBX96, uint128(-liquidity), false).toInt256() : getAmount0Delta(sqrtRatioAX96, sqrtRatioBX96, uint128(liquidity), true).toInt256();
+349	 }
+350	 function getAmount1Delta( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, int128 liquidity ) internal pure returns (int256 amount1) {
+351	 return liquidity < 0 ? -getAmount1Delta(sqrtRatioAX96, sqrtRatioBX96, uint128(-liquidity), false).toInt256() : getAmount1Delta(sqrtRatioAX96, sqrtRatioBX96, uint128(liquidity), true).toInt256();
+352	 }
+353	 }
+354	 interface IUniswapV3SwapCallback {
+355	 function uniswapV3SwapCallback( int256 amount0Delta, int256 amount1Delta, bytes calldata data ) external;
+356	 }
+357	 interface ISwapRouter is IUniswapV3SwapCallback {
+358	 struct ExactInputSingleParams {
+359	 address tokenIn;
+360	 address tokenOut;
+361	 uint24 fee;
+362	 address recipient;
+363	 uint256 deadline;
+364	 uint256 amountIn;
+365	 uint256 amountOutMinimum;
+366	 uint160 sqrtPriceLimitX96;
+367	 }
+368	 function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+369	 struct ExactInputParams {
+370	 bytes path;
+371	 address recipient;
+372	 uint256 deadline;
+373	 uint256 amountIn;
+374	 uint256 amountOutMinimum;
+375	 }
+376	 function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
+377	 struct ExactOutputSingleParams {
+378	 address tokenIn;
+379	 address tokenOut;
+380	 uint24 fee;
+381	 address recipient;
+382	 uint256 deadline;
+383	 uint256 amountOut;
+384	 uint256 amountInMaximum;
+385	 uint160 sqrtPriceLimitX96;
+386	 }
+387	 function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
+388	 struct ExactOutputParams {
+389	 bytes path;
+390	 address recipient;
+391	 uint256 deadline;
+392	 uint256 amountOut;
+393	 uint256 amountInMaximum;
+394	 }
+395	 function exactOutput(ExactOutputParams calldata params) external payable returns (uint256 amountIn);
+396	 }
+397	 library LiquidityAmounts {
+398	 function toUint128(uint256 x) private pure returns (uint128 y) {
+399	 require((y = uint128(x)) == x);
+400	 }
+401	 function getLiquidityForAmount0( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint256 amount0 ) internal pure returns (uint128 liquidity) {
+402	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+403	 uint256 intermediate = FullMath.mulDiv(sqrtRatioAX96, sqrtRatioBX96, FixedPoint96.Q96);
+404	 return toUint128(FullMath.mulDiv(amount0, intermediate, sqrtRatioBX96 - sqrtRatioAX96));
+405	 }
+406	 function getLiquidityForAmount1( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint256 amount1 ) internal pure returns (uint128 liquidity) {
+407	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+408	 return toUint128(FullMath.mulDiv(amount1, FixedPoint96.Q96, sqrtRatioBX96 - sqrtRatioAX96));
+409	 }
+410	 function getLiquidityForAmounts( uint160 sqrtRatioX96, uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint256 amount0, uint256 amount1 ) internal pure returns (uint128 liquidity) {
+411	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+412	 if (sqrtRatioX96 <= sqrtRatioAX96) {
+413	 liquidity = getLiquidityForAmount0(sqrtRatioAX96, sqrtRatioBX96, amount0);
+414	 }
+415	 else if (sqrtRatioX96 < sqrtRatioBX96) {
+416	 uint128 liquidity0 = getLiquidityForAmount0(sqrtRatioX96, sqrtRatioBX96, amount0);
+417	 uint128 liquidity1 = getLiquidityForAmount1(sqrtRatioAX96, sqrtRatioX96, amount1);
+418	 liquidity = liquidity0 < liquidity1 ? liquidity0 : liquidity1;
+419	 }
+420	 else {
+421	 liquidity = getLiquidityForAmount1(sqrtRatioAX96, sqrtRatioBX96, amount1);
+422	 }
+423	 }
+424	 function getAmount0ForLiquidity( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity ) internal pure returns (uint256 amount0) {
+425	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+426	 return FullMath.mulDiv( uint256(liquidity) << FixedPoint96.RESOLUTION, sqrtRatioBX96 - sqrtRatioAX96, sqrtRatioBX96 ) / sqrtRatioAX96;
+427	 }
+428	 function getAmount1ForLiquidity( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity ) internal pure returns (uint256 amount1) {
+429	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+430	 return FullMath.mulDiv(liquidity, sqrtRatioBX96 - sqrtRatioAX96, FixedPoint96.Q96);
+431	 }
+432	 function getAmountsForLiquidity( uint160 sqrtRatioX96, uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity ) internal pure returns (uint256 amount0, uint256 amount1) {
+433	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+434	 if (sqrtRatioX96 <= sqrtRatioAX96) {
+435	 amount0 = getAmount0ForLiquidity(sqrtRatioAX96, sqrtRatioBX96, liquidity);
+436	 }
+437	 else if (sqrtRatioX96 < sqrtRatioBX96) {
+438	 amount0 = getAmount0ForLiquidity(sqrtRatioX96, sqrtRatioBX96, liquidity);
+439	 amount1 = getAmount1ForLiquidity(sqrtRatioAX96, sqrtRatioX96, liquidity);
+440	 }
+441	 else {
+442	 amount1 = getAmount1ForLiquidity(sqrtRatioAX96, sqrtRatioBX96, liquidity);
+443	 }
+444	 }
+445	 }
+446	 library PositionKey {
+447	 function compute( address owner, int24 tickLower, int24 tickUpper ) internal pure returns (bytes32) {
+448	 return keccak256(abi.encodePacked(owner, tickLower, tickUpper));
+449	 }
+450	 }
+451	 library PoolAddress {
+452	 bytes32 internal constant POOL_INIT_CODE_HASH = 0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54;
+453	 struct PoolKey {
+454	 address token0;
+455	 address token1;
+456	 uint24 fee;
+457	 }
+458	 function getPoolKey( address tokenA, address tokenB, uint24 fee ) internal pure returns (PoolKey memory) {
+459	 if (tokenA > tokenB) (tokenA, tokenB) = (tokenB, tokenA);
+460	 return PoolKey({
+461	 token0: tokenA, token1: tokenB, fee: fee}
+462	 );
+463	 }
+464	 function computeAddress(address factory, PoolKey memory key) internal pure returns (address pool) {
+465	 require(key.token0 < key.token1);
+466	 pool = address( uint256( keccak256( abi.encodePacked( hex'ff', factory, keccak256(abi.encode(key.token0, key.token1, key.fee)), POOL_INIT_CODE_HASH ) ) ) );
+467	 }
+468	 }
+469	 library BytesLib {
+470	 function slice( bytes memory _bytes, uint256 _start, uint256 _length ) internal pure returns (bytes memory) {
+471	 require(_length + 31 >= _length, 'slice_overflow');
+472	 require(_start + _length >= _start, 'slice_overflow');
+473	 require(_bytes.length >= _start + _length, 'slice_outOfBounds');
+474	 bytes memory tempBytes;
+475	 assembly {
+476	 switch iszero(_length) case 0 {
+477	 tempBytes := mload(0x40) let lengthmod := and(_length, 31) let mc := add(add(tempBytes, lengthmod), mul(0x20, iszero(lengthmod))) let end := add(mc, _length) for {
+478	 let cc := add(add(add(_bytes, lengthmod), mul(0x20, iszero(lengthmod))), _start) }
+479	 lt(mc, end) {
+480	 mc := add(mc, 0x20) cc := add(cc, 0x20) }
+481	 {
+482	 mstore(mc, mload(cc)) }
+483	 mstore(tempBytes, _length) mstore(0x40, and(add(mc, 31), not(31))) }
+484	 default {
+485	 tempBytes := mload(0x40) mstore(tempBytes, 0) mstore(0x40, add(tempBytes, 0x20)) }
+486	 }
+487	 return tempBytes;
+488	 }
+489	 function toAddress(bytes memory _bytes, uint256 _start) internal pure returns (address) {
+490	 require(_start + 20 >= _start, 'toAddress_overflow');
+491	 require(_bytes.length >= _start + 20, 'toAddress_outOfBounds');
+492	 address tempAddress;
+493	 assembly {
+494	 tempAddress := div(mload(add(add(_bytes, 0x20), _start)), 0x1000000000000000000000000) }
+495	 return tempAddress;
+496	 }
+497	 function toUint24(bytes memory _bytes, uint256 _start) internal pure returns (uint24) {
+498	 require(_start + 3 >= _start, 'toUint24_overflow');
+499	 require(_bytes.length >= _start + 3, 'toUint24_outOfBounds');
+500	 uint24 tempUint;
+501	 assembly {
+502	 tempUint := mload(add(add(_bytes, 0x3), _start)) }
+503	 return tempUint;
+504	 }
+505	 }
+506	 library Path {
+507	 using BytesLib for bytes;
+508	 uint256 private constant ADDR_SIZE = 20;
+509	 uint256 private constant FEE_SIZE = 3;
+510	 uint256 private constant NEXT_OFFSET = ADDR_SIZE + FEE_SIZE;
+511	 uint256 private constant POP_OFFSET = NEXT_OFFSET + ADDR_SIZE;
+512	 uint256 private constant MULTIPLE_POOLS_MIN_LENGTH = POP_OFFSET + NEXT_OFFSET;
+513	 function hasMultiplePools(bytes memory path) internal pure returns (bool) {
+514	 return path.length >= MULTIPLE_POOLS_MIN_LENGTH;
+515	 }
+516	 function decodeFirstPool(bytes memory path) internal pure returns ( address tokenA, address tokenB, uint24 fee ) {
+517	 tokenA = path.toAddress(0);
+518	 fee = path.toUint24(ADDR_SIZE);
+519	 tokenB = path.toAddress(NEXT_OFFSET);
+520	 }
+521	 function getFirstPool(bytes memory path) internal pure returns (bytes memory) {
+522	 return path.slice(0, POP_OFFSET);
+523	 }
+524	 function skipToken(bytes memory path) internal pure returns (bytes memory) {
+525	 return path.slice(NEXT_OFFSET, path.length - NEXT_OFFSET);
+526	 }
+527	 }
+528	 interface IERC20 {
+529	 function totalSupply() external view returns (uint256);
+530	 function balanceOf(address account) external view returns (uint256);
+531	 function transfer(address recipient, uint256 amount) external returns (bool);
+532	 function allowance(address owner, address spender) external view returns (uint256);
+533	 function approve(address spender, uint256 amount) external returns (bool);
+534	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+535	 event Transfer(address indexed from, address indexed to, uint256 value);
+536	 event Approval(address indexed owner, address indexed spender, uint256 value);
+537	 }
+538	 library TransferHelper {
+539	 function safeTransferFrom( address token, address from, address to, uint256 value ) internal {
+540	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, value));
+541	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'STF');
+542	 }
+543	 function safeTransfer( address token, address to, uint256 value ) internal {
+544	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, value));
+545	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'ST');
+546	 }
+547	 function safeApprove( address token, address to, uint256 value ) internal {
+548	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.approve.selector, to, value));
+549	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'SA');
+550	 }
+551	 function safeTransferETH(address to, uint256 value) internal {
+552	 (bool success, ) = to.call{
+553	 value: value}
+554	 (new bytes(0));
+555	 require(success, 'STE');
+556	 }
+557	 }
+558	 abstract contract ReentrancyGuard {
+559	 uint256 private constant _NOT_ENTERED = 1;
+560	 uint256 private constant _ENTERED = 2;
+561	 uint256 private _status;
+562	 constructor () {
+563	 _status = _NOT_ENTERED;
+564	 }
+565	 modifier nonReentrant() {
+566	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+567	 _status = _ENTERED;
+568	 _;
+569	 _status = _NOT_ENTERED;
+570	 }
+571	 }
+572	 interface IHotPotV2FundERC20 is IERC20{
+573	 function name() external view returns (string memory);
+574	 function symbol() external view returns (string memory);
+575	 function decimals() external view returns (uint8);
+576	 }
+577	 interface IHotPotV2FundEvents {
+578	 event Deposit(address indexed owner, uint amount, uint share);
+579	 event Withdraw(address indexed owner, uint amount, uint share);
+580	 }
+581	 interface IHotPotV2FundState {
+582	 function controller() external view returns (address);
+583	 function manager() external view returns (address);
+584	 function token() external view returns (address);
+585	 function descriptor() external view returns (bytes32);
+586	 function totalInvestment() external view returns (uint);
+587	 function investmentOf(address owner) external view returns (uint);
+588	 function assetsOfPosition(uint poolIndex, uint positionIndex) external view returns(uint);
+589	 function assetsOfPool(uint poolIndex) external view returns(uint);
+590	 function totalAssets() external view returns (uint);
+591	 function buyPath(address _token) external view returns (bytes memory);
+592	 function sellPath(address _token) external view returns (bytes memory);
+593	 function pools(uint index) external view returns(address);
+594	 function positions(uint poolIndex, uint positionIndex) external view returns( bool isEmpty, int24 tickLower, int24 tickUpper );
+595	 function poolsLength() external view returns(uint);
+596	 function positionsLength(uint poolIndex) external view returns(uint);
+597	 }
+598	 interface IHotPotV2FundUserActions {
+599	 function deposit(uint amount) external returns(uint share);
+600	 function withdraw(uint share) external returns(uint amount);
+601	 }
+602	 interface IHotPotV2Fund is IHotPotV2FundERC20, IHotPotV2FundEvents, IHotPotV2FundState, IHotPotV2FundUserActions, IHotPotV2FundManagerActions {
+603	 }
+604	 interface IWETH9 is IERC20 {
+605	 function deposit() external payable;
+606	 function withdraw(uint256) external;
+607	 }
+608	 abstract contract HotPotV2FundERC20 is IHotPotV2FundERC20{
+609	 using LowGasSafeMath for uint;
+610	 string public override constant name = 'Hotpot V2';
+611	 string public override constant symbol = 'HPT-V2';
+612	 uint8 public override constant decimals = 18;
+613	 uint public override totalSupply;
+614	 mapping(address => uint) public override balanceOf;
+615	 mapping(address => mapping(address => uint)) public override allowance;
+616	 constructor() {
+617	 }
+618	 function _mint(address to, uint value) internal {
+619	 require(to != address(0), "ERC20: mint to the zero address");
+620	 totalSupply = totalSupply.add(value);
+621	 balanceOf[to] = balanceOf[to].add(value);
+622	 emit Transfer(address(0), to, value);
+623	 }
+624	 function _burn(address from, uint value) internal {
+625	 require(from != address(0), "ERC20: burn from the zero address");
+626	 balanceOf[from] = balanceOf[from].sub(value);
+627	 totalSupply = totalSupply.sub(value);
+628	 emit Transfer(from, address(0), value);
+629	 }
+630	 function _approve(address owner, address spender, uint value) private {
+631	 require(owner != address(0), "ERC20: approve from the zero address");
+632	 require(spender != address(0), "ERC20: approve to the zero address");
+633	 allowance[owner][spender] = value;
+634	 emit Approval(owner, spender, value);
+635	 }
+636	 function approve(address spender, uint value) external override returns (bool) {
+637	 _approve(msg.sender, spender, value);
+638	 return true;
+639	 }
+640	 function _transfer(address from, address to, uint value) private {
+641	 require(from != address(0), "ERC20: transfer from the zero address");
+642	 require(to != address(0), "ERC20: transfer to the zero address");
+643	 balanceOf[from] = balanceOf[from].sub(value);
+644	 balanceOf[to] = balanceOf[to].add(value);
+645	 emit Transfer(from, to, value);
+646	 }
+647	 function transfer(address to, uint value) external override returns (bool) {
+648	 _transfer(msg.sender, to, value);
+649	 return true;
+650	 }
+651	 function transferFrom( address from, address to, uint value ) external override returns (bool) {
+652	 allowance[from][msg.sender] = allowance[from][msg.sender].sub(value);
+653	 _transfer(from, to, value);
+654	 return true;
+655	 }
+656	 }
+657	 library PathPrice {
+658	 using Path for bytes;
+659	 function getSqrtPriceX96( bytes memory path, address uniV3Factory, bool isCurrentPrice ) internal view returns (uint160 sqrtPriceX96){
+660	 require(path.length > 0, "IPL");
+661	 sqrtPriceX96 = uint160(1 << FixedPoint96.RESOLUTION);
+662	 while (true) {
+663	 (address tokenIn, address tokenOut, uint24 fee) = path.decodeFirstPool();
+664	 IUniswapV3Pool pool = IUniswapV3Pool(PoolAddress.computeAddress(uniV3Factory, PoolAddress.getPoolKey(tokenIn, tokenOut, fee)));
+665	 uint160 _sqrtPriceX96;
+666	 if(isCurrentPrice){
+667	 (_sqrtPriceX96,,,,,,) = pool.slot0();
+668	 }
+669	 else {
+670	 uint32[] memory secondAges= new uint32[](2);
+671	 secondAges[0] = 0;
+672	 secondAges[1] = 1;
+673	 (int56[] memory tickCumulatives,) = pool.observe(secondAges);
+674	 _sqrtPriceX96 = TickMath.getSqrtRatioAtTick(int24(tickCumulatives[0] - tickCumulatives[1]));
+675	 }
+676	 sqrtPriceX96 = uint160( tokenIn > tokenOut ? FullMath.mulDiv(sqrtPriceX96, FixedPoint96.Q96, _sqrtPriceX96) : FullMath.mulDiv(sqrtPriceX96, _sqrtPriceX96, FixedPoint96.Q96) );
+677	 if (path.hasMultiplePools()) path = path.skipToken();
+678	 else return sqrtPriceX96;
+679	 }
+680	 }
+681	 }
+682	 library Position {
+683	 using LowGasSafeMath for uint;
+684	 using SafeCast for int256;
+685	 uint constant DIVISOR = 100 << 128;
+686	 struct Info {
+687	 bool isEmpty;
+688	 int24 tickLower;
+689	 int24 tickUpper;
+690	 }
+691	 function getAmountsForAmount0( uint160 sqrtPriceX96, uint160 sqrtPriceL96, uint160 sqrtPriceU96, uint deltaX ) internal pure returns(uint amount0, uint amount1){
+692	 if(sqrtPriceX96 <= sqrtPriceL96){
+693	 amount0 = deltaX;
+694	 }
+695	 else if( sqrtPriceX96 < sqrtPriceU96){
+696	 uint a = FullMath.mulDiv(sqrtPriceU96, sqrtPriceX96 - sqrtPriceL96, FixedPoint96.Q96);
+697	 uint b = FullMath.mulDiv(sqrtPriceX96, sqrtPriceU96 - sqrtPriceX96, FixedPoint96.Q96);
+698	 amount0 = FullMath.mulDiv(deltaX, b, a + b);
+699	 }
+700	 if(deltaX > amount0){
+701	 amount1 = FullMath.mulDiv( deltaX.sub(amount0), FullMath.mulDiv(sqrtPriceX96, sqrtPriceX96, FixedPoint96.Q96), FixedPoint96.Q96 );
+702	 }
+703	 }
+704	 struct SwapParams{
+705	 uint amount;
+706	 uint amount0;
+707	 uint amount1;
+708	 uint160 sqrtPriceX96;
+709	 uint160 sqrtRatioAX96;
+710	 uint160 sqrtRatioBX96;
+711	 address token;
+712	 address token0;
+713	 address token1;
+714	 uint24 fee;
+715	 address uniV3Factory;
+716	 address uniV3Router;
+717	 }
+718	 function computeSwapAmounts( SwapParams memory params, mapping(address => bytes) storage buyPath ) internal returns(uint amount0Max, uint amount1Max) {
+719	 uint equalAmount0;
+720	 uint160 buy0Price;
+721	 if(params.amount > 0){
+722	 if(params.token == params.token0){
+723	 equalAmount0 = params.amount0.add(params.amount);
+724	 }
+725	 else {
+726	 buy0Price = PathPrice.getSqrtPriceX96(buyPath[params.token0], params.uniV3Factory, true);
+727	 equalAmount0 = params.amount0.add((FullMath.mulDiv( params.amount, FullMath.mulDiv(buy0Price, buy0Price, FixedPoint96.Q96), FixedPoint96.Q96 )));
+728	 }
+729	 }
+730	 else equalAmount0 = params.amount0;
+731	 if(params.amount1 > 0){
+732	 equalAmount0 = equalAmount0.add((FullMath.mulDiv( params.amount1, FixedPoint96.Q96, FullMath.mulDiv(params.sqrtPriceX96, params.sqrtPriceX96, FixedPoint96.Q96) )));
+733	 }
+734	 require(equalAmount0 > 0, "EIZ");
+735	 (amount0Max, amount1Max) = getAmountsForAmount0(params.sqrtPriceX96, params.sqrtRatioAX96, params.sqrtRatioBX96, equalAmount0);
+736	 if(amount0Max > params.amount0) {
+737	 if(amount1Max > params.amount1){
+738	 uint fundToT0;
+739	 if(params.token0 == params.token){
+740	 fundToT0 = amount0Max - params.amount0;
+741	 if(fundToT0 > params.amount) fundToT0 = params.amount;
+742	 amount0Max = params.amount0.add(fundToT0);
+743	 }
+744	 else {
+745	 fundToT0 = FullMath.mulDiv( amount0Max - params.amount0, FixedPoint96.Q96, FullMath.mulDiv(buy0Price, buy0Price, FixedPoint96.Q96) );
+746	 if(fundToT0 > params.amount) fundToT0 = params.amount;
+747	 if(fundToT0 > 0) {
+748	 amount0Max = params.amount0.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+749	 path: buyPath[params.token0], recipient: address(this), deadline: block.timestamp, amountIn: fundToT0, amountOutMinimum: 0 }
+750	 )));
+751	 }
+752	 else amount0Max = params.amount0;
+753	 }
+754	 if(params.token1 == params.token){
+755	 amount1Max = params.amount1.add(params.amount.sub(fundToT0));
+756	 }
+757	 else {
+758	 if(fundToT0 < params.amount){
+759	 amount1Max = params.amount1.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+760	 path: buyPath[params.token1], recipient: address(this), deadline: block.timestamp, amountIn: params.amount.sub(fundToT0), amountOutMinimum: 0 }
+761	 )));
+762	 }
+763	 else amount1Max = params.amount1;
+764	 }
+765	 }
+766	 else {
+767	 if(params.amount1 > amount1Max){
+768	 amount0Max = params.amount0.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+769	 path: abi.encodePacked(params.token1, params.fee, params.token0), recipient: address(this), deadline: block.timestamp, amountIn: params.amount1.sub(amount1Max), amountOutMinimum: 0 }
+770	 )));
+771	 }
+772	 else amount0Max = params.amount0;
+773	 if (params.amount > 0){
+774	 if(params.token0 == params.token){
+775	 amount0Max = amount0Max.add(params.amount);
+776	 }
+777	 else{
+778	 amount0Max = amount0Max.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+779	 path: buyPath[params.token0], recipient: address(this), deadline: block.timestamp, amountIn: params.amount, amountOutMinimum: 0 }
+780	 )));
+781	 }
+782	 }
+783	 }
+784	 }
+785	 else {
+786	 if(amount0Max < params.amount0){
+787	 amount1Max = params.amount1.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+788	 path: abi.encodePacked(params.token0, params.fee, params.token1), recipient: address(this), deadline: block.timestamp, amountIn: params.amount0.sub(amount0Max), amountOutMinimum: 0 }
+789	 )));
+790	 }
+791	 else amount1Max = params.amount1;
+792	 if(params.amount > 0){
+793	 if(params.token1 == params.token){
+794	 amount1Max = amount1Max.add(params.amount);
+795	 }
+796	 else {
+797	 amount1Max = amount1Max.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+798	 path: buyPath[params.token1], recipient: address(this), deadline: block.timestamp, amountIn: params.amount, amountOutMinimum: 0 }
+799	 )));
+800	 }
+801	 }
+802	 }
+803	 }
+804	 struct AddParams {
+805	 uint poolIndex;
+806	 address pool;
+807	 address token;
+808	 uint amount;
+809	 uint amount0Max;
+810	 uint amount1Max;
+811	 address uniV3Router;
+812	 address uniV3Factory;
+813	 }
+814	 function addLiquidity( Info storage self, AddParams memory params, mapping(address => bytes) storage sellPath, mapping(address => bytes) storage buyPath ) public {
+815	 (int24 tickLower, int24 tickUpper) = (self.tickLower, self.tickUpper);
+816	 (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(params.pool).slot0();
+817	 SwapParams memory swapParams = SwapParams({
+818	 amount: params.amount, amount0: params.amount0Max, amount1: params.amount1Max, sqrtPriceX96: sqrtPriceX96, sqrtRatioAX96: TickMath.getSqrtRatioAtTick(tickLower), sqrtRatioBX96: TickMath.getSqrtRatioAtTick(tickUpper), token: params.token, token0: IUniswapV3Pool(params.pool).token0(), token1: IUniswapV3Pool(params.pool).token1(), fee: IUniswapV3Pool(params.pool).fee(), uniV3Router: params.uniV3Router, uniV3Factory: params.uniV3Factory }
+819	 );
+820	 (params.amount0Max, params.amount1Max) = computeSwapAmounts(swapParams, buyPath);
+821	 (sqrtPriceX96,,,,,,) = IUniswapV3Pool(params.pool).slot0();
+822	 uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(sqrtPriceX96, swapParams.sqrtRatioAX96, swapParams.sqrtRatioBX96, params.amount0Max, params.amount1Max);
+823	 require(liquidity > 0, "LIZ");
+824	 (uint amount0, uint amount1) = IUniswapV3Pool(params.pool).mint( address(this), tickLower, tickUpper, liquidity, abi.encode(params.poolIndex) );
+825	 if(amount0 < params.amount0Max){
+826	 if(swapParams.token0 != params.token){
+827	 ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+828	 path: sellPath[swapParams.token0], recipient: address(this), deadline: block.timestamp, amountIn: params.amount0Max - amount0, amountOutMinimum: 0 }
+829	 ));
+830	 }
+831	 }
+832	 if(amount1 < params.amount1Max){
+833	 if(swapParams.token1 != params.token){
+834	 ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+835	 path: sellPath[swapParams.token1], recipient: address(this), deadline: block.timestamp, amountIn: params.amount1Max - amount1, amountOutMinimum: 0 }
+836	 ));
+837	 }
+838	 }
+839	 if(self.isEmpty) self.isEmpty = false;
+840	 }
+841	 function burnAndCollect( Info storage self, address pool, uint proportionX128 ) public returns(uint amount0, uint amount1) {
+842	 require(proportionX128 <= DIVISOR, "PTL");
+843	 if(self.isEmpty == true) return(amount0, amount1);
+844	 int24 tickLower = self.tickLower;
+845	 int24 tickUpper = self.tickUpper;
+846	 IUniswapV3Pool _pool = IUniswapV3Pool(pool);
+847	 if(proportionX128 > 0) {
+848	 (uint sumLP, , , , ) = _pool.positions(PositionKey.compute(address(this), tickLower, tickUpper));
+849	 uint subLP = FullMath.mulDiv(proportionX128, sumLP, DIVISOR);
+850	 _pool.burn(tickLower, tickUpper, uint128(subLP));
+851	 (amount0, amount1) = _pool.collect(address(this), tickLower, tickUpper, type(uint128).max, type(uint128).max);
+852	 if(sumLP == subLP) self.isEmpty = true;
+853	 }
+854	 else {
+855	 _pool.burn(tickLower, tickUpper, 0);
+856	 (amount0, amount1) = _pool.collect(address(this), tickLower, tickUpper, type(uint128).max, type(uint128).max);
+857	 }
+858	 }
+859	 struct SubParams {
+860	 address pool;
+861	 address token;
+862	 uint proportionX128;
+863	 address uniV3Router;
+864	 }
+865	 function subLiquidity ( Info storage self, SubParams memory params, mapping(address => bytes) storage sellPath ) public returns(uint amount) {
+866	 address token0 = IUniswapV3Pool(params.pool).token0();
+867	 address token1 = IUniswapV3Pool(params.pool).token1();
+868	 (uint amount0, uint amount1) = burnAndCollect(self, params.pool, params.proportionX128);
+869	 if(token0 != params.token && amount0 > 0){
+870	 amount = ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+871	 path: sellPath[token0], recipient: address(this), deadline: block.timestamp, amountIn: amount0, amountOutMinimum: 0 }
+872	 ));
+873	 }
+874	 if(token1 != params.token && amount1 > 0){
+875	 amount = amount.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+876	 path: sellPath[token1], recipient: address(this), deadline: block.timestamp, amountIn: amount1, amountOutMinimum: 0 }
+877	 )));
+878	 }
+879	 }
+880	 struct AssetsParams {
+881	 address token0;
+882	 address token1;
+883	 uint160 price0;
+884	 uint160 price1;
+885	 uint160 sqrtPriceX96;
+886	 int24 tick;
+887	 uint256 feeGrowthGlobal0X128;
+888	 uint256 feeGrowthGlobal1X128;
+889	 }
+890	 function assetsOfPool( Info[] storage self, address pool, address token, mapping(address => bytes) storage sellPath, address uniV3Factory ) public view returns (uint amount, uint[] memory) {
+891	 uint[] memory amounts = new uint[](self.length);
+892	 AssetsParams memory params;
+893	 params.token0 = IUniswapV3Pool(pool).token0();
+894	 params.token1 = IUniswapV3Pool(pool).token1();
+895	 if(params.token0 != token){
+896	 bytes memory path = sellPath[params.token0];
+897	 if(path.length == 0) return(amount, amounts);
+898	 params.price0 = PathPrice.getSqrtPriceX96(path, uniV3Factory, false);
+899	 }
+900	 if(params.token1 != token){
+901	 bytes memory path = sellPath[params.token1];
+902	 if(path.length == 0) return(amount, amounts);
+903	 params.price1 = PathPrice.getSqrtPriceX96(path, uniV3Factory, false);
+904	 }
+905	 (params.sqrtPriceX96, params.tick, , , , , ) = IUniswapV3Pool(pool).slot0();
+906	 params.feeGrowthGlobal0X128 = IUniswapV3Pool(pool).feeGrowthGlobal0X128();
+907	 params.feeGrowthGlobal1X128 = IUniswapV3Pool(pool).feeGrowthGlobal1X128();
+908	 for(uint i=0; i < self.length; i++){
+909	 Position.Info memory position = self[i];
+910	 if(position.isEmpty) continue;
+911	 bytes32 positionKey = keccak256(abi.encodePacked(address(this), position.tickLower, position.tickUpper));
+912	 (uint256 _amount0, uint256 _amount1) = getAssetsOfSinglePosition( AssetsOfSinglePosition({
+913	 pool: pool, positionKey: positionKey, tickLower: position.tickLower, tickUpper: position.tickUpper, tickCurrent: params.tick, sqrtPriceX96: params.sqrtPriceX96, feeGrowthGlobal0X128: params.feeGrowthGlobal0X128, feeGrowthGlobal1X128: params.feeGrowthGlobal1X128 }
+914	 ) );
+915	 uint _amount;
+916	 if(params.token0 != token){
+917	 _amount = FullMath.mulDiv( _amount0, FullMath.mulDiv(params.price0, params.price0, FixedPoint96.Q96), FixedPoint96.Q96);
+918	 }
+919	 else _amount = _amount0;
+920	 if(params.token1 != token){
+921	 _amount = _amount.add(FullMath.mulDiv( _amount1, FullMath.mulDiv(params.price1, params.price1, FixedPoint96.Q96), FixedPoint96.Q96));
+922	 }
+923	 else _amount = _amount.add(_amount1);
+924	 amounts[i] = _amount;
+925	 amount = amount.add(_amount);
+926	 }
+927	 return(amount, amounts);
+928	 }
+929	 function assets( Info storage self, address pool, address token, mapping(address => bytes) storage sellPath, address uniV3Factory ) public view returns (uint amount) {
+930	 if(self.isEmpty) return 0;
+931	 (uint160 sqrtPriceX96, int24 tick, , , , , ) = IUniswapV3Pool(pool).slot0();
+932	 bytes32 positionKey = keccak256(abi.encodePacked(address(this), self.tickLower, self.tickUpper));
+933	 (uint256 amount0, uint256 amount1) = getAssetsOfSinglePosition( AssetsOfSinglePosition({
+934	 pool: pool, positionKey: positionKey, tickLower: self.tickLower, tickUpper: self.tickUpper, tickCurrent: tick, sqrtPriceX96: sqrtPriceX96, feeGrowthGlobal0X128: IUniswapV3Pool(pool).feeGrowthGlobal0X128(), feeGrowthGlobal1X128: IUniswapV3Pool(pool).feeGrowthGlobal1X128() }
+935	 ) );
+936	 if(amount0 > 0){
+937	 address token0 = IUniswapV3Pool(pool).token0();
+938	 if(token0 != token){
+939	 uint160 price0 = PathPrice.getSqrtPriceX96(sellPath[token0], uniV3Factory, false);
+940	 amount = FullMath.mulDiv( amount0, FullMath.mulDiv(price0, price0, FixedPoint96.Q96), FixedPoint96.Q96);
+941	 }
+942	 else amount = amount0;
+943	 }
+944	 if(amount1 > 0){
+945	 address token1 = IUniswapV3Pool(pool).token1();
+946	 if(token1 != token){
+947	 uint160 price1 = PathPrice.getSqrtPriceX96(sellPath[token1], uniV3Factory, false);
+948	 amount = amount.add(FullMath.mulDiv( amount1, FullMath.mulDiv(price1, price1, FixedPoint96.Q96), FixedPoint96.Q96));
+949	 }
+950	 else amount = amount.add(amount1);
+951	 }
+952	 }
+953	 struct AssetsOfSinglePosition {
+954	 address pool;
+955	 bytes32 positionKey;
+956	 int24 tickLower;
+957	 int24 tickUpper;
+958	 int24 tickCurrent;
+959	 uint160 sqrtPriceX96;
+960	 uint256 feeGrowthGlobal0X128;
+961	 uint256 feeGrowthGlobal1X128;
+962	 }
+963	 function getAssetsOfSinglePosition(AssetsOfSinglePosition memory params) internal view returns (uint256 amount0, uint256 amount1) {
+964	 ( uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1 ) = IUniswapV3Pool(params.pool).positions(params.positionKey);
+965	 (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = getFeeGrowthInside( FeeGrowthInsideParams({
+966	 pool: params.pool, tickLower: params.tickLower, tickUpper: params.tickUpper, tickCurrent: params.tickCurrent, feeGrowthGlobal0X128: params.feeGrowthGlobal0X128, feeGrowthGlobal1X128: params.feeGrowthGlobal1X128 }
+967	 ) );
+968	 amount0 = uint256( FullMath.mulDiv( feeGrowthInside0X128 - feeGrowthInside0LastX128, liquidity, FixedPoint128.Q128 ) );
+969	 amount1 = uint256( FullMath.mulDiv( feeGrowthInside1X128 - feeGrowthInside1LastX128, liquidity, FixedPoint128.Q128 ) );
+970	 amount0 = amount0.add(tokensOwed0);
+971	 amount1 = amount1.add(tokensOwed1);
+972	 if (params.tickCurrent < params.tickLower) {
+973	 amount0 = amount0.add(uint256( -SqrtPriceMath.getAmount0Delta( TickMath.getSqrtRatioAtTick(params.tickLower), TickMath.getSqrtRatioAtTick(params.tickUpper), -int256(liquidity).toInt128() ) ));
+974	 }
+975	 else if (params.tickCurrent < params.tickUpper) {
+976	 amount0 = amount0.add(uint256( -SqrtPriceMath.getAmount0Delta( params.sqrtPriceX96, TickMath.getSqrtRatioAtTick(params.tickUpper), -int256(liquidity).toInt128() ) ));
+977	 amount1 = amount1.add(uint256( -SqrtPriceMath.getAmount1Delta( TickMath.getSqrtRatioAtTick(params.tickLower), params.sqrtPriceX96, -int256(liquidity).toInt128() ) ));
+978	 }
+979	 else {
+980	 amount1 = amount1.add(uint256( -SqrtPriceMath.getAmount1Delta( TickMath.getSqrtRatioAtTick(params.tickLower), TickMath.getSqrtRatioAtTick(params.tickUpper), -int256(liquidity).toInt128() ) ));
+981	 }
+982	 }
+983	 struct FeeGrowthInsideParams {
+984	 address pool;
+985	 int24 tickLower;
+986	 int24 tickUpper;
+987	 int24 tickCurrent;
+988	 uint256 feeGrowthGlobal0X128;
+989	 uint256 feeGrowthGlobal1X128;
+990	 }
+991	 function getFeeGrowthInside(FeeGrowthInsideParams memory params) internal view returns (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) {
+992	 IUniswapV3Pool _pool = IUniswapV3Pool (params.pool);
+993	 uint256 lower_feeGrowthOutside0X128;
+994	 uint256 lower_feeGrowthOutside1X128;
+995	 ( , , lower_feeGrowthOutside0X128, lower_feeGrowthOutside1X128, , , ,) = _pool.ticks(params.tickLower);
+996	 uint256 feeGrowthBelow0X128;
+997	 uint256 feeGrowthBelow1X128;
+998	 if (params.tickCurrent >= params.tickLower) {
+999	 feeGrowthBelow0X128 = lower_feeGrowthOutside0X128;
+1000	 feeGrowthBelow1X128 = lower_feeGrowthOutside1X128;
+1001	 }
+1002	 else {
+1003	 feeGrowthBelow0X128 = params.feeGrowthGlobal0X128 - lower_feeGrowthOutside0X128;
+1004	 feeGrowthBelow1X128 = params.feeGrowthGlobal1X128 - lower_feeGrowthOutside1X128;
+1005	 }
+1006	 uint256 upper_feeGrowthOutside0X128;
+1007	 uint256 upper_feeGrowthOutside1X128;
+1008	 ( , , upper_feeGrowthOutside0X128, upper_feeGrowthOutside1X128, , , , ) = _pool.ticks(params.tickUpper);
+1009	 uint256 feeGrowthAbove0X128;
+1010	 uint256 feeGrowthAbove1X128;
+1011	 if (params.tickCurrent < params.tickUpper) {
+1012	 feeGrowthAbove0X128 = upper_feeGrowthOutside0X128;
+1013	 feeGrowthAbove1X128 = upper_feeGrowthOutside1X128;
+1014	 }
+1015	 else {
+1016	 feeGrowthAbove0X128 = params.feeGrowthGlobal0X128 - upper_feeGrowthOutside0X128;
+1017	 feeGrowthAbove1X128 = params.feeGrowthGlobal1X128 - upper_feeGrowthOutside1X128;
+1018	 }
+1019	 feeGrowthInside0X128 = params.feeGrowthGlobal0X128 - feeGrowthBelow0X128 - feeGrowthAbove0X128;
+1020	 feeGrowthInside1X128 = params.feeGrowthGlobal1X128 - feeGrowthBelow1X128 - feeGrowthAbove1X128;
+1021	 }
+1022	 }
+1023	 library Array2D {
+1024	 function max(uint[][] memory self) internal pure returns( uint index1, uint index2, uint value ) {
+1025	 for(uint i = 0; i < self.length; i++){
+1026	 for(uint j = 0; j < self[i].length; j++){
+1027	 if(self[i][j] > value){
+1028	 (index1, index2, value) = (i, j, self[i][j]);
+1029	 }
+1030	 }
+1031	 }
+1032	 }
+1033	 }
+1034	 contract HotPotV2Fund is HotPotV2FundERC20, IHotPotV2Fund, IUniswapV3MintCallback, ReentrancyGuard {
+1035	 using LowGasSafeMath for uint;
+1036	 using SafeCast for int256;
+1037	 using Path for bytes;
+1038	 using Position for Position.Info;
+1039	 using Position for Position.Info[];
+1040	 using Array2D for uint[][];
+1041	 uint constant DIVISOR = 100 << 128;
+1042	 uint constant MANAGER_FEE = 10 << 128;
+1043	 uint constant FEE = 10 << 128;
+1044	 address immutable WETH9;
+1045	 address immutable uniV3Factory;
+1046	 address immutable uniV3Router;
+1047	 address public override immutable controller;
+1048	 address public override immutable manager;
+1049	 address public override immutable token;
+1050	 bytes32 public override descriptor;
+1051	 uint public override totalInvestment;
+1052	 mapping (address => uint) override public investmentOf;
+1053	 mapping(address => bytes) public override buyPath;
+1054	 mapping(address => bytes) public override sellPath;
+1055	 address[] public override pools;
+1056	 Position.Info[][] public override positions;
+1057	 modifier onlyController() {
+1058	 require(msg.sender == controller, "OCC");
+1059	 _;
+1060	 }
+1061	 constructor () {
+1062	 address _token;
+1063	 address _uniV3Router;
+1064	 (WETH9, uniV3Factory, _uniV3Router, controller, manager, _token, descriptor) = IHotPotV2FundDeployer(msg.sender).parameters();
+1065	 token = _token;
+1066	 uniV3Router = _uniV3Router;
+1067	 TransferHelper.safeApprove(_token, _uniV3Router, 2**256-1);
+1068	 }
+1069	 function deposit(uint amount) external override returns(uint share) {
+1070	 require(amount > 0, "DAZ");
+1071	 uint total_assets = totalAssets();
+1072	 TransferHelper.safeTransferFrom(token, msg.sender, address(this), amount);
+1073	 return _deposit(amount, total_assets);
+1074	 }
+1075	 function _deposit(uint amount, uint total_assets) internal returns(uint share) {
+1076	 if(totalSupply == 0) share = amount;
+1077	 else share = FullMath.mulDiv(amount, totalSupply, total_assets);
+1078	 investmentOf[msg.sender] = investmentOf[msg.sender].add(amount);
+1079	 totalInvestment = totalInvestment.add(amount);
+1080	 _mint(msg.sender, share);
+1081	 emit Deposit(msg.sender, amount, share);
+1082	 }
+1083	 receive() external payable {
+1084	 if(token == WETH9){
+1085	 if(msg.sender != WETH9 && msg.value > 0){
+1086	 uint totals = totalAssets();
+1087	 IWETH9(WETH9).deposit{
+1088	 value: address(this).balance}
+1089	 ();
+1090	 _deposit(msg.value, totals);
+1091	 }
+1092	 }
+1093	 else revert();
+1094	 }
+1095	 function withdraw(uint share) external override nonReentrant returns(uint amount) {
+1096	 uint balance = balanceOf[msg.sender];
+1097	 require(share > 0 && share <= balance, "ISA");
+1098	 uint investment = FullMath.mulDiv(investmentOf[msg.sender], share, balance);
+1099	 address fToken = token;
+1100	 uint value = IERC20(fToken).balanceOf(address(this));
+1101	 uint _totalAssets = value;
+1102	 uint[][] memory amounts = new uint[][](pools.length);
+1103	 for(uint i=0; i<pools.length; i++){
+1104	 uint _amount;
+1105	 (_amount, amounts[i]) = _assetsOfPool(i);
+1106	 _totalAssets = _totalAssets.add(_amount);
+1107	 }
+1108	 amount = FullMath.mulDiv(_totalAssets, share, totalSupply);
+1109	 if(amount > value) {
+1110	 uint remainingAmount = amount.sub(value);
+1111	 while(true) {
+1112	 (uint poolIndex, uint positionIndex, uint desirableAmount) = amounts.max();
+1113	 if(desirableAmount == 0) break;
+1114	 if(remainingAmount <= desirableAmount){
+1115	 positions[poolIndex][positionIndex].subLiquidity(Position.SubParams({
+1116	 proportionX128: FullMath.mulDiv(remainingAmount, DIVISOR, desirableAmount), pool: pools[poolIndex], token: fToken, uniV3Router: uniV3Router }
+1117	 ), sellPath);
+1118	 break;
+1119	 }
+1120	 else {
+1121	 positions[poolIndex][positionIndex].subLiquidity(Position.SubParams({
+1122	 proportionX128: DIVISOR, pool: pools[poolIndex], token: fToken, uniV3Router: uniV3Router }
+1123	 ), sellPath);
+1124	 remainingAmount = remainingAmount.sub(desirableAmount);
+1125	 amounts[poolIndex][positionIndex] = 0;
+1126	 }
+1127	 }
+1128	 value = IERC20(fToken).balanceOf(address(this));
+1129	 if(amount > value) amount = value;
+1130	 else if(totalSupply == share) amount = value;
+1131	 }
+1132	 if(amount > investment){
+1133	 uint _manager_fee = FullMath.mulDiv(amount.sub(investment), MANAGER_FEE, DIVISOR);
+1134	 uint _fee = FullMath.mulDiv(amount.sub(investment), FEE, DIVISOR);
+1135	 TransferHelper.safeTransfer(fToken, manager, _manager_fee);
+1136	 TransferHelper.safeTransfer(fToken, controller, _fee);
+1137	 amount = amount.sub(_fee).sub(_manager_fee);
+1138	 }
+1139	 else investment = amount;
+1140	 investmentOf[msg.sender] = investmentOf[msg.sender].sub(investment);
+1141	 totalInvestment = totalInvestment.sub(investment);
+1142	 _burn(msg.sender, share);
+1143	 if(fToken == WETH9){
+1144	 IWETH9(WETH9).withdraw(amount);
+1145	 TransferHelper.safeTransferETH(msg.sender, amount);
+1146	 }
+1147	 else {
+1148	 TransferHelper.safeTransfer(fToken, msg.sender, amount);
+1149	 }
+1150	 emit Withdraw(msg.sender, amount, share);
+1151	 }
+1152	 function poolsLength() external override view returns(uint){
+1153	 return pools.length;
+1154	 }
+1155	 function positionsLength(uint poolIndex) external override view returns(uint){
+1156	 return positions[poolIndex].length;
+1157	 }
+1158	 function setPath( address distToken, bytes memory buy, bytes memory sell ) external override onlyController{
+1159	 if(sellPath[distToken].length > 0){
+1160	 for(uint i = 0; i < pools.length; i++){
+1161	 IUniswapV3Pool pool = IUniswapV3Pool(pools[i]);
+1162	 if(pool.token0() == distToken || pool.token1() == distToken){
+1163	 (uint amount,) = _assetsOfPool(i);
+1164	 require(amount == 0, "AZ");
+1165	 }
+1166	 }
+1167	 }
+1168	 TransferHelper.safeApprove(distToken, uniV3Router, 0);
+1169	 TransferHelper.safeApprove(distToken, uniV3Router, 2**256-1);
+1170	 buyPath[distToken] = buy;
+1171	 sellPath[distToken] = sell;
+1172	 }
+1173	 function uniswapV3MintCallback( uint256 amount0Owed, uint256 amount1Owed, bytes calldata data ) external override {
+1174	 address pool = pools[abi.decode(data, (uint))];
+1175	 require(msg.sender == pool, "MQE");
+1176	 if (amount0Owed > 0) TransferHelper.safeTransfer(IUniswapV3Pool(pool).token0(), msg.sender, amount0Owed);
+1177	 if (amount1Owed > 0) TransferHelper.safeTransfer(IUniswapV3Pool(pool).token1(), msg.sender, amount1Owed);
+1178	 }
+1179	 function init( address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint amount ) external override onlyController{
+1180	 require(tickLower < tickUpper && token0 < token1, "ITV");
+1181	 address pool = IUniswapV3Factory(uniV3Factory).getPool(token0, token1, fee);
+1182	 require(pool != address(0), "ITF");
+1183	 int24 tickspacing = IUniswapV3Pool(pool).tickSpacing();
+1184	 require(tickLower % tickspacing == 0, "TLV");
+1185	 require(tickUpper % tickspacing == 0, "TUV");
+1186	 bool hasPool = false;
+1187	 uint poolIndex;
+1188	 for(uint i = 0; i < pools.length; i++){
+1189	 if(pools[i] == pool) {
+1190	 hasPool = true;
+1191	 poolIndex = i;
+1192	 for(uint positionIndex = 0; positionIndex < positions[i].length; positionIndex++) {
+1193	 if(positions[i][positionIndex].tickLower == tickLower && positions[i][positionIndex].tickUpper == tickUpper) revert();
+1194	 }
+1195	 break;
+1196	 }
+1197	 }
+1198	 if(!hasPool) {
+1199	 pools.push(pool);
+1200	 positions.push();
+1201	 poolIndex = pools.length - 1;
+1202	 }
+1203	 positions[poolIndex].push(Position.Info({
+1204	 isEmpty: true, tickLower: tickLower, tickUpper: tickUpper }
+1205	 ));
+1206	 if(amount > 0){
+1207	 address fToken = token;
+1208	 require(IERC20(fToken).balanceOf(address(this)) >= amount, "ATL");
+1209	 Position.Info storage position = positions[poolIndex][positions[poolIndex].length - 1];
+1210	 position.addLiquidity(Position.AddParams({
+1211	 poolIndex: poolIndex, pool: pool, amount: amount, amount0Max: 0, amount1Max: 0, token: fToken, uniV3Router: uniV3Router, uniV3Factory: uniV3Factory }
+1212	 ), sellPath, buyPath);
+1213	 }
+1214	 }
+1215	 function add( uint poolIndex, uint positionIndex, uint amount, bool collect ) external override onlyController {
+1216	 require(IERC20(token).balanceOf(address(this)) >= amount, "ATL");
+1217	 require(poolIndex < pools.length, "IPL");
+1218	 require(positionIndex < positions[poolIndex].length, "IPS");
+1219	 uint amount0Max;
+1220	 uint amount1Max;
+1221	 Position.Info storage position = positions[poolIndex][positionIndex];
+1222	 address pool = pools[poolIndex];
+1223	 if(collect) (amount0Max, amount1Max) = position.burnAndCollect(pool, 0);
+1224	 position.addLiquidity(Position.AddParams({
+1225	 poolIndex: poolIndex, pool: pool, amount: amount, amount0Max: amount0Max, amount1Max: amount1Max, token: token, uniV3Router: uniV3Router, uniV3Factory: uniV3Factory }
+1226	 ), sellPath, buyPath);
+1227	 }
+1228	 function sub( uint poolIndex, uint positionIndex, uint proportionX128 ) external override onlyController{
+1229	 require(poolIndex < pools.length, "IPL");
+1230	 require(positionIndex < positions[poolIndex].length, "IPS");
+1231	 positions[poolIndex][positionIndex].subLiquidity(Position.SubParams({
+1232	 proportionX128: proportionX128, pool: pools[poolIndex], token: token, uniV3Router: uniV3Router }
+1233	 ), sellPath);
+1234	 }
+1235	 function move( uint poolIndex, uint subIndex, uint addIndex, uint proportionX128 ) external override onlyController {
+1236	 require(poolIndex < pools.length, "IPL");
+1237	 require(subIndex < positions[poolIndex].length, "ISI");
+1238	 require(addIndex < positions[poolIndex].length, "IAI");
+1239	 (uint amount0Max, uint amount1Max) = positions[poolIndex][subIndex] .burnAndCollect(pools[poolIndex], proportionX128);
+1240	 positions[poolIndex][addIndex].addLiquidity(Position.AddParams({
+1241	 poolIndex: poolIndex, pool: pools[poolIndex], amount: 0, amount0Max: amount0Max, amount1Max: amount1Max, token: token, uniV3Router: uniV3Router, uniV3Factory: uniV3Factory }
+1242	 ), sellPath, buyPath);
+1243	 }
+1244	 function assetsOfPosition(uint poolIndex, uint positionIndex) public override view returns (uint amount) {
+1245	 return positions[poolIndex][positionIndex].assets(pools[poolIndex], token, sellPath, uniV3Factory);
+1246	 }
+1247	 function assetsOfPool(uint poolIndex) public view override returns (uint amount) {
+1248	 (amount, ) = _assetsOfPool(poolIndex);
+1249	 }
+1250	 function totalAssets() public view override returns (uint amount) {
+1251	 amount = IERC20(token).balanceOf(address(this));
+1252	 for(uint i = 0; i < pools.length; i++){
+1253	 uint _amount;
+1254	 (_amount, ) = _assetsOfPool(i);
+1255	 amount = amount.add(_amount);
+1256	 }
+1257	 }
+1258	 function _assetsOfPool(uint poolIndex) internal view returns (uint amount, uint[] memory) {
+1259	 return positions[poolIndex].assetsOfPool(pools[poolIndex], token, sellPath, uniV3Factory);
+1260	 }
+1261	 }
+1262	 contract HotPotV2FundDeployer is IHotPotV2FundDeployer {
+1263	 struct Parameters {
+1264	 address WETH9;
+1265	 address uniswapV3Factory;
+1266	 address uniswapV3Router;
+1267	 address controller;
+1268	 address manager;
+1269	 address token;
+1270	 bytes32 descriptor;
+1271	 }
+1272	 Parameters public override parameters;
+1273	 function deploy( address WETH9, address uniswapV3Factory, address uniswapV3Router, address controller, address manager, address token, bytes32 descriptor ) internal returns (address fund) {
+1274	 parameters = Parameters({
+1275	 WETH9: WETH9, uniswapV3Factory: uniswapV3Factory, uniswapV3Router: uniswapV3Router, controller: controller, manager: manager, token: token, descriptor: descriptor }
+1276	 );
+1277	 fund = address(new HotPotV2Fund{
+1278	 salt: keccak256(abi.encode(manager, token))}
+1279	 ());
+1280	 delete parameters;
+1281	 }
+1282	 }
+1283	 contract HotPotV2FundFactory is IHotPotV2FundFactory, HotPotV2FundDeployer {
+1284	 address public override immutable WETH9;
+1285	 address public override immutable uniV3Factory;
+1286	 address public override immutable uniV3Router;
+1287	 address public override immutable controller;
+1288	 mapping(address => mapping(address => address)) public override getFund;
+1289	 constructor( address _controller, address _weth9, address _uniV3Factory, address _uniV3Router ){
+1290	 require(_controller != address(0));
+1291	 require(_weth9 != address(0));
+1292	 require(_uniV3Factory != address(0));
+1293	 require(_uniV3Router != address(0));
+1294	 controller = _controller;
+1295	 WETH9 = _weth9;
+1296	 uniV3Factory = _uniV3Factory;
+1297	 uniV3Router = _uniV3Router;
+1298	 }
+1299	 function createFund(address token, bytes32 descriptor) external override returns (address fund){
+1300	 require(IHotPotV2FundController(controller).verifiedToken(token));
+1301	 require(getFund[msg.sender][token] == address(0));
+1302	 fund = deploy(WETH9, uniV3Factory, uniV3Router, controller, msg.sender, token, descriptor);
+1303	 getFund[msg.sender][token] = fund;
+1304	 emit FundCreated(msg.sender, token, fund);
+1305	 }
+1306	 }

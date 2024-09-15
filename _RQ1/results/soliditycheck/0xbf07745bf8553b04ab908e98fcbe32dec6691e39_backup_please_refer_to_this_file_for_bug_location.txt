@@ -1,0 +1,155 @@
+row number 
+1	   pragma solidity ^0.4.11;
+2	 library SafeMath {
+3	 function mul(uint a, uint b) internal returns (uint) {
+4	 uint c = a * b;
+5	 assert(a == 0 || c / a == b);
+6	 return c;
+7	 }
+8	 function div(uint a, uint b) internal returns (uint) {
+9	 uint c = a / b;
+10	 return c;
+11	 }
+12	 function sub(uint a, uint b) internal returns (uint) {
+13	 assert(b <= a);
+14	 return a - b;
+15	 }
+16	 function add(uint a, uint b) internal returns (uint) {
+17	 uint c = a + b;
+18	 assert(c >= a);
+19	 return c;
+20	 }
+21	 function max64(uint64 a, uint64 b) internal constant returns (uint64) {
+22	 return a >= b ? a : b;
+23	 }
+24	 function min64(uint64 a, uint64 b) internal constant returns (uint64) {
+25	 return a < b ? a : b;
+26	 }
+27	 function max256(uint256 a, uint256 b) internal constant returns (uint256) {
+28	 return a >= b ? a : b;
+29	 }
+30	 function min256(uint256 a, uint256 b) internal constant returns (uint256) {
+31	 return a < b ? a : b;
+32	 }
+33	 function assert(bool assertion) internal {
+34	 if (!assertion) {
+35	 throw;
+36	 }
+37	 }
+38	 }
+39	 contract ERC223Interface {
+40	 uint public totalSupply;
+41	 function balanceOf(address who) constant returns (uint);
+42	 function transfer(address to, uint value) public returns (bool ok);
+43	 function batch_transfer(address[] to, uint[] value) public returns (bool ok);
+44	 function transfer(address to, uint value, bytes data) public returns (bool ok);
+45	 event Transfer(address indexed from, address indexed to, uint value);
+46	 }
+47	 contract ERC223ReceivingContract {
+48	 function tokenFallback(address _from, uint _value, bytes _data);
+49	 }
+50	 contract Owned {
+51	 address public owner;
+52	 address public proposedOwner;
+53	 bool public paused = false;
+54	 event OwnershipTransferInitiated(address indexed _proposedOwner);
+55	 event OwnershipTransferCompleted(address indexed _newOwner);
+56	 function Owned() public {
+57	 owner = msg.sender;
+58	 }
+59	 modifier onlyOwner() {
+60	 require(isOwner(msg.sender));
+61	 _;
+62	 }
+63	 function pause() onlyOwner whenNotPaused public {
+64	 paused = true;
+65	 }
+66	 function resume() onlyOwner whenPaused public {
+67	 paused = false;
+68	 }
+69	 modifier whenNotPaused() {
+70	 require(!paused);
+71	 _;
+72	 }
+73	 modifier whenPaused() {
+74	 require(paused);
+75	 _;
+76	 }
+77	 function isOwner(address _address) internal view returns (bool) {
+78	 return (_address == owner);
+79	 }
+80	 function initiateOwnershipTransfer(address _proposedOwner) public onlyOwner returns (bool) {
+81	 proposedOwner = _proposedOwner;
+82	 OwnershipTransferInitiated(_proposedOwner);
+83	 return true;
+84	 }
+85	 function completeOwnershipTransfer() public returns (bool) {
+86	 require(msg.sender == proposedOwner);
+87	 owner = proposedOwner;
+88	 proposedOwner = address(0);
+89	 OwnershipTransferCompleted(owner);
+90	 return true;
+91	 }
+92	 }
+93	 contract TRNDToken is ERC223Interface, Owned {
+94	 using SafeMath for uint;
+95	 string public constant symbol="TRND";
+96	 string public constant name="trend42";
+97	 uint8 public constant decimals=2;
+98	 uint public totalSupply = 42000000 * 10 ** uint(decimals);
+99	 mapping(address => uint256) balances;
+100	 mapping(address => mapping(address => uint256)) allowed;
+101	 function TRNDToken() {
+102	 owner = msg.sender;
+103	 balances[owner] = totalSupply;
+104	 }
+105	 event Burn(address indexed burner, uint256 value);
+106	 function burn(uint256 _value) public whenNotPaused {
+107	 _burn(msg.sender, _value);
+108	 }
+109	 function _burn(address _who, uint256 _value) internal {
+110	 require(_value <= balances[_who]);
+111	 balances[_who] = SafeMath.sub(balances[_who], _value);
+112	 totalSupply = SafeMath.sub(totalSupply, _value);
+113	 emit Burn(_who, _value);
+114	 emit Transfer(_who, address(0), _value);
+115	 }
+116	 function transfer(address _to, uint _value, bytes _data) public whenNotPaused returns (bool success) {
+117	 uint codeLength;
+118	 assembly {
+119	 codeLength := extcodesize(_to) }
+120	 balances[msg.sender] = balances[msg.sender].sub(_value);
+121	 balances[_to] = balances[_to].add(_value);
+122	 if(codeLength>0) {
+123	 ERC223ReceivingContract receiver = ERC223ReceivingContract(_to);
+124	 receiver.tokenFallback(msg.sender, _value, _data);
+125	 }
+126	 emit Transfer(msg.sender, _to, _value);
+127	 return true;
+128	 }
+129	 function transfer(address _to, uint _value) public whenNotPaused returns (bool success) {
+130	 uint codeLength;
+131	 bytes memory empty;
+132	 assembly {
+133	 codeLength := extcodesize(_to) }
+134	 balances[msg.sender] = balances[msg.sender].sub(_value);
+135	 balances[_to] = balances[_to].add(_value);
+136	 if(codeLength>0) {
+137	 ERC223ReceivingContract receiver = ERC223ReceivingContract(_to);
+138	 receiver.tokenFallback(msg.sender, _value, empty);
+139	 }
+140	 emit Transfer(msg.sender, _to, _value);
+141	 return true;
+142	 }
+143	 function batch_transfer(address[] _to, uint[] _value) public whenNotPaused returns (bool success) {
+144	 require(_to.length <= 255);
+145	 require(_to.length == _value.length);
+146	 for (uint8 i = 0; i < _to.length; i++) {
+147	 transfer(_to[i], _value[i]);
+148	 }
+149	 return true;
+150	 }
+151	 function balanceOf(address _owner) constant returns (uint balance) {
+152	 return balances[_owner];
+153	 }
+154	 }

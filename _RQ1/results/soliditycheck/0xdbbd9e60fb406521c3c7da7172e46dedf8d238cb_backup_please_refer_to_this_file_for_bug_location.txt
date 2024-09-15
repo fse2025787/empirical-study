@@ -1,0 +1,567 @@
+row number 
+1	   pragma solidity ^0.4.2;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 if (a == 0) {
+5	 return 0;
+6	 }
+7	 uint256 c = a * b;
+8	 assert(c / a == b);
+9	 return c;
+10	 }
+11	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+12	 uint256 c = a / b;
+13	 return c;
+14	 }
+15	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+16	 assert(b <= a);
+17	 return a - b;
+18	 }
+19	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+20	 uint256 c = a + b;
+21	 assert(c >= a);
+22	 return c;
+23	 }
+24	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+25	 return a < b ? a : b;
+26	 }
+27	 }
+28	 contract Minewar {
+29	 bool public initialized = false;
+30	 uint256 public roundNumber = 0;
+31	 uint256 public deadline;
+32	 uint256 public CRTSTAL_MINING_PERIOD = 86400;
+33	 uint256 public HALF_TIME = 8 hours;
+34	 uint256 public ROUND_TIME = 86400 * 7;
+35	 uint256 BASE_PRICE = 0.005 ether;
+36	 uint256 RANK_LIST_LIMIT = 10000;
+37	 uint256 MINIMUM_LIMIT_SELL = 5000000;
+38	 mapping(uint256 => MinerData) private minerData;
+39	 uint256 private numberOfMiners;
+40	 mapping(address => PlyerData) private players;
+41	 uint256 private numberOfBoosts;
+42	 mapping(uint256 => BoostData) private boostData;
+43	 uint256 private numberOfOrders;
+44	 mapping(uint256 => BuyOrderData) private buyOrderData;
+45	 mapping(uint256 => SellOrderData) private sellOrderData;
+46	 uint256 private numberOfRank;
+47	 address[21] rankList;
+48	 address public sponsor;
+49	 uint256 public sponsorLevel;
+50	 address public administrator;
+51	 struct PlyerData {
+52	 uint256 roundNumber;
+53	 mapping(uint256 => uint256) minerCount;
+54	 uint256 hashrate;
+55	 uint256 crystals;
+56	 uint256 lastUpdateTime;
+57	 uint256 referral_count;
+58	 }
+59	 struct MinerData {
+60	 uint256 basePrice;
+61	 uint256 baseProduct;
+62	 uint256 limit;
+63	 }
+64	 struct BoostData {
+65	 address owner;
+66	 uint256 boostRate;
+67	 uint256 startingLevel;
+68	 uint256 startingTime;
+69	 uint256 halfLife;
+70	 }
+71	 struct BuyOrderData {
+72	 address owner;
+73	 string title;
+74	 string description;
+75	 uint256 unitPrice;
+76	 uint256 amount;
+77	 }
+78	 struct SellOrderData {
+79	 address owner;
+80	 string title;
+81	 string description;
+82	 uint256 unitPrice;
+83	 uint256 amount;
+84	 }
+85	 modifier isNotOver() {
+86	 require(now <= deadline);
+87	 require(tx.origin == msg.sender);
+88	 _;
+89	 }
+90	 modifier isCurrentRound() {
+91	 require(players[msg.sender].roundNumber == roundNumber);
+92	 _;
+93	 }
+94	 modifier limitSell() {
+95	 PlyerData storage p = players[msg.sender];
+96	 if(p.hashrate <= MINIMUM_LIMIT_SELL){
+97	 _;
+98	 }
+99	 else{
+100	 uint256 limit_hashrate = 0;
+101	 if(rankList[9] != 0){
+102	 PlyerData storage rank_player = players[rankList[9]];
+103	 limit_hashrate = SafeMath.mul(rank_player.hashrate, 5);
+104	 }
+105	 require(p.hashrate <= limit_hashrate);
+106	 _;
+107	 }
+108	 }
+109	 function Minewar() public {
+110	 administrator = msg.sender;
+111	 numberOfMiners = 8;
+112	 numberOfBoosts = 5;
+113	 numberOfOrders = 5;
+114	 numberOfRank = 21;
+115	 minerData[0] = MinerData(10, 10, 10);
+116	 minerData[1] = MinerData(100, 200, 2);
+117	 minerData[2] = MinerData(400, 800, 4);
+118	 minerData[3] = MinerData(1600, 3200, 8);
+119	 minerData[4] = MinerData(6400, 9600, 16);
+120	 minerData[5] = MinerData(25600, 38400, 32);
+121	 minerData[6] = MinerData(204800, 204800, 64);
+122	 minerData[7] = MinerData(1638400, 819200, 65536);
+123	 }
+124	 function () public payable {
+125	 }
+126	 function startGame() public {
+127	 require(msg.sender == administrator);
+128	 require(!initialized);
+129	 startNewRound();
+130	 initialized = true;
+131	 }
+132	 function startNewRound() private {
+133	 deadline = SafeMath.add(now, ROUND_TIME);
+134	 roundNumber = SafeMath.add(roundNumber, 1);
+135	 initData();
+136	 }
+137	 function initData() private {
+138	 sponsor = administrator;
+139	 sponsorLevel = 6;
+140	 boostData[0] = BoostData(0, 150, 1, now, HALF_TIME);
+141	 boostData[1] = BoostData(0, 175, 1, now, HALF_TIME);
+142	 boostData[2] = BoostData(0, 200, 1, now, HALF_TIME);
+143	 boostData[3] = BoostData(0, 225, 1, now, HALF_TIME);
+144	 boostData[4] = BoostData(msg.sender, 250, 2, now, HALF_TIME);
+145	 uint256 idx;
+146	 for (idx = 0; idx < numberOfOrders; idx++) {
+147	 buyOrderData[idx] = BuyOrderData(0, "title", "description", 0, 0);
+148	 sellOrderData[idx] = SellOrderData(0, "title", "description", 0, 0);
+149	 }
+150	 for (idx = 0; idx < numberOfRank; idx++) {
+151	 rankList[idx] = 0;
+152	 }
+153	 }
+154	 function lottery() public {
+155	 require(now > deadline);
+156	 require(tx.origin == msg.sender);
+157	 uint256 balance = SafeMath.div(SafeMath.mul(this.balance, 90), 100);
+158	 administrator.send(SafeMath.div(SafeMath.mul(this.balance, 5), 100));
+159	 uint8[10] memory profit = [30,20,10,8,7,5,5,5,5,5];
+160	 for(uint256 idx = 0; idx < 10; idx++){
+161	 if(rankList[idx] != 0){
+162	 rankList[idx].send(SafeMath.div(SafeMath.mul(balance,profit[idx]),100));
+163	 }
+164	 }
+165	 startNewRound();
+166	 }
+167	 function getRankList() public view returns(address[21]) {
+168	 return rankList;
+169	 }
+170	 function becomeSponsor() public isNotOver isCurrentRound payable {
+171	 require(msg.value >= getSponsorFee());
+172	 sponsor.send(getCurrentPrice(sponsorLevel));
+173	 sponsor = msg.sender;
+174	 sponsorLevel = SafeMath.add(sponsorLevel, 1);
+175	 }
+176	 function getSponsorFee() public view returns(uint256 sponsorFee) {
+177	 sponsorFee = getCurrentPrice(SafeMath.add(sponsorLevel, 1));
+178	 }
+179	 function getFreeMiner(address ref) isNotOver public {
+180	 require(players[msg.sender].roundNumber != roundNumber);
+181	 PlyerData storage p = players[msg.sender];
+182	 if(p.hashrate > 0){
+183	 for (uint idx = 1; idx < numberOfMiners; idx++) {
+184	 p.minerCount[idx] = 0;
+185	 }
+186	 }
+187	 p.crystals = 0;
+188	 p.roundNumber = roundNumber;
+189	 p.lastUpdateTime = now;
+190	 p.referral_count = 0;
+191	 p.minerCount[0] = 1;
+192	 MinerData storage m0 = minerData[0];
+193	 p.hashrate = m0.baseProduct;
+194	 if (ref != msg.sender) {
+195	 PlyerData storage referral = players[ref];
+196	 if(referral.roundNumber == roundNumber){
+197	 updateCrytal(ref);
+198	 p.referral_count = 1;
+199	 referral.referral_count = SafeMath.add(referral.referral_count, 1);
+200	 }
+201	 }
+202	 }
+203	 function buyMiner(uint256[] minerNumbers) public isNotOver isCurrentRound {
+204	 require(minerNumbers.length == numberOfMiners);
+205	 uint256 minerIdx = 0;
+206	 MinerData memory m;
+207	 for (; minerIdx < numberOfMiners; minerIdx++) {
+208	 m = minerData[minerIdx];
+209	 if(minerNumbers[minerIdx] > m.limit || minerNumbers[minerIdx] < 0){
+210	 revert();
+211	 }
+212	 }
+213	 updateCrytal(msg.sender);
+214	 PlyerData storage p = players[msg.sender];
+215	 uint256 price = 0;
+216	 uint256 minerNumber = 0;
+217	 for (minerIdx = 0; minerIdx < numberOfMiners; minerIdx++) {
+218	 minerNumber = minerNumbers[minerIdx];
+219	 if (minerNumber > 0) {
+220	 m = minerData[minerIdx];
+221	 price = SafeMath.add(price, SafeMath.mul(m.basePrice, minerNumber));
+222	 }
+223	 }
+224	 price = SafeMath.mul(price, CRTSTAL_MINING_PERIOD);
+225	 if(p.crystals < price){
+226	 revert();
+227	 }
+228	 for (minerIdx = 0; minerIdx < numberOfMiners; minerIdx++) {
+229	 minerNumber = minerNumbers[minerIdx];
+230	 if (minerNumber > 0) {
+231	 m = minerData[minerIdx];
+232	 p.minerCount[minerIdx] = SafeMath.min(m.limit, SafeMath.add(p.minerCount[minerIdx], minerNumber));
+233	 }
+234	 }
+235	 p.crystals = SafeMath.sub(p.crystals, price);
+236	 updateHashrate(msg.sender);
+237	 }
+238	 function getPlayerData(address addr) public view returns (uint256 crystals, uint256 lastupdate, uint256 hashratePerDay, uint256[8] miners, uint256 hasBoost, uint256 referral_count) {
+239	 PlyerData storage p = players[addr];
+240	 if(p.roundNumber != roundNumber){
+241	 p = players[0];
+242	 }
+243	 crystals = SafeMath.div(p.crystals, CRTSTAL_MINING_PERIOD);
+244	 lastupdate = p.lastUpdateTime;
+245	 hashratePerDay = addReferralHashrate(addr, p.hashrate);
+246	 uint256 i = 0;
+247	 for(i = 0; i < numberOfMiners; i++) {
+248	 miners[i] = p.minerCount[i];
+249	 }
+250	 hasBoost = hasBooster(addr);
+251	 referral_count = p.referral_count;
+252	 }
+253	 function getHashratePerDay(address minerAddr) public view returns (uint256 personalProduction) {
+254	 PlyerData storage p = players[minerAddr];
+255	 personalProduction = addReferralHashrate(minerAddr, p.hashrate);
+256	 uint256 boosterIdx = hasBooster(minerAddr);
+257	 if (boosterIdx != 999) {
+258	 BoostData storage b = boostData[boosterIdx];
+259	 personalProduction = SafeMath.div(SafeMath.mul(personalProduction, b.boostRate), 100);
+260	 }
+261	 }
+262	 function buyBooster(uint256 idx) public isNotOver isCurrentRound payable {
+263	 require(idx < numberOfBoosts);
+264	 BoostData storage b = boostData[idx];
+265	 if(msg.value < getBoosterPrice(idx) || msg.sender == b.owner){
+266	 revert();
+267	 }
+268	 address beneficiary = b.owner;
+269	 sponsor.send(devFee(getBoosterPrice(idx)));
+270	 if(beneficiary != 0){
+271	 beneficiary.send(SafeMath.div(SafeMath.mul(getBoosterPrice(idx), 55), 100));
+272	 }
+273	 updateCrytal(msg.sender);
+274	 updateCrytal(beneficiary);
+275	 uint256 level = getCurrentLevel(b.startingLevel, b.startingTime, b.halfLife);
+276	 b.startingLevel = SafeMath.add(level, 1);
+277	 b.startingTime = now;
+278	 b.owner = msg.sender;
+279	 }
+280	 function getBoosterData(uint256 idx) public view returns (address owner,uint256 boostRate, uint256 startingLevel, uint256 startingTime, uint256 currentPrice, uint256 halfLife) {
+281	 require(idx < numberOfBoosts);
+282	 owner = boostData[idx].owner;
+283	 boostRate = boostData[idx].boostRate;
+284	 startingLevel = boostData[idx].startingLevel;
+285	 startingTime = boostData[idx].startingTime;
+286	 currentPrice = getBoosterPrice(idx);
+287	 halfLife = boostData[idx].halfLife;
+288	 }
+289	 function getBoosterPrice(uint256 index) public view returns (uint256) {
+290	 BoostData storage booster = boostData[index];
+291	 return getCurrentPrice(getCurrentLevel(booster.startingLevel, booster.startingTime, booster.halfLife));
+292	 }
+293	 function hasBooster(address addr) public view returns (uint256 boostIdx) {
+294	 boostIdx = 999;
+295	 for(uint256 i = 0; i < numberOfBoosts; i++){
+296	 uint256 revert_i = numberOfBoosts - i - 1;
+297	 if(boostData[revert_i].owner == addr){
+298	 boostIdx = revert_i;
+299	 break;
+300	 }
+301	 }
+302	 }
+303	 function buyCrystalDemand(uint256 amount, uint256 unitPrice,string title, string description) public isNotOver isCurrentRound payable {
+304	 require(unitPrice > 0);
+305	 require(amount >= 1000);
+306	 require(amount * unitPrice <= msg.value);
+307	 uint256 lowestIdx = getLowestUnitPriceIdxFromBuy();
+308	 BuyOrderData storage o = buyOrderData[lowestIdx];
+309	 if(o.amount > 10 && unitPrice <= o.unitPrice){
+310	 revert();
+311	 }
+312	 uint256 balance = SafeMath.mul(o.amount, o.unitPrice);
+313	 if (o.owner != 0){
+314	 o.owner.send(balance);
+315	 }
+316	 o.owner = msg.sender;
+317	 o.unitPrice = unitPrice;
+318	 o.title = title;
+319	 o.description = description;
+320	 o.amount = amount;
+321	 }
+322	 function sellCrystal(uint256 amount, uint256 index) public isNotOver isCurrentRound limitSell {
+323	 require(index < numberOfOrders);
+324	 require(amount > 0);
+325	 BuyOrderData storage o = buyOrderData[index];
+326	 require(amount <= o.amount);
+327	 updateCrytal(msg.sender);
+328	 PlyerData storage seller = players[msg.sender];
+329	 PlyerData storage buyer = players[o.owner];
+330	 require(seller.crystals >= amount * CRTSTAL_MINING_PERIOD);
+331	 uint256 price = SafeMath.mul(amount, o.unitPrice);
+332	 uint256 fee = devFee(price);
+333	 sponsor.send(fee);
+334	 administrator.send(fee);
+335	 buyer.crystals = SafeMath.add(buyer.crystals, amount * CRTSTAL_MINING_PERIOD);
+336	 seller.crystals = SafeMath.sub(seller.crystals, amount * CRTSTAL_MINING_PERIOD);
+337	 o.amount = SafeMath.sub(o.amount, amount);
+338	 msg.sender.send(SafeMath.div(price, 2));
+339	 }
+340	 function withdrawBuyDemand(uint256 index) public isNotOver isCurrentRound {
+341	 require(index < numberOfOrders);
+342	 BuyOrderData storage o = buyOrderData[index];
+343	 require(o.owner == msg.sender);
+344	 if(o.amount > 0){
+345	 uint256 balance = SafeMath.mul(o.amount, o.unitPrice);
+346	 o.owner.send(balance);
+347	 }
+348	 o.unitPrice = 0;
+349	 o.amount = 0;
+350	 o.title = "title";
+351	 o.description = "description";
+352	 o.owner = 0;
+353	 }
+354	 function getBuyDemand(uint256 index) public view returns(address owner, string title, string description, uint256 amount, uint256 unitPrice) {
+355	 require(index < numberOfOrders);
+356	 BuyOrderData storage o = buyOrderData[index];
+357	 owner = o.owner;
+358	 title = o.title;
+359	 description = o.description;
+360	 amount = o.amount;
+361	 unitPrice = o.unitPrice;
+362	 }
+363	 function getLowestUnitPriceIdxFromBuy() public returns(uint256 lowestIdx) {
+364	 uint256 lowestPrice = 2**256 - 1;
+365	 for (uint256 idx = 0; idx < numberOfOrders; idx++) {
+366	 BuyOrderData storage o = buyOrderData[idx];
+367	 if (o.unitPrice == 0 || o.amount < 10) {
+368	 return idx;
+369	 }
+370	 else if (o.unitPrice < lowestPrice) {
+371	 lowestPrice = o.unitPrice;
+372	 lowestIdx = idx;
+373	 }
+374	 }
+375	 }
+376	 function sellCrystalDemand(uint256 amount, uint256 unitPrice, string title, string description) public isNotOver isCurrentRound limitSell {
+377	 require(amount >= 1000);
+378	 require(unitPrice > 0);
+379	 updateCrytal(msg.sender);
+380	 PlyerData storage seller = players[msg.sender];
+381	 if(seller.crystals < amount * CRTSTAL_MINING_PERIOD){
+382	 revert();
+383	 }
+384	 uint256 highestIdx = getHighestUnitPriceIdxFromSell();
+385	 SellOrderData storage o = sellOrderData[highestIdx];
+386	 if(o.amount > 10 && unitPrice >= o.unitPrice){
+387	 revert();
+388	 }
+389	 if (o.owner != 0){
+390	 PlyerData storage prev = players[o.owner];
+391	 prev.crystals = SafeMath.add(prev.crystals, o.amount * CRTSTAL_MINING_PERIOD);
+392	 }
+393	 o.owner = msg.sender;
+394	 o.unitPrice = unitPrice;
+395	 o.title = title;
+396	 o.description = description;
+397	 o.amount = amount;
+398	 seller.crystals = SafeMath.sub(seller.crystals, amount * CRTSTAL_MINING_PERIOD);
+399	 }
+400	 function buyCrystal(uint256 amount, uint256 index) public isNotOver isCurrentRound payable {
+401	 require(index < numberOfOrders);
+402	 require(amount > 0);
+403	 SellOrderData storage o = sellOrderData[index];
+404	 require(amount <= o.amount);
+405	 require(msg.value >= amount * o.unitPrice);
+406	 PlyerData storage buyer = players[msg.sender];
+407	 uint256 price = SafeMath.mul(amount, o.unitPrice);
+408	 uint256 fee = devFee(price);
+409	 sponsor.send(fee);
+410	 administrator.transfer(fee);
+411	 buyer.crystals = SafeMath.add(buyer.crystals, amount * CRTSTAL_MINING_PERIOD);
+412	 o.amount = SafeMath.sub(o.amount, amount);
+413	 o.owner.send(SafeMath.div(price, 2));
+414	 }
+415	 function withdrawSellDemand(uint256 index) public isNotOver isCurrentRound {
+416	 require(index < numberOfOrders);
+417	 SellOrderData storage o = sellOrderData[index];
+418	 require(o.owner == msg.sender);
+419	 if(o.amount > 0){
+420	 PlyerData storage p = players[o.owner];
+421	 p.crystals = SafeMath.add(p.crystals, o.amount * CRTSTAL_MINING_PERIOD);
+422	 }
+423	 o.unitPrice = 0;
+424	 o.amount = 0;
+425	 o.title = "title";
+426	 o.description = "description";
+427	 o.owner = 0;
+428	 }
+429	 function getSellDemand(uint256 index) public view returns(address owner, string title, string description, uint256 amount, uint256 unitPrice) {
+430	 require(index < numberOfOrders);
+431	 SellOrderData storage o = sellOrderData[index];
+432	 owner = o.owner;
+433	 title = o.title;
+434	 description = o.description;
+435	 amount = o.amount;
+436	 unitPrice = o.unitPrice;
+437	 }
+438	 function getHighestUnitPriceIdxFromSell() public returns(uint256 highestIdx) {
+439	 uint256 highestPrice = 0;
+440	 for (uint256 idx = 0; idx < numberOfOrders; idx++) {
+441	 SellOrderData storage o = sellOrderData[idx];
+442	 if (o.unitPrice == 0 || o.amount < 10) {
+443	 return idx;
+444	 }
+445	 else if (o.unitPrice > highestPrice) {
+446	 highestPrice = o.unitPrice;
+447	 highestIdx = idx;
+448	 }
+449	 }
+450	 }
+451	 function devFee(uint256 amount) public view returns(uint256) {
+452	 return SafeMath.div(SafeMath.mul(amount, 5), 100);
+453	 }
+454	 function getBalance() public view returns(uint256) {
+455	 return this.balance;
+456	 }
+457	 function upgrade(address addr) public {
+458	 require(msg.sender == administrator);
+459	 require(now < deadline - 82800);
+460	 uint256 balance = SafeMath.div(SafeMath.mul(this.balance, 90), 100);
+461	 administrator.send(SafeMath.div(SafeMath.mul(this.balance, 5), 100));
+462	 uint8[10] memory profit = [30,20,10,8,7,5,5,5,5,5];
+463	 for(uint256 idx = 0; idx < 10; idx++){
+464	 if(rankList[idx] != 0){
+465	 rankList[idx].send(SafeMath.div(SafeMath.mul(balance,profit[idx]),100));
+466	 }
+467	 }
+468	 selfdestruct(addr);
+469	 }
+470	 function updateHashrate(address addr) private {
+471	 PlyerData storage p = players[addr];
+472	 uint256 hashrate = 0;
+473	 for (uint idx = 0; idx < numberOfMiners; idx++) {
+474	 MinerData storage m = minerData[idx];
+475	 hashrate = SafeMath.add(hashrate, SafeMath.mul(p.minerCount[idx], m.baseProduct));
+476	 }
+477	 p.hashrate = hashrate;
+478	 if(hashrate > RANK_LIST_LIMIT){
+479	 updateRankList(addr);
+480	 }
+481	 }
+482	 function updateCrytal(address addr) private {
+483	 require(now > players[addr].lastUpdateTime);
+484	 if (players[addr].lastUpdateTime != 0) {
+485	 PlyerData storage p = players[addr];
+486	 uint256 secondsPassed = SafeMath.sub(now, p.lastUpdateTime);
+487	 uint256 revenue = getHashratePerDay(addr);
+488	 p.lastUpdateTime = now;
+489	 if (revenue > 0) {
+490	 revenue = SafeMath.mul(revenue, secondsPassed);
+491	 p.crystals = SafeMath.add(p.crystals, revenue);
+492	 }
+493	 }
+494	 }
+495	 function addReferralHashrate(address addr, uint256 hashrate) private view returns(uint256 personalProduction) {
+496	 PlyerData storage p = players[addr];
+497	 if(p.referral_count < 5){
+498	 personalProduction = SafeMath.add(hashrate, p.referral_count * 10);
+499	 }
+500	 else if(p.referral_count < 10){
+501	 personalProduction = SafeMath.add(hashrate, 50 + p.referral_count * 10);
+502	 }
+503	 else{
+504	 personalProduction = SafeMath.add(hashrate, 200);
+505	 }
+506	 }
+507	 function getCurrentLevel(uint256 startingLevel, uint256 startingTime, uint256 halfLife) private view returns(uint256) {
+508	 uint256 timePassed=SafeMath.sub(now, startingTime);
+509	 uint256 levelsPassed=SafeMath.div(timePassed, halfLife);
+510	 if (startingLevel < levelsPassed) {
+511	 return 0;
+512	 }
+513	 return SafeMath.sub(startingLevel, levelsPassed);
+514	 }
+515	 function getCurrentPrice(uint256 currentLevel) private view returns(uint256) {
+516	 return SafeMath.mul(BASE_PRICE, 2**currentLevel);
+517	 }
+518	 function updateRankList(address addr) private returns(bool) {
+519	 uint256 idx = 0;
+520	 PlyerData storage insert = players[addr];
+521	 PlyerData storage lastOne = players[rankList[19]];
+522	 if(insert.hashrate < lastOne.hashrate) {
+523	 return false;
+524	 }
+525	 address[21] memory tempList = rankList;
+526	 if(!inRankList(addr)){
+527	 tempList[20] = addr;
+528	 quickSort(tempList, 0, 20);
+529	 }
+530	 else{
+531	 quickSort(tempList, 0, 19);
+532	 }
+533	 for(idx = 0; idx < 21; idx++){
+534	 if(tempList[idx] != rankList[idx]){
+535	 rankList[idx] = tempList[idx];
+536	 }
+537	 }
+538	 return true;
+539	 }
+540	 function inRankList(address addr) internal returns(bool) {
+541	 for(uint256 idx = 0; idx < 20; idx++){
+542	 if(addr == rankList[idx]){
+543	 return true;
+544	 }
+545	 }
+546	 return false;
+547	 }
+548	 function quickSort(address[21] list, int left, int right) internal {
+549	 int i = left;
+550	 int j = right;
+551	 if(i == j) return;
+552	 address addr = list[uint(left + (right - left) / 2)];
+553	 PlyerData storage p = players[addr];
+554	 while (i <= j) {
+555	 while (players[list[uint(i)]].hashrate > p.hashrate) i++;
+556	 while (p.hashrate > players[list[uint(j)]].hashrate) j--;
+557	 if (i <= j) {
+558	 (list[uint(i)], list[uint(j)]) = (list[uint(j)], list[uint(i)]);
+559	 i++;
+560	 j--;
+561	 }
+562	 }
+563	 if (left < j) quickSort(list, left, j);
+564	 if (i < right) quickSort(list, i, right);
+565	 }
+566	 }

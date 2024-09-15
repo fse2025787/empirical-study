@@ -1,0 +1,238 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity 0.6.12;
+3	 interface IGauge {
+4	 struct VotedSlope {
+5	 uint slope;
+6	 uint power;
+7	 uint end;
+8	 }
+9	 struct Point {
+10	 uint bias;
+11	 uint slope;
+12	 }
+13	 function vote_user_slopes(address, address) external view returns (VotedSlope memory);
+14	 function last_user_vote(address, address) external view returns (uint);
+15	 function points_weight(address, uint256) external view returns (Point memory);
+16	 function checkpoint_gauge(address) external;
+17	 function time_total() external view returns (uint);
+18	 }
+19	 interface IStrategy {
+20	 function estimatedTotalAssets() external view returns (uint);
+21	 function rewardsContract() external view returns (address);
+22	 }
+23	 interface IRewards {
+24	 function getReward(address, bool) external;
+25	 }
+26	 interface IYveCRV {
+27	 function deposit(uint) external;
+28	 }
+29	 contract Splitter {
+30	 using SafeMath for uint256;
+31	 event Split(uint yearnAmount, uint keep, uint templeAmount, uint period);
+32	 event PeriodUpdated(uint period, uint globalSlope, uint userSlope);
+33	 event YearnUpdated(address recipient, uint keepCRV);
+34	 event TempleUpdated(address recipient);
+35	 event ShareUpdated(uint share);
+36	 event PendingShareUpdated(address setter, uint share);
+37	 event Sweep(address sweeper, address token, uint amount);
+38	 struct Yearn{
+39	 address recipient;
+40	 address voter;
+41	 address admin;
+42	 uint share;
+43	 uint keepCRV;
+44	 }
+45	 struct Period{
+46	 uint period;
+47	 uint globalSlope;
+48	 uint userSlope;
+49	 }
+50	 uint internal constant precision = 10_000;
+51	 uint internal constant WEEK = 7 days;
+52	 IERC20 internal constant crv = IERC20(0xD533a949740bb3306d119CC777fa900bA034cd52);
+53	 IYveCRV internal constant yvecrv = IYveCRV(0xc5bDdf9843308380375a611c18B50Fb9341f502A);
+54	 IERC20 public constant liquidityPool = IERC20(0xdaDfD00A2bBEb1abc4936b1644a3033e1B653228);
+55	 IGauge public constant gaugeController = IGauge(0x2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB);
+56	 address public constant gauge = 0x8f162742a7BCDb87EB52d83c687E43356055a68B;
+57	 mapping(address => uint) pendingShare;
+58	 Yearn yearn;
+59	 Period period;
+60	 address public strategy;
+61	 address templeRecipient = 0xE97CB3a6A0fb5DA228976F3F2B8c37B6984e7915;
+62	 constructor() public {
+63	 crv.approve(address(yvecrv), type(uint).max);
+64	 yearn = Yearn( address(0x93A62dA5a14C80f265DAbC077fCEE437B1a0Efde), address(0xF147b8125d2ef93FB6965Db97D6746952a133934), address(0xFEB4acf3df3cDEA7399794D0869ef76A6EfAff52), 8_000, 5_000 );
+65	 }
+66	 function split() external {
+67	 _split();
+68	 }
+69	 function claimAndSplit() external {
+70	 IRewards(IStrategy(strategy).rewardsContract()).getReward(strategy, true);
+71	 _split();
+72	 }
+73	 function _split() internal {
+74	 address _strategy = strategy;
+75	 if(_strategy == address(0)) return;
+76	 uint crvBalance = crv.balanceOf(_strategy);
+77	 if (crvBalance == 0) {
+78	 emit Split(0, 0, 0, period.period);
+79	 return;
+80	 }
+81	 if (block.timestamp / WEEK * WEEK > period.period) _updatePeriod();
+82	 (uint yRatio, uint tRatio) = _computeSplitRatios();
+83	 if (yRatio == 0) {
+84	 crv.transferFrom(_strategy, templeRecipient, crvBalance);
+85	 emit Split(0, 0, crvBalance, period.period);
+86	 return;
+87	 }
+88	 uint yearnAmount = crvBalance * yRatio / precision;
+89	 uint templeAmount = crvBalance * tRatio / precision;
+90	 uint keep = yearnAmount * yearn.keepCRV / precision;
+91	 if (keep > 0) {
+92	 crv.transferFrom(_strategy, address(this), keep);
+93	 yvecrv.deposit(keep);
+94	 IERC20(address(yvecrv)).transfer(yearn.recipient, keep);
+95	 }
+96	 crv.transferFrom(_strategy, yearn.recipient, yearnAmount.sub(keep));
+97	 crv.transferFrom(_strategy, templeRecipient, templeAmount);
+98	 emit Split(yearnAmount, keep, templeAmount, period.period);
+99	 }
+100	 function _updatePeriod() internal {
+101	 uint _period = block.timestamp / WEEK * WEEK;
+102	 period.period = _period;
+103	 gaugeController.checkpoint_gauge(gauge);
+104	 uint _userSlope = gaugeController.vote_user_slopes(yearn.voter, gauge).slope;
+105	 uint _globalSlope = gaugeController.points_weight(gauge, _period).slope;
+106	 period.userSlope = _userSlope;
+107	 period.globalSlope = _globalSlope;
+108	 emit PeriodUpdated(_period, _userSlope, _globalSlope);
+109	 }
+110	 function _computeSplitRatios() internal view returns (uint yRatio, uint tRatio) {
+111	 uint userSlope = period.userSlope;
+112	 if(userSlope == 0) return (0, 10_000);
+113	 uint relativeSlope = period.globalSlope == 0 ? 0 : userSlope * precision / period.globalSlope;
+114	 uint lpSupply = liquidityPool.totalSupply();
+115	 if (lpSupply == 0) return (10_000, 0);
+116	 uint gaugeDominance = IStrategy(strategy).estimatedTotalAssets() * precision / lpSupply;
+117	 if (gaugeDominance == 0) return (10_000, 0);
+118	 yRatio = relativeSlope * yearn.share / gaugeDominance;
+119	 if (yRatio > 10_000){
+120	 return (10_000, 0);
+121	 }
+122	 tRatio = precision.sub(yRatio);
+123	 }
+124	 function estimateSplit() external view returns (uint ySplit, uint tSplit) {
+125	 (uint y, uint t) = _computeSplitRatios();
+126	 uint bal = crv.balanceOf(strategy);
+127	 ySplit = bal * y / precision;
+128	 tSplit = bal.sub(ySplit);
+129	 }
+130	 function estimateSplitRatios() external view returns (uint ySplit, uint tSplit) {
+131	 (ySplit, tSplit) = _computeSplitRatios();
+132	 }
+133	 function updatePeriod() external {
+134	 _updatePeriod();
+135	 }
+136	 function setStrategy(address _strategy) external {
+137	 require(msg.sender == yearn.admin);
+138	 strategy = _strategy;
+139	 }
+140	 function setYearn(address _recipient, uint _keepCRV) external {
+141	 require(msg.sender == yearn.admin);
+142	 require(_keepCRV <= 10_000, "TooHigh");
+143	 address recipient = yearn.recipient;
+144	 if(recipient != _recipient){
+145	 pendingShare[recipient] = 0;
+146	 yearn.recipient = _recipient;
+147	 }
+148	 yearn.keepCRV = _keepCRV;
+149	 emit YearnUpdated(_recipient, _keepCRV);
+150	 }
+151	 function setTemple(address _recipient) external {
+152	 address recipient = templeRecipient;
+153	 require(msg.sender == recipient);
+154	 if(recipient != _recipient){
+155	 pendingShare[recipient] = 0;
+156	 templeRecipient = _recipient;
+157	 emit TempleUpdated(_recipient);
+158	 }
+159	 }
+160	 function updateYearnShare(uint _share) external {
+161	 require(_share <= 10_000 && _share != 0, "OutOfRange");
+162	 require(msg.sender == yearn.admin || msg.sender == templeRecipient);
+163	 if(msg.sender == yearn.admin && pendingShare[msg.sender] != _share){
+164	 pendingShare[msg.sender] = _share;
+165	 emit PendingShareUpdated(msg.sender, _share);
+166	 if (pendingShare[templeRecipient] == _share) {
+167	 yearn.share = _share;
+168	 emit ShareUpdated(_share);
+169	 }
+170	 }
+171	 else if(msg.sender == templeRecipient && pendingShare[msg.sender] != _share){
+172	 pendingShare[msg.sender] = _share;
+173	 emit PendingShareUpdated(msg.sender, _share);
+174	 if (pendingShare[yearn.admin] == _share) {
+175	 yearn.share = _share;
+176	 emit ShareUpdated(_share);
+177	 }
+178	 }
+179	 }
+180	 function sweep(address _token) external {
+181	 require(msg.sender == templeRecipient || msg.sender == yearn.admin);
+182	 IERC20 token = IERC20(_token);
+183	 uint amt = token.balanceOf(address(this));
+184	 token.transfer(msg.sender, amt);
+185	 emit Sweep(msg.sender, _token, amt);
+186	 }
+187	 }
+188	 pragma solidity ^0.6.0;
+189	 interface IERC20 {
+190	 function totalSupply() external view returns (uint256);
+191	 function balanceOf(address account) external view returns (uint256);
+192	 function transfer(address recipient, uint256 amount) external returns (bool);
+193	 function allowance(address owner, address spender) external view returns (uint256);
+194	 function approve(address spender, uint256 amount) external returns (bool);
+195	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+196	 event Transfer(address indexed from, address indexed to, uint256 value);
+197	 event Approval(address indexed owner, address indexed spender, uint256 value);
+198	 }
+199	 pragma solidity ^0.6.0;
+200	 library SafeMath {
+201	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+202	 uint256 c = a + b;
+203	 require(c >= a, "SafeMath: addition overflow");
+204	 return c;
+205	 }
+206	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+207	 return sub(a, b, "SafeMath: subtraction overflow");
+208	 }
+209	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+210	 require(b <= a, errorMessage);
+211	 uint256 c = a - b;
+212	 return c;
+213	 }
+214	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+215	 if (a == 0) {
+216	 return 0;
+217	 }
+218	 uint256 c = a * b;
+219	 require(c / a == b, "SafeMath: multiplication overflow");
+220	 return c;
+221	 }
+222	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+223	 return div(a, b, "SafeMath: division by zero");
+224	 }
+225	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+226	 require(b > 0, errorMessage);
+227	 uint256 c = a / b;
+228	 return c;
+229	 }
+230	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+231	 return mod(a, b, "SafeMath: modulo by zero");
+232	 }
+233	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+234	 require(b != 0, errorMessage);
+235	 return a % b;
+236	 }
+237	 }

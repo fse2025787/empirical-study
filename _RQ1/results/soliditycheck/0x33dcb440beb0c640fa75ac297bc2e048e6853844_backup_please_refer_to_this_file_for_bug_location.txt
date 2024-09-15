@@ -1,0 +1,270 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract Bonds {
+3	 uint ACTIVATION_TIME = 1539302400;
+4	 modifier onlyOwner(){
+5	 require(msg.sender == dev);
+6	 _;
+7	 }
+8	 modifier isActivated(){
+9	 require(now >= ACTIVATION_TIME);
+10	 _;
+11	 }
+12	 event onBondPurchase( address customerAddress, uint256 incomingEthereum, uint256 bond, uint256 newPrice );
+13	 event onWithdraw( address customerAddress, uint256 ethereumWithdrawn );
+14	 event Transfer( address from, address to, uint256 bond );
+15	 string public name = "BONDS";
+16	 string public symbol = "BOND";
+17	 uint8 constant public nsDivRate = 10;
+18	 uint8 constant public devDivRate = 5;
+19	 uint8 constant public ownerDivRate = 50;
+20	 uint8 constant public distDivRate = 40;
+21	 uint8 constant public referralRate = 5;
+22	 uint8 constant public decimals = 18;
+23	 uint public totalBondValue = 9e18;
+24	 mapping(uint => address) internal bondOwner;
+25	 mapping(uint => uint) public bondPrice;
+26	 mapping(uint => uint) internal bondPreviousPrice;
+27	 mapping(address => uint) internal ownerAccounts;
+28	 mapping(uint => uint) internal totalBondDivs;
+29	 mapping(uint => string) internal bondName;
+30	 uint bondPriceIncrement = 110;
+31	 uint totalDivsProduced = 0;
+32	 uint public maxBonds = 200;
+33	 uint public initialPrice = 1e17;
+34	 uint public nextAvailableBond;
+35	 bool allowReferral = false;
+36	 bool allowAutoNewBond = false;
+37	 uint public bondFund = 0;
+38	 address dev;
+39	 address fundsDividendAddr;
+40	 address promoter;
+41	 constructor() public {
+42	 dev = msg.sender;
+43	 fundsDividendAddr = 0xBA209A9533FEAFA3c53Bc117Faf3561b5AB6B6f2;
+44	 promoter = 0xEafE863757a2b2a2c5C3f71988b7D59329d09A78;
+45	 nextAvailableBond = 13;
+46	 bondOwner[1] = promoter;
+47	 bondPrice[1] = 2e18;
+48	 bondPreviousPrice[1] = 0;
+49	 bondOwner[2] = promoter;
+50	 bondPrice[2] = 15e17;
+51	 bondPreviousPrice[2] = 0;
+52	 bondOwner[3] = promoter;
+53	 bondPrice[3] = 10e17;
+54	 bondPreviousPrice[3] = 0;
+55	 bondOwner[4] = promoter;
+56	 bondPrice[4] = 9e17;
+57	 bondPreviousPrice[4] = 0;
+58	 bondOwner[5] = promoter;
+59	 bondPrice[5] = 8e17;
+60	 bondPreviousPrice[5] = 0;
+61	 bondOwner[6] = promoter;
+62	 bondPrice[6] = 7e17;
+63	 bondPreviousPrice[6] = 0;
+64	 bondOwner[7] = dev;
+65	 bondPrice[7] = 6e17;
+66	 bondPreviousPrice[7] = 0;
+67	 bondOwner[8] = dev;
+68	 bondPrice[8] = 5e17;
+69	 bondPreviousPrice[8] = 0;
+70	 bondOwner[9] = dev;
+71	 bondPrice[9] = 4e17;
+72	 bondPreviousPrice[9] = 0;
+73	 bondOwner[10] = dev;
+74	 bondPrice[10] = 3e17;
+75	 bondPreviousPrice[10] = 0;
+76	 bondOwner[11] = dev;
+77	 bondPrice[11] = 2e17;
+78	 bondPreviousPrice[11] = 0;
+79	 bondOwner[12] = dev;
+80	 bondPrice[12] = 1e17;
+81	 bondPreviousPrice[12] = 0;
+82	 }
+83	 function addTotalBondValue(uint _new, uint _old) internal {
+84	 totalBondValue = SafeMath.add(totalBondValue, SafeMath.sub(_new,_old));
+85	 }
+86	 function buy(uint _bond, address _referrer) isActivated() public payable {
+87	 require(_bond <= nextAvailableBond);
+88	 require(msg.value >= bondPrice[_bond]);
+89	 require(msg.sender != bondOwner[_bond]);
+90	 uint _newPrice = SafeMath.div(SafeMath.mul(msg.value,bondPriceIncrement),100);
+91	 uint _baseDividends = msg.value - bondPreviousPrice[_bond];
+92	 totalDivsProduced = SafeMath.add(totalDivsProduced, _baseDividends);
+93	 uint _nsDividends = SafeMath.div(SafeMath.mul(_baseDividends, nsDivRate),100);
+94	 uint _ownerDividends = SafeMath.div(SafeMath.mul(_baseDividends,ownerDivRate),100);
+95	 totalBondDivs[_bond] = SafeMath.add(totalBondDivs[_bond],_ownerDividends);
+96	 _ownerDividends = SafeMath.add(_ownerDividends,bondPreviousPrice[_bond]);
+97	 uint _distDividends = SafeMath.div(SafeMath.mul(_baseDividends,distDivRate),100);
+98	 if (allowReferral && _referrer != msg.sender) {
+99	 uint _referralDividends = SafeMath.div(SafeMath.mul(_baseDividends, referralRate), 100);
+100	 _distDividends = SafeMath.sub(_distDividends, _referralDividends);
+101	 if (_referrer == 0x0) {
+102	 fundsDividendAddr.transfer(_referralDividends);
+103	 }
+104	 else {
+105	 ownerAccounts[_referrer] = SafeMath.add(ownerAccounts[_referrer], _referralDividends);
+106	 }
+107	 }
+108	 address _previousOwner = bondOwner[_bond];
+109	 address _newOwner = msg.sender;
+110	 ownerAccounts[_previousOwner] = SafeMath.add(ownerAccounts[_previousOwner],_ownerDividends);
+111	 fundsDividendAddr.transfer(_nsDividends);
+112	 bondOwner[_bond] = _newOwner;
+113	 distributeYield(_distDividends);
+114	 distributeBondFund();
+115	 bondPreviousPrice[_bond] = msg.value;
+116	 bondPrice[_bond] = _newPrice;
+117	 addTotalBondValue(_newPrice, bondPreviousPrice[_bond]);
+118	 emit onBondPurchase(msg.sender, msg.value, _bond, SafeMath.div(SafeMath.mul(msg.value,bondPriceIncrement),100));
+119	 }
+120	 function distributeYield(uint _distDividends) internal {
+121	 uint counter = 1;
+122	 while (counter < nextAvailableBond) {
+123	 uint _distAmountLocal = SafeMath.div(SafeMath.mul(_distDividends, bondPrice[counter]),totalBondValue);
+124	 ownerAccounts[bondOwner[counter]] = SafeMath.add(ownerAccounts[bondOwner[counter]],_distAmountLocal);
+125	 totalBondDivs[counter] = SafeMath.add(totalBondDivs[counter],_distAmountLocal);
+126	 counter = counter + 1;
+127	 }
+128	 }
+129	 function distributeBondFund() internal {
+130	 if(bondFund > 0){
+131	 uint counter = 1;
+132	 while (counter < nextAvailableBond) {
+133	 uint _distAmountLocal = SafeMath.div(SafeMath.mul(bondFund, bondPrice[counter]),totalBondValue);
+134	 ownerAccounts[bondOwner[counter]] = SafeMath.add(ownerAccounts[bondOwner[counter]],_distAmountLocal);
+135	 totalBondDivs[counter] = SafeMath.add(totalBondDivs[counter],_distAmountLocal);
+136	 counter = counter + 1;
+137	 }
+138	 bondFund = 0;
+139	 }
+140	 }
+141	 function extDistributeBondFund() public onlyOwner() {
+142	 if(bondFund > 0){
+143	 uint counter = 1;
+144	 while (counter < nextAvailableBond) {
+145	 uint _distAmountLocal = SafeMath.div(SafeMath.mul(bondFund, bondPrice[counter]),totalBondValue);
+146	 ownerAccounts[bondOwner[counter]] = SafeMath.add(ownerAccounts[bondOwner[counter]],_distAmountLocal);
+147	 totalBondDivs[counter] = SafeMath.add(totalBondDivs[counter],_distAmountLocal);
+148	 counter = counter + 1;
+149	 }
+150	 bondFund = 0;
+151	 }
+152	 }
+153	 function withdraw() public {
+154	 address _customerAddress = msg.sender;
+155	 require(ownerAccounts[_customerAddress] > 0);
+156	 uint _dividends = ownerAccounts[_customerAddress];
+157	 ownerAccounts[_customerAddress] = 0;
+158	 _customerAddress.transfer(_dividends);
+159	 emit onWithdraw(_customerAddress, _dividends);
+160	 }
+161	 function withdrawPart(uint _amount) public onlyOwner() {
+162	 address _customerAddress = msg.sender;
+163	 require(ownerAccounts[_customerAddress] > 0);
+164	 require(_amount <= ownerAccounts[_customerAddress]);
+165	 ownerAccounts[_customerAddress] = SafeMath.sub(ownerAccounts[_customerAddress],_amount);
+166	 _customerAddress.transfer(_amount);
+167	 emit onWithdraw(_customerAddress, _amount);
+168	 }
+169	 function() payable public {
+170	 uint devAmount = SafeMath.div(SafeMath.mul(devDivRate,msg.value),100);
+171	 uint bondAmount = msg.value - devAmount;
+172	 bondFund = SafeMath.add(bondFund, bondAmount);
+173	 ownerAccounts[dev] = SafeMath.add(ownerAccounts[dev], devAmount);
+174	 }
+175	 function transfer(address _to, uint _bond ) public {
+176	 require(bondOwner[_bond] == msg.sender);
+177	 bondOwner[_bond] = _to;
+178	 emit Transfer(msg.sender, _to, _bond);
+179	 }
+180	 function setName(string _name) onlyOwner() public {
+181	 name = _name;
+182	 }
+183	 function setSymbol(string _symbol) onlyOwner() public {
+184	 symbol = _symbol;
+185	 }
+186	 function setInitialPrice(uint _price) onlyOwner() public {
+187	 initialPrice = _price;
+188	 }
+189	 function setMaxbonds(uint _bond) onlyOwner() public {
+190	 maxBonds = _bond;
+191	 }
+192	 function setBondPrice(uint _bond, uint _price) onlyOwner() public {
+193	 require(bondOwner[_bond] == dev);
+194	 bondPrice[_bond] = _price;
+195	 }
+196	 function addNewbond(uint _price) onlyOwner() public {
+197	 require(nextAvailableBond < maxBonds);
+198	 bondPrice[nextAvailableBond] = _price;
+199	 bondOwner[nextAvailableBond] = dev;
+200	 totalBondDivs[nextAvailableBond] = 0;
+201	 bondPreviousPrice[nextAvailableBond] = 0;
+202	 nextAvailableBond = nextAvailableBond + 1;
+203	 addTotalBondValue(_price, 0);
+204	 }
+205	 function setAllowReferral(bool _allowReferral) onlyOwner() public {
+206	 allowReferral = _allowReferral;
+207	 }
+208	 function setAutoNewbond(bool _autoNewBond) onlyOwner() public {
+209	 allowAutoNewBond = _autoNewBond;
+210	 }
+211	 function getMyBalance() public view returns(uint) {
+212	 return ownerAccounts[msg.sender];
+213	 }
+214	 function getOwnerBalance(address _bondOwner) public view returns(uint) {
+215	 require(msg.sender == dev);
+216	 return ownerAccounts[_bondOwner];
+217	 }
+218	 function getBondPrice(uint _bond) public view returns(uint) {
+219	 require(_bond <= nextAvailableBond);
+220	 return bondPrice[_bond];
+221	 }
+222	 function getBondOwner(uint _bond) public view returns(address) {
+223	 require(_bond <= nextAvailableBond);
+224	 return bondOwner[_bond];
+225	 }
+226	 function gettotalBondDivs(uint _bond) public view returns(uint) {
+227	 require(_bond <= nextAvailableBond);
+228	 return totalBondDivs[_bond];
+229	 }
+230	 function getTotalDivsProduced() public view returns(uint) {
+231	 return totalDivsProduced;
+232	 }
+233	 function getBondDivShare(uint _bond) public view returns(uint) {
+234	 require(_bond <= nextAvailableBond);
+235	 return SafeMath.div(SafeMath.mul(bondPrice[_bond],10000),totalBondValue);
+236	 }
+237	 function getTotalBondValue() public view returns(uint) {
+238	 return totalBondValue;
+239	 }
+240	 function totalEthereumBalance() public view returns(uint) {
+241	 return address (this).balance;
+242	 }
+243	 function getNextAvailableBond() public view returns(uint) {
+244	 return nextAvailableBond;
+245	 }
+246	 }
+247	 library SafeMath {
+248	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+249	 if (a == 0) {
+250	 return 0;
+251	 }
+252	 uint256 c = a * b;
+253	 assert(c / a == b);
+254	 return c;
+255	 }
+256	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+257	 uint256 c = a / b;
+258	 return c;
+259	 }
+260	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+261	 assert(b <= a);
+262	 return a - b;
+263	 }
+264	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+265	 uint256 c = a + b;
+266	 assert(c >= a);
+267	 return c;
+268	 }
+269	 }

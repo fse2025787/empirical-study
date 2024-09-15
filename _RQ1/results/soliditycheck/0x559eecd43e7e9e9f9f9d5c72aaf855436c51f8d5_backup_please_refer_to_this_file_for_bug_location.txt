@@ -1,0 +1,199 @@
+row number 
+1	   pragma solidity ^0.4.23;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 if (a == 0) {
+5	 return 0;
+6	 }
+7	 uint256 c = a * b;
+8	 assert(c / a == b);
+9	 return c;
+10	 }
+11	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+12	 uint256 c = a / b;
+13	 return c;
+14	 }
+15	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+16	 assert(b <= a);
+17	 return a - b;
+18	 }
+19	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+20	 uint256 c = a + b;
+21	 assert(c >= a);
+22	 return c;
+23	 }
+24	 }
+25	 contract Ownable {
+26	 address public owner;
+27	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+28	 function Ownable() public {
+29	 owner = msg.sender;
+30	 }
+31	 modifier onlyOwner() {
+32	 require(msg.sender == owner);
+33	 _;
+34	 }
+35	 function transferOwnership(address newOwner) public onlyOwner {
+36	 require(newOwner != address(0));
+37	 emit OwnershipTransferred(owner, newOwner);
+38	 owner = newOwner;
+39	 }
+40	 }
+41	 interface TokenInterface {
+42	 function totalSupply() external constant returns (uint);
+43	 function balanceOf(address tokenOwner) external constant returns (uint balance);
+44	 function allowance(address tokenOwner, address spender) external constant returns (uint remaining);
+45	 function transfer(address to, uint tokens) external returns (bool success);
+46	 function approve(address spender, uint tokens) external returns (bool success);
+47	 function transferFrom(address from, address to, uint tokens) external returns (bool success);
+48	 function burn(uint256 _value) external;
+49	 event Transfer(address indexed from, address indexed to, uint tokens);
+50	 event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+51	 event Burn(address indexed burner, uint256 value);
+52	 }
+53	 contract EthereumTravelCrowdsale is Ownable{
+54	 using SafeMath for uint256;
+55	 TokenInterface public token;
+56	 uint Hardcap = 100000;
+57	 uint Softcap = 10000;
+58	 uint256 public startTime;
+59	 uint256 public endTime;
+60	 uint256 public ratePerWei = 10000;
+61	 uint256 public weiRaised;
+62	 uint256 public weiRaisedInPreICO;
+63	 uint256 maxTokensToSale;
+64	 uint256 public TOKENS_SOLD;
+65	 uint256 bonusPercInICOPhase1;
+66	 uint256 bonusPercInICOPhase2;
+67	 uint256 bonusPercInICOPhase3;
+68	 bool isCrowdsalePaused = false;
+69	 uint256 totalDurationInDays = 57 days;
+70	 mapping(address=>uint) EthSentAgainstAddress;
+71	 address[] usersAddressForPreICO;
+72	 event TokenPurchase(address indexed purchaser, address indexed beneficiary, uint256 value, uint256 amount);
+73	 function EthereumTravelCrowdsale(uint256 _startTime, address _wallet, address _tokenAddress) public {
+74	 require(_wallet != 0x0);
+75	 weiRaised=0;
+76	 weiRaisedInPreICO=0;
+77	 startTime = _startTime;
+78	 endTime = startTime + totalDurationInDays;
+79	 require(endTime >= startTime);
+80	 owner = _wallet;
+81	 bonusPercInICOPhase1 = 30;
+82	 bonusPercInICOPhase2 = 20;
+83	 bonusPercInICOPhase3 = 10;
+84	 token = TokenInterface(_tokenAddress);
+85	 maxTokensToSale=(token.totalSupply().mul(60)).div(100);
+86	 }
+87	 function () public payable {
+88	 buyTokens(msg.sender);
+89	 }
+90	 function determineBonus(uint tokens) internal view returns (uint256 bonus) {
+91	 uint256 timeElapsed = now - startTime;
+92	 uint256 timeElapsedInDays = timeElapsed.div(1 days);
+93	 if (timeElapsedInDays <12) {
+94	 bonus = 0;
+95	 }
+96	 else if (timeElapsedInDays >= 12 && timeElapsedInDays <27) {
+97	 revert();
+98	 }
+99	 else if (timeElapsedInDays >= 27 && timeElapsedInDays <37) {
+100	 bonus = tokens.mul(bonusPercInICOPhase1);
+101	 bonus = bonus.div(100);
+102	 require (TOKENS_SOLD.add(tokens.add(bonus)) <= maxTokensToSale);
+103	 }
+104	 else if (timeElapsedInDays >= 37 && timeElapsedInDays<47) {
+105	 bonus = tokens.mul(bonusPercInICOPhase2);
+106	 bonus = bonus.div(100);
+107	 require (TOKENS_SOLD.add(tokens.add(bonus)) <= maxTokensToSale);
+108	 }
+109	 else if (timeElapsedInDays >= 47 && timeElapsedInDays<57) {
+110	 bonus = tokens.mul(bonusPercInICOPhase3);
+111	 bonus = bonus.div(100);
+112	 require (TOKENS_SOLD.add(tokens.add(bonus)) <= maxTokensToSale);
+113	 }
+114	 else {
+115	 bonus = 0;
+116	 }
+117	 }
+118	 function buyTokens(address beneficiary) public payable {
+119	 require(beneficiary != 0x0);
+120	 require(isCrowdsalePaused == false);
+121	 require(validPurchase());
+122	 require(msg.value>=1*10**18);
+123	 require(TOKENS_SOLD<maxTokensToSale);
+124	 uint256 weiAmount = msg.value;
+125	 uint256 timeElapsed = now - startTime;
+126	 uint256 timeElapsedInDays = timeElapsed.div(1 days);
+127	 if (timeElapsedInDays <12) {
+128	 require(usersAddressForPreICO.length<=5000);
+129	 if(EthSentAgainstAddress[beneficiary]==0) {
+130	 usersAddressForPreICO.push(beneficiary);
+131	 }
+132	 EthSentAgainstAddress[beneficiary]+=weiAmount;
+133	 weiRaised = weiRaised.add(weiAmount);
+134	 weiRaisedInPreICO = weiRaisedInPreICO.add(weiAmount);
+135	 forwardFunds();
+136	 }
+137	 else if (timeElapsedInDays >= 12 && timeElapsedInDays <27) {
+138	 revert();
+139	 }
+140	 else {
+141	 uint256 tokens = weiAmount.mul(ratePerWei);
+142	 uint256 bonus = determineBonus(tokens);
+143	 tokens = tokens.add(bonus);
+144	 require(TOKENS_SOLD.add(tokens)<=maxTokensToSale);
+145	 weiRaised = weiRaised.add(weiAmount);
+146	 token.transfer(beneficiary,tokens);
+147	 emit TokenPurchase(owner, beneficiary, weiAmount, tokens);
+148	 TOKENS_SOLD = TOKENS_SOLD.add(tokens);
+149	 forwardFunds();
+150	 }
+151	 }
+152	 function forwardFunds() internal {
+153	 owner.transfer(msg.value);
+154	 }
+155	 function validPurchase() internal constant returns (bool) {
+156	 bool withinPeriod = now >= startTime && now <= endTime;
+157	 bool nonZeroPurchase = msg.value != 0;
+158	 return withinPeriod && nonZeroPurchase;
+159	 }
+160	 function hasEnded() public constant returns (bool) {
+161	 return now > endTime;
+162	 }
+163	 function changeEndDate(uint256 endTimeUnixTimestamp) public onlyOwner{
+164	 endTime = endTimeUnixTimestamp;
+165	 }
+166	 function changeStartDate(uint256 startTimeUnixTimestamp) public onlyOwner{
+167	 startTime = startTimeUnixTimestamp;
+168	 changeEndDate(startTime+totalDurationInDays);
+169	 }
+170	 function setPriceRate(uint256 newPrice) public onlyOwner {
+171	 ratePerWei = newPrice;
+172	 }
+173	 function pauseCrowdsale() public onlyOwner {
+174	 isCrowdsalePaused = true;
+175	 }
+176	 function resumeCrowdsale() public onlyOwner {
+177	 isCrowdsalePaused = false;
+178	 }
+179	 function remainingTokensForSale() public constant returns (uint) {
+180	 return maxTokensToSale.sub(TOKENS_SOLD);
+181	 }
+182	 function burnUnsoldTokens() public onlyOwner {
+183	 require(hasEnded());
+184	 uint value = remainingTokensForSale();
+185	 token.burn(value);
+186	 TOKENS_SOLD = maxTokensToSale;
+187	 }
+188	 function takeTokensBack() public onlyOwner {
+189	 uint remainingTokensInTheContract = token.balanceOf(address(this));
+190	 token.transfer(owner,remainingTokensInTheContract);
+191	 }
+192	 function BulkTransfer() public onlyOwner {
+193	 for(uint i = 0; i<usersAddressForPreICO.length; i++) {
+194	 uint tks=(EthSentAgainstAddress[usersAddressForPreICO[i]].mul(1000000000*10**18)).div(weiRaisedInPreICO);
+195	 token.transfer(usersAddressForPreICO[i],tks);
+196	 }
+197	 }
+198	 }

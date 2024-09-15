@@ -1,0 +1,185 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract Reternal {
+3	 mapping (address => Investor) public investors;
+4	 address[] public addresses;
+5	 struct Investor {
+6	 uint id;
+7	 uint deposit;
+8	 uint depositCount;
+9	 uint block;
+10	 address referrer;
+11	 }
+12	 uint constant public MINIMUM_INVEST = 10000000000000000 wei;
+13	 address defaultReferrer = 0x25EDFd665C2898c2898E499Abd8428BaC616a0ED;
+14	 uint public round;
+15	 uint public totalDepositAmount;
+16	 bool public pause;
+17	 uint public restartBlock;
+18	 bool ref_flag;
+19	 uint bank1 = 5e20;
+20	 uint bank2 = 15e20;
+21	 uint bank3 = 25e20;
+22	 uint bank4 = 7e21;
+23	 uint bank5 = 15e20;
+24	 uint dep1 = 1e18;
+25	 uint dep2 = 4e18;
+26	 uint dep3 = 12e18;
+27	 uint dep4 = 5e19;
+28	 uint dep5 = 2e20;
+29	 event NewInvestor(address indexed investor, uint deposit, address referrer);
+30	 event PayOffDividends(address indexed investor, uint value);
+31	 event refPayout(address indexed investor, uint value, address referrer);
+32	 event NewDeposit(address indexed investor, uint value);
+33	 event NextRoundStarted(uint round, uint block, address addr, uint value);
+34	 constructor() public {
+35	 addresses.length = 1;
+36	 round = 1;
+37	 pause = false;
+38	 }
+39	 function restart() private {
+40	 address addr;
+41	 for (uint i = addresses.length - 1; i > 0; i--) {
+42	 addr = addresses[i];
+43	 addresses.length -= 1;
+44	 delete investors[addr];
+45	 }
+46	 emit NextRoundStarted(round, block.number, msg.sender, msg.value);
+47	 pause = false;
+48	 round += 1;
+49	 totalDepositAmount = 0;
+50	 createDeposit();
+51	 }
+52	 function getRaisedPercents(address addr) internal view returns(uint){
+53	 uint percent = getIndividualPercent() + getBankPercent();
+54	 uint256 amount = investors[addr].deposit * percent / 100*(block.number-investors[addr].block)/6000;
+55	 return(amount / 100);
+56	 }
+57	 function payDividends() private{
+58	 require(investors[msg.sender].id > 0, "Investor not found.");
+59	 uint amount = getRaisedPercents(msg.sender);
+60	 if (address(this).balance < amount) {
+61	 pause = true;
+62	 restartBlock = block.number + 6000;
+63	 return;
+64	 }
+65	 uint FeeToWithdraw = amount * 5 / 100;
+66	 uint payment = amount - FeeToWithdraw;
+67	 address(0xD9bE11E7412584368546b1CaE64b6C384AE85ebB).transfer(FeeToWithdraw);
+68	 msg.sender.transfer(payment);
+69	 emit PayOffDividends(msg.sender, amount);
+70	 }
+71	 function createDeposit() private{
+72	 Investor storage user = investors[msg.sender];
+73	 if (user.id == 0) {
+74	 msg.sender.transfer(0 wei);
+75	 user.id = addresses.push(msg.sender);
+76	 if (msg.data.length != 0) {
+77	 address referrer = bytesToAddress(msg.data);
+78	 if (investors[referrer].id > 0 && referrer != msg.sender) {
+79	 user.referrer = referrer;
+80	 if (user.depositCount == 0) {
+81	 uint cashback = msg.value / 100;
+82	 if (msg.sender.send(cashback)) {
+83	 emit refPayout(msg.sender, cashback, referrer);
+84	 }
+85	 }
+86	 }
+87	 }
+88	 else {
+89	 user.referrer = defaultReferrer;
+90	 }
+91	 emit NewInvestor(msg.sender, msg.value, referrer);
+92	 }
+93	 else {
+94	 payDividends();
+95	 }
+96	 uint payReferrer = msg.value * 2 / 100;
+97	 if (user.referrer == defaultReferrer) {
+98	 user.referrer.transfer(payReferrer);
+99	 }
+100	 else {
+101	 investors[referrer].deposit += payReferrer;
+102	 }
+103	 user.depositCount++;
+104	 user.deposit += msg.value;
+105	 user.block = block.number;
+106	 totalDepositAmount += msg.value;
+107	 emit NewDeposit(msg.sender, msg.value);
+108	 }
+109	 function() external payable {
+110	 if(pause) {
+111	 if (restartBlock <= block.number) {
+112	 restart();
+113	 }
+114	 require(!pause, "Eternal is restarting, wait for the block in restartBlock");
+115	 }
+116	 else {
+117	 if (msg.value == 0) {
+118	 payDividends();
+119	 return;
+120	 }
+121	 require(msg.value >= MINIMUM_INVEST, "Too small amount, minimum 0.01 ether");
+122	 createDeposit();
+123	 }
+124	 }
+125	 function getBankPercent() public view returns(uint){
+126	 uint contractBalance = address(this).balance;
+127	 uint totalBank1 = bank1;
+128	 uint totalBank2 = bank2;
+129	 uint totalBank3 = bank3;
+130	 uint totalBank4 = bank4;
+131	 uint totalBank5 = bank5;
+132	 if(contractBalance < totalBank1){
+133	 return(0);
+134	 }
+135	 if(contractBalance >= totalBank1 && contractBalance < totalBank2){
+136	 return(10);
+137	 }
+138	 if(contractBalance >= totalBank2 && contractBalance < totalBank3){
+139	 return(20);
+140	 }
+141	 if(contractBalance >= totalBank3 && contractBalance < totalBank4){
+142	 return(30);
+143	 }
+144	 if(contractBalance >= totalBank4 && contractBalance < totalBank5){
+145	 return(45);
+146	 }
+147	 if(contractBalance >= totalBank5){
+148	 return(65);
+149	 }
+150	 }
+151	 function getIndividualPercent() public view returns(uint){
+152	 uint userBalance = investors[msg.sender].deposit;
+153	 uint totalDeposit1 = dep1;
+154	 uint totalDeposit2 = dep2;
+155	 uint totalDeposit3 = dep3;
+156	 uint totalDeposit4 = dep4;
+157	 uint totalDeposit5 = dep5;
+158	 if(userBalance < totalDeposit1){
+159	 return(315);
+160	 }
+161	 if(userBalance >= totalDeposit1 && userBalance < totalDeposit2){
+162	 return(325);
+163	 }
+164	 if(userBalance >= totalDeposit2 && userBalance < totalDeposit3){
+165	 return(345);
+166	 }
+167	 if(userBalance >= totalDeposit3 && userBalance < totalDeposit4){
+168	 return(360);
+169	 }
+170	 if(userBalance >= totalDeposit4 && userBalance < totalDeposit5){
+171	 return(385);
+172	 }
+173	 if(userBalance >= totalDeposit5){
+174	 return(415);
+175	 }
+176	 }
+177	 function getInvestorCount() public view returns (uint) {
+178	 return addresses.length - 1;
+179	 }
+180	 function bytesToAddress(bytes bys) private pure returns (address addr) {
+181	 assembly {
+182	 addr := mload(add(bys, 20)) }
+183	 }
+184	 }

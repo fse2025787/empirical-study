@@ -1,0 +1,471 @@
+row number 
+1	      pragma solidity ^0.5.0;
+2	 contract ReentrancyGuard {
+3	 bool private _notEntered;
+4	 constructor () internal {
+5	 _notEntered = true;
+6	 }
+7	 modifier nonReentrant() {
+8	 require(_notEntered, "ReentrancyGuard: reentrant call");
+9	 _notEntered = false;
+10	 _;
+11	 _notEntered = true;
+12	 }
+13	 }
+14	 pragma solidity ^0.5.0;
+15	 contract MasterAware {
+16	 INXMMaster public master;
+17	 modifier onlyMember {
+18	 require(master.isMember(msg.sender), "Caller is not a member");
+19	 _;
+20	 }
+21	 modifier onlyInternal {
+22	 require(master.isInternal(msg.sender), "Caller is not an internal contract");
+23	 _;
+24	 }
+25	 modifier onlyMaster {
+26	 if (address(master) != address(0)) {
+27	 require(address(master) == msg.sender, "Not master");
+28	 }
+29	 _;
+30	 }
+31	 modifier onlyGovernance {
+32	 require( master.checkIsAuthToGoverned(msg.sender), "Caller is not authorized to govern" );
+33	 _;
+34	 }
+35	 modifier whenPaused {
+36	 require(master.isPause(), "System is not paused");
+37	 _;
+38	 }
+39	 modifier whenNotPaused {
+40	 require(!master.isPause(), "System is paused");
+41	 _;
+42	 }
+43	 function changeDependentContractAddress() external;
+44	 function changeMasterAddress(address masterAddress) public onlyMaster {
+45	 master = INXMMaster(masterAddress);
+46	 }
+47	 }
+48	 pragma solidity >=0.5.0;
+49	 interface IQuotation {
+50	 function verifyCoverDetails( address payable from, address scAddress, bytes4 coverCurr, uint[] calldata coverDetails, uint16 coverPeriod, uint8 _v, bytes32 _r, bytes32 _s ) external;
+51	 function createCover( address payable from, address scAddress, bytes4 currency, uint[] calldata coverDetails, uint16 coverPeriod, uint8 _v, bytes32 _r, bytes32 _s ) external;
+52	 }
+53	 pragma solidity ^0.5.0;
+54	 contract Quotation is IQuotation, MasterAware, ReentrancyGuard {
+55	 using SafeMath for uint;
+56	 IClaimsReward public cr;
+57	 IPool public pool;
+58	 IPooledStaking public pooledStaking;
+59	 IQuotationData public qd;
+60	 ITokenController public tc;
+61	 ITokenData public td;
+62	 IIncidents public incidents;
+63	 mapping(uint => string) public coverMetadata;
+64	 function changeDependentContractAddress() public onlyInternal {
+65	 cr = IClaimsReward(master.getLatestAddress("CR"));
+66	 pool = IPool(master.getLatestAddress("P1"));
+67	 pooledStaking = IPooledStaking(master.getLatestAddress("PS"));
+68	 qd = IQuotationData(master.getLatestAddress("QD"));
+69	 tc = ITokenController(master.getLatestAddress("TC"));
+70	 td = ITokenData(master.getLatestAddress("TD"));
+71	 incidents = IIncidents(master.getLatestAddress("IC"));
+72	 }
+73	 function sendEther() public payable {
+74	 }
+75	 function expireCover(uint coverId) external {
+76	 uint expirationDate = qd.getValidityOfCover(coverId);
+77	 require(expirationDate < now, "Quotation: cover is not due to expire");
+78	 uint coverStatus = qd.getCoverStatusNo(coverId);
+79	 require(coverStatus != uint(IQuotationData.CoverStatus.CoverExpired), "Quotation: cover already expired");
+80	 (, bool hasOpenClaim, ) = tc.coverInfo(coverId);
+81	 require(!hasOpenClaim, "Quotation: cover has an open claim");
+82	 if (coverStatus != uint(IQuotationData.CoverStatus.ClaimAccepted)) {
+83	 (,, address contractAddress, bytes4 currency, uint amount,) = qd.getCoverDetailsByCoverID1(coverId);
+84	 qd.subFromTotalSumAssured(currency, amount);
+85	 qd.subFromTotalSumAssuredSC(contractAddress, currency, amount);
+86	 }
+87	 qd.changeCoverStatusNo(coverId, uint8(IQuotationData.CoverStatus.CoverExpired));
+88	 }
+89	 function withdrawCoverNote(address coverOwner, uint[] calldata coverIds, uint[] calldata reasonIndexes) external {
+90	 uint gracePeriod = tc.claimSubmissionGracePeriod();
+91	 for (uint i = 0; i < coverIds.length; i++) {
+92	 uint expirationDate = qd.getValidityOfCover(coverIds[i]);
+93	 require(expirationDate.add(gracePeriod) < now, "Quotation: cannot withdraw before grace period expiration");
+94	 }
+95	 tc.withdrawCoverNote(coverOwner, coverIds, reasonIndexes);
+96	 }
+97	 function getWithdrawableCoverNoteCoverIds( address coverOwner ) public view returns ( uint[] memory expiredCoverIds, bytes32[] memory lockReasons ) {
+98	 uint[] memory coverIds = qd.getAllCoversOfUser(coverOwner);
+99	 uint[] memory expiredIdsQueue = new uint[](coverIds.length);
+100	 uint gracePeriod = tc.claimSubmissionGracePeriod();
+101	 uint expiredQueueLength = 0;
+102	 for (uint i = 0; i < coverIds.length; i++) {
+103	 uint coverExpirationDate = qd.getValidityOfCover(coverIds[i]);
+104	 uint gracePeriodExpirationDate = coverExpirationDate.add(gracePeriod);
+105	 (, bool hasOpenClaim, ) = tc.coverInfo(coverIds[i]);
+106	 if (!hasOpenClaim && gracePeriodExpirationDate < now) {
+107	 expiredIdsQueue[expiredQueueLength] = coverIds[i];
+108	 expiredQueueLength++;
+109	 }
+110	 }
+111	 expiredCoverIds = new uint[](expiredQueueLength);
+112	 lockReasons = new bytes32[](expiredQueueLength);
+113	 for (uint i = 0; i < expiredQueueLength; i++) {
+114	 expiredCoverIds[i] = expiredIdsQueue[i];
+115	 lockReasons[i] = keccak256(abi.encodePacked("CN", coverOwner, expiredIdsQueue[i]));
+116	 }
+117	 }
+118	 function getWithdrawableCoverNotesAmount(address coverOwner) external view returns (uint) {
+119	 uint withdrawableAmount;
+120	 bytes32[] memory lockReasons;
+121	 (, lockReasons) = getWithdrawableCoverNoteCoverIds(coverOwner);
+122	 for (uint i = 0; i < lockReasons.length; i++) {
+123	 uint coverNoteAmount = tc.tokensLocked(coverOwner, lockReasons[i]);
+124	 withdrawableAmount = withdrawableAmount.add(coverNoteAmount);
+125	 }
+126	 return withdrawableAmount;
+127	 }
+128	 function makeCoverUsingNXMTokens( uint[] calldata coverDetails, uint16 coverPeriod, bytes4 coverCurr, address smartCAdd, uint8 _v, bytes32 _r, bytes32 _s ) external onlyMember whenNotPaused {
+129	 tc.burnFrom(msg.sender, coverDetails[2]);
+130	 _verifyCoverDetails( msg.sender, smartCAdd, coverCurr, coverDetails, coverPeriod, _v, _r, _s, true );
+131	 }
+132	 function buyCoverWithMetadata( uint[] calldata coverDetails, uint16 coverPeriod, bytes4 coverCurr, address smartCAdd, uint8 _v, bytes32 _r, bytes32 _s, bool payWithNXM, string calldata ipfsMetadata ) external payable onlyMember whenNotPaused {
+133	 if (payWithNXM) {
+134	 tc.burnFrom(msg.sender, coverDetails[2]);
+135	 }
+136	 else if (coverCurr == "ETH") {
+137	 require(msg.value == coverDetails[1], "Quotation: ETH amount does not match premium");
+138	 (bool ok, ) = address(pool).call.value(msg.value)("");
+139	 require(ok, "Quotation: Transfer to Pool failed");
+140	 }
+141	 _verifyCoverDetails( msg.sender, smartCAdd, coverCurr, coverDetails, coverPeriod, _v, _r, _s, payWithNXM );
+142	 uint coverId = qd.getCoverLength().sub(1);
+143	 coverMetadata[coverId] = ipfsMetadata;
+144	 }
+145	 function verifyCoverDetails( address payable from, address scAddress, bytes4 coverCurr, uint[] memory coverDetails, uint16 coverPeriod, uint8 _v, bytes32 _r, bytes32 _s ) public onlyInternal {
+146	 _verifyCoverDetails( from, scAddress, coverCurr, coverDetails, coverPeriod, _v, _r, _s, false );
+147	 }
+148	 function verifySignature( uint[] memory coverDetails, uint16 coverPeriod, bytes4 currency, address contractAddress, uint8 _v, bytes32 _r, bytes32 _s ) public view returns (bool) {
+149	 require(contractAddress != address(0));
+150	 bytes32 hash = getOrderHash(coverDetails, coverPeriod, currency, contractAddress);
+151	 return isValidSignature(hash, _v, _r, _s);
+152	 }
+153	 function getOrderHash( uint[] memory coverDetails, uint16 coverPeriod, bytes4 currency, address contractAddress ) public view returns (bytes32) {
+154	 return keccak256( abi.encodePacked( coverDetails[0], currency, coverPeriod, contractAddress, coverDetails[1], coverDetails[2], coverDetails[3], coverDetails[4], address(this) ) );
+155	 }
+156	 function isValidSignature(bytes32 hash, uint8 v, bytes32 r, bytes32 s) public view returns (bool) {
+157	 bytes memory prefix = "\x19Ethereum Signed Message:\n32";
+158	 bytes32 prefixedHash = keccak256(abi.encodePacked(prefix, hash));
+159	 address a = ecrecover(prefixedHash, v, r, s);
+160	 return (a == qd.getAuthQuoteEngine());
+161	 }
+162	 function _makeCover( address payable from, address contractAddress, bytes4 coverCurrency, uint[] memory coverDetails, uint16 coverPeriod ) internal {
+163	 address underlyingToken = incidents.underlyingToken(contractAddress);
+164	 if (underlyingToken != address(0)) {
+165	 address coverAsset = cr.getCurrencyAssetAddress(coverCurrency);
+166	 require(coverAsset == underlyingToken, "Quotation: Unsupported cover asset for this product");
+167	 }
+168	 uint cid = qd.getCoverLength();
+169	 qd.addCover( coverPeriod, coverDetails[0], from, coverCurrency, contractAddress, coverDetails[1], coverDetails[2] );
+170	 uint coverNoteAmount = coverDetails[2].mul(qd.tokensRetained()).div(100);
+171	 uint gracePeriod = tc.claimSubmissionGracePeriod();
+172	 uint claimSubmissionPeriod = uint(coverPeriod).mul(1 days).add(gracePeriod);
+173	 bytes32 reason = keccak256(abi.encodePacked("CN", from, cid));
+174	 td.setDepositCNAmount(cid, coverNoteAmount);
+175	 tc.mintCoverNote(from, reason, coverNoteAmount, claimSubmissionPeriod);
+176	 qd.addInTotalSumAssured(coverCurrency, coverDetails[0]);
+177	 qd.addInTotalSumAssuredSC(contractAddress, coverCurrency, coverDetails[0]);
+178	 uint coverPremiumInNXM = coverDetails[2];
+179	 uint stakersRewardPercentage = td.stakerCommissionPer();
+180	 uint rewardValue = coverPremiumInNXM.mul(stakersRewardPercentage).div(100);
+181	 pooledStaking.accumulateReward(contractAddress, rewardValue);
+182	 }
+183	 function _verifyCoverDetails( address payable from, address scAddress, bytes4 coverCurr, uint[] memory coverDetails, uint16 coverPeriod, uint8 _v, bytes32 _r, bytes32 _s, bool isNXM ) internal {
+184	 require(coverDetails[3] > now, "Quotation: Quote has expired");
+185	 require(coverPeriod >= 30 && coverPeriod <= 365, "Quotation: Cover period out of bounds");
+186	 require(!qd.timestampRepeated(coverDetails[4]), "Quotation: Quote already used");
+187	 qd.setTimestampRepeated(coverDetails[4]);
+188	 address asset = cr.getCurrencyAssetAddress(coverCurr);
+189	 if (coverCurr != "ETH" && !isNXM) {
+190	 pool.transferAssetFrom(asset, from, coverDetails[1]);
+191	 }
+192	 require(verifySignature(coverDetails, coverPeriod, coverCurr, scAddress, _v, _r, _s), "Quotation: signature mismatch");
+193	 _makeCover(from, scAddress, coverCurr, coverDetails, coverPeriod);
+194	 }
+195	 function createCover( address payable from, address scAddress, bytes4 currency, uint[] calldata coverDetails, uint16 coverPeriod, uint8 _v, bytes32 _r, bytes32 _s ) external onlyInternal {
+196	 require(coverDetails[3] > now, "Quotation: Quote has expired");
+197	 require(coverPeriod >= 30 && coverPeriod <= 365, "Quotation: Cover period out of bounds");
+198	 require(!qd.timestampRepeated(coverDetails[4]), "Quotation: Quote already used");
+199	 qd.setTimestampRepeated(coverDetails[4]);
+200	 require(verifySignature(coverDetails, coverPeriod, currency, scAddress, _v, _r, _s), "Quotation: signature mismatch");
+201	 _makeCover(from, scAddress, currency, coverDetails, coverPeriod);
+202	 }
+203	 function transferAssetsToNewContract(address) external pure {
+204	 }
+205	 }
+206	 pragma solidity ^0.5.0;
+207	 library SafeMath {
+208	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+209	 uint256 c = a + b;
+210	 require(c >= a, "SafeMath: addition overflow");
+211	 return c;
+212	 }
+213	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+214	 return sub(a, b, "SafeMath: subtraction overflow");
+215	 }
+216	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+217	 require(b <= a, errorMessage);
+218	 uint256 c = a - b;
+219	 return c;
+220	 }
+221	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+222	 if (a == 0) {
+223	 return 0;
+224	 }
+225	 uint256 c = a * b;
+226	 require(c / a == b, "SafeMath: multiplication overflow");
+227	 return c;
+228	 }
+229	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+230	 return div(a, b, "SafeMath: division by zero");
+231	 }
+232	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+233	 require(b > 0, errorMessage);
+234	 uint256 c = a / b;
+235	 return c;
+236	 }
+237	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+238	 return mod(a, b, "SafeMath: modulo by zero");
+239	 }
+240	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+241	 require(b != 0, errorMessage);
+242	 return a % b;
+243	 }
+244	 }
+245	 pragma solidity ^0.5.0;
+246	 interface IERC20 {
+247	 function totalSupply() external view returns (uint256);
+248	 function balanceOf(address account) external view returns (uint256);
+249	 function transfer(address recipient, uint256 amount) external returns (bool);
+250	 function allowance(address owner, address spender) external view returns (uint256);
+251	 function approve(address spender, uint256 amount) external returns (bool);
+252	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+253	 event Transfer(address indexed from, address indexed to, uint256 value);
+254	 event Approval(address indexed owner, address indexed spender, uint256 value);
+255	 }
+256	 pragma solidity >=0.5.0;
+257	 interface IClaimsReward {
+258	 function changeClaimStatus(uint claimid) external;
+259	 function getCurrencyAssetAddress(bytes4 currency) external view returns (address);
+260	 function getRewardToBeGiven( uint check, uint voteid, uint flag ) external view returns ( uint tokenCalculated, bool lastClaimedCheck, uint tokens, uint perc );
+261	 function upgrade(address _newAdd) external;
+262	 function getRewardToBeDistributedByUser(address _add) external view returns (uint total);
+263	 function getRewardAndClaimedStatus(uint check, uint claimId) external view returns (uint reward, bool claimed);
+264	 function claimAllPendingReward(uint records) external;
+265	 function getAllPendingRewardOfUser(address _add) external view returns (uint);
+266	 function unlockCoverNote(uint coverId) external;
+267	 }
+268	 pragma solidity >=0.5.0;
+269	 interface IIncidents {
+270	 function underlyingToken(address) external view returns (address);
+271	 function coveredToken(address) external view returns (address);
+272	 function claimPayout(uint) external view returns (uint);
+273	 function incidentCount() external view returns (uint);
+274	 function addIncident( address productId, uint incidentDate, uint priceBefore ) external;
+275	 function redeemPayoutForMember( uint coverId, uint incidentId, uint coveredTokenAmount, address member ) external returns (uint claimId, uint payoutAmount, address payoutToken);
+276	 function redeemPayout( uint coverId, uint incidentId, uint coveredTokenAmount ) external returns (uint claimId, uint payoutAmount, address payoutToken);
+277	 function pushBurns(address productId, uint maxIterations) external;
+278	 function withdrawAsset(address asset, address destination, uint amount) external;
+279	 }
+280	 pragma solidity >=0.5.0;
+281	 interface IPool {
+282	 function sellNXM(uint tokenAmount, uint minEthOut) external;
+283	 function sellNXMTokens(uint tokenAmount) external returns (bool);
+284	 function minPoolEth() external returns (uint);
+285	 function transferAssetToSwapOperator(address asset, uint amount) external;
+286	 function setAssetDataLastSwapTime(address asset, uint32 lastSwapTime) external;
+287	 function getAssetDetails(address _asset) external view returns ( uint112 min, uint112 max, uint32 lastAssetSwapTime, uint maxSlippageRatio );
+288	 function sendClaimPayout ( address asset, address payable payoutAddress, uint amount ) external returns (bool success);
+289	 function transferAsset( address asset, address payable destination, uint amount ) external;
+290	 function upgradeCapitalPool(address payable newPoolAddress) external;
+291	 function priceFeedOracle() external view returns (IPriceFeedOracle);
+292	 function getPoolValueInEth() external view returns (uint);
+293	 function transferAssetFrom(address asset, address from, uint amount) external;
+294	 function getEthForNXM(uint nxmAmount) external view returns (uint ethAmount);
+295	 function calculateEthForNXM( uint nxmAmount, uint currentTotalAssetValue, uint mcrEth ) external pure returns (uint);
+296	 function calculateMCRRatio(uint totalAssetValue, uint mcrEth) external pure returns (uint);
+297	 function calculateTokenSpotPrice(uint totalAssetValue, uint mcrEth) external pure returns (uint tokenPrice);
+298	 function getTokenPrice(address asset) external view returns (uint tokenPrice);
+299	 function getMCRRatio() external view returns (uint);
+300	 }
+301	 pragma solidity >=0.5.0;
+302	 interface IPooledStaking {
+303	 function accumulateReward(address contractAddress, uint amount) external;
+304	 function pushBurn(address contractAddress, uint amount) external;
+305	 function hasPendingActions() external view returns (bool);
+306	 function processPendingActions(uint maxIterations) external returns (bool finished);
+307	 function contractStake(address contractAddress) external view returns (uint);
+308	 function stakerReward(address staker) external view returns (uint);
+309	 function stakerDeposit(address staker) external view returns (uint);
+310	 function stakerContractStake(address staker, address contractAddress) external view returns (uint);
+311	 function withdraw(uint amount) external;
+312	 function stakerMaxWithdrawable(address stakerAddress) external view returns (uint);
+313	 function withdrawReward(address stakerAddress) external;
+314	 }
+315	 pragma solidity >=0.5.0;
+316	 interface IQuotationData {
+317	 function authQuoteEngine() external view returns (address);
+318	 function stlp() external view returns (uint);
+319	 function stl() external view returns (uint);
+320	 function pm() external view returns (uint);
+321	 function minDays() external view returns (uint);
+322	 function tokensRetained() external view returns (uint);
+323	 function kycAuthAddress() external view returns (address);
+324	 function refundEligible(address) external view returns (bool);
+325	 function holdedCoverIDStatus(uint) external view returns (uint);
+326	 function timestampRepeated(uint) external view returns (bool);
+327	 enum HCIDStatus {
+328	 NA, kycPending, kycPass, kycFailedOrRefunded, kycPassNoCover}
+329	 enum CoverStatus {
+330	 Active, ClaimAccepted, ClaimDenied, CoverExpired, ClaimSubmitted, Requested}
+331	 function addInTotalSumAssuredSC(address _add, bytes4 _curr, uint _amount) external;
+332	 function subFromTotalSumAssuredSC(address _add, bytes4 _curr, uint _amount) external;
+333	 function subFromTotalSumAssured(bytes4 _curr, uint _amount) external;
+334	 function addInTotalSumAssured(bytes4 _curr, uint _amount) external;
+335	 function setTimestampRepeated(uint _timestamp) external;
+336	 function addCover( uint16 _coverPeriod, uint _sumAssured, address payable _userAddress, bytes4 _currencyCode, address _scAddress, uint premium, uint premiumNXM ) external;
+337	 function addHoldCover( address payable from, address scAddress, bytes4 coverCurr, uint[] calldata coverDetails, uint16 coverPeriod ) external;
+338	 function setRefundEligible(address _add, bool status) external;
+339	 function setHoldedCoverIDStatus(uint holdedCoverID, uint status) external;
+340	 function setKycAuthAddress(address _add) external;
+341	 function changeAuthQuoteEngine(address _add) external;
+342	 function getUintParameters(bytes8 code) external view returns (bytes8 codeVal, uint val);
+343	 function getProductDetails() external view returns ( uint _minDays, uint _pm, uint _stl, uint _stlp );
+344	 function getCoverLength() external view returns (uint len);
+345	 function getAuthQuoteEngine() external view returns (address _add);
+346	 function getTotalSumAssured(bytes4 _curr) external view returns (uint amount);
+347	 function getAllCoversOfUser(address _add) external view returns (uint[] memory allCover);
+348	 function getUserCoverLength(address _add) external view returns (uint len);
+349	 function getCoverStatusNo(uint _cid) external view returns (uint8);
+350	 function getCoverPeriod(uint _cid) external view returns (uint32 cp);
+351	 function getCoverSumAssured(uint _cid) external view returns (uint sa);
+352	 function getCurrencyOfCover(uint _cid) external view returns (bytes4 curr);
+353	 function getValidityOfCover(uint _cid) external view returns (uint date);
+354	 function getscAddressOfCover(uint _cid) external view returns (uint, address);
+355	 function getCoverMemberAddress(uint _cid) external view returns (address payable _add);
+356	 function getCoverPremiumNXM(uint _cid) external view returns (uint _premiumNXM);
+357	 function getCoverDetailsByCoverID1( uint _cid ) external view returns ( uint cid, address _memberAddress, address _scAddress, bytes4 _currencyCode, uint _sumAssured, uint premiumNXM );
+358	 function getCoverDetailsByCoverID2( uint _cid ) external view returns ( uint cid, uint8 status, uint sumAssured, uint16 coverPeriod, uint validUntil );
+359	 function getHoldedCoverDetailsByID1( uint _hcid ) external view returns ( uint hcid, address scAddress, bytes4 coverCurr, uint16 coverPeriod );
+360	 function getUserHoldedCoverLength(address _add) external view returns (uint);
+361	 function getUserHoldedCoverByIndex(address _add, uint index) external view returns (uint);
+362	 function getHoldedCoverDetailsByID2( uint _hcid ) external view returns ( uint hcid, address payable memberAddress, uint[] memory coverDetails );
+363	 function getTotalSumAssuredSC(address _add, bytes4 _curr) external view returns (uint amount);
+364	 function changeCoverStatusNo(uint _cid, uint8 _stat) external;
+365	 }
+366	 pragma solidity >=0.5.0;
+367	 interface ITokenController {
+368	 function coverInfo(uint id) external view returns (uint16 claimCount, bool hasOpenClaim, bool hasAcceptedClaim);
+369	 function claimSubmissionGracePeriod() external view returns (uint);
+370	 function withdrawCoverNote( address _of, uint[] calldata _coverIds, uint[] calldata _indexes ) external;
+371	 function markCoverClaimOpen(uint coverId) external;
+372	 function markCoverClaimClosed(uint coverId, bool isAccepted) external;
+373	 function changeOperator(address _newOperator) external;
+374	 function operatorTransfer(address _from, address _to, uint _value) external returns (bool);
+375	 function lockClaimAssessmentTokens(uint256 _amount, uint256 _time) external;
+376	 function lockOf(address _of, bytes32 _reason, uint256 _amount, uint256 _time) external returns (bool);
+377	 function mintCoverNote( address _of, bytes32 _reason, uint256 _amount, uint256 _time ) external;
+378	 function extendClaimAssessmentLock(uint256 _time) external;
+379	 function extendLockOf(address _of, bytes32 _reason, uint256 _time) external returns (bool);
+380	 function increaseClaimAssessmentLock(uint256 _amount) external;
+381	 function burnFrom(address _of, uint amount) external returns (bool);
+382	 function burnLockedTokens(address _of, bytes32 _reason, uint256 _amount) external;
+383	 function reduceLock(address _of, bytes32 _reason, uint256 _time) external;
+384	 function releaseLockedTokens(address _of, bytes32 _reason, uint256 _amount) external;
+385	 function addToWhitelist(address _member) external;
+386	 function removeFromWhitelist(address _member) external;
+387	 function mint(address _member, uint _amount) external;
+388	 function lockForMemberVote(address _of, uint _days) external;
+389	 function withdrawClaimAssessmentTokens(address _of) external;
+390	 function getLockReasons(address _of) external view returns (bytes32[] memory reasons);
+391	 function getLockedTokensValidity(address _of, bytes32 reason) external view returns (uint256 validity);
+392	 function getUnlockableTokens(address _of) external view returns (uint256 unlockableTokens);
+393	 function tokensLocked(address _of, bytes32 _reason) external view returns (uint256 amount);
+394	 function tokensLockedWithValidity(address _of, bytes32 _reason) external view returns (uint256 amount, uint256 validity);
+395	 function tokensUnlockable(address _of, bytes32 _reason) external view returns (uint256 amount);
+396	 function totalSupply() external view returns (uint256);
+397	 function tokensLockedAtTime(address _of, bytes32 _reason, uint256 _time) external view returns (uint256 amount);
+398	 function totalBalanceOf(address _of) external view returns (uint256 amount);
+399	 function totalLockedBalance(address _of) external view returns (uint256 amount);
+400	 }
+401	 pragma solidity >=0.5.0;
+402	 interface ITokenData {
+403	 function walletAddress() external view returns (address payable);
+404	 function lockTokenTimeAfterCoverExp() external view returns (uint);
+405	 function bookTime() external view returns (uint);
+406	 function lockCADays() external view returns (uint);
+407	 function lockMVDays() external view returns (uint);
+408	 function scValidDays() external view returns (uint);
+409	 function joiningFee() external view returns (uint);
+410	 function stakerCommissionPer() external view returns (uint);
+411	 function stakerMaxCommissionPer() external view returns (uint);
+412	 function tokenExponent() external view returns (uint);
+413	 function priceStep() external view returns (uint);
+414	 function depositedCN(uint) external view returns (uint amount, bool isDeposited);
+415	 function lastCompletedStakeCommission(address) external view returns (uint);
+416	 function changeWalletAddress(address payable _address) external;
+417	 function getStakerStakedContractByIndex( address _stakerAddress, uint _stakerIndex ) external view returns (address stakedContractAddress);
+418	 function getStakerStakedBurnedByIndex( address _stakerAddress, uint _stakerIndex ) external view returns (uint burnedAmount);
+419	 function getStakerStakedUnlockableBeforeLastBurnByIndex( address _stakerAddress, uint _stakerIndex ) external view returns (uint unlockable);
+420	 function getStakerStakedContractIndex( address _stakerAddress, uint _stakerIndex ) external view returns (uint scIndex);
+421	 function getStakedContractStakerIndex( address _stakedContractAddress, uint _stakedContractIndex ) external view returns (uint sIndex);
+422	 function getStakerInitialStakedAmountOnContract( address _stakerAddress, uint _stakerIndex ) external view returns (uint amount);
+423	 function getStakerStakedContractLength( address _stakerAddress ) external view returns (uint length);
+424	 function getStakerUnlockedStakedTokens( address _stakerAddress, uint _stakerIndex ) external view returns (uint amount);
+425	 function pushUnlockedStakedTokens( address _stakerAddress, uint _stakerIndex, uint _amount ) external;
+426	 function pushBurnedTokens( address _stakerAddress, uint _stakerIndex, uint _amount ) external;
+427	 function pushUnlockableBeforeLastBurnTokens( address _stakerAddress, uint _stakerIndex, uint _amount ) external;
+428	 function setUnlockableBeforeLastBurnTokens( address _stakerAddress, uint _stakerIndex, uint _amount ) external;
+429	 function pushEarnedStakeCommissions( address _stakerAddress, address _stakedContractAddress, uint _stakedContractIndex, uint _commissionAmount ) external;
+430	 function pushRedeemedStakeCommissions( address _stakerAddress, uint _stakerIndex, uint _amount ) external;
+431	 function getStakerEarnedStakeCommission( address _stakerAddress, uint _stakerIndex ) external view returns (uint);
+432	 function getStakerRedeemedStakeCommission( address _stakerAddress, uint _stakerIndex ) external view returns (uint);
+433	 function getStakerTotalEarnedStakeCommission( address _stakerAddress ) external view returns (uint totalCommissionEarned);
+434	 function getStakerTotalReedmedStakeCommission( address _stakerAddress ) external view returns (uint totalCommissionRedeemed);
+435	 function setDepositCN(uint coverId, bool flag) external;
+436	 function getStakedContractStakerByIndex( address _stakedContractAddress, uint _stakedContractIndex ) external view returns (address stakerAddress);
+437	 function getStakedContractStakersLength( address _stakedContractAddress ) external view returns (uint length);
+438	 function addStake( address _stakerAddress, address _stakedContractAddress, uint _amount ) external returns (uint scIndex);
+439	 function bookCATokens(address _of) external;
+440	 function isCATokensBooked(address _of) external view returns (bool res);
+441	 function setStakedContractCurrentCommissionIndex( address _stakedContractAddress, uint _index ) external;
+442	 function setLastCompletedStakeCommissionIndex( address _stakerAddress, uint _index ) external;
+443	 function setStakedContractCurrentBurnIndex( address _stakedContractAddress, uint _index ) external;
+444	 function setDepositCNAmount(uint coverId, uint amount) external;
+445	 }
+446	 pragma solidity >=0.5.0;
+447	 interface INXMMaster {
+448	 function tokenAddress() external view returns (address);
+449	 function owner() external view returns (address);
+450	 function masterInitialized() external view returns (bool);
+451	 function isInternal(address _add) external view returns (bool);
+452	 function isPause() external view returns (bool check);
+453	 function isOwner(address _add) external view returns (bool);
+454	 function isMember(address _add) external view returns (bool);
+455	 function checkIsAuthToGoverned(address _add) external view returns (bool);
+456	 function dAppLocker() external view returns (address _add);
+457	 function getLatestAddress(bytes2 _contractName) external view returns (address payable contractAddress);
+458	 function upgradeMultipleContracts( bytes2[] calldata _contractCodes, address payable[] calldata newAddresses ) external;
+459	 function removeContracts(bytes2[] calldata contractCodesToRemove) external;
+460	 function addNewInternalContracts( bytes2[] calldata _contractCodes, address payable[] calldata newAddresses, uint[] calldata _types ) external;
+461	 function updateOwnerParameters(bytes8 code, address payable val) external;
+462	 }
+463	 pragma solidity >=0.5.0;
+464	 interface IPriceFeedOracle {
+465	 function daiAddress() external view returns (address);
+466	 function stETH() external view returns (address);
+467	 function ETH() external view returns (address);
+468	 function getAssetToEthRate(address asset) external view returns (uint);
+469	 function getAssetForEth(address asset, uint ethIn) external view returns (uint);
+470	 }

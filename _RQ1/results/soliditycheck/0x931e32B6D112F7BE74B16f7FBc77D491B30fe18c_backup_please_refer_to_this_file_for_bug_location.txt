@@ -1,0 +1,282 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity ^0.7.0;
+12	 abstract contract Ownable is Context {
+13	 address private _owner;
+14	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+15	 constructor () {
+16	 address msgSender = _msgSender();
+17	 _owner = msgSender;
+18	 emit OwnershipTransferred(address(0), msgSender);
+19	 }
+20	 function owner() public view virtual returns (address) {
+21	 return _owner;
+22	 }
+23	 modifier onlyOwner() {
+24	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+25	 _;
+26	 }
+27	 function renounceOwnership() public virtual onlyOwner {
+28	 emit OwnershipTransferred(_owner, address(0));
+29	 _owner = address(0);
+30	 }
+31	 function transferOwnership(address newOwner) public virtual onlyOwner {
+32	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+33	 emit OwnershipTransferred(_owner, newOwner);
+34	 _owner = newOwner;
+35	 }
+36	 }
+37	 pragma solidity 0.7.6;
+38	 contract MultiWrapper is Ownable {
+39	 using SafeMath for uint256;
+40	 using EnumerableSet for EnumerableSet.AddressSet;
+41	 event WrapperAdded(IWrapper connector);
+42	 event WrapperRemoved(IWrapper connector);
+43	 EnumerableSet.AddressSet private _wrappers;
+44	 constructor(IWrapper[] memory existingWrappers) {
+45	 for (uint256 i = 0; i < existingWrappers.length; i++) {
+46	 require(_wrappers.add(address(existingWrappers[i])), "Wrapper already added");
+47	 emit WrapperAdded(existingWrappers[i]);
+48	 }
+49	 }
+50	 function wrappers() external view returns (IWrapper[] memory allWrappers) {
+51	 allWrappers = new IWrapper[](_wrappers.length());
+52	 for (uint256 i = 0; i < allWrappers.length; i++) {
+53	 allWrappers[i] = IWrapper(uint256(_wrappers._inner._values[i]));
+54	 }
+55	 }
+56	 function addWrapper(IWrapper wrapper) external onlyOwner {
+57	 require(_wrappers.add(address(wrapper)), "Wrapper already added");
+58	 emit WrapperAdded(wrapper);
+59	 }
+60	 function removeWrapper(IWrapper wrapper) external onlyOwner {
+61	 require(_wrappers.remove(address(wrapper)), "Unknown wrapper");
+62	 emit WrapperRemoved(wrapper);
+63	 }
+64	 function getWrappedTokens(IERC20 token) external view returns (IERC20[] memory wrappedTokens, uint256[] memory rates) {
+65	 IERC20[] memory memWrappedTokens = new IERC20[](20);
+66	 uint256[] memory memRates = new uint256[](20);
+67	 uint256 len = 0;
+68	 for (uint256 i = 0; i < _wrappers._inner._values.length; i++) {
+69	 try IWrapper(uint256(_wrappers._inner._values[i])).wrap(token) returns (IERC20 wrappedToken, uint256 rate) {
+70	 memWrappedTokens[len] = wrappedToken;
+71	 memRates[len] = rate;
+72	 len += 1;
+73	 for (uint256 j = 0; j < _wrappers._inner._values.length; j++) {
+74	 if (i != j) {
+75	 try IWrapper(uint256(_wrappers._inner._values[j])).wrap(wrappedToken) returns (IERC20 wrappedToken2, uint256 rate2) {
+76	 bool used = false;
+77	 for (uint256 k = 0; k < len; k++) {
+78	 if (wrappedToken2 == memWrappedTokens[k]) {
+79	 used = true;
+80	 break;
+81	 }
+82	 }
+83	 if (!used) {
+84	 memWrappedTokens[len] = wrappedToken2;
+85	 memRates[len] = rate.mul(rate2).div(1e18);
+86	 len += 1;
+87	 }
+88	 }
+89	 catch {
+90	 continue;
+91	 }
+92	 }
+93	 }
+94	 }
+95	 catch {
+96	 continue;
+97	 }
+98	 }
+99	 wrappedTokens = new IERC20[](len + 1);
+100	 rates = new uint256[](len + 1);
+101	 for (uint256 i = 0; i < len; i++) {
+102	 wrappedTokens[i] = memWrappedTokens[i];
+103	 rates[i] = memRates[i];
+104	 }
+105	 wrappedTokens[len] = token;
+106	 rates[len] = 1e18;
+107	 }
+108	 }
+109	 pragma solidity 0.7.6;
+110	 interface IWrapper {
+111	 function wrap(IERC20 token) external view returns (IERC20 wrappedToken, uint256 rate);
+112	 }
+113	 pragma solidity ^0.7.0;
+114	 library SafeMath {
+115	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+116	 uint256 c = a + b;
+117	 if (c < a) return (false, 0);
+118	 return (true, c);
+119	 }
+120	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+121	 if (b > a) return (false, 0);
+122	 return (true, a - b);
+123	 }
+124	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+125	 if (a == 0) return (true, 0);
+126	 uint256 c = a * b;
+127	 if (c / a != b) return (false, 0);
+128	 return (true, c);
+129	 }
+130	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+131	 if (b == 0) return (false, 0);
+132	 return (true, a / b);
+133	 }
+134	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+135	 if (b == 0) return (false, 0);
+136	 return (true, a % b);
+137	 }
+138	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+139	 uint256 c = a + b;
+140	 require(c >= a, "SafeMath: addition overflow");
+141	 return c;
+142	 }
+143	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+144	 require(b <= a, "SafeMath: subtraction overflow");
+145	 return a - b;
+146	 }
+147	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+148	 if (a == 0) return 0;
+149	 uint256 c = a * b;
+150	 require(c / a == b, "SafeMath: multiplication overflow");
+151	 return c;
+152	 }
+153	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+154	 require(b > 0, "SafeMath: division by zero");
+155	 return a / b;
+156	 }
+157	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+158	 require(b > 0, "SafeMath: modulo by zero");
+159	 return a % b;
+160	 }
+161	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+162	 require(b <= a, errorMessage);
+163	 return a - b;
+164	 }
+165	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+166	 require(b > 0, errorMessage);
+167	 return a / b;
+168	 }
+169	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+170	 require(b > 0, errorMessage);
+171	 return a % b;
+172	 }
+173	 }
+174	 pragma solidity ^0.7.0;
+175	 interface IERC20 {
+176	 function totalSupply() external view returns (uint256);
+177	 function balanceOf(address account) external view returns (uint256);
+178	 function transfer(address recipient, uint256 amount) external returns (bool);
+179	 function allowance(address owner, address spender) external view returns (uint256);
+180	 function approve(address spender, uint256 amount) external returns (bool);
+181	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+182	 event Transfer(address indexed from, address indexed to, uint256 value);
+183	 event Approval(address indexed owner, address indexed spender, uint256 value);
+184	 }
+185	 pragma solidity ^0.7.0;
+186	 library EnumerableSet {
+187	 struct Set {
+188	 bytes32[] _values;
+189	 mapping (bytes32 => uint256) _indexes;
+190	 }
+191	 function _add(Set storage set, bytes32 value) private returns (bool) {
+192	 if (!_contains(set, value)) {
+193	 set._values.push(value);
+194	 set._indexes[value] = set._values.length;
+195	 return true;
+196	 }
+197	 else {
+198	 return false;
+199	 }
+200	 }
+201	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+202	 uint256 valueIndex = set._indexes[value];
+203	 if (valueIndex != 0) {
+204	 uint256 toDeleteIndex = valueIndex - 1;
+205	 uint256 lastIndex = set._values.length - 1;
+206	 bytes32 lastvalue = set._values[lastIndex];
+207	 set._values[toDeleteIndex] = lastvalue;
+208	 set._indexes[lastvalue] = toDeleteIndex + 1;
+209	 set._values.pop();
+210	 delete set._indexes[value];
+211	 return true;
+212	 }
+213	 else {
+214	 return false;
+215	 }
+216	 }
+217	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+218	 return set._indexes[value] != 0;
+219	 }
+220	 function _length(Set storage set) private view returns (uint256) {
+221	 return set._values.length;
+222	 }
+223	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+224	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+225	 return set._values[index];
+226	 }
+227	 struct Bytes32Set {
+228	 Set _inner;
+229	 }
+230	 function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+231	 return _add(set._inner, value);
+232	 }
+233	 function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+234	 return _remove(set._inner, value);
+235	 }
+236	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+237	 return _contains(set._inner, value);
+238	 }
+239	 function length(Bytes32Set storage set) internal view returns (uint256) {
+240	 return _length(set._inner);
+241	 }
+242	 function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+243	 return _at(set._inner, index);
+244	 }
+245	 struct AddressSet {
+246	 Set _inner;
+247	 }
+248	 function add(AddressSet storage set, address value) internal returns (bool) {
+249	 return _add(set._inner, bytes32(uint256(uint160(value))));
+250	 }
+251	 function remove(AddressSet storage set, address value) internal returns (bool) {
+252	 return _remove(set._inner, bytes32(uint256(uint160(value))));
+253	 }
+254	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+255	 return _contains(set._inner, bytes32(uint256(uint160(value))));
+256	 }
+257	 function length(AddressSet storage set) internal view returns (uint256) {
+258	 return _length(set._inner);
+259	 }
+260	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+261	 return address(uint160(uint256(_at(set._inner, index))));
+262	 }
+263	 struct UintSet {
+264	 Set _inner;
+265	 }
+266	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+267	 return _add(set._inner, bytes32(value));
+268	 }
+269	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+270	 return _remove(set._inner, bytes32(value));
+271	 }
+272	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+273	 return _contains(set._inner, bytes32(value));
+274	 }
+275	 function length(UintSet storage set) internal view returns (uint256) {
+276	 return _length(set._inner);
+277	 }
+278	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+279	 return uint256(_at(set._inner, index));
+280	 }
+281	 }

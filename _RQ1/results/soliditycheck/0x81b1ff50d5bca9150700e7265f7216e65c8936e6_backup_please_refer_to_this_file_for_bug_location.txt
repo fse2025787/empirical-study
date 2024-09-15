@@ -1,0 +1,145 @@
+row number 
+1	   pragma solidity ^0.4.20;
+2	 contract Ownable {
+3	 address public owner;
+4	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+5	 constructor() public {
+6	 owner = msg.sender;
+7	 }
+8	 modifier onlyOwner() {
+9	 require(msg.sender == owner);
+10	 _;
+11	 }
+12	 function transferOwnership(address newOwner) public onlyOwner {
+13	 require(newOwner != address(0));
+14	 emit OwnershipTransferred(owner, newOwner);
+15	 owner = newOwner;
+16	 }
+17	 }
+18	 contract Pausable is Ownable {
+19	 event Pause();
+20	 event Unpause();
+21	 bool public paused = false;
+22	 modifier whenNotPaused() {
+23	 require(!paused, 'Contract Paused!');
+24	 _;
+25	 }
+26	 modifier whenPaused() {
+27	 require(paused, 'Contract Active!');
+28	 _;
+29	 }
+30	 function pause() onlyOwner whenNotPaused public {
+31	 paused = true;
+32	 emit Pause();
+33	 }
+34	 function unpause() onlyOwner whenPaused public {
+35	 paused = false;
+36	 emit Unpause();
+37	 }
+38	 }
+39	 contract EtherDrop is Pausable {
+40	 uint constant PRICE_WEI = 2e16;
+41	 uint constant FLAG_BLACKLIST = 1;
+42	 uint constant QMAX = 1000;
+43	 uint constant DMAX = 3;
+44	 event NewDropIn(address addr, uint round, uint place, uint value);
+45	 event NewWinner(address addr, uint round, uint place, uint value, uint price);
+46	 struct history {
+47	 uint blacklist;
+48	 uint size;
+49	 uint[] rounds;
+50	 uint[] places;
+51	 uint[] values;
+52	 uint[] prices;
+53	 }
+54	 address[] private _queue;
+55	 address[] private _winners;
+56	 bytes32[] private _wincomma;
+57	 bytes32[] private _wincommb;
+58	 uint[] private _positions;
+59	 uint[] private _blocks;
+60	 uint public _round;
+61	 uint public _counter;
+62	 uint private _collectibles = 0;
+63	 mapping(address => history) private _history;
+64	 function currentRound() public view returns (uint round, uint counter, uint round_users, uint price) {
+65	 return (_round, _counter, QMAX, PRICE_WEI);
+66	 }
+67	 function roundStats(uint index) public view returns (uint round, address winner, uint position, uint block_no) {
+68	 return (index, _winners[index], _positions[index], _blocks[index]);
+69	 }
+70	 function userRounds(address user) public view returns (uint) {
+71	 return _history[user].size;
+72	 }
+73	 function userRound(address user, uint index) public view returns (uint round, uint place, uint value, uint price) {
+74	 history memory h = _history[user];
+75	 return (h.rounds[index], h.places[index], h.values[index], h.prices[index]);
+76	 }
+77	 function() public payable whenNotPaused {
+78	 require(msg.value >= PRICE_WEI, 'Insufficient Ether');
+79	 if (_counter == QMAX) {
+80	 uint r = DMAX;
+81	 uint winpos = 0;
+82	 _blocks.push(block.number);
+83	 bytes32 _a = blockhash(block.number - 1);
+84	 for (uint i = 31; i >= 1; i--) {
+85	 if (uint8(_a[i]) >= 48 && uint8(_a[i]) <= 57) {
+86	 winpos = 10 * winpos + (uint8(_a[i]) - 48);
+87	 if (--r == 0) break;
+88	 }
+89	 }
+90	 _positions.push(winpos);
+91	 uint _reward = (QMAX * PRICE_WEI * 90) / 100;
+92	 address _winner = _queue[winpos];
+93	 _winners.push(_winner);
+94	 _winner.transfer(_reward);
+95	 history storage h = _history[_winner];
+96	 h.prices[h.size - 1] = _reward;
+97	 _wincomma.push(0x0);
+98	 _wincommb.push(0x0);
+99	 emit NewWinner(_winner, _round, winpos, h.values[h.size - 1], _reward);
+100	 _collectibles += address(this).balance - _reward;
+101	 _counter = 0;
+102	 _round++;
+103	 }
+104	 h = _history[msg.sender];
+105	 require(h.size == 0 || h.rounds[h.size - 1] != _round, 'Already In Round');
+106	 h.size++;
+107	 h.rounds.push(_round);
+108	 h.places.push(_counter);
+109	 h.values.push(msg.value);
+110	 h.prices.push(0);
+111	 if (_round == 0) {
+112	 _queue.push(msg.sender);
+113	 }
+114	 else {
+115	 _queue[_counter] = msg.sender;
+116	 }
+117	 emit NewDropIn(msg.sender, _round, _counter, msg.value);
+118	 _counter++;
+119	 }
+120	 function comment(uint round, bytes32 a, bytes32 b) whenNotPaused public {
+121	 address winner = _winners[round];
+122	 require(winner == msg.sender, 'not a winner');
+123	 require(_history[winner].blacklist != FLAG_BLACKLIST, 'blacklisted');
+124	 _wincomma[round] = a;
+125	 _wincommb[round] = b;
+126	 }
+127	 function blackList(address user) public onlyOwner {
+128	 history storage h = _history[user];
+129	 if (h.size > 0) {
+130	 h.blacklist = FLAG_BLACKLIST;
+131	 }
+132	 }
+133	 function userComment(uint round) whenNotPaused public view returns (address winner, bytes32 comma, bytes32 commb) {
+134	 if (_history[_winners[round]].blacklist != FLAG_BLACKLIST) {
+135	 return (_winners[round], _wincomma[round], _wincommb[round]);
+136	 }
+137	 else {
+138	 return (0x0, 0x0, 0x0);
+139	 }
+140	 }
+141	 function collect() public onlyOwner {
+142	 owner.transfer(_collectibles);
+143	 }
+144	 }

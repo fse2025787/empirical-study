@@ -1,0 +1,501 @@
+row number 
+1	      pragma solidity ^0.7.0;
+2	 contract DSMath {
+3	 uint constant WAD = 10 ** 18;
+4	 uint constant RAY = 10 ** 27;
+5	 function add(uint x, uint y) internal pure returns (uint z) {
+6	 z = SafeMath.add(x, y);
+7	 }
+8	 function sub(uint x, uint y) internal virtual pure returns (uint z) {
+9	 z = SafeMath.sub(x, y);
+10	 }
+11	 function mul(uint x, uint y) internal pure returns (uint z) {
+12	 z = SafeMath.mul(x, y);
+13	 }
+14	 function div(uint x, uint y) internal pure returns (uint z) {
+15	 z = SafeMath.div(x, y);
+16	 }
+17	 function wmul(uint x, uint y) internal pure returns (uint z) {
+18	 z = SafeMath.add(SafeMath.mul(x, y), WAD / 2) / WAD;
+19	 }
+20	 function wdiv(uint x, uint y) internal pure returns (uint z) {
+21	 z = SafeMath.add(SafeMath.mul(x, WAD), y / 2) / y;
+22	 }
+23	 function rdiv(uint x, uint y) internal pure returns (uint z) {
+24	 z = SafeMath.add(SafeMath.mul(x, RAY), y / 2) / y;
+25	 }
+26	 function rmul(uint x, uint y) internal pure returns (uint z) {
+27	 z = SafeMath.add(SafeMath.mul(x, y), RAY / 2) / RAY;
+28	 }
+29	 function toInt(uint x) internal pure returns (int y) {
+30	 y = int(x);
+31	 require(y >= 0, "int-overflow");
+32	 }
+33	 function toRad(uint wad) internal pure returns (uint rad) {
+34	 rad = mul(wad, 10 ** 27);
+35	 }
+36	 }
+37	 pragma solidity ^0.7.0;
+38	 abstract contract Stores {
+39	 address constant internal ethAddr = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+40	 address constant internal wethAddr = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+41	 MemoryInterface constant internal instaMemory = MemoryInterface(0x8a5419CfC711B2343c17a6ABf4B2bAFaBb06957F);
+42	 InstaMapping constant internal instaMapping = InstaMapping(0xe81F70Cc7C0D46e12d70efc60607F16bbD617E88);
+43	 function getUint(uint getId, uint val) internal returns (uint returnVal) {
+44	 returnVal = getId == 0 ? val : instaMemory.getUint(getId);
+45	 }
+46	 function setUint(uint setId, uint val) virtual internal {
+47	 if (setId != 0) instaMemory.setUint(setId, val);
+48	 }
+49	 }
+50	 pragma solidity ^0.7.0;
+51	 abstract contract Basic is DSMath, Stores {
+52	 function convert18ToDec(uint _dec, uint256 _amt) internal pure returns (uint256 amt) {
+53	 amt = (_amt / 10 ** (18 - _dec));
+54	 }
+55	 function convertTo18(uint _dec, uint256 _amt) internal pure returns (uint256 amt) {
+56	 amt = mul(_amt, 10 ** (18 - _dec));
+57	 }
+58	 function getTokenBal(TokenInterface token) internal view returns(uint _amt) {
+59	 _amt = address(token) == ethAddr ? address(this).balance : token.balanceOf(address(this));
+60	 }
+61	 function getTokensDec(TokenInterface buyAddr, TokenInterface sellAddr) internal view returns(uint buyDec, uint sellDec) {
+62	 buyDec = address(buyAddr) == ethAddr ? 18 : buyAddr.decimals();
+63	 sellDec = address(sellAddr) == ethAddr ? 18 : sellAddr.decimals();
+64	 }
+65	 function encodeEvent(string memory eventName, bytes memory eventParam) internal pure returns (bytes memory) {
+66	 return abi.encode(eventName, eventParam);
+67	 }
+68	 function changeEthAddress(address buy, address sell) internal pure returns(TokenInterface _buy, TokenInterface _sell){
+69	 _buy = buy == ethAddr ? TokenInterface(wethAddr) : TokenInterface(buy);
+70	 _sell = sell == ethAddr ? TokenInterface(wethAddr) : TokenInterface(sell);
+71	 }
+72	 function convertEthToWeth(bool isEth, TokenInterface token, uint amount) internal {
+73	 if(isEth) token.deposit{
+74	 value: amount}
+75	 ();
+76	 }
+77	 function convertWethToEth(bool isEth, TokenInterface token, uint amount) internal {
+78	 if(isEth) {
+79	 token.approve(address(token), amount);
+80	 token.withdraw(amount);
+81	 }
+82	 }
+83	 }
+84	 pragma solidity ^0.7.0;
+85	 abstract contract Helpers is DSMath, Basic {
+86	 ManagerLike internal constant managerContract = ManagerLike(0x5ef30b9986345249bc32d8928B7ee64DE9435E39);
+87	 DaiJoinInterface internal constant daiJoinContract = DaiJoinInterface(0x9759A6Ac90977b93B58547b4A71c78317f391A28);
+88	 PotLike internal constant potContract = PotLike(0x197E90f9FAD81970bA7976f33CbD77088E5D7cf7);
+89	 JugLike internal constant mcdJug = JugLike(0x19c0976f590D67707E62397C87829d896Dc0f1F1);
+90	 address internal constant giveAddr = 0x4dD58550eb15190a5B3DfAE28BB14EeC181fC267;
+91	 function getVaultData(uint vault) internal view returns (bytes32 ilk, address urn) {
+92	 ilk = managerContract.ilks(vault);
+93	 urn = managerContract.urns(vault);
+94	 }
+95	 function isEth(address tknAddr) internal pure returns (bool) {
+96	 return tknAddr == ethAddr ? true : false;
+97	 }
+98	 function _getVaultDebt( address vat, bytes32 ilk, address urn ) internal view returns (uint wad) {
+99	 (, uint rate,,,) = VatLike(vat).ilks(ilk);
+100	 (, uint art) = VatLike(vat).urns(ilk, urn);
+101	 uint dai = VatLike(vat).dai(urn);
+102	 uint rad = sub(mul(art, rate), dai);
+103	 wad = rad / RAY;
+104	 wad = mul(wad, RAY) < rad ? wad + 1 : wad;
+105	 }
+106	 function _getBorrowAmt( address vat, address urn, bytes32 ilk, uint amt ) internal returns (int dart) {
+107	 uint rate = mcdJug.drip(ilk);
+108	 uint dai = VatLike(vat).dai(urn);
+109	 if (dai < mul(amt, RAY)) {
+110	 dart = toInt(sub(mul(amt, RAY), dai) / rate);
+111	 dart = mul(uint(dart), rate) < mul(amt, RAY) ? dart + 1 : dart;
+112	 }
+113	 }
+114	 function _getWipeAmt( address vat, uint amt, address urn, bytes32 ilk ) internal view returns (int dart) {
+115	 (, uint rate,,,) = VatLike(vat).ilks(ilk);
+116	 (, uint art) = VatLike(vat).urns(ilk, urn);
+117	 dart = toInt(amt / rate);
+118	 dart = uint(dart) <= art ? - dart : - toInt(art);
+119	 }
+120	 function stringToBytes32(string memory str) internal pure returns (bytes32 result) {
+121	 require(bytes(str).length != 0, "string-empty");
+122	 assembly {
+123	 result := mload(add(str, 32)) }
+124	 }
+125	 function getVault(uint vault) internal view returns (uint _vault) {
+126	 if (vault == 0) {
+127	 require(managerContract.count(address(this)) > 0, "no-vault-opened");
+128	 _vault = managerContract.last(address(this));
+129	 }
+130	 else {
+131	 _vault = vault;
+132	 }
+133	 }
+134	 }
+135	 pragma solidity ^0.7.0;
+136	 contract Events {
+137	 event LogOpen(uint256 indexed vault, bytes32 indexed ilk);
+138	 event LogClose(uint256 indexed vault, bytes32 indexed ilk);
+139	 event LogTransfer(uint256 indexed vault, bytes32 indexed ilk, address newOwner);
+140	 event LogDeposit(uint256 indexed vault, bytes32 indexed ilk, uint256 tokenAmt, uint256 getId, uint256 setId);
+141	 event LogWithdraw(uint256 indexed vault, bytes32 indexed ilk, uint256 tokenAmt, uint256 getId, uint256 setId);
+142	 event LogBorrow(uint256 indexed vault, bytes32 indexed ilk, uint256 tokenAmt, uint256 getId, uint256 setId);
+143	 event LogPayback(uint256 indexed vault, bytes32 indexed ilk, uint256 tokenAmt, uint256 getId, uint256 setId);
+144	 event LogWithdrawLiquidated(uint256 indexed vault, bytes32 indexed ilk, uint256 tokenAmt, uint256 getId, uint256 setId);
+145	 event LogExitDai(uint256 indexed vault, bytes32 indexed ilk, uint256 tokenAmt, uint256 getId, uint256 setId);
+146	 event LogDepositDai(uint256 tokenAmt, uint256 getId, uint256 setId);
+147	 event LogWithdrawDai(uint256 tokenAmt, uint256 getId, uint256 setId);
+148	 event LogDepositAndBorrow( uint256 indexed vault, bytes32 indexed ilk, uint256 depositAmt, uint256 borrowAmt, uint256 getIdDeposit, uint256 getIdBorrow, uint256 setIdDeposit, uint256 setIdBorrow );
+149	 }
+150	 pragma solidity ^0.7.0;
+151	 abstract contract MakerResolver is Helpers, Events {
+152	 function open(string calldata colType) external payable returns (string memory _eventName, bytes memory _eventParam) {
+153	 bytes32 ilk = stringToBytes32(colType);
+154	 require(instaMapping.gemJoinMapping(ilk) != address(0), "wrong-col-type");
+155	 uint256 vault = managerContract.open(ilk, address(this));
+156	 _eventName = "LogOpen(uint256,bytes32)";
+157	 _eventParam = abi.encode(vault, ilk);
+158	 }
+159	 function close(uint256 vault) external payable returns (string memory _eventName, bytes memory _eventParam) {
+160	 uint _vault = getVault(vault);
+161	 (bytes32 ilk, address urn) = getVaultData(_vault);
+162	 (uint ink, uint art) = VatLike(managerContract.vat()).urns(ilk, urn);
+163	 require(ink == 0 && art == 0, "vault-has-assets");
+164	 require(managerContract.owns(_vault) == address(this), "not-owner");
+165	 managerContract.give(_vault, giveAddr);
+166	 _eventName = "LogClose(uint256,bytes32)";
+167	 _eventParam = abi.encode(_vault, ilk);
+168	 }
+169	 function deposit( uint256 vault, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+170	 uint _amt = getUint(getId, amt);
+171	 uint _vault = getVault(vault);
+172	 (bytes32 ilk, address urn) = getVaultData(_vault);
+173	 address colAddr = instaMapping.gemJoinMapping(ilk);
+174	 TokenJoinInterface tokenJoinContract = TokenJoinInterface(colAddr);
+175	 TokenInterface tokenContract = tokenJoinContract.gem();
+176	 if (isEth(address(tokenContract))) {
+177	 _amt = _amt == uint(-1) ? address(this).balance : _amt;
+178	 tokenContract.deposit{
+179	 value: _amt}
+180	 ();
+181	 }
+182	 else {
+183	 _amt = _amt == uint(-1) ? tokenContract.balanceOf(address(this)) : _amt;
+184	 }
+185	 tokenContract.approve(address(colAddr), _amt);
+186	 tokenJoinContract.join(address(this), _amt);
+187	 VatLike(managerContract.vat()).frob( ilk, urn, address(this), address(this), toInt(convertTo18(tokenJoinContract.dec(), _amt)), 0 );
+188	 setUint(setId, _amt);
+189	 _eventName = "LogDeposit(uint256,bytes32,uint256,uint256,uint256)";
+190	 _eventParam = abi.encode(_vault, ilk, _amt, getId, setId);
+191	 }
+192	 function withdraw( uint256 vault, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+193	 uint _amt = getUint(getId, amt);
+194	 uint _vault = getVault(vault);
+195	 (bytes32 ilk, address urn) = getVaultData(_vault);
+196	 address colAddr = instaMapping.gemJoinMapping(ilk);
+197	 TokenJoinInterface tokenJoinContract = TokenJoinInterface(colAddr);
+198	 uint _amt18;
+199	 if (_amt == uint(-1)) {
+200	 (_amt18,) = VatLike(managerContract.vat()).urns(ilk, urn);
+201	 _amt = convert18ToDec(tokenJoinContract.dec(), _amt18);
+202	 }
+203	 else {
+204	 _amt18 = convertTo18(tokenJoinContract.dec(), _amt);
+205	 }
+206	 managerContract.frob( _vault, -toInt(_amt18), 0 );
+207	 managerContract.flux( _vault, address(this), _amt18 );
+208	 TokenInterface tokenContract = tokenJoinContract.gem();
+209	 if (isEth(address(tokenContract))) {
+210	 tokenJoinContract.exit(address(this), _amt);
+211	 tokenContract.withdraw(_amt);
+212	 }
+213	 else {
+214	 tokenJoinContract.exit(address(this), _amt);
+215	 }
+216	 setUint(setId, _amt);
+217	 _eventName = "LogWithdraw(uint256,bytes32,uint256,uint256,uint256)";
+218	 _eventParam = abi.encode(_vault, ilk, _amt, getId, setId);
+219	 }
+220	 function borrow( uint256 vault, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+221	 uint _amt = getUint(getId, amt);
+222	 uint _vault = getVault(vault);
+223	 (bytes32 ilk, address urn) = getVaultData(_vault);
+224	 VatLike vatContract = VatLike(managerContract.vat());
+225	 managerContract.frob( _vault, 0, _getBorrowAmt( address(vatContract), urn, ilk, _amt ) );
+226	 managerContract.move( _vault, address(this), toRad(_amt) );
+227	 if (vatContract.can(address(this), address(daiJoinContract)) == 0) {
+228	 vatContract.hope(address(daiJoinContract));
+229	 }
+230	 daiJoinContract.exit(address(this), _amt);
+231	 setUint(setId, _amt);
+232	 _eventName = "LogBorrow(uint256,bytes32,uint256,uint256,uint256)";
+233	 _eventParam = abi.encode(_vault, ilk, _amt, getId, setId);
+234	 }
+235	 function payback( uint256 vault, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+236	 uint _amt = getUint(getId, amt);
+237	 uint _vault = getVault(vault);
+238	 (bytes32 ilk, address urn) = getVaultData(_vault);
+239	 address vat = managerContract.vat();
+240	 uint _maxDebt = _getVaultDebt(vat, ilk, urn);
+241	 _amt = _amt == uint(-1) ? _maxDebt : _amt;
+242	 require(_maxDebt >= _amt, "paying-excess-debt");
+243	 daiJoinContract.dai().approve(address(daiJoinContract), _amt);
+244	 daiJoinContract.join(urn, _amt);
+245	 managerContract.frob( _vault, 0, _getWipeAmt( vat, VatLike(vat).dai(urn), urn, ilk ) );
+246	 setUint(setId, _amt);
+247	 _eventName = "LogPayback(uint256,bytes32,uint256,uint256,uint256)";
+248	 _eventParam = abi.encode(_vault, ilk, _amt, getId, setId);
+249	 }
+250	 function withdrawLiquidated( uint256 vault, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+251	 uint _amt = getUint(getId, amt);
+252	 (bytes32 ilk, address urn) = getVaultData(vault);
+253	 address colAddr = instaMapping.gemJoinMapping(ilk);
+254	 TokenJoinInterface tokenJoinContract = TokenJoinInterface(colAddr);
+255	 uint _amt18;
+256	 if (_amt == uint(-1)) {
+257	 _amt18 = VatLike(managerContract.vat()).gem(ilk, urn);
+258	 _amt = convert18ToDec(tokenJoinContract.dec(), _amt18);
+259	 }
+260	 else {
+261	 _amt18 = convertTo18(tokenJoinContract.dec(), _amt);
+262	 }
+263	 managerContract.flux( vault, address(this), _amt18 );
+264	 TokenInterface tokenContract = tokenJoinContract.gem();
+265	 tokenJoinContract.exit(address(this), _amt);
+266	 if (isEth(address(tokenContract))) {
+267	 tokenContract.withdraw(_amt);
+268	 }
+269	 setUint(setId, _amt);
+270	 _eventName = "LogWithdrawLiquidated(uint256,bytes32,uint256,uint256,uint256)";
+271	 _eventParam = abi.encode(vault, ilk, _amt, getId, setId);
+272	 }
+273	 struct MakerData {
+274	 uint _vault;
+275	 address colAddr;
+276	 TokenJoinInterface tokenJoinContract;
+277	 VatLike vatContract;
+278	 TokenInterface tokenContract;
+279	 }
+280	 function depositAndBorrow( uint256 vault, uint256 depositAmt, uint256 borrowAmt, uint256 getIdDeposit, uint256 getIdBorrow, uint256 setIdDeposit, uint256 setIdBorrow ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+281	 MakerData memory makerData;
+282	 uint _amtDeposit = getUint(getIdDeposit, depositAmt);
+283	 uint _amtBorrow = getUint(getIdBorrow, borrowAmt);
+284	 makerData._vault = getVault(vault);
+285	 (bytes32 ilk, address urn) = getVaultData(makerData._vault);
+286	 makerData.colAddr = instaMapping.gemJoinMapping(ilk);
+287	 makerData.tokenJoinContract = TokenJoinInterface(makerData.colAddr);
+288	 makerData.vatContract = VatLike(managerContract.vat());
+289	 makerData.tokenContract = makerData.tokenJoinContract.gem();
+290	 if (isEth(address(makerData.tokenContract))) {
+291	 _amtDeposit = _amtDeposit == uint(-1) ? address(this).balance : _amtDeposit;
+292	 makerData.tokenContract.deposit{
+293	 value: _amtDeposit}
+294	 ();
+295	 }
+296	 else {
+297	 _amtDeposit = _amtDeposit == uint(-1) ? makerData.tokenContract.balanceOf(address(this)) : _amtDeposit;
+298	 }
+299	 makerData.tokenContract.approve(address(makerData.colAddr), _amtDeposit);
+300	 makerData.tokenJoinContract.join(urn, _amtDeposit);
+301	 managerContract.frob( makerData._vault, toInt(convertTo18(makerData.tokenJoinContract.dec(), _amtDeposit)), _getBorrowAmt( address(makerData.vatContract), urn, ilk, _amtBorrow ) );
+302	 managerContract.move( makerData._vault, address(this), toRad(_amtBorrow) );
+303	 if (makerData.vatContract.can(address(this), address(daiJoinContract)) == 0) {
+304	 makerData.vatContract.hope(address(daiJoinContract));
+305	 }
+306	 daiJoinContract.exit(address(this), _amtBorrow);
+307	 setUint(setIdDeposit, _amtDeposit);
+308	 setUint(setIdBorrow, _amtBorrow);
+309	 _eventName = "LogDepositAndBorrow(uint256,bytes32,uint256,uint256,uint256,uint256,uint256,uint256)";
+310	 _eventParam = abi.encode( makerData._vault, ilk, _amtDeposit, _amtBorrow, getIdDeposit, getIdBorrow, setIdDeposit, setIdBorrow );
+311	 }
+312	 function exitDai( uint256 vault, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+313	 uint _amt = getUint(getId, amt);
+314	 uint _vault = getVault(vault);
+315	 (bytes32 ilk, address urn) = getVaultData(_vault);
+316	 VatLike vatContract = VatLike(managerContract.vat());
+317	 if(_amt == uint(-1)) {
+318	 _amt = vatContract.dai(urn);
+319	 _amt = _amt / 10 ** 27;
+320	 }
+321	 managerContract.move( _vault, address(this), toRad(_amt) );
+322	 if (vatContract.can(address(this), address(daiJoinContract)) == 0) {
+323	 vatContract.hope(address(daiJoinContract));
+324	 }
+325	 daiJoinContract.exit(address(this), _amt);
+326	 setUint(setId, _amt);
+327	 _eventName = "LogExitDai(uint256,bytes32,uint256,uint256,uint256)";
+328	 _eventParam = abi.encode(_vault, ilk, _amt, getId, setId);
+329	 }
+330	 function depositDai( uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+331	 uint _amt = getUint(getId, amt);
+332	 _amt = _amt == uint(-1) ? daiJoinContract.dai().balanceOf(address(this)) : _amt;
+333	 VatLike vat = daiJoinContract.vat();
+334	 uint chi = potContract.drip();
+335	 daiJoinContract.dai().approve(address(daiJoinContract), _amt);
+336	 daiJoinContract.join(address(this), _amt);
+337	 if (vat.can(address(this), address(potContract)) == 0) {
+338	 vat.hope(address(potContract));
+339	 }
+340	 potContract.join(mul(_amt, RAY) / chi);
+341	 setUint(setId, _amt);
+342	 _eventName = "LogDepositDai(uint256,uint256,uint256)";
+343	 _eventParam = abi.encode(_amt, getId, setId);
+344	 }
+345	 function withdrawDai( uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+346	 uint _amt = getUint(getId, amt);
+347	 VatLike vat = daiJoinContract.vat();
+348	 uint chi = potContract.drip();
+349	 uint pie;
+350	 if (_amt == uint(-1)) {
+351	 pie = potContract.pie(address(this));
+352	 _amt = mul(chi, pie) / RAY;
+353	 }
+354	 else {
+355	 pie = mul(_amt, RAY) / chi;
+356	 }
+357	 potContract.exit(pie);
+358	 uint bal = vat.dai(address(this));
+359	 if (vat.can(address(this), address(daiJoinContract)) == 0) {
+360	 vat.hope(address(daiJoinContract));
+361	 }
+362	 daiJoinContract.exit( address(this), bal >= mul(_amt, RAY) ? _amt : bal / RAY );
+363	 setUint(setId, _amt);
+364	 _eventName = "LogWithdrawDai(uint256,uint256,uint256)";
+365	 _eventParam = abi.encode(_amt, getId, setId);
+366	 }
+367	 }
+368	 contract ConnectV2Maker is MakerResolver {
+369	 string public constant name = "MakerDao-v1";
+370	 }
+371	 pragma solidity ^0.7.0;
+372	 interface TokenInterface {
+373	 function approve(address, uint256) external;
+374	 function transfer(address, uint) external;
+375	 function transferFrom(address, address, uint) external;
+376	 function deposit() external payable;
+377	 function withdraw(uint) external;
+378	 function balanceOf(address) external view returns (uint);
+379	 function decimals() external view returns (uint);
+380	 }
+381	 interface MemoryInterface {
+382	 function getUint(uint id) external returns (uint num);
+383	 function setUint(uint id, uint val) external;
+384	 }
+385	 interface InstaMapping {
+386	 function cTokenMapping(address) external view returns (address);
+387	 function gemJoinMapping(bytes32) external view returns (address);
+388	 }
+389	 interface AccountInterface {
+390	 function enable(address) external;
+391	 function disable(address) external;
+392	 function isAuth(address) external view returns (bool);
+393	 }
+394	 pragma solidity ^0.7.0;
+395	 interface ManagerLike {
+396	 function cdpCan(address, uint, address) external view returns (uint);
+397	 function ilks(uint) external view returns (bytes32);
+398	 function last(address) external view returns (uint);
+399	 function count(address) external view returns (uint);
+400	 function owns(uint) external view returns (address);
+401	 function urns(uint) external view returns (address);
+402	 function vat() external view returns (address);
+403	 function open(bytes32, address) external returns (uint);
+404	 function give(uint, address) external;
+405	 function frob(uint, int, int) external;
+406	 function flux(uint, address, uint) external;
+407	 function move(uint, address, uint) external;
+408	 }
+409	 interface VatLike {
+410	 function can(address, address) external view returns (uint);
+411	 function ilks(bytes32) external view returns (uint, uint, uint, uint, uint);
+412	 function dai(address) external view returns (uint);
+413	 function urns(bytes32, address) external view returns (uint, uint);
+414	 function frob( bytes32, address, address, address, int, int ) external;
+415	 function hope(address) external;
+416	 function move(address, address, uint) external;
+417	 function gem(bytes32, address) external view returns (uint);
+418	 }
+419	 interface TokenJoinInterface {
+420	 function dec() external returns (uint);
+421	 function gem() external returns (TokenInterface);
+422	 function join(address, uint) external payable;
+423	 function exit(address, uint) external;
+424	 }
+425	 interface DaiJoinInterface {
+426	 function vat() external returns (VatLike);
+427	 function dai() external returns (TokenInterface);
+428	 function join(address, uint) external payable;
+429	 function exit(address, uint) external;
+430	 }
+431	 interface JugLike {
+432	 function drip(bytes32) external returns (uint);
+433	 }
+434	 interface PotLike {
+435	 function pie(address) external view returns (uint);
+436	 function drip() external returns (uint);
+437	 function join(uint) external;
+438	 function exit(uint) external;
+439	 }
+440	 pragma solidity >=0.6.0 <0.8.0;
+441	 library SafeMath {
+442	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+443	 uint256 c = a + b;
+444	 if (c < a) return (false, 0);
+445	 return (true, c);
+446	 }
+447	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+448	 if (b > a) return (false, 0);
+449	 return (true, a - b);
+450	 }
+451	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+452	 if (a == 0) return (true, 0);
+453	 uint256 c = a * b;
+454	 if (c / a != b) return (false, 0);
+455	 return (true, c);
+456	 }
+457	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+458	 if (b == 0) return (false, 0);
+459	 return (true, a / b);
+460	 }
+461	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+462	 if (b == 0) return (false, 0);
+463	 return (true, a % b);
+464	 }
+465	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+466	 uint256 c = a + b;
+467	 require(c >= a, "SafeMath: addition overflow");
+468	 return c;
+469	 }
+470	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+471	 require(b <= a, "SafeMath: subtraction overflow");
+472	 return a - b;
+473	 }
+474	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+475	 if (a == 0) return 0;
+476	 uint256 c = a * b;
+477	 require(c / a == b, "SafeMath: multiplication overflow");
+478	 return c;
+479	 }
+480	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+481	 require(b > 0, "SafeMath: division by zero");
+482	 return a / b;
+483	 }
+484	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+485	 require(b > 0, "SafeMath: modulo by zero");
+486	 return a % b;
+487	 }
+488	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+489	 require(b <= a, errorMessage);
+490	 return a - b;
+491	 }
+492	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+493	 require(b > 0, errorMessage);
+494	 return a / b;
+495	 }
+496	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+497	 require(b > 0, errorMessage);
+498	 return a % b;
+499	 }
+500	 }

@@ -1,0 +1,325 @@
+row number 
+1	               pragma solidity ^0.8.4;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address) {
+4	 return msg.sender;
+5	 }
+6	 }
+7	 interface IERC20 {
+8	 function totalSupply() external view returns (uint256);
+9	 function balanceOf(address account) external view returns (uint256);
+10	 function transfer(address recipient, uint256 amount) external returns (bool);
+11	 function allowance(address owner, address spender) external view returns (uint256);
+12	 function approve(address spender, uint256 amount) external returns (bool);
+13	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+14	 event Transfer(address indexed from, address indexed to, uint256 value);
+15	 event Approval( address indexed owner, address indexed spender, uint256 value );
+16	 }
+17	 contract Ownable is Context {
+18	 address private _owner;
+19	 address private _previousOwner;
+20	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+21	 constructor() {
+22	 address msgSender = _msgSender();
+23	 _owner = msgSender;
+24	 emit OwnershipTransferred(address(0), msgSender);
+25	 }
+26	 function owner() public view returns (address) {
+27	 return _owner;
+28	 }
+29	 modifier onlyOwner() {
+30	 require(_owner == _msgSender(), "Ownable: caller is not the owner");
+31	 _;
+32	 }
+33	 function renounceOwnership() public virtual onlyOwner {
+34	 emit OwnershipTransferred(_owner, address(0));
+35	 _owner = address(0);
+36	 }
+37	 function transferOwnership(address newOwner) public virtual onlyOwner {
+38	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+39	 emit OwnershipTransferred(_owner, newOwner);
+40	 _owner = newOwner;
+41	 }
+42	 }
+43	 library SafeMath {
+44	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+45	 uint256 c = a + b;
+46	 require(c >= a, "SafeMath: addition overflow");
+47	 return c;
+48	 }
+49	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+50	 return sub(a, b, "SafeMath: subtraction overflow");
+51	 }
+52	 function sub( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+53	 require(b <= a, errorMessage);
+54	 uint256 c = a - b;
+55	 return c;
+56	 }
+57	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+58	 if (a == 0) {
+59	 return 0;
+60	 }
+61	 uint256 c = a * b;
+62	 require(c / a == b, "SafeMath: multiplication overflow");
+63	 return c;
+64	 }
+65	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+66	 return div(a, b, "SafeMath: division by zero");
+67	 }
+68	 function div( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+69	 require(b > 0, errorMessage);
+70	 uint256 c = a / b;
+71	 return c;
+72	 }
+73	 }
+74	 interface IUniswapV2Factory {
+75	 function createPair(address tokenA, address tokenB) external returns (address pair);
+76	 }
+77	 interface IUniswapV2Router02 {
+78	 function swapExactTokensForETHSupportingFeeOnTransferTokens( uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline ) external;
+79	 function factory() external pure returns (address);
+80	 function WETH() external pure returns (address);
+81	 function addLiquidityETH( address token, uint256 amountTokenDesired, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline ) external payable returns ( uint256 amountToken, uint256 amountETH, uint256 liquidity );
+82	 }
+83	 contract HolyCatInu is Context, IERC20, Ownable {
+84	 using SafeMath for uint256;
+85	 string private constant _name = "Holy Cat Inu";
+86	 string private constant _symbol = "HOLY";
+87	 uint8 private constant _decimals = 9;
+88	 mapping(address => uint256) private _rOwned;
+89	 mapping(address => uint256) private _tOwned;
+90	 mapping(address => mapping(address => uint256)) private _allowances;
+91	 mapping(address => bool) private _isExcludedFromFee;
+92	 uint256 private constant MAX = ~uint256(0);
+93	 uint256 private constant _tTotal = 100000000000 * 10**9;
+94	 uint256 private _rTotal = (MAX - (MAX % _tTotal));
+95	 uint256 private _tFeeTotal;
+96	 uint256 private _redisFeeOnBuy = 0;
+97	 uint256 private _taxFeeOnBuy = 2;
+98	 uint256 private _redisFeeOnSell = 0;
+99	 uint256 private _taxFeeOnSell = 3;
+100	 uint256 private _redisFee = _redisFeeOnSell;
+101	 uint256 private _taxFee = _taxFeeOnSell;
+102	 uint256 private _previousredisFee = _redisFee;
+103	 uint256 private _previoustaxFee = _taxFee;
+104	 mapping(address => uint256) private cooldown;
+105	 address payable private _developmentAddress = payable(0x60b7eCdd82406fb682fbA170fDA2aD8a7771B7c9);
+106	 address payable private _marketingAddress = payable(0x60b7eCdd82406fb682fbA170fDA2aD8a7771B7c9);
+107	 IUniswapV2Router02 public uniswapV2Router;
+108	 address public uniswapV2Pair;
+109	 bool private tradingOpen = true;
+110	 bool private inSwap = false;
+111	 bool private swapEnabled = true;
+112	 uint256 public _maxTxAmount = 1000000000 * 10**9;
+113	 uint256 public _maxWalletSize = 2000000000 * 10**9;
+114	 uint256 public _swapTokensAtAmount = 100000000 * 10**9;
+115	 event MaxTxAmountUpdated(uint256 _maxTxAmount);
+116	 modifier lockTheSwap {
+117	 inSwap = true;
+118	 _;
+119	 inSwap = false;
+120	 }
+121	 constructor() {
+122	 _rOwned[_msgSender()] = _rTotal;
+123	 IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
+124	 uniswapV2Router = _uniswapV2Router;
+125	 uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory()) .createPair(address(this), _uniswapV2Router.WETH());
+126	 _isExcludedFromFee[owner()] = true;
+127	 _isExcludedFromFee[address(this)] = true;
+128	 _isExcludedFromFee[_developmentAddress] = true;
+129	 _isExcludedFromFee[_marketingAddress] = true;
+130	 emit Transfer(address(0), _msgSender(), _tTotal);
+131	 }
+132	 function name() public pure returns (string memory) {
+133	 return _name;
+134	 }
+135	 function symbol() public pure returns (string memory) {
+136	 return _symbol;
+137	 }
+138	 function decimals() public pure returns (uint8) {
+139	 return _decimals;
+140	 }
+141	 function totalSupply() public pure override returns (uint256) {
+142	 return _tTotal;
+143	 }
+144	 function balanceOf(address account) public view override returns (uint256) {
+145	 return tokenFromReflection(_rOwned[account]);
+146	 }
+147	 function transfer(address recipient, uint256 amount) public override returns (bool) {
+148	 _transfer(_msgSender(), recipient, amount);
+149	 return true;
+150	 }
+151	 function allowance(address owner, address spender) public view override returns (uint256) {
+152	 return _allowances[owner][spender];
+153	 }
+154	 function approve(address spender, uint256 amount) public override returns (bool) {
+155	 _approve(_msgSender(), spender, amount);
+156	 return true;
+157	 }
+158	 function transferFrom( address sender, address recipient, uint256 amount ) public override returns (bool) {
+159	 _transfer(sender, recipient, amount);
+160	 _approve( sender, _msgSender(), _allowances[sender][_msgSender()].sub( amount, "ERC20: transfer amount exceeds allowance" ) );
+161	 return true;
+162	 }
+163	 function tokenFromReflection(uint256 rAmount) private view returns (uint256) {
+164	 require( rAmount <= _rTotal, "Amount must be less than total reflections" );
+165	 uint256 currentRate = _getRate();
+166	 return rAmount.div(currentRate);
+167	 }
+168	 function removeAllFee() private {
+169	 if (_redisFee == 0 && _taxFee == 0) return;
+170	 _previousredisFee = _redisFee;
+171	 _previoustaxFee = _taxFee;
+172	 _redisFee = 0;
+173	 _taxFee = 0;
+174	 }
+175	 function restoreAllFee() private {
+176	 _redisFee = _previousredisFee;
+177	 _taxFee = _previoustaxFee;
+178	 }
+179	 function _approve( address owner, address spender, uint256 amount ) private {
+180	 require(owner != address(0), "ERC20: approve from the zero address");
+181	 require(spender != address(0), "ERC20: approve to the zero address");
+182	 _allowances[owner][spender] = amount;
+183	 emit Approval(owner, spender, amount);
+184	 }
+185	 function _transfer( address from, address to, uint256 amount ) private {
+186	 require(from != address(0), "ERC20: transfer from the zero address");
+187	 require(to != address(0), "ERC20: transfer to the zero address");
+188	 require(amount > 0, "Transfer amount must be greater than zero");
+189	 if (from != owner() && to != owner()) {
+190	 if (!tradingOpen) {
+191	 require(from == owner(), "TOKEN: This account cannot send tokens until trading is enabled");
+192	 }
+193	 require(amount <= _maxTxAmount, "TOKEN: Max Transaction Limit");
+194	 if(to != uniswapV2Pair) {
+195	 require(balanceOf(to) + amount < _maxWalletSize, "TOKEN: Balance exceeds wallet size!");
+196	 }
+197	 uint256 contractTokenBalance = balanceOf(address(this));
+198	 bool canSwap = contractTokenBalance >= _swapTokensAtAmount;
+199	 if(contractTokenBalance >= _maxTxAmount) {
+200	 contractTokenBalance = _maxTxAmount;
+201	 }
+202	 if (canSwap && !inSwap && from != uniswapV2Pair && swapEnabled && !_isExcludedFromFee[from] && !_isExcludedFromFee[to]) {
+203	 swapTokensForEth(contractTokenBalance);
+204	 uint256 contractETHBalance = address(this).balance;
+205	 if (contractETHBalance > 0) {
+206	 sendETHToFee(address(this).balance);
+207	 }
+208	 }
+209	 }
+210	 bool takeFee = true;
+211	 if ((_isExcludedFromFee[from] || _isExcludedFromFee[to]) || (from != uniswapV2Pair && to != uniswapV2Pair)) {
+212	 takeFee = false;
+213	 }
+214	 else {
+215	 if(from == uniswapV2Pair && to != address(uniswapV2Router)) {
+216	 _redisFee = _redisFeeOnBuy;
+217	 _taxFee = _taxFeeOnBuy;
+218	 }
+219	 if (to == uniswapV2Pair && from != address(uniswapV2Router)) {
+220	 _redisFee = _redisFeeOnSell;
+221	 _taxFee = _taxFeeOnSell;
+222	 }
+223	 }
+224	 _tokenTransfer(from, to, amount, takeFee);
+225	 }
+226	 function swapTokensForEth(uint256 tokenAmount) private lockTheSwap {
+227	 address[] memory path = new address[](2);
+228	 path[0] = address(this);
+229	 path[1] = uniswapV2Router.WETH();
+230	 _approve(address(this), address(uniswapV2Router), tokenAmount);
+231	 uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens( tokenAmount, 0, path, address(this), block.timestamp );
+232	 }
+233	 function sendETHToFee(uint256 amount) private {
+234	 _developmentAddress.transfer(amount.div(2));
+235	 _marketingAddress.transfer(amount.div(2));
+236	 }
+237	 function setTrading() public onlyOwner {
+238	 tradingOpen = true;
+239	 }
+240	 function manualswap() external {
+241	 require(_msgSender() == _developmentAddress || _msgSender() == _marketingAddress);
+242	 uint256 contractBalance = balanceOf(address(this));
+243	 swapTokensForEth(contractBalance);
+244	 }
+245	 function manualsend() external {
+246	 require(_msgSender() == _developmentAddress || _msgSender() == _marketingAddress);
+247	 uint256 contractETHBalance = address(this).balance;
+248	 sendETHToFee(contractETHBalance);
+249	 }
+250	 function _tokenTransfer( address sender, address recipient, uint256 amount, bool takeFee ) private {
+251	 if (!takeFee) removeAllFee();
+252	 _transferStandard(sender, recipient, amount);
+253	 if (!takeFee) restoreAllFee();
+254	 }
+255	 function _transferStandard( address sender, address recipient, uint256 tAmount ) private {
+256	 ( uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 tTeam ) = _getValues(tAmount);
+257	 _rOwned[sender] = _rOwned[sender].sub(rAmount);
+258	 _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);
+259	 _takeTeam(tTeam);
+260	 _reflectFee(rFee, tFee);
+261	 emit Transfer(sender, recipient, tTransferAmount);
+262	 }
+263	 function _takeTeam(uint256 tTeam) private {
+264	 uint256 currentRate = _getRate();
+265	 uint256 rTeam = tTeam.mul(currentRate);
+266	 _rOwned[address(this)] = _rOwned[address(this)].add(rTeam);
+267	 }
+268	 function _reflectFee(uint256 rFee, uint256 tFee) private {
+269	 _rTotal = _rTotal.sub(rFee);
+270	 _tFeeTotal = _tFeeTotal.add(tFee);
+271	 }
+272	 receive() external payable {
+273	 }
+274	 function _getValues(uint256 tAmount) private view returns ( uint256, uint256, uint256, uint256, uint256, uint256 ) {
+275	 (uint256 tTransferAmount, uint256 tFee, uint256 tTeam) = _getTValues(tAmount, _redisFee, _taxFee);
+276	 uint256 currentRate = _getRate();
+277	 (uint256 rAmount, uint256 rTransferAmount, uint256 rFee) = _getRValues(tAmount, tFee, tTeam, currentRate);
+278	 return (rAmount, rTransferAmount, rFee, tTransferAmount, tFee, tTeam);
+279	 }
+280	 function _getTValues( uint256 tAmount, uint256 redisFee, uint256 taxFee ) private pure returns ( uint256, uint256, uint256 ) {
+281	 uint256 tFee = tAmount.mul(redisFee).div(100);
+282	 uint256 tTeam = tAmount.mul(taxFee).div(100);
+283	 uint256 tTransferAmount = tAmount.sub(tFee).sub(tTeam);
+284	 return (tTransferAmount, tFee, tTeam);
+285	 }
+286	 function _getRValues( uint256 tAmount, uint256 tFee, uint256 tTeam, uint256 currentRate ) private pure returns ( uint256, uint256, uint256 ) {
+287	 uint256 rAmount = tAmount.mul(currentRate);
+288	 uint256 rFee = tFee.mul(currentRate);
+289	 uint256 rTeam = tTeam.mul(currentRate);
+290	 uint256 rTransferAmount = rAmount.sub(rFee).sub(rTeam);
+291	 return (rAmount, rTransferAmount, rFee);
+292	 }
+293	 function _getRate() private view returns (uint256) {
+294	 (uint256 rSupply, uint256 tSupply) = _getCurrentSupply();
+295	 return rSupply.div(tSupply);
+296	 }
+297	 function _getCurrentSupply() private view returns (uint256, uint256) {
+298	 uint256 rSupply = _rTotal;
+299	 uint256 tSupply = _tTotal;
+300	 if (rSupply < _rTotal.div(_tTotal)) return (_rTotal, _tTotal);
+301	 return (rSupply, tSupply);
+302	 }
+303	 function setFee(uint256 taxFeeOnSell) public onlyOwner {
+304	 require(taxFeeOnSell < 10, "Tax fee cannot be more than 10%");
+305	 _taxFeeOnSell = taxFeeOnSell;
+306	 }
+307	 function setMinSwapTokensThreshold(uint256 swapTokensAtAmount) public onlyOwner {
+308	 _swapTokensAtAmount = swapTokensAtAmount;
+309	 }
+310	 function toggleSwap(bool _swapEnabled) public onlyOwner {
+311	 swapEnabled = _swapEnabled;
+312	 }
+313	 function setMaxTxnAmount(uint256 maxTxAmount) public onlyOwner {
+314	 _maxTxAmount = maxTxAmount;
+315	 }
+316	 function setMaxWalletSize(uint256 maxWalletSize) public onlyOwner {
+317	 _maxWalletSize = maxWalletSize;
+318	 }
+319	 function excludeMultipleAccountsFromFees(address[] calldata accounts, bool excluded) public onlyOwner {
+320	 for(uint256 i = 0; i < accounts.length; i++) {
+321	 _isExcludedFromFee[accounts[i]] = excluded;
+322	 }
+323	 }
+324	 }

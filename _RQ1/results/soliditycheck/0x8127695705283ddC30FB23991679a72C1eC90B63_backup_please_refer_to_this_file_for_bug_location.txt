@@ -1,0 +1,723 @@
+row number 
+1	          pragma solidity ^0.8.0;
+2	 interface IERC165 {
+3	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+4	 }
+5	 pragma solidity ^0.8.0;
+6	 interface IERC1155 is IERC165 {
+7	 event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value);
+8	 event TransferBatch( address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values );
+9	 event ApprovalForAll(address indexed account, address indexed operator, bool approved);
+10	 event URI(string value, uint256 indexed id);
+11	 function balanceOf(address account, uint256 id) external view returns (uint256);
+12	 function balanceOfBatch(address[] calldata accounts, uint256[] calldata ids) external view returns (uint256[] memory);
+13	 function setApprovalForAll(address operator, bool approved) external;
+14	 function isApprovedForAll(address account, address operator) external view returns (bool);
+15	 function safeTransferFrom( address from, address to, uint256 id, uint256 amount, bytes calldata data ) external;
+16	 function safeBatchTransferFrom( address from, address to, uint256[] calldata ids, uint256[] calldata amounts, bytes calldata data ) external;
+17	 }
+18	 pragma solidity ^0.8.0;
+19	 abstract contract Context {
+20	 function _msgSender() internal view virtual returns (address) {
+21	 return msg.sender;
+22	 }
+23	 function _msgData() internal view virtual returns (bytes calldata) {
+24	 return msg.data;
+25	 }
+26	 }
+27	 pragma solidity ^0.8.0;
+28	 interface IERC20 {
+29	 event Transfer(address indexed from, address indexed to, uint256 value);
+30	 event Approval(address indexed owner, address indexed spender, uint256 value);
+31	 function totalSupply() external view returns (uint256);
+32	 function balanceOf(address account) external view returns (uint256);
+33	 function transfer(address to, uint256 amount) external returns (bool);
+34	 function allowance(address owner, address spender) external view returns (uint256);
+35	 function approve(address spender, uint256 amount) external returns (bool);
+36	 function transferFrom( address from, address to, uint256 amount ) external returns (bool);
+37	 }
+38	 pragma solidity ^0.8.0;
+39	 abstract contract ERC165 is IERC165 {
+40	 function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+41	 return interfaceId == type(IERC165).interfaceId;
+42	 }
+43	 }
+44	 pragma solidity ^0.8.0;
+45	 interface IERC1155MetadataURI is IERC1155 {
+46	 function uri(uint256 id) external view returns (string memory);
+47	 }
+48	 pragma solidity ^0.8.0;
+49	 contract ERC1155 is Context, ERC165, IERC1155, IERC1155MetadataURI {
+50	 using Address for address;
+51	 mapping(uint256 => mapping(address => uint256)) private _balances;
+52	 mapping(address => mapping(address => bool)) private _operatorApprovals;
+53	 string private _uri;
+54	 constructor(string memory uri_) {
+55	 _setURI(uri_);
+56	 }
+57	 function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, IERC165) returns (bool) {
+58	 return interfaceId == type(IERC1155).interfaceId || interfaceId == type(IERC1155MetadataURI).interfaceId || super.supportsInterface(interfaceId);
+59	 }
+60	 function uri(uint256) public view virtual override returns (string memory) {
+61	 return _uri;
+62	 }
+63	 function balanceOf(address account, uint256 id) public view virtual override returns (uint256) {
+64	 require(account != address(0), "ERC1155: address zero is not a valid owner");
+65	 return _balances[id][account];
+66	 }
+67	 function balanceOfBatch(address[] memory accounts, uint256[] memory ids) public view virtual override returns (uint256[] memory) {
+68	 require(accounts.length == ids.length, "ERC1155: accounts and ids length mismatch");
+69	 uint256[] memory batchBalances = new uint256[](accounts.length);
+70	 for (uint256 i = 0; i < accounts.length; ++i) {
+71	 batchBalances[i] = balanceOf(accounts[i], ids[i]);
+72	 }
+73	 return batchBalances;
+74	 }
+75	 function setApprovalForAll(address operator, bool approved) public virtual override {
+76	 _setApprovalForAll(_msgSender(), operator, approved);
+77	 }
+78	 function isApprovedForAll(address account, address operator) public view virtual override returns (bool) {
+79	 return _operatorApprovals[account][operator];
+80	 }
+81	 function safeTransferFrom( address from, address to, uint256 id, uint256 amount, bytes memory data ) public virtual override {
+82	 require( from == _msgSender() || isApprovedForAll(from, _msgSender()), "ERC1155: caller is not token owner nor approved" );
+83	 _safeTransferFrom(from, to, id, amount, data);
+84	 }
+85	 function safeBatchTransferFrom( address from, address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) public virtual override {
+86	 require( from == _msgSender() || isApprovedForAll(from, _msgSender()), "ERC1155: caller is not token owner nor approved" );
+87	 _safeBatchTransferFrom(from, to, ids, amounts, data);
+88	 }
+89	 function _safeTransferFrom( address from, address to, uint256 id, uint256 amount, bytes memory data ) internal virtual {
+90	 require(to != address(0), "ERC1155: transfer to the zero address");
+91	 address operator = _msgSender();
+92	 uint256[] memory ids = _asSingletonArray(id);
+93	 uint256[] memory amounts = _asSingletonArray(amount);
+94	 _beforeTokenTransfer(operator, from, to, ids, amounts, data);
+95	 uint256 fromBalance = _balances[id][from];
+96	 require(fromBalance >= amount, "ERC1155: insufficient balance for transfer");
+97	 unchecked {
+98	 _balances[id][from] = fromBalance - amount;
+99	 }
+100	 _balances[id][to] += amount;
+101	 emit TransferSingle(operator, from, to, id, amount);
+102	 _afterTokenTransfer(operator, from, to, ids, amounts, data);
+103	 _doSafeTransferAcceptanceCheck(operator, from, to, id, amount, data);
+104	 }
+105	 function _safeBatchTransferFrom( address from, address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) internal virtual {
+106	 require(ids.length == amounts.length, "ERC1155: ids and amounts length mismatch");
+107	 require(to != address(0), "ERC1155: transfer to the zero address");
+108	 address operator = _msgSender();
+109	 _beforeTokenTransfer(operator, from, to, ids, amounts, data);
+110	 for (uint256 i = 0; i < ids.length; ++i) {
+111	 uint256 id = ids[i];
+112	 uint256 amount = amounts[i];
+113	 uint256 fromBalance = _balances[id][from];
+114	 require(fromBalance >= amount, "ERC1155: insufficient balance for transfer");
+115	 unchecked {
+116	 _balances[id][from] = fromBalance - amount;
+117	 }
+118	 _balances[id][to] += amount;
+119	 }
+120	 emit TransferBatch(operator, from, to, ids, amounts);
+121	 _afterTokenTransfer(operator, from, to, ids, amounts, data);
+122	 _doSafeBatchTransferAcceptanceCheck(operator, from, to, ids, amounts, data);
+123	 }
+124	 function _setURI(string memory newuri) internal virtual {
+125	 _uri = newuri;
+126	 }
+127	 function _mint( address to, uint256 id, uint256 amount, bytes memory data ) internal virtual {
+128	 require(to != address(0), "ERC1155: mint to the zero address");
+129	 address operator = _msgSender();
+130	 uint256[] memory ids = _asSingletonArray(id);
+131	 uint256[] memory amounts = _asSingletonArray(amount);
+132	 _beforeTokenTransfer(operator, address(0), to, ids, amounts, data);
+133	 _balances[id][to] += amount;
+134	 emit TransferSingle(operator, address(0), to, id, amount);
+135	 _afterTokenTransfer(operator, address(0), to, ids, amounts, data);
+136	 _doSafeTransferAcceptanceCheck(operator, address(0), to, id, amount, data);
+137	 }
+138	 function _mintBatch( address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) internal virtual {
+139	 require(to != address(0), "ERC1155: mint to the zero address");
+140	 require(ids.length == amounts.length, "ERC1155: ids and amounts length mismatch");
+141	 address operator = _msgSender();
+142	 _beforeTokenTransfer(operator, address(0), to, ids, amounts, data);
+143	 for (uint256 i = 0; i < ids.length; i++) {
+144	 _balances[ids[i]][to] += amounts[i];
+145	 }
+146	 emit TransferBatch(operator, address(0), to, ids, amounts);
+147	 _afterTokenTransfer(operator, address(0), to, ids, amounts, data);
+148	 _doSafeBatchTransferAcceptanceCheck(operator, address(0), to, ids, amounts, data);
+149	 }
+150	 function _burn( address from, uint256 id, uint256 amount ) internal virtual {
+151	 require(from != address(0), "ERC1155: burn from the zero address");
+152	 address operator = _msgSender();
+153	 uint256[] memory ids = _asSingletonArray(id);
+154	 uint256[] memory amounts = _asSingletonArray(amount);
+155	 _beforeTokenTransfer(operator, from, address(0), ids, amounts, "");
+156	 uint256 fromBalance = _balances[id][from];
+157	 require(fromBalance >= amount, "ERC1155: burn amount exceeds balance");
+158	 unchecked {
+159	 _balances[id][from] = fromBalance - amount;
+160	 }
+161	 emit TransferSingle(operator, from, address(0), id, amount);
+162	 _afterTokenTransfer(operator, from, address(0), ids, amounts, "");
+163	 }
+164	 function _burnBatch( address from, uint256[] memory ids, uint256[] memory amounts ) internal virtual {
+165	 require(from != address(0), "ERC1155: burn from the zero address");
+166	 require(ids.length == amounts.length, "ERC1155: ids and amounts length mismatch");
+167	 address operator = _msgSender();
+168	 _beforeTokenTransfer(operator, from, address(0), ids, amounts, "");
+169	 for (uint256 i = 0; i < ids.length; i++) {
+170	 uint256 id = ids[i];
+171	 uint256 amount = amounts[i];
+172	 uint256 fromBalance = _balances[id][from];
+173	 require(fromBalance >= amount, "ERC1155: burn amount exceeds balance");
+174	 unchecked {
+175	 _balances[id][from] = fromBalance - amount;
+176	 }
+177	 }
+178	 emit TransferBatch(operator, from, address(0), ids, amounts);
+179	 _afterTokenTransfer(operator, from, address(0), ids, amounts, "");
+180	 }
+181	 function _setApprovalForAll( address owner, address operator, bool approved ) internal virtual {
+182	 require(owner != operator, "ERC1155: setting approval status for self");
+183	 _operatorApprovals[owner][operator] = approved;
+184	 emit ApprovalForAll(owner, operator, approved);
+185	 }
+186	 function _beforeTokenTransfer( address operator, address from, address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) internal virtual {
+187	 }
+188	 function _afterTokenTransfer( address operator, address from, address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) internal virtual {
+189	 }
+190	 function _doSafeTransferAcceptanceCheck( address operator, address from, address to, uint256 id, uint256 amount, bytes memory data ) private {
+191	 if (to.isContract()) {
+192	 try IERC1155Receiver(to).onERC1155Received(operator, from, id, amount, data) returns (bytes4 response) {
+193	 if (response != IERC1155Receiver.onERC1155Received.selector) {
+194	 revert("ERC1155: ERC1155Receiver rejected tokens");
+195	 }
+196	 }
+197	 catch Error(string memory reason) {
+198	 revert(reason);
+199	 }
+200	 catch {
+201	 revert("ERC1155: transfer to non ERC1155Receiver implementer");
+202	 }
+203	 }
+204	 }
+205	 function _doSafeBatchTransferAcceptanceCheck( address operator, address from, address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) private {
+206	 if (to.isContract()) {
+207	 try IERC1155Receiver(to).onERC1155BatchReceived(operator, from, ids, amounts, data) returns ( bytes4 response ) {
+208	 if (response != IERC1155Receiver.onERC1155BatchReceived.selector) {
+209	 revert("ERC1155: ERC1155Receiver rejected tokens");
+210	 }
+211	 }
+212	 catch Error(string memory reason) {
+213	 revert(reason);
+214	 }
+215	 catch {
+216	 revert("ERC1155: transfer to non ERC1155Receiver implementer");
+217	 }
+218	 }
+219	 }
+220	 function _asSingletonArray(uint256 element) private pure returns (uint256[] memory) {
+221	 uint256[] memory array = new uint256[](1);
+222	 array[0] = element;
+223	 return array;
+224	 }
+225	 }
+226	 pragma solidity ^0.8.0;
+227	 interface IERC20Metadata is IERC20 {
+228	 function name() external view returns (string memory);
+229	 function symbol() external view returns (string memory);
+230	 function decimals() external view returns (uint8);
+231	 }
+232	 pragma solidity ^0.8.0;
+233	 abstract contract Ownable is Context {
+234	 address private _owner;
+235	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+236	 constructor() {
+237	 _transferOwnership(_msgSender());
+238	 }
+239	 modifier onlyOwner() {
+240	 _checkOwner();
+241	 _;
+242	 }
+243	 function owner() public view virtual returns (address) {
+244	 return _owner;
+245	 }
+246	 function _checkOwner() internal view virtual {
+247	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+248	 }
+249	 function renounceOwnership() public virtual onlyOwner {
+250	 _transferOwnership(address(0));
+251	 }
+252	 function transferOwnership(address newOwner) public virtual onlyOwner {
+253	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+254	 _transferOwnership(newOwner);
+255	 }
+256	 function _transferOwnership(address newOwner) internal virtual {
+257	 address oldOwner = _owner;
+258	 _owner = newOwner;
+259	 emit OwnershipTransferred(oldOwner, newOwner);
+260	 }
+261	 }
+262	 pragma solidity ^0.8.0;
+263	 contract ERC20 is Context, IERC20, IERC20Metadata {
+264	 mapping(address => uint256) private _balances;
+265	 mapping(address => mapping(address => uint256)) private _allowances;
+266	 uint256 private _totalSupply;
+267	 string private _name;
+268	 string private _symbol;
+269	 constructor(string memory name_, string memory symbol_) {
+270	 _name = name_;
+271	 _symbol = symbol_;
+272	 }
+273	 function name() public view virtual override returns (string memory) {
+274	 return _name;
+275	 }
+276	 function symbol() public view virtual override returns (string memory) {
+277	 return _symbol;
+278	 }
+279	 function decimals() public view virtual override returns (uint8) {
+280	 return 18;
+281	 }
+282	 function totalSupply() public view virtual override returns (uint256) {
+283	 return _totalSupply;
+284	 }
+285	 function balanceOf(address account) public view virtual override returns (uint256) {
+286	 return _balances[account];
+287	 }
+288	 function transfer(address to, uint256 amount) public virtual override returns (bool) {
+289	 address owner = _msgSender();
+290	 _transfer(owner, to, amount);
+291	 return true;
+292	 }
+293	 function allowance(address owner, address spender) public view virtual override returns (uint256) {
+294	 return _allowances[owner][spender];
+295	 }
+296	 function approve(address spender, uint256 amount) public virtual override returns (bool) {
+297	 address owner = _msgSender();
+298	 _approve(owner, spender, amount);
+299	 return true;
+300	 }
+301	 function transferFrom( address from, address to, uint256 amount ) public virtual override returns (bool) {
+302	 address spender = _msgSender();
+303	 _spendAllowance(from, spender, amount);
+304	 _transfer(from, to, amount);
+305	 return true;
+306	 }
+307	 function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+308	 address owner = _msgSender();
+309	 _approve(owner, spender, allowance(owner, spender) + addedValue);
+310	 return true;
+311	 }
+312	 function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+313	 address owner = _msgSender();
+314	 uint256 currentAllowance = allowance(owner, spender);
+315	 require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+316	 unchecked {
+317	 _approve(owner, spender, currentAllowance - subtractedValue);
+318	 }
+319	 return true;
+320	 }
+321	 function _transfer( address from, address to, uint256 amount ) internal virtual {
+322	 require(from != address(0), "ERC20: transfer from the zero address");
+323	 require(to != address(0), "ERC20: transfer to the zero address");
+324	 _beforeTokenTransfer(from, to, amount);
+325	 uint256 fromBalance = _balances[from];
+326	 require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
+327	 unchecked {
+328	 _balances[from] = fromBalance - amount;
+329	 }
+330	 _balances[to] += amount;
+331	 emit Transfer(from, to, amount);
+332	 _afterTokenTransfer(from, to, amount);
+333	 }
+334	 function _mint(address account, uint256 amount) internal virtual {
+335	 require(account != address(0), "ERC20: mint to the zero address");
+336	 _beforeTokenTransfer(address(0), account, amount);
+337	 _totalSupply += amount;
+338	 _balances[account] += amount;
+339	 emit Transfer(address(0), account, amount);
+340	 _afterTokenTransfer(address(0), account, amount);
+341	 }
+342	 function _burn(address account, uint256 amount) internal virtual {
+343	 require(account != address(0), "ERC20: burn from the zero address");
+344	 _beforeTokenTransfer(account, address(0), amount);
+345	 uint256 accountBalance = _balances[account];
+346	 require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+347	 unchecked {
+348	 _balances[account] = accountBalance - amount;
+349	 }
+350	 _totalSupply -= amount;
+351	 emit Transfer(account, address(0), amount);
+352	 _afterTokenTransfer(account, address(0), amount);
+353	 }
+354	 function _approve( address owner, address spender, uint256 amount ) internal virtual {
+355	 require(owner != address(0), "ERC20: approve from the zero address");
+356	 require(spender != address(0), "ERC20: approve to the zero address");
+357	 _allowances[owner][spender] = amount;
+358	 emit Approval(owner, spender, amount);
+359	 }
+360	 function _spendAllowance( address owner, address spender, uint256 amount ) internal virtual {
+361	 uint256 currentAllowance = allowance(owner, spender);
+362	 if (currentAllowance != type(uint256).max) {
+363	 require(currentAllowance >= amount, "ERC20: insufficient allowance");
+364	 unchecked {
+365	 _approve(owner, spender, currentAllowance - amount);
+366	 }
+367	 }
+368	 }
+369	 function _beforeTokenTransfer( address from, address to, uint256 amount ) internal virtual {
+370	 }
+371	 function _afterTokenTransfer( address from, address to, uint256 amount ) internal virtual {
+372	 }
+373	 }
+374	 pragma solidity ^0.8.0;
+375	 abstract contract ERC1155Supply is ERC1155 {
+376	 mapping(uint256 => uint256) private _totalSupply;
+377	 function totalSupply(uint256 id) public view virtual returns (uint256) {
+378	 return _totalSupply[id];
+379	 }
+380	 function exists(uint256 id) public view virtual returns (bool) {
+381	 return ERC1155Supply.totalSupply(id) > 0;
+382	 }
+383	 function _beforeTokenTransfer( address operator, address from, address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) internal virtual override {
+384	 super._beforeTokenTransfer(operator, from, to, ids, amounts, data);
+385	 if (from == address(0)) {
+386	 for (uint256 i = 0; i < ids.length; ++i) {
+387	 _totalSupply[ids[i]] += amounts[i];
+388	 }
+389	 }
+390	 if (to == address(0)) {
+391	 for (uint256 i = 0; i < ids.length; ++i) {
+392	 uint256 id = ids[i];
+393	 uint256 amount = amounts[i];
+394	 uint256 supply = _totalSupply[id];
+395	 require(supply >= amount, "ERC1155: burn amount exceeds totalSupply");
+396	 unchecked {
+397	 _totalSupply[id] = supply - amount;
+398	 }
+399	 }
+400	 }
+401	 }
+402	 }
+403	 pragma solidity >=0.7.0;
+404	 enum Faction {
+405	 None, Jahjahrion, Breedorok, Foodrak, Pimpmyridian, Muskarion, Lamborgardoz, Schumarian, Creatron }
+406	 abstract contract Cosmog is ERC20, Ownable {
+407	 }
+408	 contract CosmoGangItems is ERC1155Supply, Ownable {
+409	 string public name = "CosmoGangItems";
+410	 string public symbol = "CGI";
+411	 uint256 public constant PRICE = 0 ether;
+412	 address public main_address;
+413	 address public token_address;
+414	 address public signer_address;
+415	 uint256 public daysBetweenMints = 30;
+416	 uint256 public cosmog_price = 150000000000000000000;
+417	 Cosmog public token_contract;
+418	 bool public isMinting = false;
+419	 mapping(Faction => string) faction_metadata_url_mapping;
+420	 mapping(uint256 => uint256) tokenIdLastMint;
+421	 mapping(address => bool) public approvedAddresses;
+422	 mapping(Faction => uint256) public factionSuccessProbability;
+423	 constructor(address _main_address, address _token_address, address _signer_address) ERC1155("") {
+424	 main_address = _main_address;
+425	 token_address = _token_address;
+426	 token_contract = Cosmog(token_address);
+427	 factionSuccessProbability[Faction.None] = 0;
+428	 factionSuccessProbability[Faction.Jahjahrion] = 100;
+429	 factionSuccessProbability[Faction.Breedorok] = 10;
+430	 factionSuccessProbability[Faction.Foodrak] = 100;
+431	 factionSuccessProbability[Faction.Pimpmyridian] = 100;
+432	 factionSuccessProbability[Faction.Muskarion] = 100;
+433	 factionSuccessProbability[Faction.Lamborgardoz] = 100;
+434	 factionSuccessProbability[Faction.Schumarian] = 100;
+435	 factionSuccessProbability[Faction.Creatron] = 100;
+436	 signer_address = _signer_address;
+437	 }
+438	 modifier onlyApproved() {
+439	 require(msg.sender == owner() || approvedAddresses[msg.sender], "caller is not approved");
+440	 _;
+441	 }
+442	 function toggleMintState() external onlyOwner {
+443	 if (isMinting) {
+444	 isMinting = false;
+445	 }
+446	 else {
+447	 isMinting = true;
+448	 }
+449	 }
+450	 function getFaction(uint256[] calldata tokenIds, uint8 v, bytes32 r, bytes32 s, uint256 deadline) private view returns (Faction) {
+451	 if (ecrecover(sha256(abi.encodePacked(msg.sender, tokenIds, uint(Faction.None), deadline)), v, r, s) == signer_address) {
+452	 return Faction.None;
+453	 }
+454	 else if (ecrecover(sha256(abi.encodePacked(msg.sender, tokenIds, uint(Faction.Jahjahrion), deadline)), v, r, s) == signer_address) {
+455	 return Faction.Jahjahrion;
+456	 }
+457	 else if (ecrecover(sha256(abi.encodePacked(msg.sender, tokenIds, uint(Faction.Breedorok), deadline)), v, r, s) == signer_address) {
+458	 return Faction.Breedorok;
+459	 }
+460	 else if (ecrecover(sha256(abi.encodePacked(msg.sender, tokenIds, uint(Faction.Foodrak), deadline)), v, r, s) == signer_address) {
+461	 return Faction.Foodrak;
+462	 }
+463	 else if (ecrecover(sha256(abi.encodePacked(msg.sender, tokenIds, uint(Faction.Pimpmyridian), deadline)), v, r, s) == signer_address) {
+464	 return Faction.Pimpmyridian;
+465	 }
+466	 else if (ecrecover(sha256(abi.encodePacked(msg.sender, tokenIds, uint(Faction.Muskarion), deadline)), v, r, s) == signer_address) {
+467	 return Faction.Muskarion;
+468	 }
+469	 else if (ecrecover(sha256(abi.encodePacked(msg.sender, tokenIds, uint(Faction.Lamborgardoz), deadline)), v, r, s) == signer_address) {
+470	 return Faction.Lamborgardoz;
+471	 }
+472	 else if (ecrecover(sha256(abi.encodePacked(msg.sender, tokenIds, uint(Faction.Schumarian), deadline)), v, r, s) == signer_address) {
+473	 return Faction.Schumarian;
+474	 }
+475	 else if (ecrecover(sha256(abi.encodePacked(msg.sender, tokenIds, uint(Faction.Creatron), deadline)), v, r, s) == signer_address) {
+476	 return Faction.Creatron;
+477	 }
+478	 else {
+479	 return Faction.None;
+480	 }
+481	 }
+482	 function canMint(uint256 tokenId) public view returns (bool) {
+483	 return block.timestamp >= tokenIdLastMint[tokenId] + 60 * 60 * 24 * daysBetweenMints;
+484	 }
+485	 function canMintBatch(uint256[] calldata tokenIds) public view returns (bool) {
+486	 for (uint256 idx = 0; idx < tokenIds.length; idx++) {
+487	 if (!canMint(tokenIds[idx])) {
+488	 return false;
+489	 }
+490	 }
+491	 return true;
+492	 }
+493	 function canMintMany(uint256[] calldata tokenIds) external view returns (bool[] memory) {
+494	 bool[] memory canMintArray = new bool[](tokenIds.length);
+495	 for (uint256 idx = 0; idx < tokenIds.length; idx++) {
+496	 uint tid = tokenIds[idx];
+497	 bool _canMint = canMint(tid);
+498	 canMintArray[idx] = _canMint;
+499	 }
+500	 return canMintArray;
+501	 }
+502	 function successMint(Faction faction) private view returns (bool) {
+503	 uint256 random;
+504	 random = randomBetween(0, 100);
+505	 if (random > (100 - factionSuccessProbability[faction])) {
+506	 return true;
+507	 }
+508	 return false;
+509	 }
+510	 function _mintNFT(address recipient, uint8 v, bytes32 r, bytes32 s, uint256[] calldata fromTokenIds, uint256 deadline, bool useProba) private returns (bool) {
+511	 Faction faction = getFaction(fromTokenIds, v, r, s, deadline);
+512	 require(canMintBatch(fromTokenIds), "tokenId already minted his periodic Cosmo Gang Item");
+513	 for (uint256 idx = 0; idx < fromTokenIds.length; idx++) {
+514	 uint tokenId = fromTokenIds[idx];
+515	 tokenIdLastMint[tokenId] = block.timestamp;
+516	 }
+517	 require(faction != Faction.None, "No faction found with these parameters");
+518	 uint256 nMint = fromTokenIds.length;
+519	 if (useProba) {
+520	 if (successMint(faction)) {
+521	 _mint(recipient, uint256(faction), nMint, "");
+522	 return true;
+523	 }
+524	 else {
+525	 return false;
+526	 }
+527	 }
+528	 else {
+529	 _mint(recipient, uint256(faction), nMint, "");
+530	 return true;
+531	 }
+532	 }
+533	 function mintNFT(address recipient, uint8 v, bytes32 r, bytes32 s, uint256[] calldata fromTokenIds, uint256 deadline) external payable returns (bool) {
+534	 uint256 nMint = fromTokenIds.length;
+535	 require(token_contract.allowance(msg.sender, address(this)) >= nMint * cosmog_price, "Inssuficient allowance for CosmoGangItems on your Cosmog");
+536	 require(isMinting, "Mint period have not started yet and you are not Whitelisted");
+537	 require(msg.value >= PRICE * nMint, "Not enough ETH to mint");
+538	 require(token_contract.balanceOf(msg.sender) >= nMint * cosmog_price, "Not enough Cosmogs to mint");
+539	 require(nMint > 0, "You have to mint more than 0");
+540	 if (cosmog_price != 0) {
+541	 token_contract.transferFrom(msg.sender, address(token_contract), nMint * cosmog_price);
+542	 }
+543	 return _mintNFT(recipient, v, r, s, fromTokenIds, deadline, true);
+544	 }
+545	 function giveaway(uint256 nMint, address recipient, Faction faction) public onlyApproved returns (bool) {
+546	 _mint(recipient, uint256(faction), nMint, "");
+547	 return true;
+548	 }
+549	 function burnNFT(address fromAddress, uint256 amount, Faction _faction) public {
+550	 require(msg.sender == fromAddress || msg.sender == owner() || approvedAddresses[msg.sender], "Must be called by owner of address or approved of contract");
+551	 require(balanceOf(fromAddress, uint256(_faction)) >= amount, "Not enough balance to burn this amount");
+552	 _burn(fromAddress, uint256(_faction), amount);
+553	 }
+554	 function setTokenAddress(address _token_address) external onlyOwner {
+555	 token_address = _token_address;
+556	 token_contract = Cosmog(token_address);
+557	 }
+558	 function setSignerAddress(address _signer_address) external onlyOwner {
+559	 signer_address = _signer_address;
+560	 }
+561	 function setMainAddress(address _main_address) external onlyOwner {
+562	 main_address = _main_address;
+563	 }
+564	 function setDaysBetweenMints(uint256 _days) external onlyOwner {
+565	 daysBetweenMints = _days;
+566	 }
+567	 function setCosmogPrice(uint256 _days) external onlyOwner {
+568	 cosmog_price = _days;
+569	 }
+570	 function setFactionMetadata(Faction faction, string memory metadataUri) external onlyApproved {
+571	 faction_metadata_url_mapping[faction] = metadataUri;
+572	 }
+573	 function setFactionSuccessProbability(Faction faction, uint256 proba) external onlyApproved {
+574	 factionSuccessProbability[faction] = proba;
+575	 }
+576	 function uri(uint256 tokenId) public view override returns (string memory) {
+577	 return faction_metadata_url_mapping[Faction(tokenId)];
+578	 }
+579	 function withdraw() external onlyOwner payable {
+580	 uint256 amount = address(this).balance;
+581	 require(amount > 0, "Nothing to withdraw");
+582	 bool success = payable(main_address).send(amount);
+583	 require(success, "Failed to withdraw");
+584	 }
+585	 function transferCosmogs(address addr, uint256 amount) external onlyApproved {
+586	 require(token_contract.balanceOf(address(this)) > 0, "Not enough Cosmogs in the contract to send");
+587	 token_contract.transfer(addr, amount);
+588	 }
+589	 function addApprovedAddress(address addr) external onlyOwner {
+590	 approvedAddresses[addr] = true;
+591	 }
+592	 function removeApprovedAddress(address addr) external onlyOwner {
+593	 approvedAddresses[addr] = false;
+594	 }
+595	 function randomBetween(uint256 min, uint256 max) internal view returns (uint) {
+596	 require (max > min, "max have to be > min");
+597	 string memory difficulty = Strings.toString(block.difficulty);
+598	 string memory timestamp = Strings.toString(block.timestamp);
+599	 bytes memory key = abi.encodePacked(difficulty, timestamp, msg.sender);
+600	 uint random = uint(keccak256(key)) % (max - min);
+601	 random += min;
+602	 return random;
+603	 }
+604	 receive() external payable {
+605	 }
+606	 fallback() external {
+607	 }
+608	 }
+609	 pragma solidity ^0.8.0;
+610	 library Strings {
+611	 bytes16 private constant _HEX_SYMBOLS = "0123456789abcdef";
+612	 uint8 private constant _ADDRESS_LENGTH = 20;
+613	 function toString(uint256 value) internal pure returns (string memory) {
+614	 if (value == 0) {
+615	 return "0";
+616	 }
+617	 uint256 temp = value;
+618	 uint256 digits;
+619	 while (temp != 0) {
+620	 digits++;
+621	 temp /= 10;
+622	 }
+623	 bytes memory buffer = new bytes(digits);
+624	 while (value != 0) {
+625	 digits -= 1;
+626	 buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+627	 value /= 10;
+628	 }
+629	 return string(buffer);
+630	 }
+631	 function toHexString(uint256 value) internal pure returns (string memory) {
+632	 if (value == 0) {
+633	 return "0x00";
+634	 }
+635	 uint256 temp = value;
+636	 uint256 length = 0;
+637	 while (temp != 0) {
+638	 length++;
+639	 temp >>= 8;
+640	 }
+641	 return toHexString(value, length);
+642	 }
+643	 function toHexString(uint256 value, uint256 length) internal pure returns (string memory) {
+644	 bytes memory buffer = new bytes(2 * length + 2);
+645	 buffer[0] = "0";
+646	 buffer[1] = "x";
+647	 for (uint256 i = 2 * length + 1; i > 1; --i) {
+648	 buffer[i] = _HEX_SYMBOLS[value & 0xf];
+649	 value >>= 4;
+650	 }
+651	 require(value == 0, "Strings: hex length insufficient");
+652	 return string(buffer);
+653	 }
+654	 function toHexString(address addr) internal pure returns (string memory) {
+655	 return toHexString(uint256(uint160(addr)), _ADDRESS_LENGTH);
+656	 }
+657	 }
+658	 pragma solidity ^0.8.1;
+659	 library Address {
+660	 function isContract(address account) internal view returns (bool) {
+661	 return account.code.length > 0;
+662	 }
+663	 function sendValue(address payable recipient, uint256 amount) internal {
+664	 require(address(this).balance >= amount, "Address: insufficient balance");
+665	 (bool success, ) = recipient.call{
+666	 value: amount}
+667	 ("");
+668	 require(success, "Address: unable to send value, recipient may have reverted");
+669	 }
+670	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+671	 return functionCall(target, data, "Address: low-level call failed");
+672	 }
+673	 function functionCall( address target, bytes memory data, string memory errorMessage ) internal returns (bytes memory) {
+674	 return functionCallWithValue(target, data, 0, errorMessage);
+675	 }
+676	 function functionCallWithValue( address target, bytes memory data, uint256 value ) internal returns (bytes memory) {
+677	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+678	 }
+679	 function functionCallWithValue( address target, bytes memory data, uint256 value, string memory errorMessage ) internal returns (bytes memory) {
+680	 require(address(this).balance >= value, "Address: insufficient balance for call");
+681	 require(isContract(target), "Address: call to non-contract");
+682	 (bool success, bytes memory returndata) = target.call{
+683	 value: value}
+684	 (data);
+685	 return verifyCallResult(success, returndata, errorMessage);
+686	 }
+687	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+688	 return functionStaticCall(target, data, "Address: low-level static call failed");
+689	 }
+690	 function functionStaticCall( address target, bytes memory data, string memory errorMessage ) internal view returns (bytes memory) {
+691	 require(isContract(target), "Address: static call to non-contract");
+692	 (bool success, bytes memory returndata) = target.staticcall(data);
+693	 return verifyCallResult(success, returndata, errorMessage);
+694	 }
+695	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+696	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+697	 }
+698	 function functionDelegateCall( address target, bytes memory data, string memory errorMessage ) internal returns (bytes memory) {
+699	 require(isContract(target), "Address: delegate call to non-contract");
+700	 (bool success, bytes memory returndata) = target.delegatecall(data);
+701	 return verifyCallResult(success, returndata, errorMessage);
+702	 }
+703	 function verifyCallResult( bool success, bytes memory returndata, string memory errorMessage ) internal pure returns (bytes memory) {
+704	 if (success) {
+705	 return returndata;
+706	 }
+707	 else {
+708	 if (returndata.length > 0) {
+709	 assembly {
+710	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+711	 }
+712	 else {
+713	 revert(errorMessage);
+714	 }
+715	 }
+716	 }
+717	 }
+718	 pragma solidity ^0.8.0;
+719	 interface IERC1155Receiver is IERC165 {
+720	 function onERC1155Received( address operator, address from, uint256 id, uint256 value, bytes calldata data ) external returns (bytes4);
+721	 function onERC1155BatchReceived( address operator, address from, uint256[] calldata ids, uint256[] calldata values, bytes calldata data ) external returns (bytes4);
+722	 }

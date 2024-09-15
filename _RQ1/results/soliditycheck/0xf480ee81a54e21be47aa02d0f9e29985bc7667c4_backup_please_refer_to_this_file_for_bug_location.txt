@@ -1,0 +1,1155 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity =0.7.6;
+3	 contract Bip {
+4	 AppStorage internal s;
+5	 using SafeMath for uint256;
+6	 using LibSafeMath32 for uint32;
+7	 using Decimal for Decimal.D256;
+8	 function activeBips() public view returns (uint32[] memory) {
+9	 return s.g.activeBips;
+10	 }
+11	 function numberOfBips() public view returns (uint32) {
+12	 return s.g.bipIndex;
+13	 }
+14	 function bip(uint32 bipId) public view returns (Storage.Bip memory) {
+15	 return s.g.bips[bipId];
+16	 }
+17	 function voted(address account, uint32 bipId) public view returns (bool) {
+18	 return s.g.voted[bipId][account];
+19	 }
+20	 function rootsFor(uint32 bipId) public view returns (uint256) {
+21	 return s.g.bips[bipId].roots;
+22	 }
+23	 function bipDiamondCut(uint32 bipId) public view returns (Storage.DiamondCut memory) {
+24	 return s.g.diamondCuts[bipId];
+25	 }
+26	 function bipFacetCuts(uint32 bipId) public view returns (IDiamondCut.FacetCut[] memory) {
+27	 return s.g.diamondCuts[bipId].diamondCut;
+28	 }
+29	 function diamondCutIsEmpty(uint32 bipId) internal view returns (bool) {
+30	 return ( s.g.diamondCuts[bipId].diamondCut.length == 0 && s.g.diamondCuts[bipId].initAddress == address(0) );
+31	 }
+32	 function createBip( IDiamondCut.FacetCut[] memory _diamondCut, address _init, bytes memory _calldata, uint8 pauseOrUnpause, uint32 period, address account ) internal returns (uint32) {
+33	 require(_init != address(0) || _calldata.length == 0, "Governance: calldata not empty.");
+34	 uint32 bipId = s.g.bipIndex;
+35	 s.g.bipIndex += 1;
+36	 s.g.bips[bipId].start = season();
+37	 s.g.bips[bipId].period = period;
+38	 s.g.bips[bipId].timestamp = uint128(block.timestamp);
+39	 s.g.bips[bipId].proposer = account;
+40	 s.g.bips[bipId].pauseOrUnpause = pauseOrUnpause;
+41	 for (uint i = 0; i < _diamondCut.length; i++) s.g.diamondCuts[bipId].diamondCut.push(_diamondCut[i]);
+42	 s.g.diamondCuts[bipId].initAddress = _init;
+43	 s.g.diamondCuts[bipId].initData = _calldata;
+44	 s.g.activeBips.push(bipId);
+45	 return bipId;
+46	 }
+47	 function endBip(uint32 bipId) internal {
+48	 uint256 i = 0;
+49	 while(s.g.activeBips[i] != bipId) i++;
+50	 s.g.bips[bipId].timestamp = uint128(block.timestamp);
+51	 s.g.bips[bipId].endTotalRoots = totalRoots();
+52	 uint256 numberOfActiveBips = s.g.activeBips.length-1;
+53	 if (i < numberOfActiveBips) s.g.activeBips[i] = s.g.activeBips[numberOfActiveBips];
+54	 s.g.activeBips.pop();
+55	 }
+56	 function cutBip(uint32 bipId) internal {
+57	 if (diamondCutIsEmpty(bipId)) return;
+58	 LibDiamond.diamondCut( s.g.diamondCuts[bipId].diamondCut, s.g.diamondCuts[bipId].initAddress, s.g.diamondCuts[bipId].initData );
+59	 }
+60	 function proposer(uint32 bipId) internal view returns (address) {
+61	 return s.g.bips[bipId].proposer;
+62	 }
+63	 function startFor(uint32 bipId) internal view returns (uint32) {
+64	 return s.g.bips[bipId].start;
+65	 }
+66	 function periodFor(uint32 bipId) internal view returns (uint32) {
+67	 return s.g.bips[bipId].period;
+68	 }
+69	 function timestamp(uint32 bipId) internal view returns (uint256) {
+70	 return uint256(s.g.bips[bipId].timestamp);
+71	 }
+72	 function isNominated(uint32 bipId) internal view returns (bool) {
+73	 return startFor(bipId) > 0 && !s.g.bips[bipId].executed;
+74	 }
+75	 function isActive(uint32 bipId) internal view returns (bool) {
+76	 return season() < startFor(bipId).add(periodFor(bipId));
+77	 }
+78	 function isExpired(uint32 bipId) internal view returns (bool) {
+79	 return season() > startFor(bipId).add(periodFor(bipId)).add(C.getGovernanceExpiration());
+80	 }
+81	 function bipVotePercent(uint32 bipId) internal view returns (Decimal.D256 memory) {
+82	 return Decimal.ratio(rootsFor(bipId), totalRoots());
+83	 }
+84	 function endedBipVotePercent(uint32 bipId) internal view returns (Decimal.D256 memory) {
+85	 return Decimal.ratio(s.g.bips[bipId].roots,s.g.bips[bipId].endTotalRoots);
+86	 }
+87	 function canPropose(address account) internal view returns (bool) {
+88	 if (totalRoots() == 0 || balanceOfRoots(account) == 0) {
+89	 return false;
+90	 }
+91	 Decimal.D256 memory stake = Decimal.ratio(balanceOfRoots(account), totalRoots());
+92	 return stake.greaterThan(C.getGovernanceProposalThreshold());
+93	 }
+94	 function notTooProposed(address account) internal view returns (bool) {
+95	 uint256 propositions;
+96	 for (uint256 i = 0; i < s.g.activeBips.length; i++) {
+97	 uint32 bipId = s.g.activeBips[i];
+98	 if (s.g.bips[bipId].proposer == account) propositions += 1;
+99	 }
+100	 return (propositions < C.getMaxPropositions());
+101	 }
+102	 function incentiveTime(uint32 bipId) internal view returns (uint256) {
+103	 uint256 time = block.timestamp.sub(s.g.bips[bipId].timestamp);
+104	 if (time > 1800) time = 1800;
+105	 return time / 6;
+106	 }
+107	 function balanceOfRoots(address account) internal view returns (uint256) {
+108	 return s.a[account].roots;
+109	 }
+110	 function totalRoots() internal view returns (uint256) {
+111	 return s.s.roots;
+112	 }
+113	 function season() internal view returns (uint32) {
+114	 return s.season.current;
+115	 }
+116	 }
+117	 pragma solidity =0.7.6;
+118	 contract VotingBooth is Bip {
+119	 using SafeMath for uint256;
+120	 using LibSafeMath32 for uint32;
+121	 event Vote(address indexed account, uint32 indexed bip, uint256 roots);
+122	 function _vote(address account, uint32 bipId) internal {
+123	 recordVote(account, bipId);
+124	 placeVotedUntil(account, bipId);
+125	 emit Vote(account, bipId, balanceOfRoots(account));
+126	 }
+127	 function recordVote(address account, uint32 bipId) internal {
+128	 s.g.voted[bipId][account] = true;
+129	 s.g.bips[bipId].roots = s.g.bips[bipId].roots.add(balanceOfRoots(account));
+130	 }
+131	 function unrecordVote(address account, uint32 bipId) internal {
+132	 s.g.voted[bipId][account] = false;
+133	 s.g.bips[bipId].roots = s.g.bips[bipId].roots.sub(balanceOfRoots(account));
+134	 }
+135	 function placeVotedUntil(address account, uint32 bipId) internal {
+136	 uint32 newLock = startFor(bipId).add(periodFor(bipId));
+137	 if (newLock > s.a[account].votedUntil) {
+138	 s.a[account].votedUntil = newLock;
+139	 }
+140	 }
+141	 function updateVotedUntil(address account) internal {
+142	 uint32[] memory actives = activeBips();
+143	 uint32 lastSeason = 0;
+144	 for (uint256 i = 0; i < actives.length; i++) {
+145	 uint32 activeBip = actives[i];
+146	 if (s.g.voted[activeBip][account]) {
+147	 uint32 bipEnd = startFor(activeBip).add(periodFor(activeBip));
+148	 if (bipEnd > lastSeason) lastSeason = bipEnd;
+149	 }
+150	 }
+151	 s.a[account].votedUntil = lastSeason;
+152	 }
+153	 }
+154	 pragma solidity >=0.6.0 <0.8.0;
+155	 interface IERC20 {
+156	 function totalSupply() external view returns (uint256);
+157	 function balanceOf(address account) external view returns (uint256);
+158	 function transfer(address recipient, uint256 amount) external returns (bool);
+159	 function allowance(address owner, address spender) external view returns (uint256);
+160	 function approve(address spender, uint256 amount) external returns (bool);
+161	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+162	 event Transfer(address indexed from, address indexed to, uint256 value);
+163	 event Approval(address indexed owner, address indexed spender, uint256 value);
+164	 }
+165	 pragma solidity =0.7.6;
+166	 contract GovernanceFacet is VotingBooth {
+167	 using SafeMath for uint256;
+168	 using LibSafeMath32 for uint32;
+169	 using Decimal for Decimal.D256;
+170	 event Proposal(address indexed account, uint32 indexed bip, uint256 indexed start, uint256 period);
+171	 event VoteList(address indexed account, uint32[] bips, bool[] votes, uint256 roots);
+172	 event Unvote(address indexed account, uint32 indexed bip, uint256 roots);
+173	 event Commit(address indexed account, uint32 indexed bip);
+174	 event Incentivization(address indexed account, uint256 beans);
+175	 event Pause(address account, uint256 timestamp);
+176	 event Unpause(address account, uint256 timestamp, uint256 timePassed);
+177	 function propose( IDiamondCut.FacetCut[] calldata _diamondCut, address _init, bytes calldata _calldata, uint8 _pauseOrUnpause ) external {
+178	 require(canPropose(msg.sender), "Governance: Not enough Stalk.");
+179	 require(notTooProposed(msg.sender), "Governance: Too many active BIPs.");
+180	 require( _init != address(0) || _diamondCut.length > 0 || _pauseOrUnpause > 0, "Governance: Proposition is empty." );
+181	 uint32 bipId = createBip( _diamondCut, _init, _calldata, _pauseOrUnpause, C.getGovernancePeriod(), msg.sender );
+182	 s.a[msg.sender].proposedUntil = startFor(bipId).add(periodFor(bipId));
+183	 emit Proposal(msg.sender, bipId, season(), C.getGovernancePeriod());
+184	 _vote(msg.sender, bipId);
+185	 }
+186	 function vote(uint32 bip) external {
+187	 require(balanceOfRoots(msg.sender) > 0, "Governance: Must have Stalk.");
+188	 require(isNominated(bip), "Governance: Not nominated.");
+189	 require(isActive(bip), "Governance: Ended.");
+190	 require(!voted(msg.sender, bip), "Governance: Already voted.");
+191	 _vote(msg.sender, bip);
+192	 }
+193	 function voteAll(uint32[] calldata bip_list) external {
+194	 require(balanceOfRoots(msg.sender) > 0, "Governance: Must have Stalk.");
+195	 bool[] memory vote_types = new bool[](bip_list.length);
+196	 uint i = 0;
+197	 uint32 lock = s.a[msg.sender].votedUntil;
+198	 for (i = 0; i < bip_list.length; i++) {
+199	 uint32 bip = bip_list[i];
+200	 require(isNominated(bip), "Governance: Not nominated.");
+201	 require(isActive(bip), "Governance: Ended.");
+202	 require(!voted(msg.sender, bip), "Governance: Already voted.");
+203	 recordVote(msg.sender, bip);
+204	 vote_types[i] = true;
+205	 uint32 newLock = startFor(bip).add(periodFor(bip));
+206	 if (newLock > lock) lock = newLock;
+207	 }
+208	 s.a[msg.sender].votedUntil = lock;
+209	 emit VoteList(msg.sender, bip_list, vote_types, balanceOfRoots(msg.sender));
+210	 }
+211	 function unvote(uint32 bip) external {
+212	 require(isNominated(bip), "Governance: Not nominated.");
+213	 require(balanceOfRoots(msg.sender) > 0, "Governance: Must have Stalk.");
+214	 require(isActive(bip), "Governance: Ended.");
+215	 require(voted(msg.sender, bip), "Governance: Not voted.");
+216	 require(proposer(bip) != msg.sender, "Governance: Is proposer.");
+217	 unrecordVote(msg.sender, bip);
+218	 updateVotedUntil(msg.sender);
+219	 emit Unvote(msg.sender, bip, balanceOfRoots(msg.sender));
+220	 }
+221	 function unvoteAll(uint32[] calldata bip_list) external {
+222	 require(balanceOfRoots(msg.sender) > 0, "Governance: Must have Stalk.");
+223	 uint i = 0;
+224	 bool[] memory vote_types = new bool[](bip_list.length);
+225	 for (i = 0; i < bip_list.length; i++) {
+226	 uint32 bip = bip_list[i];
+227	 require(isNominated(bip), "Governance: Not nominated.");
+228	 require(isActive(bip), "Governance: Ended.");
+229	 require(voted(msg.sender, bip), "Governance: Not voted.");
+230	 require(proposer(bip) != msg.sender, "Governance: Is proposer.");
+231	 unrecordVote(msg.sender, bip);
+232	 vote_types[i] = false;
+233	 }
+234	 updateVotedUntil(msg.sender);
+235	 emit VoteList(msg.sender, bip_list, vote_types, balanceOfRoots(msg.sender));
+236	 }
+237	 function voteUnvoteAll(uint32[] calldata bip_list) external {
+238	 require(balanceOfRoots(msg.sender) > 0, "Governance: Must have Stalk.");
+239	 uint i = 0;
+240	 bool[] memory vote_types = new bool[](bip_list.length);
+241	 for (i = 0; i < bip_list.length; i++) {
+242	 uint32 bip = bip_list[i];
+243	 require(isNominated(bip), "Governance: Not nominated.");
+244	 require(isActive(bip), "Governance: Ended.");
+245	 if (s.g.voted[bip][msg.sender]) {
+246	 require(proposer(bip) != msg.sender, "Governance: Is proposer.");
+247	 unrecordVote(msg.sender, bip);
+248	 vote_types[i] = false;
+249	 }
+250	 else {
+251	 recordVote(msg.sender, bip);
+252	 vote_types[i] = true;
+253	 }
+254	 }
+255	 updateVotedUntil(msg.sender);
+256	 emit VoteList(msg.sender, bip_list, vote_types, balanceOfRoots(msg.sender));
+257	 }
+258	 function commit(uint32 bip) external {
+259	 require(isNominated(bip), "Governance: Not nominated.");
+260	 require(!isActive(bip), "Governance: Not ended.");
+261	 require(!isExpired(bip), "Governance: Expired.");
+262	 require( endedBipVotePercent(bip).greaterThanOrEqualTo(C.getGovernancePassThreshold()), "Governance: Must have majority." );
+263	 _execute(msg.sender, bip, true, true);
+264	 }
+265	 function emergencyCommit(uint32 bip) external {
+266	 require(isNominated(bip), "Governance: Not nominated.");
+267	 require( block.timestamp >= timestamp(bip).add(C.getGovernanceEmergencyPeriod()), "Governance: Too early.");
+268	 require(isActive(bip), "Governance: Ended.");
+269	 require( bipVotePercent(bip).greaterThanOrEqualTo(C.getGovernanceEmergencyThreshold()), "Governance: Must have super majority." );
+270	 _execute(msg.sender, bip, false, true);
+271	 }
+272	 function pauseOrUnpause(uint32 bip) external {
+273	 require(isNominated(bip), "Governance: Not nominated.");
+274	 require(diamondCutIsEmpty(bip),"Governance: Has diamond cut.");
+275	 require(isActive(bip), "Governance: Ended.");
+276	 require( bipVotePercent(bip).greaterThanOrEqualTo(C.getGovernanceEmergencyThreshold()), "Governance: Must have super majority." );
+277	 _execute(msg.sender, bip, false, false);
+278	 }
+279	 function _execute(address account, uint32 bip, bool ended, bool cut) private {
+280	 if (!ended) endBip(bip);
+281	 s.g.bips[bip].executed = true;
+282	 if (cut) cutBip(bip);
+283	 pauseOrUnpauseBip(bip);
+284	 incentivize(account, ended, bip, C.getCommitIncentive());
+285	 emit Commit(account, bip);
+286	 }
+287	 function incentivize(address account, bool compound, uint32 bipId, uint256 amount) private {
+288	 if (compound) amount = LibIncentive.fracExp(amount, 100, incentiveTime(bipId), 2);
+289	 IBean(s.c.bean).mint(account, amount);
+290	 emit Incentivization(account, amount);
+291	 }
+292	 function ownerPause() external {
+293	 LibDiamond.enforceIsContractOwner();
+294	 pause();
+295	 }
+296	 function ownerUnpause() external {
+297	 LibDiamond.enforceIsContractOwner();
+298	 unpause();
+299	 }
+300	 function pause() private {
+301	 if (s.paused) return;
+302	 s.paused = true;
+303	 s.o.initialized = false;
+304	 s.pausedAt = uint128(block.timestamp);
+305	 emit Pause(msg.sender, block.timestamp);
+306	 }
+307	 function unpause() private {
+308	 if (!s.paused) return;
+309	 s.paused = false;
+310	 uint256 timePassed = block.timestamp.sub(uint(s.pausedAt));
+311	 timePassed = (timePassed.div(3600).add(1)).mul(3600);
+312	 s.season.start = s.season.start.add(timePassed);
+313	 emit Unpause(msg.sender, block.timestamp, timePassed);
+314	 }
+315	 function pauseOrUnpauseBip(uint32 bipId) private {
+316	 if (s.g.bips[bipId].pauseOrUnpause == 1) pause();
+317	 else if (s.g.bips[bipId].pauseOrUnpause == 2) unpause();
+318	 }
+319	 }
+320	 pragma solidity =0.7.6;
+321	 abstract contract IBean is IERC20 {
+322	 function burn(uint256 amount) public virtual;
+323	 function burnFrom(address account, uint256 amount) public virtual;
+324	 function mint(address account, uint256 amount) public virtual returns (bool);
+325	 }
+326	 pragma solidity =0.7.6;
+327	 interface ISiloUpdate {
+328	 function updateSilo(address account) external payable;
+329	 }
+330	 library LibInternal {
+331	 bytes32 constant DIAMOND_STORAGE_POSITION = keccak256("diamond.standard.diamond.storage");
+332	 struct FacetAddressAndPosition {
+333	 address facetAddress;
+334	 uint16 functionSelectorPosition;
+335	 }
+336	 struct FacetFunctionSelectors {
+337	 bytes4[] functionSelectors;
+338	 uint16 facetAddressPosition;
+339	 }
+340	 struct DiamondStorage {
+341	 mapping(bytes4 => FacetAddressAndPosition) selectorToFacetAndPosition;
+342	 mapping(address => FacetFunctionSelectors) facetFunctionSelectors;
+343	 address[] facetAddresses;
+344	 mapping(bytes4 => bool) supportedInterfaces;
+345	 address contractOwner;
+346	 }
+347	 function diamondStorage() internal pure returns (DiamondStorage storage ds) {
+348	 bytes32 position = DIAMOND_STORAGE_POSITION;
+349	 assembly {
+350	 ds.slot := position }
+351	 }
+352	 function updateSilo(address account) internal {
+353	 DiamondStorage storage ds = diamondStorage();
+354	 address facet = ds.selectorToFacetAndPosition[ISiloUpdate.updateSilo.selector].facetAddress;
+355	 bytes memory myFunctionCall = abi.encodeWithSelector(ISiloUpdate.updateSilo.selector, account);
+356	 (bool success,) = address(facet).delegatecall(myFunctionCall);
+357	 require(success, "Silo: updateSilo failed.");
+358	 }
+359	 }
+360	 pragma solidity =0.7.6;
+361	 library LibIncentive {
+362	 function fracExp(uint k, uint q, uint n, uint x) internal pure returns (uint s) {
+363	 uint p = log_two(n) + 1 + x * n / q;
+364	 uint N = 1;
+365	 uint B = 1;
+366	 for (uint i = 0; i < p; ++i){
+367	 s += k * N / B / (q**i);
+368	 N = N * (n-i);
+369	 B = B * (i+1);
+370	 }
+371	 }
+372	 function log_two(uint x) private pure returns (uint y) {
+373	 assembly {
+374	 let arg := x x := sub(x,1) x := or(x, div(x, 0x02)) x := or(x, div(x, 0x04)) x := or(x, div(x, 0x10)) x := or(x, div(x, 0x100)) x := or(x, div(x, 0x10000)) x := or(x, div(x, 0x100000000)) x := or(x, div(x, 0x10000000000000000)) x := or(x, div(x, 0x100000000000000000000000000000000)) x := add(x, 1) let m := mload(0x40) mstore(m, 0xf8f9cbfae6cc78fbefe7cdc3a1793dfcf4f0e8bbd8cec470b6a28a7a5a3e1efd) mstore(add(m,0x20), 0xf5ecf1b3e9debc68e1d9cfabc5997135bfb7a7a3938b7b606b5b4b3f2f1f0ffe) mstore(add(m,0x40), 0xf6e4ed9ff2d6b458eadcdf97bd91692de2d4da8fd2d0ac50c6ae9a8272523616) mstore(add(m,0x60), 0xc8c0b887b0a8a4489c948c7f847c6125746c645c544c444038302820181008ff) mstore(add(m,0x80), 0xf7cae577eec2a03cf3bad76fb589591debb2dd67e0aa9834bea6925f6a4a2e0e) mstore(add(m,0xa0), 0xe39ed557db96902cd38ed14fad815115c786af479b7e83247363534337271707) mstore(add(m,0xc0), 0xc976c13bb96e881cb166a933a55e490d9d56952b8d4e801485467d2362422606) mstore(add(m,0xe0), 0x753a6d1b65325d0c552a4d1345224105391a310b29122104190a110309020100) mstore(0x40, add(m, 0x100)) let magic := 0x818283848586878898a8b8c8d8e8f929395969799a9b9d9e9faaeb6bedeeff let shift := 0x100000000000000000000000000000000000000000000000000000000000000 let a := div(mul(x, magic), shift) y := div(mload(add(m,sub(255,a))), shift) y := add(y, mul(256, gt(arg, 0x8000000000000000000000000000000000000000000000000000000000000000))) }
+375	 }
+376	 }
+377	 pragma solidity >=0.6.0 <0.8.0;
+378	 library SafeMath {
+379	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+380	 uint256 c = a + b;
+381	 if (c < a) return (false, 0);
+382	 return (true, c);
+383	 }
+384	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+385	 if (b > a) return (false, 0);
+386	 return (true, a - b);
+387	 }
+388	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+389	 if (a == 0) return (true, 0);
+390	 uint256 c = a * b;
+391	 if (c / a != b) return (false, 0);
+392	 return (true, c);
+393	 }
+394	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+395	 if (b == 0) return (false, 0);
+396	 return (true, a / b);
+397	 }
+398	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+399	 if (b == 0) return (false, 0);
+400	 return (true, a % b);
+401	 }
+402	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+403	 uint256 c = a + b;
+404	 require(c >= a, "SafeMath: addition overflow");
+405	 return c;
+406	 }
+407	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+408	 require(b <= a, "SafeMath: subtraction overflow");
+409	 return a - b;
+410	 }
+411	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+412	 if (a == 0) return 0;
+413	 uint256 c = a * b;
+414	 require(c / a == b, "SafeMath: multiplication overflow");
+415	 return c;
+416	 }
+417	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+418	 require(b > 0, "SafeMath: division by zero");
+419	 return a / b;
+420	 }
+421	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+422	 require(b > 0, "SafeMath: modulo by zero");
+423	 return a % b;
+424	 }
+425	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+426	 require(b <= a, errorMessage);
+427	 return a - b;
+428	 }
+429	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+430	 require(b > 0, errorMessage);
+431	 return a / b;
+432	 }
+433	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+434	 require(b > 0, errorMessage);
+435	 return a % b;
+436	 }
+437	 }
+438	 pragma solidity >=0.6.0 <0.8.0;
+439	 library LibSafeMath32 {
+440	 function tryAdd(uint32 a, uint32 b) internal pure returns (bool, uint32) {
+441	 uint32 c = a + b;
+442	 if (c < a) return (false, 0);
+443	 return (true, c);
+444	 }
+445	 function trySub(uint32 a, uint32 b) internal pure returns (bool, uint32) {
+446	 if (b > a) return (false, 0);
+447	 return (true, a - b);
+448	 }
+449	 function tryMul(uint32 a, uint32 b) internal pure returns (bool, uint32) {
+450	 if (a == 0) return (true, 0);
+451	 uint32 c = a * b;
+452	 if (c / a != b) return (false, 0);
+453	 return (true, c);
+454	 }
+455	 function tryDiv(uint32 a, uint32 b) internal pure returns (bool, uint32) {
+456	 if (b == 0) return (false, 0);
+457	 return (true, a / b);
+458	 }
+459	 function tryMod(uint32 a, uint32 b) internal pure returns (bool, uint32) {
+460	 if (b == 0) return (false, 0);
+461	 return (true, a % b);
+462	 }
+463	 function add(uint32 a, uint32 b) internal pure returns (uint32) {
+464	 uint32 c = a + b;
+465	 require(c >= a, "SafeMath: addition overflow");
+466	 return c;
+467	 }
+468	 function sub(uint32 a, uint32 b) internal pure returns (uint32) {
+469	 require(b <= a, "SafeMath: subtraction overflow");
+470	 return a - b;
+471	 }
+472	 function mul(uint32 a, uint32 b) internal pure returns (uint32) {
+473	 if (a == 0) return 0;
+474	 uint32 c = a * b;
+475	 require(c / a == b, "SafeMath: multiplication overflow");
+476	 return c;
+477	 }
+478	 function div(uint32 a, uint32 b) internal pure returns (uint32) {
+479	 require(b > 0, "SafeMath: division by zero");
+480	 return a / b;
+481	 }
+482	 function mod(uint32 a, uint32 b) internal pure returns (uint32) {
+483	 require(b > 0, "SafeMath: modulo by zero");
+484	 return a % b;
+485	 }
+486	 function sub(uint32 a, uint32 b, string memory errorMessage) internal pure returns (uint32) {
+487	 require(b <= a, errorMessage);
+488	 return a - b;
+489	 }
+490	 function div(uint32 a, uint32 b, string memory errorMessage) internal pure returns (uint32) {
+491	 require(b > 0, errorMessage);
+492	 return a / b;
+493	 }
+494	 function mod(uint32 a, uint32 b, string memory errorMessage) internal pure returns (uint32) {
+495	 require(b > 0, errorMessage);
+496	 return a % b;
+497	 }
+498	 }
+499	 pragma solidity =0.7.6;
+500	 contract Account {
+501	 struct Field {
+502	 mapping(uint256 => uint256) plots;
+503	 mapping(address => uint256) podAllowances;
+504	 }
+505	 struct AssetSilo {
+506	 mapping(uint32 => uint256) withdrawals;
+507	 mapping(uint32 => uint256) deposits;
+508	 mapping(uint32 => uint256) depositSeeds;
+509	 }
+510	 struct Deposit {
+511	 uint128 amount;
+512	 uint128 bdv;
+513	 }
+514	 struct Silo {
+515	 uint256 stalk;
+516	 uint256 seeds;
+517	 }
+518	 struct SeasonOfPlenty {
+519	 uint256 base;
+520	 uint256 roots;
+521	 uint256 basePerRoot;
+522	 }
+523	 struct State {
+524	 Field field;
+525	 AssetSilo bean;
+526	 AssetSilo lp;
+527	 Silo s;
+528	 uint32 votedUntil;
+529	 uint32 lastUpdate;
+530	 uint32 lastSop;
+531	 uint32 lastRain;
+532	 uint32 lastSIs;
+533	 uint32 proposedUntil;
+534	 SeasonOfPlenty sop;
+535	 uint256 roots;
+536	 uint256 wrappedBeans;
+537	 mapping(address => mapping(uint32 => Deposit)) deposits;
+538	 mapping(address => mapping(uint32 => uint256)) withdrawals;
+539	 }
+540	 }
+541	 contract Storage {
+542	 struct Contracts {
+543	 address bean;
+544	 address pair;
+545	 address pegPair;
+546	 address weth;
+547	 }
+548	 struct Field {
+549	 uint256 soil;
+550	 uint256 pods;
+551	 uint256 harvested;
+552	 uint256 harvestable;
+553	 }
+554	 struct Bip {
+555	 address proposer;
+556	 uint32 start;
+557	 uint32 period;
+558	 bool executed;
+559	 int pauseOrUnpause;
+560	 uint128 timestamp;
+561	 uint256 roots;
+562	 uint256 endTotalRoots;
+563	 }
+564	 struct DiamondCut {
+565	 IDiamondCut.FacetCut[] diamondCut;
+566	 address initAddress;
+567	 bytes initData;
+568	 }
+569	 struct Governance {
+570	 uint32[] activeBips;
+571	 uint32 bipIndex;
+572	 mapping(uint32 => DiamondCut) diamondCuts;
+573	 mapping(uint32 => mapping(address => bool)) voted;
+574	 mapping(uint32 => Bip) bips;
+575	 }
+576	 struct AssetSilo {
+577	 uint256 deposited;
+578	 uint256 withdrawn;
+579	 }
+580	 struct IncreaseSilo {
+581	 uint256 beans;
+582	 uint256 stalk;
+583	 }
+584	 struct V1IncreaseSilo {
+585	 uint256 beans;
+586	 uint256 stalk;
+587	 uint256 roots;
+588	 }
+589	 struct SeasonOfPlenty {
+590	 uint256 weth;
+591	 uint256 base;
+592	 uint32 last;
+593	 }
+594	 struct Silo {
+595	 uint256 stalk;
+596	 uint256 seeds;
+597	 uint256 roots;
+598	 }
+599	 struct Oracle {
+600	 bool initialized;
+601	 uint256 cumulative;
+602	 uint256 pegCumulative;
+603	 uint32 timestamp;
+604	 uint32 pegTimestamp;
+605	 }
+606	 struct Rain {
+607	 uint32 start;
+608	 bool raining;
+609	 uint256 pods;
+610	 uint256 roots;
+611	 }
+612	 struct Season {
+613	 uint32 current;
+614	 uint32 sis;
+615	 uint8 withdrawSeasons;
+616	 uint256 start;
+617	 uint256 period;
+618	 uint256 timestamp;
+619	 }
+620	 struct Weather {
+621	 uint256 startSoil;
+622	 uint256 lastDSoil;
+623	 uint96 lastSoilPercent;
+624	 uint32 lastSowTime;
+625	 uint32 nextSowTime;
+626	 uint32 yield;
+627	 bool didSowBelowMin;
+628	 bool didSowFaster;
+629	 }
+630	 struct Fundraiser {
+631	 address payee;
+632	 address token;
+633	 uint256 total;
+634	 uint256 remaining;
+635	 uint256 start;
+636	 }
+637	 struct SiloSettings {
+638	 bytes4 selector;
+639	 uint32 seeds;
+640	 uint32 stalk;
+641	 }
+642	 }
+643	 struct AppStorage {
+644	 uint8 index;
+645	 int8[32] cases;
+646	 bool paused;
+647	 uint128 pausedAt;
+648	 Storage.Season season;
+649	 Storage.Contracts c;
+650	 Storage.Field f;
+651	 Storage.Governance g;
+652	 Storage.Oracle o;
+653	 Storage.Rain r;
+654	 Storage.Silo s;
+655	 uint256 reentrantStatus;
+656	 Storage.Weather w;
+657	 Storage.AssetSilo bean;
+658	 Storage.AssetSilo lp;
+659	 Storage.IncreaseSilo si;
+660	 Storage.SeasonOfPlenty sop;
+661	 Storage.V1IncreaseSilo v1SI;
+662	 uint256 unclaimedRoots;
+663	 uint256 v2SIBeans;
+664	 mapping (uint32 => uint256) sops;
+665	 mapping (address => Account.State) a;
+666	 uint32 bip0Start;
+667	 uint32 hotFix3Start;
+668	 mapping (uint32 => Storage.Fundraiser) fundraisers;
+669	 uint32 fundraiserIndex;
+670	 mapping (address => bool) isBudget;
+671	 mapping(uint256 => bytes32) podListings;
+672	 mapping(bytes32 => uint256) podOrders;
+673	 mapping(address => Storage.AssetSilo) siloBalances;
+674	 mapping(address => Storage.SiloSettings) ss;
+675	 uint256 refundStatus;
+676	 uint256 beanRefundAmount;
+677	 uint256 ethRefundAmount;
+678	 }
+679	 pragma solidity =0.7.6;
+680	 library C {
+681	 using Decimal for Decimal.D256;
+682	 using SafeMath for uint256;
+683	 uint256 private constant PERCENT_BASE = 1e18;
+684	 uint256 private constant CHAIN_ID = 1;
+685	 uint256 private constant CURRENT_SEASON_PERIOD = 3600;
+686	 uint256 private constant HARVESET_PERCENTAGE = 0.5e18;
+687	 uint256 private constant POD_RATE_LOWER_BOUND = 0.05e18;
+688	 uint256 private constant OPTIMAL_POD_RATE = 0.15e18;
+689	 uint256 private constant POD_RATE_UPPER_BOUND = 0.25e18;
+690	 uint256 private constant DELTA_POD_DEMAND_LOWER_BOUND = 0.95e18;
+691	 uint256 private constant DELTA_POD_DEMAND_UPPER_BOUND = 1.05e18;
+692	 uint32 private constant STEADY_SOW_TIME = 60;
+693	 uint256 private constant RAIN_TIME = 24;
+694	 uint32 private constant GOVERNANCE_PERIOD = 168;
+695	 uint32 private constant GOVERNANCE_EMERGENCY_PERIOD = 86400;
+696	 uint256 private constant GOVERNANCE_PASS_THRESHOLD = 5e17;
+697	 uint256 private constant GOVERNANCE_EMERGENCY_THRESHOLD_NUMERATOR = 2;
+698	 uint256 private constant GOVERNANCE_EMERGENCY_THRESHOLD_DEMONINATOR = 3;
+699	 uint32 private constant GOVERNANCE_EXPIRATION = 24;
+700	 uint256 private constant GOVERNANCE_PROPOSAL_THRESHOLD = 0.001e18;
+701	 uint256 private constant BASE_COMMIT_INCENTIVE = 100e6;
+702	 uint256 private constant MAX_PROPOSITIONS = 5;
+703	 uint256 private constant BASE_ADVANCE_INCENTIVE = 100e6;
+704	 uint32 private constant WITHDRAW_TIME = 25;
+705	 uint256 private constant SEEDS_PER_BEAN = 2;
+706	 uint256 private constant SEEDS_PER_LP_BEAN = 4;
+707	 uint256 private constant STALK_PER_BEAN = 10000;
+708	 uint256 private constant ROOTS_BASE = 1e12;
+709	 uint256 private constant MAX_SOIL_DENOMINATOR = 4;
+710	 uint256 private constant COMPLEX_WEATHER_DENOMINATOR = 1000;
+711	 function getSeasonPeriod() internal pure returns (uint256) {
+712	 return CURRENT_SEASON_PERIOD;
+713	 }
+714	 function getGovernancePeriod() internal pure returns (uint32) {
+715	 return GOVERNANCE_PERIOD;
+716	 }
+717	 function getGovernanceEmergencyPeriod() internal pure returns (uint32) {
+718	 return GOVERNANCE_EMERGENCY_PERIOD;
+719	 }
+720	 function getGovernanceExpiration() internal pure returns (uint32) {
+721	 return GOVERNANCE_EXPIRATION;
+722	 }
+723	 function getGovernancePassThreshold() internal pure returns (Decimal.D256 memory) {
+724	 return Decimal.D256({
+725	 value: GOVERNANCE_PASS_THRESHOLD}
+726	 );
+727	 }
+728	 function getGovernanceEmergencyThreshold() internal pure returns (Decimal.D256 memory) {
+729	 return Decimal.ratio(GOVERNANCE_EMERGENCY_THRESHOLD_NUMERATOR,GOVERNANCE_EMERGENCY_THRESHOLD_DEMONINATOR);
+730	 }
+731	 function getGovernanceProposalThreshold() internal pure returns (Decimal.D256 memory) {
+732	 return Decimal.D256({
+733	 value: GOVERNANCE_PROPOSAL_THRESHOLD}
+734	 );
+735	 }
+736	 function getAdvanceIncentive() internal pure returns (uint256) {
+737	 return BASE_ADVANCE_INCENTIVE;
+738	 }
+739	 function getCommitIncentive() internal pure returns (uint256) {
+740	 return BASE_COMMIT_INCENTIVE;
+741	 }
+742	 function getSiloWithdrawSeasons() internal pure returns (uint32) {
+743	 return WITHDRAW_TIME;
+744	 }
+745	 function getComplexWeatherDenominator() internal pure returns (uint256) {
+746	 return COMPLEX_WEATHER_DENOMINATOR;
+747	 }
+748	 function getMaxSoilDenominator() internal pure returns (uint256) {
+749	 return MAX_SOIL_DENOMINATOR;
+750	 }
+751	 function getHarvestPercentage() internal pure returns (uint256) {
+752	 return HARVESET_PERCENTAGE;
+753	 }
+754	 function getChainId() internal pure returns (uint256) {
+755	 return CHAIN_ID;
+756	 }
+757	 function getOptimalPodRate() internal pure returns (Decimal.D256 memory) {
+758	 return Decimal.ratio(OPTIMAL_POD_RATE, PERCENT_BASE);
+759	 }
+760	 function getUpperBoundPodRate() internal pure returns (Decimal.D256 memory) {
+761	 return Decimal.ratio(POD_RATE_UPPER_BOUND, PERCENT_BASE);
+762	 }
+763	 function getLowerBoundPodRate() internal pure returns (Decimal.D256 memory) {
+764	 return Decimal.ratio(POD_RATE_LOWER_BOUND, PERCENT_BASE);
+765	 }
+766	 function getUpperBoundDPD() internal pure returns (Decimal.D256 memory) {
+767	 return Decimal.ratio(DELTA_POD_DEMAND_UPPER_BOUND, PERCENT_BASE);
+768	 }
+769	 function getLowerBoundDPD() internal pure returns (Decimal.D256 memory) {
+770	 return Decimal.ratio(DELTA_POD_DEMAND_LOWER_BOUND, PERCENT_BASE);
+771	 }
+772	 function getSteadySowTime() internal pure returns (uint32) {
+773	 return STEADY_SOW_TIME;
+774	 }
+775	 function getRainTime() internal pure returns (uint256) {
+776	 return RAIN_TIME;
+777	 }
+778	 function getMaxPropositions() internal pure returns (uint256) {
+779	 return MAX_PROPOSITIONS;
+780	 }
+781	 function getSeedsPerBean() internal pure returns (uint256) {
+782	 return SEEDS_PER_BEAN;
+783	 }
+784	 function getSeedsPerLPBean() internal pure returns (uint256) {
+785	 return SEEDS_PER_LP_BEAN;
+786	 }
+787	 function getStalkPerBean() internal pure returns (uint256) {
+788	 return STALK_PER_BEAN;
+789	 }
+790	 function getStalkPerLPSeed() internal pure returns (uint256) {
+791	 return STALK_PER_BEAN/SEEDS_PER_LP_BEAN;
+792	 }
+793	 function getRootsBase() internal pure returns (uint256) {
+794	 return ROOTS_BASE;
+795	 }
+796	 }
+797	 pragma solidity =0.7.6;
+798	 library Decimal {
+799	 using SafeMath for uint256;
+800	 uint256 constant BASE = 10**18;
+801	 struct D256 {
+802	 uint256 value;
+803	 }
+804	 function zero() internal pure returns (D256 memory) {
+805	 return D256({
+806	 value: 0 }
+807	 );
+808	 }
+809	 function one() internal pure returns (D256 memory) {
+810	 return D256({
+811	 value: BASE }
+812	 );
+813	 }
+814	 function from( uint256 a ) internal pure returns (D256 memory) {
+815	 return D256({
+816	 value: a.mul(BASE) }
+817	 );
+818	 }
+819	 function ratio( uint256 a, uint256 b ) internal pure returns (D256 memory) {
+820	 return D256({
+821	 value: getPartial(a, BASE, b) }
+822	 );
+823	 }
+824	 function add( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+825	 return D256({
+826	 value: self.value.add(b.mul(BASE)) }
+827	 );
+828	 }
+829	 function sub( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+830	 return D256({
+831	 value: self.value.sub(b.mul(BASE)) }
+832	 );
+833	 }
+834	 function sub( D256 memory self, uint256 b, string memory reason ) internal pure returns (D256 memory) {
+835	 return D256({
+836	 value: self.value.sub(b.mul(BASE), reason) }
+837	 );
+838	 }
+839	 function mul( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+840	 return D256({
+841	 value: self.value.mul(b) }
+842	 );
+843	 }
+844	 function div( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+845	 return D256({
+846	 value: self.value.div(b) }
+847	 );
+848	 }
+849	 function pow( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+850	 if (b == 0) {
+851	 return one();
+852	 }
+853	 D256 memory temp = D256({
+854	 value: self.value }
+855	 );
+856	 for (uint256 i = 1; i < b; i++) {
+857	 temp = mul(temp, self);
+858	 }
+859	 return temp;
+860	 }
+861	 function add( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+862	 return D256({
+863	 value: self.value.add(b.value) }
+864	 );
+865	 }
+866	 function sub( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+867	 return D256({
+868	 value: self.value.sub(b.value) }
+869	 );
+870	 }
+871	 function sub( D256 memory self, D256 memory b, string memory reason ) internal pure returns (D256 memory) {
+872	 return D256({
+873	 value: self.value.sub(b.value, reason) }
+874	 );
+875	 }
+876	 function mul( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+877	 return D256({
+878	 value: getPartial(self.value, b.value, BASE) }
+879	 );
+880	 }
+881	 function div( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+882	 return D256({
+883	 value: getPartial(self.value, BASE, b.value) }
+884	 );
+885	 }
+886	 function equals(D256 memory self, D256 memory b) internal pure returns (bool) {
+887	 return self.value == b.value;
+888	 }
+889	 function greaterThan(D256 memory self, D256 memory b) internal pure returns (bool) {
+890	 return compareTo(self, b) == 2;
+891	 }
+892	 function lessThan(D256 memory self, D256 memory b) internal pure returns (bool) {
+893	 return compareTo(self, b) == 0;
+894	 }
+895	 function greaterThanOrEqualTo(D256 memory self, D256 memory b) internal pure returns (bool) {
+896	 return compareTo(self, b) > 0;
+897	 }
+898	 function lessThanOrEqualTo(D256 memory self, D256 memory b) internal pure returns (bool) {
+899	 return compareTo(self, b) < 2;
+900	 }
+901	 function isZero(D256 memory self) internal pure returns (bool) {
+902	 return self.value == 0;
+903	 }
+904	 function asUint256(D256 memory self) internal pure returns (uint256) {
+905	 return self.value.div(BASE);
+906	 }
+907	 function getPartial( uint256 target, uint256 numerator, uint256 denominator ) private pure returns (uint256) {
+908	 return target.mul(numerator).div(denominator);
+909	 }
+910	 function compareTo( D256 memory a, D256 memory b ) private pure returns (uint256) {
+911	 if (a.value == b.value) {
+912	 return 1;
+913	 }
+914	 return a.value > b.value ? 2 : 0;
+915	 }
+916	 }
+917	 pragma solidity =0.7.6;
+918	 library LibDiamond {
+919	 bytes32 constant DIAMOND_STORAGE_POSITION = keccak256("diamond.standard.diamond.storage");
+920	 struct FacetAddressAndPosition {
+921	 address facetAddress;
+922	 uint96 functionSelectorPosition;
+923	 }
+924	 struct FacetFunctionSelectors {
+925	 bytes4[] functionSelectors;
+926	 uint256 facetAddressPosition;
+927	 }
+928	 struct DiamondStorage {
+929	 mapping(bytes4 => FacetAddressAndPosition) selectorToFacetAndPosition;
+930	 mapping(address => FacetFunctionSelectors) facetFunctionSelectors;
+931	 address[] facetAddresses;
+932	 mapping(bytes4 => bool) supportedInterfaces;
+933	 address contractOwner;
+934	 }
+935	 function diamondStorage() internal pure returns (DiamondStorage storage ds) {
+936	 bytes32 position = DIAMOND_STORAGE_POSITION;
+937	 assembly {
+938	 ds.slot := position }
+939	 }
+940	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+941	 function setContractOwner(address _newOwner) internal {
+942	 DiamondStorage storage ds = diamondStorage();
+943	 address previousOwner = ds.contractOwner;
+944	 ds.contractOwner = _newOwner;
+945	 emit OwnershipTransferred(previousOwner, _newOwner);
+946	 }
+947	 function contractOwner() internal view returns (address contractOwner_) {
+948	 contractOwner_ = diamondStorage().contractOwner;
+949	 }
+950	 function enforceIsContractOwner() internal view {
+951	 require(msg.sender == diamondStorage().contractOwner, "LibDiamond: Must be contract owner");
+952	 }
+953	 event DiamondCut(IDiamondCut.FacetCut[] _diamondCut, address _init, bytes _calldata);
+954	 function addDiamondFunctions( address _diamondCutFacet, address _diamondLoupeFacet, address _ownershipFacet ) internal {
+955	 IDiamondCut.FacetCut[] memory cut = new IDiamondCut.FacetCut[](3);
+956	 bytes4[] memory functionSelectors = new bytes4[](1);
+957	 functionSelectors[0] = IDiamondCut.diamondCut.selector;
+958	 cut[0] = IDiamondCut.FacetCut({
+959	 facetAddress: _diamondCutFacet, action: IDiamondCut.FacetCutAction.Add, functionSelectors: functionSelectors}
+960	 );
+961	 functionSelectors = new bytes4[](5);
+962	 functionSelectors[0] = IDiamondLoupe.facets.selector;
+963	 functionSelectors[1] = IDiamondLoupe.facetFunctionSelectors.selector;
+964	 functionSelectors[2] = IDiamondLoupe.facetAddresses.selector;
+965	 functionSelectors[3] = IDiamondLoupe.facetAddress.selector;
+966	 functionSelectors[4] = IERC165.supportsInterface.selector;
+967	 cut[1] = IDiamondCut.FacetCut({
+968	 facetAddress: _diamondLoupeFacet, action: IDiamondCut.FacetCutAction.Add, functionSelectors: functionSelectors }
+969	 );
+970	 functionSelectors = new bytes4[](2);
+971	 functionSelectors[0] = IERC173.transferOwnership.selector;
+972	 functionSelectors[1] = IERC173.owner.selector;
+973	 cut[2] = IDiamondCut.FacetCut({
+974	 facetAddress: _ownershipFacet, action: IDiamondCut.FacetCutAction.Add, functionSelectors: functionSelectors}
+975	 );
+976	 diamondCut(cut, address(0), "");
+977	 }
+978	 function diamondCut( IDiamondCut.FacetCut[] memory _diamondCut, address _init, bytes memory _calldata ) internal {
+979	 for (uint256 facetIndex; facetIndex < _diamondCut.length; facetIndex++) {
+980	 IDiamondCut.FacetCutAction action = _diamondCut[facetIndex].action;
+981	 if (action == IDiamondCut.FacetCutAction.Add) {
+982	 addFunctions(_diamondCut[facetIndex].facetAddress, _diamondCut[facetIndex].functionSelectors);
+983	 }
+984	 else if (action == IDiamondCut.FacetCutAction.Replace) {
+985	 replaceFunctions(_diamondCut[facetIndex].facetAddress, _diamondCut[facetIndex].functionSelectors);
+986	 }
+987	 else if (action == IDiamondCut.FacetCutAction.Remove) {
+988	 removeFunctions(_diamondCut[facetIndex].facetAddress, _diamondCut[facetIndex].functionSelectors);
+989	 }
+990	 else {
+991	 revert("LibDiamondCut: Incorrect FacetCutAction");
+992	 }
+993	 }
+994	 emit DiamondCut(_diamondCut, _init, _calldata);
+995	 initializeDiamondCut(_init, _calldata);
+996	 }
+997	 function addFunctions(address _facetAddress, bytes4[] memory _functionSelectors) internal {
+998	 require(_functionSelectors.length > 0, "LibDiamondCut: No selectors in facet to cut");
+999	 DiamondStorage storage ds = diamondStorage();
+1000	 require(_facetAddress != address(0), "LibDiamondCut: Add facet can't be address(0)");
+1001	 uint96 selectorPosition = uint96(ds.facetFunctionSelectors[_facetAddress].functionSelectors.length);
+1002	 if (selectorPosition == 0) {
+1003	 addFacet(ds, _facetAddress);
+1004	 }
+1005	 for (uint256 selectorIndex; selectorIndex < _functionSelectors.length; selectorIndex++) {
+1006	 bytes4 selector = _functionSelectors[selectorIndex];
+1007	 address oldFacetAddress = ds.selectorToFacetAndPosition[selector].facetAddress;
+1008	 require(oldFacetAddress == address(0), "LibDiamondCut: Can't add function that already exists");
+1009	 addFunction(ds, selector, selectorPosition, _facetAddress);
+1010	 selectorPosition++;
+1011	 }
+1012	 }
+1013	 function replaceFunctions(address _facetAddress, bytes4[] memory _functionSelectors) internal {
+1014	 require(_functionSelectors.length > 0, "LibDiamondCut: No selectors in facet to cut");
+1015	 DiamondStorage storage ds = diamondStorage();
+1016	 require(_facetAddress != address(0), "LibDiamondCut: Add facet can't be address(0)");
+1017	 uint96 selectorPosition = uint96(ds.facetFunctionSelectors[_facetAddress].functionSelectors.length);
+1018	 if (selectorPosition == 0) {
+1019	 addFacet(ds, _facetAddress);
+1020	 }
+1021	 for (uint256 selectorIndex; selectorIndex < _functionSelectors.length; selectorIndex++) {
+1022	 bytes4 selector = _functionSelectors[selectorIndex];
+1023	 address oldFacetAddress = ds.selectorToFacetAndPosition[selector].facetAddress;
+1024	 require(oldFacetAddress != _facetAddress, "LibDiamondCut: Can't replace function with same function");
+1025	 removeFunction(ds, oldFacetAddress, selector);
+1026	 addFunction(ds, selector, selectorPosition, _facetAddress);
+1027	 selectorPosition++;
+1028	 }
+1029	 }
+1030	 function removeFunctions(address _facetAddress, bytes4[] memory _functionSelectors) internal {
+1031	 require(_functionSelectors.length > 0, "LibDiamondCut: No selectors in facet to cut");
+1032	 DiamondStorage storage ds = diamondStorage();
+1033	 require(_facetAddress == address(0), "LibDiamondCut: Remove facet address must be address(0)");
+1034	 for (uint256 selectorIndex; selectorIndex < _functionSelectors.length; selectorIndex++) {
+1035	 bytes4 selector = _functionSelectors[selectorIndex];
+1036	 address oldFacetAddress = ds.selectorToFacetAndPosition[selector].facetAddress;
+1037	 removeFunction(ds, oldFacetAddress, selector);
+1038	 }
+1039	 }
+1040	 function addFacet(DiamondStorage storage ds, address _facetAddress) internal {
+1041	 enforceHasContractCode(_facetAddress, "LibDiamondCut: New facet has no code");
+1042	 ds.facetFunctionSelectors[_facetAddress].facetAddressPosition = ds.facetAddresses.length;
+1043	 ds.facetAddresses.push(_facetAddress);
+1044	 }
+1045	 function addFunction(DiamondStorage storage ds, bytes4 _selector, uint96 _selectorPosition, address _facetAddress) internal {
+1046	 ds.selectorToFacetAndPosition[_selector].functionSelectorPosition = _selectorPosition;
+1047	 ds.facetFunctionSelectors[_facetAddress].functionSelectors.push(_selector);
+1048	 ds.selectorToFacetAndPosition[_selector].facetAddress = _facetAddress;
+1049	 }
+1050	 function removeFunction(DiamondStorage storage ds, address _facetAddress, bytes4 _selector) internal {
+1051	 require(_facetAddress != address(0), "LibDiamondCut: Can't remove function that doesn't exist");
+1052	 require(_facetAddress != address(this), "LibDiamondCut: Can't remove immutable function");
+1053	 uint256 selectorPosition = ds.selectorToFacetAndPosition[_selector].functionSelectorPosition;
+1054	 uint256 lastSelectorPosition = ds.facetFunctionSelectors[_facetAddress].functionSelectors.length - 1;
+1055	 if (selectorPosition != lastSelectorPosition) {
+1056	 bytes4 lastSelector = ds.facetFunctionSelectors[_facetAddress].functionSelectors[lastSelectorPosition];
+1057	 ds.facetFunctionSelectors[_facetAddress].functionSelectors[selectorPosition] = lastSelector;
+1058	 ds.selectorToFacetAndPosition[lastSelector].functionSelectorPosition = uint96(selectorPosition);
+1059	 }
+1060	 ds.facetFunctionSelectors[_facetAddress].functionSelectors.pop();
+1061	 delete ds.selectorToFacetAndPosition[_selector];
+1062	 if (lastSelectorPosition == 0) {
+1063	 uint256 lastFacetAddressPosition = ds.facetAddresses.length - 1;
+1064	 uint256 facetAddressPosition = ds.facetFunctionSelectors[_facetAddress].facetAddressPosition;
+1065	 if (facetAddressPosition != lastFacetAddressPosition) {
+1066	 address lastFacetAddress = ds.facetAddresses[lastFacetAddressPosition];
+1067	 ds.facetAddresses[facetAddressPosition] = lastFacetAddress;
+1068	 ds.facetFunctionSelectors[lastFacetAddress].facetAddressPosition = facetAddressPosition;
+1069	 }
+1070	 ds.facetAddresses.pop();
+1071	 delete ds.facetFunctionSelectors[_facetAddress].facetAddressPosition;
+1072	 }
+1073	 }
+1074	 function initializeDiamondCut(address _init, bytes memory _calldata) internal {
+1075	 if (_init == address(0)) {
+1076	 require(_calldata.length == 0, "LibDiamondCut: _init is address(0) but_calldata is not empty");
+1077	 }
+1078	 else {
+1079	 require(_calldata.length > 0, "LibDiamondCut: _calldata is empty but _init is not address(0)");
+1080	 if (_init != address(this)) {
+1081	 enforceHasContractCode(_init, "LibDiamondCut: _init address has no code");
+1082	 }
+1083	 (bool success, bytes memory error) = _init.delegatecall(_calldata);
+1084	 if (!success) {
+1085	 if (error.length > 0) {
+1086	 revert(string(error));
+1087	 }
+1088	 else {
+1089	 revert("LibDiamondCut: _init function reverted");
+1090	 }
+1091	 }
+1092	 }
+1093	 }
+1094	 function enforceHasContractCode(address _contract, string memory _errorMessage) internal view {
+1095	 uint256 contractSize;
+1096	 assembly {
+1097	 contractSize := extcodesize(_contract) }
+1098	 require(contractSize > 0, _errorMessage);
+1099	 }
+1100	 }
+1101	 pragma solidity =0.7.6;
+1102	 interface IDiamondCut {
+1103	 enum FacetCutAction {
+1104	 Add, Replace, Remove}
+1105	 struct FacetCut {
+1106	 address facetAddress;
+1107	 FacetCutAction action;
+1108	 bytes4[] functionSelectors;
+1109	 }
+1110	 function diamondCut( FacetCut[] calldata _diamondCut, address _init, bytes calldata _calldata ) external;
+1111	 event DiamondCut(FacetCut[] _diamondCut, address _init, bytes _calldata);
+1112	 }
+1113	 pragma solidity =0.7.6;
+1114	 interface IDiamondLoupe {
+1115	 struct Facet {
+1116	 address facetAddress;
+1117	 bytes4[] functionSelectors;
+1118	 }
+1119	 function facets() external view returns (Facet[] memory facets_);
+1120	 function facetFunctionSelectors(address _facet) external view returns (bytes4[] memory facetFunctionSelectors_);
+1121	 function facetAddresses() external view returns (address[] memory facetAddresses_);
+1122	 function facetAddress(bytes4 _functionSelector) external view returns (address facetAddress_);
+1123	 }
+1124	 pragma solidity =0.7.6;
+1125	 interface IERC165 {
+1126	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+1127	 }
+1128	 pragma solidity =0.7.6;
+1129	 interface IERC173 {
+1130	 function owner() external view returns (address owner_);
+1131	 function transferOwnership(address _newOwner) external;
+1132	 }
+1133	 pragma solidity =0.7.6;
+1134	 library LibMeta {
+1135	 bytes32 internal constant EIP712_DOMAIN_TYPEHASH = keccak256(bytes("EIP712Domain(string name,string version,uint256 salt,address verifyingContract)"));
+1136	 function domainSeparator(string memory name, string memory version) internal view returns (bytes32 domainSeparator_) {
+1137	 domainSeparator_ = keccak256( abi.encode(EIP712_DOMAIN_TYPEHASH, keccak256(bytes(name)), keccak256(bytes(version)), getChainID(), address(this)) );
+1138	 }
+1139	 function getChainID() internal pure returns (uint256 id) {
+1140	 assembly {
+1141	 id := chainid() }
+1142	 }
+1143	 function msgSender() internal view returns (address sender_) {
+1144	 if (msg.sender == address(this)) {
+1145	 bytes memory array = msg.data;
+1146	 uint256 index = msg.data.length;
+1147	 assembly {
+1148	 sender_ := and(mload(add(array, index)), 0xffffffffffffffffffffffffffffffffffffffff) }
+1149	 }
+1150	 else {
+1151	 sender_ = msg.sender;
+1152	 }
+1153	 }
+1154	 }

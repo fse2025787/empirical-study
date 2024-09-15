@@ -1,0 +1,230 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract ERC721 {
+3	 function approve(address _to, uint _tokenId) public;
+4	 function balanceOf(address _owner) public view returns (uint balance);
+5	 function implementsERC721() public pure returns (bool);
+6	 function ownerOf(uint _tokenId) public view returns (address addr);
+7	 function takeOwnership(uint _tokenId) public;
+8	 function totalSupply() public view returns (uint total);
+9	 function transferFrom(address _from, address _to, uint _tokenId) public;
+10	 function transfer(address _to, uint _tokenId) public;
+11	 event Transfer(address indexed from, address indexed to, uint tokenId);
+12	 event Approval(address indexed owner, address indexed approved, uint tokenId);
+13	 }
+14	 contract ZethrDividendCards is ERC721 {
+15	 using SafeMath for uint;
+16	 event Birth(uint tokenId, string name, address owner);
+17	 event TokenSold(uint tokenId, uint oldPrice, uint newPrice, address prevOwner, address winner, string name);
+18	 event Transfer(address from, address to, uint tokenId);
+19	 string public constant NAME = "ZethrDividendCard";
+20	 string public constant SYMBOL = "ZDC";
+21	 address public BANKROLL;
+22	 mapping (uint => address) public divCardIndexToOwner;
+23	 mapping (uint => uint) public divCardRateToIndex;
+24	 mapping (address => uint) private ownershipDivCardCount;
+25	 mapping (uint => address) public divCardIndexToApproved;
+26	 mapping (uint => uint) private divCardIndexToPrice;
+27	 mapping (address => bool) internal administrators;
+28	 address public creator;
+29	 bool public onSale;
+30	 struct Card {
+31	 string name;
+32	 uint percentIncrease;
+33	 }
+34	 Card[] private divCards;
+35	 modifier onlyCreator() {
+36	 require(msg.sender == creator);
+37	 _;
+38	 }
+39	 constructor (address _bankroll) public {
+40	 creator = msg.sender;
+41	 BANKROLL = _bankroll;
+42	 createDivCard("2%", 1 ether, 2);
+43	 divCardRateToIndex[2] = 0;
+44	 createDivCard("5%", 1 ether, 5);
+45	 divCardRateToIndex[5] = 1;
+46	 createDivCard("10%", 1 ether, 10);
+47	 divCardRateToIndex[10] = 2;
+48	 createDivCard("15%", 1 ether, 15);
+49	 divCardRateToIndex[15] = 3;
+50	 createDivCard("20%", 1 ether, 20);
+51	 divCardRateToIndex[20] = 4;
+52	 createDivCard("25%", 1 ether, 25);
+53	 divCardRateToIndex[25] = 5;
+54	 createDivCard("33%", 1 ether, 33);
+55	 divCardRateToIndex[33] = 6;
+56	 createDivCard("MASTER", 5 ether, 10);
+57	 divCardRateToIndex[999] = 7;
+58	 onSale = false;
+59	 administrators[0x4F4eBF556CFDc21c3424F85ff6572C77c514Fcae] = true;
+60	 administrators[0x11e52c75998fe2E7928B191bfc5B25937Ca16741] = true;
+61	 administrators[0x20C945800de43394F70D789874a4daC9cFA57451] = true;
+62	 administrators[0xef764BAC8a438E7E498c2E5fcCf0f174c3E3F8dB] = true;
+63	 }
+64	 modifier isNotContract() {
+65	 require (msg.sender == tx.origin);
+66	 _;
+67	 }
+68	 modifier hasStarted() {
+69	 require (onSale == true);
+70	 _;
+71	 }
+72	 modifier isAdmin() {
+73	 require(administrators[msg.sender]);
+74	 _;
+75	 }
+76	 function setBankroll(address where) isAdmin {
+77	 BANKROLL = where;
+78	 }
+79	 function approve(address _to, uint _tokenId) public isNotContract {
+80	 require(_owns(msg.sender, _tokenId));
+81	 divCardIndexToApproved[_tokenId] = _to;
+82	 emit Approval(msg.sender, _to, _tokenId);
+83	 }
+84	 function balanceOf(address _owner) public view returns (uint balance) {
+85	 return ownershipDivCardCount[_owner];
+86	 }
+87	 function createDivCard(string _name, uint _price, uint _percentIncrease) public onlyCreator {
+88	 _createDivCard(_name, BANKROLL, _price, _percentIncrease);
+89	 }
+90	 function startCardSale() public onlyCreator {
+91	 onSale = true;
+92	 }
+93	 function getDivCard(uint _divCardId) public view returns (string divCardName, uint sellingPrice, address owner) {
+94	 Card storage divCard = divCards[_divCardId];
+95	 divCardName = divCard.name;
+96	 sellingPrice = divCardIndexToPrice[_divCardId];
+97	 owner = divCardIndexToOwner[_divCardId];
+98	 }
+99	 function implementsERC721() public pure returns (bool) {
+100	 return true;
+101	 }
+102	 function name() public pure returns (string) {
+103	 return NAME;
+104	 }
+105	 function ownerOf(uint _divCardId) public view returns (address owner) {
+106	 owner = divCardIndexToOwner[_divCardId];
+107	 require(owner != address(0));
+108	 return owner;
+109	 }
+110	 function purchase(uint _divCardId) public payable hasStarted isNotContract {
+111	 address oldOwner = divCardIndexToOwner[_divCardId];
+112	 address newOwner = msg.sender;
+113	 uint currentPrice = divCardIndexToPrice[_divCardId];
+114	 require(oldOwner != newOwner);
+115	 require(_addressNotNull(newOwner));
+116	 require(msg.value >= currentPrice);
+117	 uint percentIncrease = divCards[_divCardId].percentIncrease;
+118	 uint previousPrice = SafeMath.mul(currentPrice, 100).div(100 + percentIncrease);
+119	 uint totalProfit = SafeMath.sub(currentPrice, previousPrice);
+120	 uint oldOwnerProfit = SafeMath.div(totalProfit, 2);
+121	 uint bankrollProfit = SafeMath.sub(totalProfit, oldOwnerProfit);
+122	 oldOwnerProfit = SafeMath.add(oldOwnerProfit, previousPrice);
+123	 uint purchaseExcess = SafeMath.sub(msg.value, currentPrice);
+124	 divCardIndexToPrice[_divCardId] = SafeMath.div(SafeMath.mul(currentPrice, (100 + percentIncrease)), 100);
+125	 _transfer(oldOwner, newOwner, _divCardId);
+126	 BANKROLL.send(bankrollProfit);
+127	 oldOwner.send(oldOwnerProfit);
+128	 msg.sender.transfer(purchaseExcess);
+129	 }
+130	 function priceOf(uint _divCardId) public view returns (uint price) {
+131	 return divCardIndexToPrice[_divCardId];
+132	 }
+133	 function setCreator(address _creator) public onlyCreator {
+134	 require(_creator != address(0));
+135	 creator = _creator;
+136	 }
+137	 function symbol() public pure returns (string) {
+138	 return SYMBOL;
+139	 }
+140	 function takeOwnership(uint _divCardId) public isNotContract {
+141	 address newOwner = msg.sender;
+142	 address oldOwner = divCardIndexToOwner[_divCardId];
+143	 require(_addressNotNull(newOwner));
+144	 require(_approved(newOwner, _divCardId));
+145	 _transfer(oldOwner, newOwner, _divCardId);
+146	 }
+147	 function totalSupply() public view returns (uint total) {
+148	 return divCards.length;
+149	 }
+150	 function transfer(address _to, uint _divCardId) public isNotContract {
+151	 require(_owns(msg.sender, _divCardId));
+152	 require(_addressNotNull(_to));
+153	 _transfer(msg.sender, _to, _divCardId);
+154	 }
+155	 function transferFrom(address _from, address _to, uint _divCardId) public isNotContract {
+156	 require(_owns(_from, _divCardId));
+157	 require(_approved(_to, _divCardId));
+158	 require(_addressNotNull(_to));
+159	 _transfer(_from, _to, _divCardId);
+160	 }
+161	 function receiveDividends(uint _divCardRate) public payable {
+162	 uint _divCardId = divCardRateToIndex[_divCardRate];
+163	 address _regularAddress = divCardIndexToOwner[_divCardId];
+164	 address _masterAddress = divCardIndexToOwner[7];
+165	 uint toMaster = msg.value.div(2);
+166	 uint toRegular = msg.value.sub(toMaster);
+167	 _masterAddress.send(toMaster);
+168	 _regularAddress.send(toRegular);
+169	 }
+170	 function _addressNotNull(address _to) private pure returns (bool) {
+171	 return _to != address(0);
+172	 }
+173	 function _approved(address _to, uint _divCardId) private view returns (bool) {
+174	 return divCardIndexToApproved[_divCardId] == _to;
+175	 }
+176	 function _createDivCard(string _name, address _owner, uint _price, uint _percentIncrease) private {
+177	 Card memory _divcard = Card({
+178	 name: _name, percentIncrease: _percentIncrease }
+179	 );
+180	 uint newCardId = divCards.push(_divcard) - 1;
+181	 require(newCardId == uint(uint32(newCardId)));
+182	 emit Birth(newCardId, _name, _owner);
+183	 divCardIndexToPrice[newCardId] = _price;
+184	 _transfer(BANKROLL, _owner, newCardId);
+185	 }
+186	 function _owns(address claimant, uint _divCardId) private view returns (bool) {
+187	 return claimant == divCardIndexToOwner[_divCardId];
+188	 }
+189	 function _transfer(address _from, address _to, uint _divCardId) private {
+190	 ownershipDivCardCount[_to]++;
+191	 divCardIndexToOwner[_divCardId] = _to;
+192	 if (_from != address(0)) {
+193	 ownershipDivCardCount[_from]--;
+194	 delete divCardIndexToApproved[_divCardId];
+195	 }
+196	 emit Transfer(_from, _to, _divCardId);
+197	 }
+198	 }
+199	 library SafeMath {
+200	 function mul(uint a, uint b) internal pure returns (uint) {
+201	 if (a == 0) {
+202	 return 0;
+203	 }
+204	 uint c = a * b;
+205	 assert(c / a == b);
+206	 return c;
+207	 }
+208	 function div(uint a, uint b) internal pure returns (uint) {
+209	 uint c = a / b;
+210	 return c;
+211	 }
+212	 function sub(uint a, uint b) internal pure returns (uint) {
+213	 assert(b <= a);
+214	 return a - b;
+215	 }
+216	 function add(uint a, uint b) internal pure returns (uint) {
+217	 uint c = a + b;
+218	 assert(c >= a);
+219	 return c;
+220	 }
+221	 }
+222	 library AddressUtils {
+223	 function isContract(address addr) internal view returns (bool) {
+224	 uint size;
+225	 assembly {
+226	 size := extcodesize(addr) }
+227	 return size > 0;
+228	 }
+229	 }

@@ -1,0 +1,790 @@
+row number 
+1	         pragma solidity 0.7.6;
+2	 contract PriceManager {
+3	 enum PriceType {
+4	 FIXED, DECLIINING_BY_TIME }
+5	 struct DecliningPrice {
+6	 uint128 highest;
+7	 uint128 lowest;
+8	 uint32 startTime;
+9	 uint32 duration;
+10	 uint32 interval;
+11	 }
+12	 mapping(uint24 => DecliningPrice) internal decliningPrices;
+13	 mapping(uint24 => uint128) internal fixedPrices;
+14	 function getDecliningPrice(uint24 saleId_) external view returns ( uint128 highest, uint128 lowest, uint32 startTime, uint32 duration, uint32 interval ) {
+15	 DecliningPrice storage decliningPrice = decliningPrices[saleId_];
+16	 return ( decliningPrice.highest, decliningPrice.lowest, decliningPrice.startTime, decliningPrice.duration, decliningPrice.interval );
+17	 }
+18	 function getFixedPrice(uint24 saleId_) external view returns (uint128) {
+19	 return fixedPrices[saleId_];
+20	 }
+21	 function price(PriceType priceType_, uint24 saleId_) internal view returns (uint128) {
+22	 if (priceType_ == PriceType.FIXED) {
+23	 return fixedPrices[saleId_];
+24	 }
+25	 if (priceType_ == PriceType.DECLIINING_BY_TIME) {
+26	 DecliningPrice storage price_ = decliningPrices[saleId_];
+27	 if (block.timestamp >= price_.startTime + price_.duration) {
+28	 return price_.lowest;
+29	 }
+30	 if (block.timestamp <= price_.startTime) {
+31	 return price_.highest;
+32	 }
+33	 uint256 lastPrice = price_.highest - ((block.timestamp - price_.startTime) / price_.interval) * ((price_.interval * (price_.highest - price_.lowest)) / price_.duration);
+34	 uint256 price256 = lastPrice < price_.lowest ? price_.lowest : lastPrice;
+35	 require(price256 <= uint128(-1), "price: exceeds uint128 max");
+36	 return uint128(price256);
+37	 }
+38	 revert("unsupported priceType");
+39	 }
+40	 function setFixedPrice(uint24 saleId_, uint128 price_) internal {
+41	 fixedPrices[saleId_] = price_;
+42	 }
+43	 function setDecliningPrice( uint24 saleId_, uint32 startTime_, uint128 highest_, uint128 lowest_, uint32 duration_, uint32 interval_ ) internal {
+44	 decliningPrices[saleId_].startTime = startTime_;
+45	 decliningPrices[saleId_].highest = highest_;
+46	 decliningPrices[saleId_].lowest = lowest_;
+47	 decliningPrices[saleId_].duration = duration_;
+48	 decliningPrices[saleId_].interval = interval_;
+49	 }
+50	 }
+51	 pragma solidity 0.7.6;
+52	 interface ISolvICMarket {
+53	 event Publish( address indexed icToken, address indexed seller, uint24 indexed tokenId, uint24 saleId, uint8 priceType, uint128 units, uint128 startTime, address currency, uint128 min, uint128 max, bool useAllowList );
+54	 event Remove( address indexed icToken, address indexed seller, uint24 indexed saleId, uint128 total, uint128 saled );
+55	 event FixedPriceSet( address indexed icToken, uint24 indexed saleId, uint24 indexed tokenId, uint8 priceType, uint128 lastPrice );
+56	 event DecliningPriceSet( address indexed icToken, uint24 indexed saleId, uint24 indexed tokenId, uint128 highest, uint128 lowest, uint32 duration, uint32 interval );
+57	 event Traded( address indexed buyer, uint24 indexed saleId, address indexed icToken, uint24 tokenId, uint24 tradeId, uint32 tradeTime, address currency, uint8 priceType, uint128 price, uint128 tradedUnits, uint256 tradedAmount, uint8 feePayType, uint128 fee );
+58	 function publishFixedPrice( address icToken_, uint24 tokenId_, address currency_, uint128 min_, uint128 max_, uint32 startTime_, bool useAllowList_, uint128 price_ ) external returns (uint24 saleId);
+59	 function publishDecliningPrice( address icToken_, uint24 tokenId_, address currency_, uint128 min_, uint128 max_, uint32 startTime_, bool useAllowList_, uint128 highest_, uint128 lowest_, uint32 duration_, uint32 interval_ ) external returns (uint24 saleId);
+60	 function buyByAmount(uint24 saleId_, uint256 amount_) external payable returns (uint128 units_);
+61	 function buyByUnits(uint24 saleId_, uint128 units_) external payable returns (uint256 amount_, uint128 fee_);
+62	 function remove(uint24 saleId_) external;
+63	 function totalSalesOfICToken(address icToken_) external view returns (uint256);
+64	 function saleIdOfICTokenByIndex(address icToken_, uint256 index_) external view returns (uint256);
+65	 function getPrice(uint24 saleId_) external view returns (uint128);
+66	 }
+67	 pragma solidity >=0.6.0 <0.8.0;
+68	 library SafeMathUpgradeable {
+69	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+70	 uint256 c = a + b;
+71	 if (c < a) return (false, 0);
+72	 return (true, c);
+73	 }
+74	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+75	 if (b > a) return (false, 0);
+76	 return (true, a - b);
+77	 }
+78	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+79	 if (a == 0) return (true, 0);
+80	 uint256 c = a * b;
+81	 if (c / a != b) return (false, 0);
+82	 return (true, c);
+83	 }
+84	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+85	 if (b == 0) return (false, 0);
+86	 return (true, a / b);
+87	 }
+88	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+89	 if (b == 0) return (false, 0);
+90	 return (true, a % b);
+91	 }
+92	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+93	 uint256 c = a + b;
+94	 require(c >= a, "SafeMath: addition overflow");
+95	 return c;
+96	 }
+97	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+98	 require(b <= a, "SafeMath: subtraction overflow");
+99	 return a - b;
+100	 }
+101	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+102	 if (a == 0) return 0;
+103	 uint256 c = a * b;
+104	 require(c / a == b, "SafeMath: multiplication overflow");
+105	 return c;
+106	 }
+107	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+108	 require(b > 0, "SafeMath: division by zero");
+109	 return a / b;
+110	 }
+111	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+112	 require(b > 0, "SafeMath: modulo by zero");
+113	 return a % b;
+114	 }
+115	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+116	 require(b <= a, errorMessage);
+117	 return a - b;
+118	 }
+119	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+120	 require(b > 0, errorMessage);
+121	 return a / b;
+122	 }
+123	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+124	 require(b > 0, errorMessage);
+125	 return a % b;
+126	 }
+127	 }
+128	 pragma solidity >=0.6.0 <0.8.0;
+129	 library EnumerableSetUpgradeable {
+130	 struct Set {
+131	 bytes32[] _values;
+132	 mapping (bytes32 => uint256) _indexes;
+133	 }
+134	 function _add(Set storage set, bytes32 value) private returns (bool) {
+135	 if (!_contains(set, value)) {
+136	 set._values.push(value);
+137	 set._indexes[value] = set._values.length;
+138	 return true;
+139	 }
+140	 else {
+141	 return false;
+142	 }
+143	 }
+144	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+145	 uint256 valueIndex = set._indexes[value];
+146	 if (valueIndex != 0) {
+147	 uint256 toDeleteIndex = valueIndex - 1;
+148	 uint256 lastIndex = set._values.length - 1;
+149	 bytes32 lastvalue = set._values[lastIndex];
+150	 set._values[toDeleteIndex] = lastvalue;
+151	 set._indexes[lastvalue] = toDeleteIndex + 1;
+152	 set._values.pop();
+153	 delete set._indexes[value];
+154	 return true;
+155	 }
+156	 else {
+157	 return false;
+158	 }
+159	 }
+160	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+161	 return set._indexes[value] != 0;
+162	 }
+163	 function _length(Set storage set) private view returns (uint256) {
+164	 return set._values.length;
+165	 }
+166	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+167	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+168	 return set._values[index];
+169	 }
+170	 struct Bytes32Set {
+171	 Set _inner;
+172	 }
+173	 function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+174	 return _add(set._inner, value);
+175	 }
+176	 function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+177	 return _remove(set._inner, value);
+178	 }
+179	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+180	 return _contains(set._inner, value);
+181	 }
+182	 function length(Bytes32Set storage set) internal view returns (uint256) {
+183	 return _length(set._inner);
+184	 }
+185	 function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+186	 return _at(set._inner, index);
+187	 }
+188	 struct AddressSet {
+189	 Set _inner;
+190	 }
+191	 function add(AddressSet storage set, address value) internal returns (bool) {
+192	 return _add(set._inner, bytes32(uint256(uint160(value))));
+193	 }
+194	 function remove(AddressSet storage set, address value) internal returns (bool) {
+195	 return _remove(set._inner, bytes32(uint256(uint160(value))));
+196	 }
+197	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+198	 return _contains(set._inner, bytes32(uint256(uint160(value))));
+199	 }
+200	 function length(AddressSet storage set) internal view returns (uint256) {
+201	 return _length(set._inner);
+202	 }
+203	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+204	 return address(uint160(uint256(_at(set._inner, index))));
+205	 }
+206	 struct UintSet {
+207	 Set _inner;
+208	 }
+209	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+210	 return _add(set._inner, bytes32(value));
+211	 }
+212	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+213	 return _remove(set._inner, bytes32(value));
+214	 }
+215	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+216	 return _contains(set._inner, bytes32(value));
+217	 }
+218	 function length(UintSet storage set) internal view returns (uint256) {
+219	 return _length(set._inner);
+220	 }
+221	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+222	 return uint256(_at(set._inner, index));
+223	 }
+224	 }
+225	 pragma solidity 0.7.6;
+226	 interface ERC20Interface {
+227	 function balanceOf(address account) external view returns (uint256);
+228	 function transfer(address recipient, uint256 amount) external returns (bool);
+229	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+230	 }
+231	 library ERC20TransferHelper {
+232	 function doTransferIn( address underlying, address from, uint256 amount ) internal returns (uint256) {
+233	 if (underlying == EthAddressLib.ethAddress()) {
+234	 require(tx.origin == from || msg.sender == from, "sender mismatch");
+235	 require(msg.value == amount, "value mismatch");
+236	 return amount;
+237	 }
+238	 else {
+239	 require(msg.value == 0, "don't support msg.value");
+240	 uint256 balanceBefore = ERC20Interface(underlying).balanceOf( address(this) );
+241	 (bool success, bytes memory data) = underlying.call( abi.encodeWithSelector( ERC20Interface.transferFrom.selector, from, address(this), amount ) );
+242	 require( success && (data.length == 0 || abi.decode(data, (bool))), "STF" );
+243	 uint256 balanceAfter = ERC20Interface(underlying).balanceOf( address(this) );
+244	 require( balanceAfter >= balanceBefore, "TOKEN_TRANSFER_IN_OVERFLOW" );
+245	 return balanceAfter - balanceBefore;
+246	 }
+247	 }
+248	 function doTransferOut( address underlying, address payable to, uint256 amount ) internal {
+249	 if (underlying == EthAddressLib.ethAddress()) {
+250	 (bool success, ) = to.call{
+251	 value: amount}
+252	 (new bytes(0));
+253	 require(success, "STE");
+254	 }
+255	 else {
+256	 (bool success, bytes memory data) = underlying.call( abi.encodeWithSelector( ERC20Interface.transfer.selector, to, amount ) );
+257	 require( success && (data.length == 0 || abi.decode(data, (bool))), "ST" );
+258	 }
+259	 }
+260	 function getCashPrior(address underlying_) internal view returns (uint256) {
+261	 if (underlying_ == EthAddressLib.ethAddress()) {
+262	 uint256 startingBalance = sub(address(this).balance, msg.value);
+263	 return startingBalance;
+264	 }
+265	 else {
+266	 ERC20Interface token = ERC20Interface(underlying_);
+267	 return token.balanceOf(address(this));
+268	 }
+269	 }
+270	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+271	 require(b <= a, "SafeMath: subtraction overflow");
+272	 return a - b;
+273	 }
+274	 }
+275	 pragma solidity 0.7.6;
+276	 library EthAddressLib {
+277	 function ethAddress() internal pure returns(address) {
+278	 return 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+279	 }
+280	 }
+281	 pragma solidity 0.7.6;
+282	 interface ERC721Interface {
+283	 function transferFrom( address from, address to, uint256 tokenId ) external;
+284	 }
+285	 interface VNFTInterface {
+286	 function safeTransferFrom( address from, address to, uint256 tokenId, uint256 units, bytes calldata data ) external returns (uint256 newTokenId);
+287	 }
+288	 library VNFTTransferHelper {
+289	 function doTransferIn( address underlying, address from, uint256 tokenId ) internal {
+290	 ERC721Interface token = ERC721Interface(underlying);
+291	 token.transferFrom(from, address(this), tokenId);
+292	 }
+293	 function doTransferOut( address underlying, address to, uint256 tokenId ) internal {
+294	 ERC721Interface token = ERC721Interface(underlying);
+295	 token.transferFrom(address(this), to, tokenId);
+296	 }
+297	 function doTransferIn( address underlying, address from, uint256 tokenId, uint256 units ) internal {
+298	 VNFTInterface token = VNFTInterface(underlying);
+299	 token.safeTransferFrom(from, address(this), tokenId, units, "");
+300	 }
+301	 function doTransferOut( address underlying, address to, uint256 tokenId, uint256 units ) internal {
+302	 VNFTInterface token = VNFTInterface(underlying);
+303	 token.safeTransferFrom(address(this), to, tokenId, units, "");
+304	 }
+305	 }
+306	 pragma solidity >=0.6.0 <0.8.0;
+307	 library SafeMathUpgradeable128 {
+308	 function tryAdd(uint128 a, uint128 b) internal pure returns (bool, uint128) {
+309	 uint128 c = a + b;
+310	 if (c < a) return (false, 0);
+311	 return (true, c);
+312	 }
+313	 function trySub(uint128 a, uint128 b) internal pure returns (bool, uint128) {
+314	 if (b > a) return (false, 0);
+315	 return (true, a - b);
+316	 }
+317	 function tryMul(uint128 a, uint128 b) internal pure returns (bool, uint256) {
+318	 if (a == 0) return (true, 0);
+319	 uint256 c = a * b;
+320	 if (c / a != b) return (false, 0);
+321	 return (true, c);
+322	 }
+323	 function tryDiv(uint128 a, uint128 b) internal pure returns (bool, uint128) {
+324	 if (b == 0) return (false, 0);
+325	 return (true, a / b);
+326	 }
+327	 function tryMod(uint128 a, uint128 b) internal pure returns (bool, uint128) {
+328	 if (b == 0) return (false, 0);
+329	 return (true, a % b);
+330	 }
+331	 function add(uint128 a, uint128 b) internal pure returns (uint128) {
+332	 uint128 c = a + b;
+333	 require(c >= a, "SafeMath: addition overflow");
+334	 return c;
+335	 }
+336	 function sub(uint128 a, uint128 b) internal pure returns (uint128) {
+337	 require(b <= a, "SafeMath: subtraction overflow");
+338	 return a - b;
+339	 }
+340	 function mul(uint128 a, uint128 b) internal pure returns (uint128) {
+341	 if (a == 0) return 0;
+342	 uint128 c = a * b;
+343	 require(c / a == b, "SafeMath: multiplication overflow");
+344	 return c;
+345	 }
+346	 function div(uint128 a, uint128 b) internal pure returns (uint128) {
+347	 require(b > 0, "SafeMath: division by zero");
+348	 return a / b;
+349	 }
+350	 function mod(uint128 a, uint128 b) internal pure returns (uint128) {
+351	 require(b > 0, "SafeMath: modulo by zero");
+352	 return a % b;
+353	 }
+354	 function sub(uint128 a, uint128 b, string memory errorMessage) internal pure returns (uint128) {
+355	 require(b <= a, errorMessage);
+356	 return a - b;
+357	 }
+358	 function div(uint128 a, uint128 b, string memory errorMessage) internal pure returns (uint128) {
+359	 require(b > 0, errorMessage);
+360	 return a / b;
+361	 }
+362	 function mod(uint128 a, uint128 b, string memory errorMessage) internal pure returns (uint128) {
+363	 require(b > 0, errorMessage);
+364	 return a % b;
+365	 }
+366	 }
+367	 pragma solidity 0.7.6;
+368	 contract SolvConvertibleMarket is ISolvICMarket, PriceManager {
+369	 using SafeMathUpgradeable for uint256;
+370	 using SafeMathUpgradeable128 for uint128;
+371	 using EnumerableSetUpgradeable for EnumerableSetUpgradeable.UintSet;
+372	 using EnumerableSetUpgradeable for EnumerableSetUpgradeable.AddressSet;
+373	 event NewAdmin(address oldAdmin, address newAdmin);
+374	 event NewPendingAdmin(address oldPendingAdmin, address newPendingAdmin);
+375	 event NewSolver(ISolver oldSolver, ISolver newSolver);
+376	 event AddMarket( address indexed icToken, uint128 precision, uint8 feePayType, uint8 feeType, uint128 feeAmount, uint16 feeRate );
+377	 event RemoveMarket(address indexed icToken);
+378	 event SetCurrency(address indexed currency, bool enable);
+379	 event WithdrawFee(address icToken, uint256 reduceAmount);
+380	 struct Sale {
+381	 uint24 saleId;
+382	 uint24 tokenId;
+383	 uint32 startTime;
+384	 address seller;
+385	 PriceManager.PriceType priceType;
+386	 uint128 total;
+387	 uint128 units;
+388	 uint128 min;
+389	 uint128 max;
+390	 address icToken;
+391	 address currency;
+392	 bool useAllowList;
+393	 bool isValid;
+394	 }
+395	 struct Market {
+396	 bool isValid;
+397	 uint128 precision;
+398	 FeeType feeType;
+399	 FeePayType feePayType;
+400	 uint128 feeAmount;
+401	 uint16 feeRate;
+402	 }
+403	 enum FeeType {
+404	 BY_AMOUNT, FIXED }
+405	 enum FeePayType {
+406	 SELLER_PAY, BUYER_PAY }
+407	 mapping(uint24 => Sale) public sales;
+408	 mapping(address => Market) public markets;
+409	 EnumerableSetUpgradeable.AddressSet internal _currencies;
+410	 EnumerableSetUpgradeable.AddressSet internal _vouchers;
+411	 mapping(address => EnumerableSetUpgradeable.UintSet) internal _voucherSales;
+412	 mapping(address => EnumerableSetUpgradeable.AddressSet) internal _allowAddresses;
+413	 ISolver public solver;
+414	 uint24 public nextSaleId;
+415	 address payable public pendingAdmin;
+416	 uint24 public nextTradeId;
+417	 address payable public admin;
+418	 bool public initialized;
+419	 uint16 internal constant PERCENTAGE_BASE = 10000;
+420	 bool internal _notEntered;
+421	 mapping(address => EnumerableSetUpgradeable.AddressSet) internal allowAddressManagers;
+422	 mapping(uint24 => mapping(address => uint128)) internal saleRecords;
+423	 uint16 public repoFeeRate;
+424	 modifier onlyAdmin {
+425	 require(msg.sender == admin, "only admin");
+426	 _;
+427	 }
+428	 modifier onlyAllowAddressManager(address voucher_) {
+429	 require( msg.sender == admin || allowAddressManagers[voucher_].contains(msg.sender), "only manager" );
+430	 _;
+431	 }
+432	 modifier nonReentrant() {
+433	 require(_notEntered, "re-entered");
+434	 _notEntered = false;
+435	 _;
+436	 _notEntered = true;
+437	 }
+438	 constructor() {
+439	 }
+440	 function initialize(ISolver solver_) public {
+441	 require(initialized == false, "already initialized");
+442	 admin = msg.sender;
+443	 nextSaleId = 1;
+444	 nextTradeId = 1;
+445	 _setSolver(solver_);
+446	 initialized = true;
+447	 _notEntered = true;
+448	 }
+449	 function currencies() external view returns (address[] memory currencies_) {
+450	 currencies_ = new address[](_currencies.length());
+451	 for (uint256 i = 0; i < _currencies.length(); i++) {
+452	 currencies_[i] = _currencies.at(i);
+453	 }
+454	 }
+455	 function vouchers() external view returns (address[] memory vouchers_) {
+456	 vouchers_ = new address[](_vouchers.length());
+457	 for (uint256 i = 0; i < _vouchers.length(); i++) {
+458	 vouchers_[i] = _vouchers.at(i);
+459	 }
+460	 }
+461	 function publishFixedPrice( address voucher_, uint24 tokenId_, address currency_, uint128 min_, uint128 max_, uint32 startTime_, bool useAllowList_, uint128 price_ ) external nonReentrant virtual override returns (uint24 saleId) {
+462	 address seller = msg.sender;
+463	 uint256 err = solver.publishFixedPriceAllowed( voucher_, tokenId_, seller, currency_, min_, max_, startTime_, useAllowList_, price_ );
+464	 require(err == 0, "Solver: not allowed");
+465	 PriceManager.PriceType priceType = PriceManager.PriceType.FIXED;
+466	 saleId = _publish( seller, voucher_, tokenId_, currency_, priceType, min_, max_, startTime_, useAllowList_ );
+467	 PriceManager.setFixedPrice(saleId, price_);
+468	 emit FixedPriceSet( voucher_, saleId, tokenId_, uint8(priceType), price_ );
+469	 }
+470	 struct PublishDecliningPriceLocalVars {
+471	 address icToken;
+472	 uint24 tokenId;
+473	 address currency;
+474	 uint128 min;
+475	 uint128 max;
+476	 uint32 startTime;
+477	 bool useAllowList;
+478	 uint128 highest;
+479	 uint128 lowest;
+480	 uint32 duration;
+481	 uint32 interval;
+482	 address seller;
+483	 }
+484	 function publishDecliningPrice( address voucher_, uint24 tokenId_, address currency_, uint128 min_, uint128 max_, uint32 startTime_, bool useAllowList_, uint128 highest_, uint128 lowest_, uint32 duration_, uint32 interval_ ) external nonReentrant virtual override returns (uint24 saleId) {
+485	 PublishDecliningPriceLocalVars memory vars;
+486	 vars.seller = msg.sender;
+487	 vars.icToken = voucher_;
+488	 vars.tokenId = tokenId_;
+489	 vars.currency = currency_;
+490	 vars.min = min_;
+491	 vars.max = max_;
+492	 vars.startTime = startTime_;
+493	 vars.useAllowList = useAllowList_;
+494	 vars.highest = highest_;
+495	 vars.lowest = lowest_;
+496	 vars.duration = duration_;
+497	 vars.interval = interval_;
+498	 require(vars.interval > 0, "interval cannot be 0");
+499	 require(vars.lowest <= vars.highest, "lowest > highest");
+500	 require(vars.duration > 0, "duration cannot be 0");
+501	 uint256 err = solver.publishDecliningPriceAllowed( vars.icToken, vars.tokenId, vars.seller, vars.currency, vars.min, vars.max, vars.startTime, vars.useAllowList, vars.highest, vars.lowest, vars.duration, vars.interval );
+502	 require(err == 0, "Solver: not allowed");
+503	 PriceManager.PriceType priceType = PriceManager .PriceType .DECLIINING_BY_TIME;
+504	 saleId = _publish( vars.seller, vars.icToken, vars.tokenId, vars.currency, priceType, vars.min, vars.max, vars.startTime, vars.useAllowList );
+505	 PriceManager.setDecliningPrice( saleId, vars.startTime, vars.highest, vars.lowest, vars.duration, vars.interval );
+506	 emit DecliningPriceSet( vars.icToken, saleId, vars.tokenId, vars.highest, vars.lowest, vars.duration, vars.interval );
+507	 }
+508	 function _publish( address seller_, address voucher_, uint24 tokenId_, address currency_, PriceManager.PriceType priceType_, uint128 min_, uint128 max_, uint32 startTime_, bool useAllowList_ ) internal returns (uint24 saleId) {
+509	 require(markets[voucher_].isValid, "unsupported voucher");
+510	 require( _currencies.contains(currency_) || currency_ == IUnderlyingContainer(voucher_).underlying(), "unsupported currency" );
+511	 if (max_ > 0) {
+512	 require(min_ <= max_, "min > max");
+513	 }
+514	 IVNFT vnft = IVNFT(voucher_);
+515	 VNFTTransferHelper.doTransferIn(voucher_, seller_, tokenId_);
+516	 saleId = _generateNextSaleId();
+517	 uint256 units = vnft.unitsInToken(tokenId_);
+518	 require(units <= uint128(-1), "exceeds uint128 max");
+519	 sales[saleId] = Sale({
+520	 saleId: saleId, seller: msg.sender, tokenId: tokenId_, total: uint128(units), units: uint128(units), startTime: startTime_, min: min_, max: max_, icToken: voucher_, currency: currency_, priceType: priceType_, useAllowList: useAllowList_, isValid: true }
+521	 );
+522	 Sale storage sale = sales[saleId];
+523	 _voucherSales[voucher_].add(saleId);
+524	 emit Publish( sale.icToken, sale.seller, sale.tokenId, saleId, uint8(sale.priceType), sale.units, sale.startTime, sale.currency, sale.min, sale.max, sale.useAllowList );
+525	 solver.publishVerify( sale.icToken, sale.tokenId, sale.seller, sale.currency, sale.saleId, sale.units );
+526	 return saleId;
+527	 }
+528	 function buyByAmount(uint24 saleId_, uint256 amount_) external payable nonReentrant virtual override returns (uint128 units_) {
+529	 Sale storage sale = sales[saleId_];
+530	 address buyer = msg.sender;
+531	 uint128 fee = _getFee(sale.icToken, sale.currency, amount_);
+532	 uint128 price = PriceManager.price(sale.priceType, sale.saleId);
+533	 uint256 units256;
+534	 if (markets[sale.icToken].feePayType == FeePayType.BUYER_PAY) {
+535	 amount_ = amount_.sub(fee, "fee exceeds amount");
+536	 units256 = amount_ .mul(uint256(markets[sale.icToken].precision)) .div(uint256(price));
+537	 }
+538	 else {
+539	 units256 = amount_ .mul(uint256(markets[sale.icToken].precision)) .div(uint256(price));
+540	 }
+541	 require(units256 <= uint128(-1), "exceeds uint128 max");
+542	 units_ = uint128(units256);
+543	 uint256 err = solver.buyAllowed( sale.icToken, sale.tokenId, saleId_, buyer, sale.currency, amount_, units_, price );
+544	 require(err == 0, "Solver: not allowed");
+545	 _buy(buyer, sale, amount_, units_, price, fee);
+546	 return units_;
+547	 }
+548	 function buyByUnits(uint24 saleId_, uint128 units_) external payable nonReentrant virtual override returns (uint256 amount_, uint128 fee_) {
+549	 Sale storage sale = sales[saleId_];
+550	 if (markets[sale.icToken].feePayType == FeePayType.BUYER_PAY) {
+551	 require(sale.currency != EthAddressLib.ethAddress(), "buyByUnits unsupported");
+552	 }
+553	 address buyer = msg.sender;
+554	 uint128 price = PriceManager.price(sale.priceType, sale.saleId);
+555	 amount_ = uint256(units_).mul(uint256(price)).div( uint256(markets[sale.icToken].precision) );
+556	 fee_ = _getFee(sale.icToken, sale.currency, amount_);
+557	 uint256 err = solver.buyAllowed( sale.icToken, sale.tokenId, saleId_, buyer, sale.currency, amount_, units_, price );
+558	 require(err == 0, "Solver: not allowed");
+559	 _buy(buyer, sale, amount_, units_, price, fee_);
+560	 return (amount_, fee_);
+561	 }
+562	 struct BuyLocalVar {
+563	 uint256 transferInAmount;
+564	 uint256 transferOutAmount;
+565	 FeePayType feePayType;
+566	 }
+567	 function _buy( address buyer_, Sale storage sale_, uint256 amount_, uint128 units_, uint128 price_, uint128 fee_ ) internal {
+568	 require(sale_.isValid, "invalid saleId");
+569	 require(block.timestamp >= sale_.startTime, "not yet on sale");
+570	 if (sale_.units >= sale_.min) {
+571	 require(units_ >= sale_.min, "min units not met");
+572	 }
+573	 if (sale_.max > 0) {
+574	 uint128 purchased = saleRecords[sale_.saleId][buyer_].add(units_);
+575	 require(purchased <= sale_.max, "exceeds purchase limit");
+576	 saleRecords[sale_.saleId][buyer_] = purchased;
+577	 }
+578	 if (sale_.useAllowList) {
+579	 require( _allowAddresses[sale_.icToken].contains(buyer_), "not in allow list" );
+580	 }
+581	 sale_.units = sale_.units.sub(units_, "insufficient units for sale");
+582	 BuyLocalVar memory vars;
+583	 vars.feePayType = markets[sale_.icToken].feePayType;
+584	 if (vars.feePayType == FeePayType.BUYER_PAY) {
+585	 vars.transferInAmount = amount_.add(fee_);
+586	 vars.transferOutAmount = amount_;
+587	 }
+588	 else if (vars.feePayType == FeePayType.SELLER_PAY) {
+589	 vars.transferInAmount = amount_;
+590	 vars.transferOutAmount = amount_.sub(fee_, "fee exceeds amount");
+591	 }
+592	 else {
+593	 revert("unsupported feePayType");
+594	 }
+595	 ERC20TransferHelper.doTransferIn( sale_.currency, buyer_, vars.transferInAmount );
+596	 if (units_ == IVNFT(sale_.icToken).unitsInToken(sale_.tokenId)) {
+597	 VNFTTransferHelper.doTransferOut( sale_.icToken, buyer_, sale_.tokenId );
+598	 }
+599	 else {
+600	 VNFTTransferHelper.doTransferOut( sale_.icToken, buyer_, sale_.tokenId, units_ );
+601	 }
+602	 ERC20TransferHelper.doTransferOut( sale_.currency, payable(sale_.seller), vars.transferOutAmount );
+603	 emit Traded( buyer_, sale_.saleId, sale_.icToken, sale_.tokenId, _generateNextTradeId(), uint32(block.timestamp), sale_.currency, uint8(sale_.priceType), price_, units_, amount_, uint8(vars.feePayType), fee_ );
+604	 solver.buyVerify( sale_.icToken, sale_.tokenId, sale_.saleId, buyer_, sale_.seller, amount_, units_, price_, fee_ );
+605	 if (sale_.units == 0) {
+606	 emit Remove( sale_.icToken, sale_.seller, sale_.saleId, sale_.total, sale_.total - sale_.units );
+607	 delete sales[sale_.saleId];
+608	 }
+609	 }
+610	 function purchasedUnits(uint24 saleId_, address buyer_) external view returns (uint128) {
+611	 return saleRecords[saleId_][buyer_];
+612	 }
+613	 function remove(uint24 saleId_) public nonReentrant virtual override {
+614	 Sale memory sale = sales[saleId_];
+615	 require(sale.isValid, "invalid sale");
+616	 require(sale.seller == msg.sender, "only seller");
+617	 uint256 err = solver.removeAllow( sale.icToken, sale.tokenId, sale.saleId, sale.seller );
+618	 require(err == 0, "Solver: not allowed");
+619	 VNFTTransferHelper.doTransferOut( sale.icToken, sale.seller, sale.tokenId );
+620	 emit Remove( sale.icToken, sale.seller, sale.saleId, sale.total, sale.total - sale.units );
+621	 delete sales[saleId_];
+622	 }
+623	 function _getFee( address voucher_, address currency_, uint256 amount ) internal view returns (uint128) {
+624	 if (currency_ == IUnderlyingContainer(voucher_).underlying()) {
+625	 uint256 fee = amount.mul(uint256(repoFeeRate)).div(PERCENTAGE_BASE);
+626	 require(fee <= uint128(-1), "Fee: exceeds uint128 max");
+627	 return uint128(fee);
+628	 }
+629	 Market storage market = markets[voucher_];
+630	 if (market.feeType == FeeType.FIXED) {
+631	 return market.feeAmount;
+632	 }
+633	 else if (market.feeType == FeeType.BY_AMOUNT) {
+634	 uint256 fee = amount.mul(uint256(market.feeRate)).div( uint256(PERCENTAGE_BASE) );
+635	 require(fee <= uint128(-1), "Fee: exceeds uint128 max");
+636	 return uint128(fee);
+637	 }
+638	 else {
+639	 revert("unsupported feeType");
+640	 }
+641	 }
+642	 function getPrice(uint24 saleId_) public view virtual override returns (uint128) {
+643	 return PriceManager.price(sales[saleId_].priceType, saleId_);
+644	 }
+645	 function totalSalesOfICToken(address voucher_) public view virtual override returns (uint256) {
+646	 return _voucherSales[voucher_].length();
+647	 }
+648	 function saleIdOfICTokenByIndex(address voucher_, uint256 index_) public view virtual override returns (uint256) {
+649	 return _voucherSales[voucher_].at(index_);
+650	 }
+651	 function _generateNextSaleId() internal returns (uint24) {
+652	 return nextSaleId++;
+653	 }
+654	 function _generateNextTradeId() internal returns (uint24) {
+655	 return nextTradeId++;
+656	 }
+657	 function _addMarket( address voucher_, uint128 precision_, uint8 feePayType_, uint8 feeType_, uint128 feeAmount_, uint16 feeRate_ ) public onlyAdmin {
+658	 markets[voucher_].isValid = true;
+659	 markets[voucher_].precision = precision_;
+660	 markets[voucher_].feePayType = FeePayType(feePayType_);
+661	 markets[voucher_].feeType = FeeType(feeType_);
+662	 markets[voucher_].feeAmount = feeAmount_;
+663	 markets[voucher_].feeRate = feeRate_;
+664	 _vouchers.add(voucher_);
+665	 emit AddMarket( voucher_, precision_, feePayType_, feeType_, feeAmount_, feeRate_ );
+666	 }
+667	 function _removeMarket(address voucher_) public onlyAdmin {
+668	 _vouchers.remove(voucher_);
+669	 delete markets[voucher_];
+670	 emit RemoveMarket(voucher_);
+671	 }
+672	 function _setCurrency(address currency_, bool enable_) public onlyAdmin {
+673	 _currencies.add(currency_);
+674	 emit SetCurrency(currency_, enable_);
+675	 }
+676	 function _setRepoFeeRate(uint16 newRepoFeeRate_) external onlyAdmin {
+677	 repoFeeRate = newRepoFeeRate_;
+678	 }
+679	 function _withdrawFee(address currency_, uint256 reduceAmount_) public onlyAdmin {
+680	 ERC20TransferHelper.doTransferOut(currency_, admin, reduceAmount_);
+681	 emit WithdrawFee(currency_, reduceAmount_);
+682	 }
+683	 function _addAllowAddress( address voucher_, address[] calldata addresses_, bool resetExisting_ ) external onlyAllowAddressManager(voucher_) {
+684	 require(markets[voucher_].isValid, "unsupported icToken");
+685	 EnumerableSetUpgradeable.AddressSet storage set = _allowAddresses[ voucher_ ];
+686	 if (resetExisting_) {
+687	 while (set.length() != 0) {
+688	 set.remove(set.at(0));
+689	 }
+690	 }
+691	 for (uint256 i = 0; i < addresses_.length; i++) {
+692	 set.add(addresses_[i]);
+693	 }
+694	 }
+695	 function _removeAllowAddress( address voucher_, address[] calldata addresses_ ) external onlyAllowAddressManager(voucher_) {
+696	 require(markets[voucher_].isValid, "unsupported icToken");
+697	 EnumerableSetUpgradeable.AddressSet storage set = _allowAddresses[ voucher_ ];
+698	 for (uint256 i = 0; i < addresses_.length; i++) {
+699	 set.remove(addresses_[i]);
+700	 }
+701	 }
+702	 function isBuyerAllowed(address voucher_, address buyer_) external view returns (bool) {
+703	 return _allowAddresses[voucher_].contains(buyer_);
+704	 }
+705	 function setAllowAddressManager( address voucher_, address[] calldata managers_, bool resetExisting_ ) external onlyAdmin {
+706	 require(markets[voucher_].isValid, "unsupported icToken");
+707	 EnumerableSetUpgradeable.AddressSet storage set = allowAddressManagers[ voucher_ ];
+708	 if (resetExisting_) {
+709	 while (set.length() != 0) {
+710	 set.remove(set.at(0));
+711	 }
+712	 }
+713	 for (uint256 i = 0; i < managers_.length; i++) {
+714	 set.add(managers_[i]);
+715	 }
+716	 }
+717	 function allowAddressManager(address voucher_, uint256 index_) external view returns (address) {
+718	 return allowAddressManagers[voucher_].at(index_);
+719	 }
+720	 function _setSolver(ISolver newSolver_) public virtual onlyAdmin {
+721	 ISolver oldSolver = solver;
+722	 require(newSolver_.isSolver(), "invalid solver");
+723	 solver = newSolver_;
+724	 emit NewSolver(oldSolver, newSolver_);
+725	 }
+726	 function _setPendingAdmin(address payable newPendingAdmin) public {
+727	 require(msg.sender == admin, "only admin");
+728	 address oldPendingAdmin = pendingAdmin;
+729	 pendingAdmin = newPendingAdmin;
+730	 emit NewPendingAdmin(oldPendingAdmin, newPendingAdmin);
+731	 }
+732	 function _acceptAdmin() public {
+733	 require( msg.sender == pendingAdmin && msg.sender != address(0), "only pending admin" );
+734	 address oldAdmin = admin;
+735	 address oldPendingAdmin = pendingAdmin;
+736	 admin = pendingAdmin;
+737	 pendingAdmin = address(0);
+738	 emit NewAdmin(oldAdmin, admin);
+739	 emit NewPendingAdmin(oldPendingAdmin, pendingAdmin);
+740	 }
+741	 }
+742	 pragma solidity 0.7.6;
+743	 interface ISolver {
+744	 function isSolver() external returns (bool);
+745	 function depositAllowed( address product, address depositor, uint64 term, uint256 depositAmount, uint64[] calldata maturities ) external returns (uint256);
+746	 function depositVerify( address product, address depositor, uint256 depositAmount, uint256 tokenId, uint64 term, uint64[] calldata maturities ) external returns (uint256);
+747	 function withdrawAllowed( address product, address payee, uint256 withdrawAmount, uint256 tokenId, uint64 term, uint64 maturity ) external returns (uint256);
+748	 function withdrawVerify( address product, address payee, uint256 withdrawAmount, uint256 tokenId, uint64 term, uint64 maturity ) external returns (uint256);
+749	 function transferFromAllowed( address product, address from, address to, uint256 tokenId, uint256 targetTokenId, uint256 amount ) external returns (uint256);
+750	 function transferFromVerify( address product, address from, address to, uint256 tokenId, uint256 targetTokenId, uint256 amount ) external returns (uint256);
+751	 function mergeAllowed( address product, address owner, uint256 tokenId, uint256 targetTokenId, uint256 amount ) external returns (uint256);
+752	 function mergeVerify( address product, address owner, uint256 tokenId, uint256 targetTokenId, uint256 amount ) external returns (uint256);
+753	 function splitAllowed( address product, address owner, uint256 tokenId, uint256 newTokenId, uint256 amount ) external returns (uint256);
+754	 function splitVerify( address product, address owner, uint256 tokenId, uint256 newTokenId, uint256 amount ) external returns (uint256);
+755	 function needConvertUnsafeTransfer( address product, address from, address to, uint256 tokenId, uint256 units ) external view returns (bool);
+756	 function needRejectUnsafeTransfer( address product, address from, address to, uint256 tokenId, uint256 units ) external view returns (bool);
+757	 function publishFixedPriceAllowed( address icToken, uint256 tokenId, address seller, address currency, uint256 min, uint256 max, uint256 startTime, bool useAllowList, uint256 price ) external returns (uint256);
+758	 function publishDecliningPriceAllowed( address icToken, uint256 tokenId, address seller, address currency, uint256 min, uint256 max, uint256 startTime, bool useAllowList, uint256 highest, uint256 lowest, uint256 duration, uint256 interval ) external returns (uint256);
+759	 function publishVerify( address icToken, uint256 tokenId, address seller, address currency, uint256 saleId, uint256 units ) external;
+760	 function buyAllowed( address icToken, uint256 tokenId, uint256 saleId, address buyer, address currency, uint256 buyAmount, uint256 buyUnits, uint256 price ) external returns (uint256);
+761	 function buyVerify( address icToken, uint256 tokenId, uint256 saleId, address buyer, address seller, uint256 amount, uint256 units, uint256 price, uint256 fee ) external;
+762	 function removeAllow( address icToken, uint256 tokenId, uint256 saleId, address seller ) external returns (uint256);
+763	 }
+764	 pragma solidity 0.7.6;
+765	 interface IUnderlyingContainer {
+766	 function underlying() external view returns (address);
+767	 }
+768	 pragma solidity 0.7.6;
+769	 interface IVNFT {
+770	 event TransferUnits(address from, address to, uint256 tokenId, uint256 targetTokenId, uint256 transferUnits);
+771	 event Split(address owner, uint256 tokenId, uint256 newTokenId, uint256 splitUnits);
+772	 event Merge(address owner, uint256 tokenId, uint256 targetTokenId, uint256 mergeUnits);
+773	 event ApprovalUnits(address indexed owner, address indexed approved, uint256 indexed tokenId, uint256 approvalUnits);
+774	 function slotOf(uint256 tokenId) external view returns(uint256 slot);
+775	 function balanceOfSlot(uint256 slot) external view returns (uint256 balance);
+776	 function tokenOfSlotByIndex(uint256 slot, uint256 index) external view returns (uint256 tokenId);
+777	 function unitsInToken(uint256 tokenId) external view returns (uint256 units);
+778	 function approve(address to, uint256 tokenId, uint256 units) external;
+779	 function allowance(uint256 tokenId, address spender) external view returns (uint256 allowed);
+780	 function split(uint256 tokenId, uint256[] calldata units) external returns (uint256[] memory newTokenIds);
+781	 function merge(uint256[] calldata tokenIds, uint256 targetTokenId) external;
+782	 function transferFrom(address from, address to, uint256 tokenId, uint256 units) external returns (uint256 newTokenId);
+783	 function safeTransferFrom(address from, address to, uint256 tokenId, uint256 units, bytes calldata data) external returns (uint256 newTokenId);
+784	 function transferFrom(address from, address to, uint256 tokenId, uint256 targetTokenId, uint256 units) external;
+785	 function safeTransferFrom(address from, address to, uint256 tokenId, uint256 targetTokenId, uint256 units, bytes calldata data) external;
+786	 }
+787	 interface IVNFTReceiver {
+788	 function onVNFTReceived(address operator, address from, uint256 tokenId, uint256 units, bytes calldata data) external returns (bytes4);
+789	 }

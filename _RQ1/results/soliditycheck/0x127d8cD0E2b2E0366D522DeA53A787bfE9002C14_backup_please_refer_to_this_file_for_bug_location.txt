@@ -1,0 +1,295 @@
+row number 
+1	      pragma solidity ^0.7.0;
+2	 contract DSMath {
+3	 uint constant WAD = 10 ** 18;
+4	 uint constant RAY = 10 ** 27;
+5	 function add(uint x, uint y) internal pure returns (uint z) {
+6	 z = SafeMath.add(x, y);
+7	 }
+8	 function sub(uint x, uint y) internal virtual pure returns (uint z) {
+9	 z = SafeMath.sub(x, y);
+10	 }
+11	 function mul(uint x, uint y) internal pure returns (uint z) {
+12	 z = SafeMath.mul(x, y);
+13	 }
+14	 function div(uint x, uint y) internal pure returns (uint z) {
+15	 z = SafeMath.div(x, y);
+16	 }
+17	 function wmul(uint x, uint y) internal pure returns (uint z) {
+18	 z = SafeMath.add(SafeMath.mul(x, y), WAD / 2) / WAD;
+19	 }
+20	 function wdiv(uint x, uint y) internal pure returns (uint z) {
+21	 z = SafeMath.add(SafeMath.mul(x, WAD), y / 2) / y;
+22	 }
+23	 function rdiv(uint x, uint y) internal pure returns (uint z) {
+24	 z = SafeMath.add(SafeMath.mul(x, RAY), y / 2) / y;
+25	 }
+26	 function rmul(uint x, uint y) internal pure returns (uint z) {
+27	 z = SafeMath.add(SafeMath.mul(x, y), RAY / 2) / RAY;
+28	 }
+29	 function toInt(uint x) internal pure returns (int y) {
+30	 y = int(x);
+31	 require(y >= 0, "int-overflow");
+32	 }
+33	 function toRad(uint wad) internal pure returns (uint rad) {
+34	 rad = mul(wad, 10 ** 27);
+35	 }
+36	 }
+37	 pragma solidity ^0.7.0;
+38	 abstract contract Stores {
+39	 address constant internal ethAddr = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+40	 address constant internal wethAddr = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+41	 MemoryInterface constant internal instaMemory = MemoryInterface(0x8a5419CfC711B2343c17a6ABf4B2bAFaBb06957F);
+42	 InstaMapping constant internal instaMapping = InstaMapping(0xe81F70Cc7C0D46e12d70efc60607F16bbD617E88);
+43	 function getUint(uint getId, uint val) internal returns (uint returnVal) {
+44	 returnVal = getId == 0 ? val : instaMemory.getUint(getId);
+45	 }
+46	 function setUint(uint setId, uint val) virtual internal {
+47	 if (setId != 0) instaMemory.setUint(setId, val);
+48	 }
+49	 }
+50	 pragma solidity ^0.7.0;
+51	 abstract contract Basic is DSMath, Stores {
+52	 function convert18ToDec(uint _dec, uint256 _amt) internal pure returns (uint256 amt) {
+53	 amt = (_amt / 10 ** (18 - _dec));
+54	 }
+55	 function convertTo18(uint _dec, uint256 _amt) internal pure returns (uint256 amt) {
+56	 amt = mul(_amt, 10 ** (18 - _dec));
+57	 }
+58	 function getTokenBal(TokenInterface token) internal view returns(uint _amt) {
+59	 _amt = address(token) == ethAddr ? address(this).balance : token.balanceOf(address(this));
+60	 }
+61	 function getTokensDec(TokenInterface buyAddr, TokenInterface sellAddr) internal view returns(uint buyDec, uint sellDec) {
+62	 buyDec = address(buyAddr) == ethAddr ? 18 : buyAddr.decimals();
+63	 sellDec = address(sellAddr) == ethAddr ? 18 : sellAddr.decimals();
+64	 }
+65	 function encodeEvent(string memory eventName, bytes memory eventParam) internal pure returns (bytes memory) {
+66	 return abi.encode(eventName, eventParam);
+67	 }
+68	 function changeEthAddress(address buy, address sell) internal pure returns(TokenInterface _buy, TokenInterface _sell){
+69	 _buy = buy == ethAddr ? TokenInterface(wethAddr) : TokenInterface(buy);
+70	 _sell = sell == ethAddr ? TokenInterface(wethAddr) : TokenInterface(sell);
+71	 }
+72	 function convertEthToWeth(bool isEth, TokenInterface token, uint amount) internal {
+73	 if(isEth) token.deposit{
+74	 value: amount}
+75	 ();
+76	 }
+77	 function convertWethToEth(bool isEth, TokenInterface token, uint amount) internal {
+78	 if(isEth) {
+79	 token.approve(address(token), amount);
+80	 token.withdraw(amount);
+81	 }
+82	 }
+83	 }
+84	 pragma solidity ^0.7.0;
+85	 abstract contract Helpers is DSMath, Basic {
+86	 AaveProviderInterface constant internal aaveProvider = AaveProviderInterface(0x24a42fD28C976A61Df5D00D0599C34c4f90748c8);
+87	 uint16 constant internal referralCode = 3228;
+88	 function getIsColl(AaveInterface aave, address token) internal view returns (bool isCol) {
+89	 (, , , , , , , , , isCol) = aave.getUserReserveData(token, address(this));
+90	 }
+91	 function getCollateralBalance(AaveInterface aave, address token) internal view returns (uint bal) {
+92	 (bal, , , , , , , , , ) = aave.getUserReserveData(token, address(this));
+93	 }
+94	 function getPaybackBalance(AaveInterface aave, address token) internal view returns (uint bal, uint fee) {
+95	 (, bal, , , , , fee, , , ) = aave.getUserReserveData(token, address(this));
+96	 }
+97	 }
+98	 pragma solidity ^0.7.0;
+99	 contract Events {
+100	 event LogDeposit(address indexed token, uint256 tokenAmt, uint256 getId, uint256 setId);
+101	 event LogWithdraw(address indexed token, uint256 tokenAmt, uint256 getId, uint256 setId);
+102	 event LogBorrow(address indexed token, uint256 tokenAmt, uint256 getId, uint256 setId);
+103	 event LogPayback(address indexed token, uint256 tokenAmt, uint256 getId, uint256 setId);
+104	 event LogEnableCollateral(address[] tokens);
+105	 }
+106	 pragma solidity ^0.7.0;
+107	 abstract contract AaveResolver is Events, Helpers {
+108	 function deposit( address token, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+109	 uint _amt = getUint(getId, amt);
+110	 AaveInterface aave = AaveInterface(aaveProvider.getLendingPool());
+111	 uint ethAmt;
+112	 if (token == ethAddr) {
+113	 _amt = _amt == uint(-1) ? address(this).balance : _amt;
+114	 ethAmt = _amt;
+115	 }
+116	 else {
+117	 TokenInterface tokenContract = TokenInterface(token);
+118	 _amt = _amt == uint(-1) ? tokenContract.balanceOf(address(this)) : _amt;
+119	 tokenContract.approve(aaveProvider.getLendingPoolCore(), _amt);
+120	 }
+121	 aave.deposit{
+122	 value: ethAmt}
+123	 (token, _amt, referralCode);
+124	 if (!getIsColl(aave, token)) aave.setUserUseReserveAsCollateral(token, true);
+125	 setUint(setId, _amt);
+126	 _eventName = "LogDeposit(address,uint256,uint256,uint256)";
+127	 _eventParam = abi.encode(token, _amt, getId, setId);
+128	 }
+129	 function withdraw( address token, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+130	 uint _amt = getUint(getId, amt);
+131	 AaveCoreInterface aaveCore = AaveCoreInterface(aaveProvider.getLendingPoolCore());
+132	 ATokenInterface atoken = ATokenInterface(aaveCore.getReserveATokenAddress(token));
+133	 TokenInterface tokenContract = TokenInterface(token);
+134	 uint initialBal = token == ethAddr ? address(this).balance : tokenContract.balanceOf(address(this));
+135	 atoken.redeem(_amt);
+136	 uint finalBal = token == ethAddr ? address(this).balance : tokenContract.balanceOf(address(this));
+137	 _amt = sub(finalBal, initialBal);
+138	 setUint(setId, _amt);
+139	 _eventName = "LogWithdraw(address,uint256,uint256,uint256)";
+140	 _eventParam = abi.encode(token, _amt, getId, setId);
+141	 }
+142	 function borrow( address token, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+143	 uint _amt = getUint(getId, amt);
+144	 AaveInterface aave = AaveInterface(aaveProvider.getLendingPool());
+145	 aave.borrow(token, _amt, 2, referralCode);
+146	 setUint(setId, _amt);
+147	 _eventName = "LogBorrow(address,uint256,uint256,uint256)";
+148	 _eventParam = abi.encode(token, _amt, getId, setId);
+149	 }
+150	 function payback( address token, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+151	 uint _amt = getUint(getId, amt);
+152	 AaveInterface aave = AaveInterface(aaveProvider.getLendingPool());
+153	 if (_amt == uint(-1)) {
+154	 uint fee;
+155	 (_amt, fee) = getPaybackBalance(aave, token);
+156	 _amt = add(_amt, fee);
+157	 }
+158	 uint ethAmt;
+159	 if (token == ethAddr) {
+160	 ethAmt = _amt;
+161	 }
+162	 else {
+163	 TokenInterface(token).approve(aaveProvider.getLendingPoolCore(), _amt);
+164	 }
+165	 aave.repay{
+166	 value: ethAmt}
+167	 (token, _amt, payable(address(this)));
+168	 setUint(setId, _amt);
+169	 _eventName = "LogPayback(address,uint256,uint256,uint256)";
+170	 _eventParam = abi.encode(token, _amt, getId, setId);
+171	 }
+172	 function enableCollateral( address[] calldata tokens ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+173	 uint _length = tokens.length;
+174	 require(_length > 0, "0-tokens-not-allowed");
+175	 AaveInterface aave = AaveInterface(aaveProvider.getLendingPool());
+176	 for (uint i = 0; i < _length; i++) {
+177	 address token = tokens[i];
+178	 if (getCollateralBalance(aave, token) > 0 && !getIsColl(aave, token)) {
+179	 aave.setUserUseReserveAsCollateral(token, true);
+180	 }
+181	 }
+182	 _eventName = "LogEnableCollateral(address[]);
+183	 ";
+184	 _eventParam = abi.encode(tokens);
+185	 }
+186	 }
+187	 contract ConnectV2AaveV1 is AaveResolver {
+188	 string constant public name = "AaveV1-v1";
+189	 }
+190	 pragma solidity ^0.7.0;
+191	 interface TokenInterface {
+192	 function approve(address, uint256) external;
+193	 function transfer(address, uint) external;
+194	 function transferFrom(address, address, uint) external;
+195	 function deposit() external payable;
+196	 function withdraw(uint) external;
+197	 function balanceOf(address) external view returns (uint);
+198	 function decimals() external view returns (uint);
+199	 }
+200	 interface MemoryInterface {
+201	 function getUint(uint id) external returns (uint num);
+202	 function setUint(uint id, uint val) external;
+203	 }
+204	 interface InstaMapping {
+205	 function cTokenMapping(address) external view returns (address);
+206	 function gemJoinMapping(bytes32) external view returns (address);
+207	 }
+208	 interface AccountInterface {
+209	 function enable(address) external;
+210	 function disable(address) external;
+211	 function isAuth(address) external view returns (bool);
+212	 }
+213	 pragma solidity ^0.7.0;
+214	 interface AaveInterface {
+215	 function deposit(address _reserve, uint256 _amount, uint16 _referralCode) external payable;
+216	 function redeemUnderlying( address _reserve, address payable _user, uint256 _amount, uint256 _aTokenBalanceAfterRedeem ) external;
+217	 function setUserUseReserveAsCollateral(address _reserve, bool _useAsCollateral) external;
+218	 function getUserReserveData(address _reserve, address _user) external view returns ( uint256 currentATokenBalance, uint256 currentBorrowBalance, uint256 principalBorrowBalance, uint256 borrowRateMode, uint256 borrowRate, uint256 liquidityRate, uint256 originationFee, uint256 variableBorrowIndex, uint256 lastUpdateTimestamp, bool usageAsCollateralEnabled );
+219	 function borrow(address _reserve, uint256 _amount, uint256 _interestRateMode, uint16 _referralCode) external;
+220	 function repay(address _reserve, uint256 _amount, address payable _onBehalfOf) external payable;
+221	 }
+222	 interface AaveProviderInterface {
+223	 function getLendingPool() external view returns (address);
+224	 function getLendingPoolCore() external view returns (address);
+225	 }
+226	 interface AaveCoreInterface {
+227	 function getReserveATokenAddress(address _reserve) external view returns (address);
+228	 }
+229	 interface ATokenInterface {
+230	 function redeem(uint256 _amount) external;
+231	 function balanceOf(address _user) external view returns(uint256);
+232	 function principalBalanceOf(address _user) external view returns(uint256);
+233	 }
+234	 pragma solidity >=0.6.0 <0.8.0;
+235	 library SafeMath {
+236	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+237	 uint256 c = a + b;
+238	 if (c < a) return (false, 0);
+239	 return (true, c);
+240	 }
+241	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+242	 if (b > a) return (false, 0);
+243	 return (true, a - b);
+244	 }
+245	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+246	 if (a == 0) return (true, 0);
+247	 uint256 c = a * b;
+248	 if (c / a != b) return (false, 0);
+249	 return (true, c);
+250	 }
+251	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+252	 if (b == 0) return (false, 0);
+253	 return (true, a / b);
+254	 }
+255	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+256	 if (b == 0) return (false, 0);
+257	 return (true, a % b);
+258	 }
+259	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+260	 uint256 c = a + b;
+261	 require(c >= a, "SafeMath: addition overflow");
+262	 return c;
+263	 }
+264	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+265	 require(b <= a, "SafeMath: subtraction overflow");
+266	 return a - b;
+267	 }
+268	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+269	 if (a == 0) return 0;
+270	 uint256 c = a * b;
+271	 require(c / a == b, "SafeMath: multiplication overflow");
+272	 return c;
+273	 }
+274	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+275	 require(b > 0, "SafeMath: division by zero");
+276	 return a / b;
+277	 }
+278	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+279	 require(b > 0, "SafeMath: modulo by zero");
+280	 return a % b;
+281	 }
+282	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+283	 require(b <= a, errorMessage);
+284	 return a - b;
+285	 }
+286	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+287	 require(b > 0, errorMessage);
+288	 return a / b;
+289	 }
+290	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+291	 require(b > 0, errorMessage);
+292	 return a % b;
+293	 }
+294	 }

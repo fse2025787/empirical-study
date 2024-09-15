@@ -1,0 +1,179 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity >=0.6.0 <0.8.0;
+12	 abstract contract Ownable is Context {
+13	 address private _owner;
+14	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+15	 constructor () internal {
+16	 address msgSender = _msgSender();
+17	 _owner = msgSender;
+18	 emit OwnershipTransferred(address(0), msgSender);
+19	 }
+20	 function owner() public view virtual returns (address) {
+21	 return _owner;
+22	 }
+23	 modifier onlyOwner() {
+24	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+25	 _;
+26	 }
+27	 function renounceOwnership() public virtual onlyOwner {
+28	 emit OwnershipTransferred(_owner, address(0));
+29	 _owner = address(0);
+30	 }
+31	 function transferOwnership(address newOwner) public virtual onlyOwner {
+32	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+33	 emit OwnershipTransferred(_owner, newOwner);
+34	 _owner = newOwner;
+35	 }
+36	 }
+37	 pragma solidity 0.7.6;
+38	 contract FeeManager is Ownable {
+39	 using SafeMath for uint256;
+40	 struct FactoryFeeInfo {
+41	 bool isFeeDistributor;
+42	 address feeToken;
+43	 uint256 feeAmount;
+44	 uint256 totalFeesAcquired;
+45	 }
+46	 mapping(address => FactoryFeeInfo) public factoryFeeInfos;
+47	 address payable public feeBeneficiary;
+48	 event FeesUpdated( address indexed factoryAddress, uint256 indexed feeAmount, address indexed feeToken );
+49	 event FetchedFees( address indexed factoryAddress, uint256 indexed feeAmount, address indexed feeToken );
+50	 constructor(address payable _beneficiary) {
+51	 feeBeneficiary = _beneficiary;
+52	 }
+53	 function fetchFees() external payable returns (uint256 fetchedFees) {
+54	 fetchedFees = _fetchFees(false, 0);
+55	 }
+56	 function _fetchFees(bool _exactFees, uint256 _feeAmount) private returns (uint256 fetchedFees) {
+57	 FactoryFeeInfo storage feeInfo = factoryFeeInfos[msg.sender];
+58	 require(feeInfo.isFeeDistributor, "Invalid Fee Distributor");
+59	 fetchedFees = _exactFees ? _feeAmount : feeInfo.feeAmount;
+60	 if (feeInfo.feeToken == address(0)) {
+61	 require(msg.value == fetchedFees, "Invalid Fee Amount");
+62	 }
+63	 else {
+64	 TransferHelper.safeTransferFrom( feeInfo.feeToken, msg.sender, address(this), fetchedFees );
+65	 }
+66	 feeInfo.totalFeesAcquired = feeInfo.totalFeesAcquired.add(fetchedFees);
+67	 emit FetchedFees(msg.sender, fetchedFees, feeInfo.feeToken);
+68	 }
+69	 function fetchExactFees(uint256 _feeAmount) external payable returns (uint256 fetchedFees) {
+70	 fetchedFees = _fetchFees(true, _feeAmount);
+71	 }
+72	 function updateFactoryFeesInfo( address _factory, uint256 _feeAmount, address _feeToken ) external onlyOwner {
+73	 require(_factory != address(0), "Factory cant be zero address");
+74	 FactoryFeeInfo storage feeInfo = factoryFeeInfos[_factory];
+75	 feeInfo.feeAmount = _feeAmount;
+76	 feeInfo.feeToken = _feeToken;
+77	 feeInfo.isFeeDistributor = true;
+78	 emit FeesUpdated(_factory, _feeAmount, _feeToken);
+79	 }
+80	 function setFeeBeneficiary(address payable _beneficiary) external onlyOwner {
+81	 require(_beneficiary != address(0), "Beneficiary cant be zero address");
+82	 feeBeneficiary = _beneficiary;
+83	 }
+84	 function withdrawAcquiredFees(address _token, uint256 _amount) external onlyOwner {
+85	 if (_token == address(0)) {
+86	 TransferHelper.safeTransferETH(feeBeneficiary, _amount);
+87	 }
+88	 else {
+89	 TransferHelper.safeTransfer(_token, feeBeneficiary, _amount);
+90	 }
+91	 }
+92	 function getFactoryFeeInfo(address _factory) external view returns (uint256 _feeAmount, address _feeToken) {
+93	 FactoryFeeInfo memory feeInfo = factoryFeeInfos[_factory];
+94	 return (feeInfo.feeAmount, feeInfo.feeToken);
+95	 }
+96	 }
+97	 pragma solidity 0.7.6;
+98	 library TransferHelper {
+99	 function safeApprove(address token, address to, uint value) internal {
+100	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+101	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');
+102	 }
+103	 function safeTransfer(address token, address to, uint value) internal {
+104	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+105	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FAILED');
+106	 }
+107	 function safeTransferFrom(address token, address from, address to, uint value) internal {
+108	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+109	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');
+110	 }
+111	 function safeTransferETH(address to, uint256 value) internal {
+112	 (bool success, ) = to.call{
+113	 value: value}
+114	 (new bytes(0));
+115	 require(success, 'TransferHelper: ETH transfer failed');
+116	 }
+117	 }
+118	 pragma solidity >=0.6.0 <0.8.0;
+119	 library SafeMath {
+120	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+121	 uint256 c = a + b;
+122	 if (c < a) return (false, 0);
+123	 return (true, c);
+124	 }
+125	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+126	 if (b > a) return (false, 0);
+127	 return (true, a - b);
+128	 }
+129	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+130	 if (a == 0) return (true, 0);
+131	 uint256 c = a * b;
+132	 if (c / a != b) return (false, 0);
+133	 return (true, c);
+134	 }
+135	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+136	 if (b == 0) return (false, 0);
+137	 return (true, a / b);
+138	 }
+139	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+140	 if (b == 0) return (false, 0);
+141	 return (true, a % b);
+142	 }
+143	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+144	 uint256 c = a + b;
+145	 require(c >= a, "SafeMath: addition overflow");
+146	 return c;
+147	 }
+148	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+149	 require(b <= a, "SafeMath: subtraction overflow");
+150	 return a - b;
+151	 }
+152	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+153	 if (a == 0) return 0;
+154	 uint256 c = a * b;
+155	 require(c / a == b, "SafeMath: multiplication overflow");
+156	 return c;
+157	 }
+158	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+159	 require(b > 0, "SafeMath: division by zero");
+160	 return a / b;
+161	 }
+162	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+163	 require(b > 0, "SafeMath: modulo by zero");
+164	 return a % b;
+165	 }
+166	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+167	 require(b <= a, errorMessage);
+168	 return a - b;
+169	 }
+170	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+171	 require(b > 0, errorMessage);
+172	 return a / b;
+173	 }
+174	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+175	 require(b > 0, errorMessage);
+176	 return a % b;
+177	 }
+178	 }

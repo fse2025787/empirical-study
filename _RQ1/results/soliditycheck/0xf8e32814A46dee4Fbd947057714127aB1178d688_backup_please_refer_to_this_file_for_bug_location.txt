@@ -1,0 +1,341 @@
+row number 
+1	       pragma solidity 0.7.6;
+2	 interface IInstanceRegistry {
+3	 event InstanceAdded(address instance);
+4	 event InstanceRemoved(address instance);
+5	 function isInstance(address instance) external view returns (bool validity);
+6	 function instanceCount() external view returns (uint256 count);
+7	 function instanceAt(uint256 index) external view returns (address instance);
+8	 }
+9	 pragma solidity 0.7.6;
+10	 interface IPowered {
+11	 function isOnline() external view returns (bool status);
+12	 function isOffline() external view returns (bool status);
+13	 function isShutdown() external view returns (bool status);
+14	 function getPowerSwitch() external view returns (address powerSwitch);
+15	 function getPowerController() external view returns (address controller);
+16	 }
+17	 pragma solidity >=0.6.0 <0.8.0;
+18	 abstract contract Context {
+19	 function _msgSender() internal view virtual returns (address payable) {
+20	 return msg.sender;
+21	 }
+22	 function _msgData() internal view virtual returns (bytes memory) {
+23	 this;
+24	 return msg.data;
+25	 }
+26	 }
+27	 pragma solidity 0.7.6;
+28	 interface IFactory {
+29	 function create(bytes calldata args) external returns (address instance);
+30	 function create2(bytes calldata args, bytes32 salt) external returns (address instance);
+31	 }
+32	 contract InstanceRegistry is IInstanceRegistry {
+33	 using EnumerableSet for EnumerableSet.AddressSet;
+34	 EnumerableSet.AddressSet private _instanceSet;
+35	 function isInstance(address instance) external view override returns (bool validity) {
+36	 return _instanceSet.contains(instance);
+37	 }
+38	 function instanceCount() external view override returns (uint256 count) {
+39	 return _instanceSet.length();
+40	 }
+41	 function instanceAt(uint256 index) external view override returns (address instance) {
+42	 return _instanceSet.at(index);
+43	 }
+44	 function _register(address instance) internal {
+45	 require(_instanceSet.add(instance), "InstanceRegistry: already registered");
+46	 emit InstanceAdded(instance);
+47	 }
+48	 }
+49	 pragma solidity 0.7.6;
+50	 interface IRewardPool {
+51	 function sendERC20( address token, address to, uint256 value ) external;
+52	 function rescueERC20(address[] calldata tokens, address recipient) external;
+53	 }
+54	 pragma solidity ^0.7.0;
+55	 abstract contract Ownable is Context {
+56	 address private _owner;
+57	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+58	 constructor () {
+59	 address msgSender = _msgSender();
+60	 _owner = msgSender;
+61	 emit OwnershipTransferred(address(0), msgSender);
+62	 }
+63	 function owner() public view virtual returns (address) {
+64	 return _owner;
+65	 }
+66	 modifier onlyOwner() {
+67	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+68	 _;
+69	 }
+70	 function renounceOwnership() public virtual onlyOwner {
+71	 emit OwnershipTransferred(_owner, address(0));
+72	 _owner = address(0);
+73	 }
+74	 function transferOwnership(address newOwner) public virtual onlyOwner {
+75	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+76	 emit OwnershipTransferred(_owner, newOwner);
+77	 _owner = newOwner;
+78	 }
+79	 }
+80	 contract Powered is IPowered {
+81	 address private _powerSwitch;
+82	 modifier onlyOnline() {
+83	 _onlyOnline();
+84	 _;
+85	 }
+86	 modifier onlyOffline() {
+87	 _onlyOffline();
+88	 _;
+89	 }
+90	 modifier notShutdown() {
+91	 _notShutdown();
+92	 _;
+93	 }
+94	 modifier onlyShutdown() {
+95	 _onlyShutdown();
+96	 _;
+97	 }
+98	 function _setPowerSwitch(address powerSwitch) internal {
+99	 _powerSwitch = powerSwitch;
+100	 }
+101	 function isOnline() public view override returns (bool status) {
+102	 return IPowerSwitch(_powerSwitch).isOnline();
+103	 }
+104	 function isOffline() public view override returns (bool status) {
+105	 return IPowerSwitch(_powerSwitch).isOffline();
+106	 }
+107	 function isShutdown() public view override returns (bool status) {
+108	 return IPowerSwitch(_powerSwitch).isShutdown();
+109	 }
+110	 function getPowerSwitch() public view override returns (address powerSwitch) {
+111	 return _powerSwitch;
+112	 }
+113	 function getPowerController() public view override returns (address controller) {
+114	 return IPowerSwitch(_powerSwitch).getPowerController();
+115	 }
+116	 function _onlyOnline() private view {
+117	 require(isOnline(), "Powered: is not online");
+118	 }
+119	 function _onlyOffline() private view {
+120	 require(isOffline(), "Powered: is not offline");
+121	 }
+122	 function _notShutdown() private view {
+123	 require(!isShutdown(), "Powered: is shutdown");
+124	 }
+125	 function _onlyShutdown() private view {
+126	 require(isShutdown(), "Powered: is not shutdown");
+127	 }
+128	 }
+129	 pragma solidity 0.7.6;
+130	 interface IPowerSwitch {
+131	 event PowerOn();
+132	 event PowerOff();
+133	 event EmergencyShutdown();
+134	 enum State {
+135	 Online, Offline, Shutdown}
+136	 function powerOn() external;
+137	 function powerOff() external;
+138	 function emergencyShutdown() external;
+139	 function isOnline() external view returns (bool status);
+140	 function isOffline() external view returns (bool status);
+141	 function isShutdown() external view returns (bool status);
+142	 function getStatus() external view returns (State status);
+143	 function getPowerController() external view returns (address controller);
+144	 }
+145	 pragma solidity 0.7.6;
+146	 contract RewardPoolFactory is IFactory, InstanceRegistry {
+147	 function create(bytes calldata args) external override returns (address) {
+148	 address powerSwitch = abi.decode(args, (address));
+149	 RewardPool pool = new RewardPool(powerSwitch);
+150	 InstanceRegistry._register(address(pool));
+151	 pool.transferOwnership(msg.sender);
+152	 return address(pool);
+153	 }
+154	 function create2(bytes calldata, bytes32) external pure override returns (address) {
+155	 revert("RewardPoolFactory: unused function");
+156	 }
+157	 }
+158	 pragma solidity ^0.7.0;
+159	 library EnumerableSet {
+160	 struct Set {
+161	 bytes32[] _values;
+162	 mapping (bytes32 => uint256) _indexes;
+163	 }
+164	 function _add(Set storage set, bytes32 value) private returns (bool) {
+165	 if (!_contains(set, value)) {
+166	 set._values.push(value);
+167	 set._indexes[value] = set._values.length;
+168	 return true;
+169	 }
+170	 else {
+171	 return false;
+172	 }
+173	 }
+174	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+175	 uint256 valueIndex = set._indexes[value];
+176	 if (valueIndex != 0) {
+177	 uint256 toDeleteIndex = valueIndex - 1;
+178	 uint256 lastIndex = set._values.length - 1;
+179	 bytes32 lastvalue = set._values[lastIndex];
+180	 set._values[toDeleteIndex] = lastvalue;
+181	 set._indexes[lastvalue] = toDeleteIndex + 1;
+182	 set._values.pop();
+183	 delete set._indexes[value];
+184	 return true;
+185	 }
+186	 else {
+187	 return false;
+188	 }
+189	 }
+190	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+191	 return set._indexes[value] != 0;
+192	 }
+193	 function _length(Set storage set) private view returns (uint256) {
+194	 return set._values.length;
+195	 }
+196	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+197	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+198	 return set._values[index];
+199	 }
+200	 struct Bytes32Set {
+201	 Set _inner;
+202	 }
+203	 function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+204	 return _add(set._inner, value);
+205	 }
+206	 function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+207	 return _remove(set._inner, value);
+208	 }
+209	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+210	 return _contains(set._inner, value);
+211	 }
+212	 function length(Bytes32Set storage set) internal view returns (uint256) {
+213	 return _length(set._inner);
+214	 }
+215	 function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+216	 return _at(set._inner, index);
+217	 }
+218	 struct AddressSet {
+219	 Set _inner;
+220	 }
+221	 function add(AddressSet storage set, address value) internal returns (bool) {
+222	 return _add(set._inner, bytes32(uint256(uint160(value))));
+223	 }
+224	 function remove(AddressSet storage set, address value) internal returns (bool) {
+225	 return _remove(set._inner, bytes32(uint256(uint160(value))));
+226	 }
+227	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+228	 return _contains(set._inner, bytes32(uint256(uint160(value))));
+229	 }
+230	 function length(AddressSet storage set) internal view returns (uint256) {
+231	 return _length(set._inner);
+232	 }
+233	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+234	 return address(uint160(uint256(_at(set._inner, index))));
+235	 }
+236	 struct UintSet {
+237	 Set _inner;
+238	 }
+239	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+240	 return _add(set._inner, bytes32(value));
+241	 }
+242	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+243	 return _remove(set._inner, bytes32(value));
+244	 }
+245	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+246	 return _contains(set._inner, bytes32(value));
+247	 }
+248	 function length(UintSet storage set) internal view returns (uint256) {
+249	 return _length(set._inner);
+250	 }
+251	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+252	 return uint256(_at(set._inner, index));
+253	 }
+254	 }
+255	 contract RewardPool is IRewardPool, Powered, Ownable {
+256	 constructor(address powerSwitch) {
+257	 Powered._setPowerSwitch(powerSwitch);
+258	 }
+259	 function sendERC20( address token, address to, uint256 value ) external override onlyOwner onlyOnline {
+260	 TransferHelper.safeTransfer(token, to, value);
+261	 }
+262	 function rescueERC20(address[] calldata tokens, address recipient) external override onlyShutdown {
+263	 require(msg.sender == Powered.getPowerController(), "RewardPool: only controller can withdraw after shutdown");
+264	 require(recipient != address(0), "RewardPool: recipient not defined");
+265	 for (uint256 index = 0; index < tokens.length; index++) {
+266	 address token = tokens[index];
+267	 uint256 balance = IERC20(token).balanceOf(address(this));
+268	 TransferHelper.safeTransfer(token, recipient, balance);
+269	 }
+270	 }
+271	 }
+272	 pragma solidity ^0.7.0;
+273	 interface IERC20 {
+274	 function totalSupply() external view returns (uint256);
+275	 function balanceOf(address account) external view returns (uint256);
+276	 function transfer(address recipient, uint256 amount) external returns (bool);
+277	 function allowance(address owner, address spender) external view returns (uint256);
+278	 function approve(address spender, uint256 amount) external returns (bool);
+279	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+280	 event Transfer(address indexed from, address indexed to, uint256 value);
+281	 event Approval(address indexed owner, address indexed spender, uint256 value);
+282	 }
+283	 pragma solidity >=0.6.0;
+284	 library TransferHelper {
+285	 function safeApprove( address token, address to, uint256 value ) internal {
+286	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+287	 require( success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper::safeApprove: approve failed' );
+288	 }
+289	 function safeTransfer( address token, address to, uint256 value ) internal {
+290	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+291	 require( success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper::safeTransfer: transfer failed' );
+292	 }
+293	 function safeTransferFrom( address token, address from, address to, uint256 value ) internal {
+294	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+295	 require( success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper::transferFrom: transferFrom failed' );
+296	 }
+297	 function safeTransferETH(address to, uint256 value) internal {
+298	 (bool success, ) = to.call{
+299	 value: value}
+300	 (new bytes(0));
+301	 require(success, 'TransferHelper::safeTransferETH: ETH transfer failed');
+302	 }
+303	 }
+304	 contract PowerSwitch is IPowerSwitch, Ownable {
+305	 IPowerSwitch.State private _status;
+306	 constructor(address owner) {
+307	 require(owner != address(0), "PowerSwitch: invalid owner");
+308	 Ownable.transferOwnership(owner);
+309	 }
+310	 function powerOn() external override onlyOwner {
+311	 require(_status == IPowerSwitch.State.Offline, "PowerSwitch: cannot power on");
+312	 _status = IPowerSwitch.State.Online;
+313	 emit PowerOn();
+314	 }
+315	 function powerOff() external override onlyOwner {
+316	 require(_status == IPowerSwitch.State.Online, "PowerSwitch: cannot power off");
+317	 _status = IPowerSwitch.State.Offline;
+318	 emit PowerOff();
+319	 }
+320	 function emergencyShutdown() external override onlyOwner {
+321	 require(_status != IPowerSwitch.State.Shutdown, "PowerSwitch: cannot shutdown");
+322	 _status = IPowerSwitch.State.Shutdown;
+323	 emit EmergencyShutdown();
+324	 }
+325	 function isOnline() external view override returns (bool status) {
+326	 return _status == State.Online;
+327	 }
+328	 function isOffline() external view override returns (bool status) {
+329	 return _status == State.Offline;
+330	 }
+331	 function isShutdown() external view override returns (bool status) {
+332	 return _status == State.Shutdown;
+333	 }
+334	 function getStatus() external view override returns (IPowerSwitch.State status) {
+335	 return _status;
+336	 }
+337	 function getPowerController() external view override returns (address controller) {
+338	 return Ownable.owner();
+339	 }
+340	 }

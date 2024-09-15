@@ -1,0 +1,551 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity >=0.6.0 <0.8.0;
+3	 abstract contract ReentrancyGuard {
+4	 uint256 private constant _NOT_ENTERED = 1;
+5	 uint256 private constant _ENTERED = 2;
+6	 uint256 private _status;
+7	 constructor () internal {
+8	 _status = _NOT_ENTERED;
+9	 }
+10	 modifier nonReentrant() {
+11	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+12	 _status = _ENTERED;
+13	 _;
+14	 _status = _NOT_ENTERED;
+15	 }
+16	 }
+17	 pragma solidity >=0.6.0 <0.8.0;
+18	 interface IERC20 {
+19	 function name() external view returns (string memory);
+20	 function symbol() external view returns (string memory);
+21	 function decimals() external view returns (uint8);
+22	 function totalSupply() external view returns (uint256);
+23	 function balanceOf(address account) external view returns (uint256);
+24	 function transfer(address recipient, uint256 amount) external returns (bool);
+25	 function allowance(address owner, address spender) external view returns (uint256);
+26	 function approve(address spender, uint256 amount) external returns (bool);
+27	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+28	 event Transfer(address indexed from, address indexed to, uint256 value);
+29	 event Approval(address indexed owner, address indexed spender, uint256 value);
+30	 }
+31	 pragma solidity 0.7.6;
+32	 contract Conjure is IERC20, ReentrancyGuard {
+33	 using SafeMath for uint256;
+34	 using Address for address;
+35	 using FixedPoint for FixedPoint.uq112x112;
+36	 using FixedPoint for FixedPoint.uq144x112;
+37	 uint256 internal _totalSupply;
+38	 string internal _name;
+39	 string internal _symbol;
+40	 uint8 internal constant DECIMALS = 18;
+41	 mapping(address => uint256) private _balances;
+42	 mapping(address => mapping(address => uint256)) private _allowances;
+43	 address payable public _owner;
+44	 uint256 public _assetType;
+45	 address public _factoryContract;
+46	 address public _collateralContract;
+47	 struct _oracleStruct {
+48	 address oracleaddress;
+49	 address tokenaddress;
+50	 uint256 oracleType;
+51	 string signature;
+52	 bytes calldatas;
+53	 uint256 weight;
+54	 uint256 decimals;
+55	 uint256 values;
+56	 }
+57	 _oracleStruct[] public _oracleData;
+58	 uint256 public _numoracles;
+59	 uint256 internal _latestobservedprice;
+60	 uint256 internal _latestobservedtime;
+61	 uint256 public _indexdivisor;
+62	 bool public _inverse;
+63	 bool public _inited;
+64	 uint256 public _deploymentPrice;
+65	 uint256 private constant MAXIMUM_DECIMALS = 18;
+66	 uint256 private constant UNIT = 10**18;
+67	 uint256 private constant CHAINLINK_RETURN_DECIMALS = 8;
+68	 address public ethUsdChainLinkOracle;
+69	 uint256 public inverseLowerCap;
+70	 event NewOwner(address newOwner);
+71	 event Issued(address indexed account, uint256 value);
+72	 event Burned(address indexed account, uint256 value);
+73	 event AssetTypeSet(uint256 value);
+74	 event IndexDivisorSet(uint256 value);
+75	 event PriceUpdated(uint256 value);
+76	 event InverseSet(bool value);
+77	 event NumOraclesSet(uint256 value);
+78	 modifier onlyOwner {
+79	 _onlyOwner();
+80	 _;
+81	 }
+82	 function _onlyOwner() private view {
+83	 require(msg.sender == _owner, "Only the contract owner may perform this action");
+84	 }
+85	 constructor() {
+86	 _factoryContract = address(1);
+87	 }
+88	 function initialize( string[2] memory nameSymbol, address[] memory conjureAddresses, address factoryAddress_, address collateralContract ) external {
+89	 require(_factoryContract == address(0), "already initialized");
+90	 require(factoryAddress_ != address(0), "factory can not be null");
+91	 require(collateralContract != address(0), "collateralContract can not be null");
+92	 _owner = payable(conjureAddresses[0]);
+93	 _name = nameSymbol[0];
+94	 _symbol = nameSymbol[1];
+95	 ethUsdChainLinkOracle = conjureAddresses[1];
+96	 _factoryContract = factoryAddress_;
+97	 _collateralContract = collateralContract;
+98	 emit NewOwner(_owner);
+99	 }
+100	 function init( bool inverse_, uint256[2] memory divisorAssetType, address[][2] memory oracleAddresses_, uint256[][4] memory oracleTypesValuesWeightsDecimals, string[] memory signatures_, bytes[] memory callData_ ) external {
+101	 require(msg.sender == _factoryContract, "can only be called by factory contract");
+102	 require(!_inited, "Contract already inited");
+103	 require(divisorAssetType[0] != 0, "Divisor should not be 0");
+104	 _assetType = divisorAssetType[1];
+105	 _numoracles = oracleAddresses_[0].length;
+106	 _indexdivisor = divisorAssetType[0];
+107	 _inverse = inverse_;
+108	 emit AssetTypeSet(_assetType);
+109	 emit IndexDivisorSet(_indexdivisor);
+110	 emit InverseSet(_inverse);
+111	 emit NumOraclesSet(_numoracles);
+112	 uint256 weightCheck;
+113	 for (uint i = 0; i < oracleAddresses_[0].length; i++) {
+114	 require(oracleTypesValuesWeightsDecimals[3][i] <= 18, "Decimals too high");
+115	 _oracleData.push(_oracleStruct({
+116	 oracleaddress: oracleAddresses_[0][i], tokenaddress: oracleAddresses_[1][i], oracleType: oracleTypesValuesWeightsDecimals[0][i], signature: signatures_[i], calldatas: callData_[i], weight: oracleTypesValuesWeightsDecimals[2][i], values: oracleTypesValuesWeightsDecimals[1][i], decimals: oracleTypesValuesWeightsDecimals[3][i] }
+117	 ));
+118	 weightCheck += oracleTypesValuesWeightsDecimals[2][i];
+119	 }
+120	 if (_assetType == 1) {
+121	 require(weightCheck == 100, "Weights not 100");
+122	 }
+123	 updatePrice();
+124	 _deploymentPrice = getLatestPrice();
+125	 if (_inverse) {
+126	 inverseLowerCap = _deploymentPrice.div(10);
+127	 }
+128	 _inited = true;
+129	 }
+130	 function burn(address account, uint amount) external {
+131	 require(msg.sender == _collateralContract, "Only Collateral Contract");
+132	 _internalBurn(account, amount);
+133	 }
+134	 function mint(address account, uint amount) external {
+135	 require(msg.sender == _collateralContract, "Only Collateral Contract");
+136	 _internalIssue(account, amount);
+137	 }
+138	 function _internalIssue(address account, uint amount) internal {
+139	 _balances[account] = _balances[account].add(amount);
+140	 _totalSupply = _totalSupply.add(amount);
+141	 emit Transfer(address(0), account, amount);
+142	 emit Issued(account, amount);
+143	 }
+144	 function _internalBurn(address account, uint amount) internal {
+145	 _balances[account] = _balances[account].sub(amount);
+146	 _totalSupply = _totalSupply.sub(amount);
+147	 emit Transfer(account, address(0), amount);
+148	 emit Burned(account, amount);
+149	 }
+150	 function changeOwner(address payable _newOwner) external onlyOwner {
+151	 require(_newOwner != address(0), "_newOwner can not be null");
+152	 _owner = _newOwner;
+153	 emit NewOwner(_newOwner);
+154	 }
+155	 function collectFees() external onlyOwner {
+156	 _owner.transfer(address(this).balance);
+157	 }
+158	 function getLatestPrice(AggregatorV3Interface priceFeed) internal view returns (uint) {
+159	 ( , int price, , , ) = priceFeed.latestRoundData();
+160	 return uint(price);
+161	 }
+162	 function getLatestETHUSDPrice() public view returns (uint) {
+163	 ( , int price, , , ) = AggregatorV3Interface(ethUsdChainLinkOracle).latestRoundData();
+164	 return uint(price) * 10 ** (MAXIMUM_DECIMALS - CHAINLINK_RETURN_DECIMALS);
+165	 }
+166	 function quickSort(uint[] memory arr, int left, int right) internal pure {
+167	 int i = left;
+168	 int j = right;
+169	 if (i == j) return;
+170	 uint pivot = arr[uint(left + (right - left) / 2)];
+171	 while (i <= j) {
+172	 while (arr[uint(i)] < pivot) i++;
+173	 while (pivot < arr[uint(j)]) j--;
+174	 if (i <= j) {
+175	 (arr[uint(i)], arr[uint(j)]) = (arr[uint(j)], arr[uint(i)]);
+176	 i++;
+177	 j--;
+178	 }
+179	 }
+180	 if (left < j) quickSort(arr, left, j);
+181	 if (i < right) quickSort(arr, i, right);
+182	 }
+183	 function getAverage(uint[] memory arr) internal view returns (uint) {
+184	 uint sum = 0;
+185	 for (uint i = 0; i < arr.length; i++) {
+186	 sum += arr[i];
+187	 }
+188	 if (_assetType == 0) {
+189	 return (sum / arr.length);
+190	 }
+191	 if ((_assetType == 2) || (_assetType == 3)) {
+192	 return sum / _indexdivisor;
+193	 }
+194	 return ((sum / 100) / _indexdivisor);
+195	 }
+196	 function sort(uint[] memory data) internal pure returns (uint[] memory) {
+197	 quickSort(data, int(0), int(data.length - 1));
+198	 return data;
+199	 }
+200	 function sqrt(uint256 y) internal pure returns (uint256 z) {
+201	 if (y > 3) {
+202	 z = y;
+203	 uint256 x = (y + 1) / 2;
+204	 while (x < z) {
+205	 z = x;
+206	 x = (y / x + x) / 2;
+207	 }
+208	 }
+209	 else if (y != 0) {
+210	 z = 1;
+211	 }
+212	 else {
+213	 z = 0;
+214	 }
+215	 }
+216	 function getLatestPrice() public view returns (uint) {
+217	 return _latestobservedprice;
+218	 }
+219	 function getLatestPriceTime() external view returns (uint) {
+220	 return _latestobservedtime;
+221	 }
+222	 function updatePrice() public {
+223	 uint256 returnPrice = updateInternalPrice();
+224	 bool priceLimited;
+225	 if (_inverse && _inited) {
+226	 if (_deploymentPrice.mul(2) <= returnPrice) {
+227	 returnPrice = 0;
+228	 }
+229	 else {
+230	 returnPrice = _deploymentPrice.mul(2).sub(returnPrice);
+231	 if (returnPrice <= inverseLowerCap) {
+232	 priceLimited = true;
+233	 }
+234	 }
+235	 }
+236	 _latestobservedprice = returnPrice;
+237	 _latestobservedtime = block.timestamp;
+238	 emit PriceUpdated(_latestobservedprice);
+239	 if ((returnPrice <= 0) || (priceLimited)) {
+240	 IEtherCollateral(_collateralContract).setAssetClosed(true);
+241	 }
+242	 else {
+243	 if (IEtherCollateral(_collateralContract).getAssetClosed()) {
+244	 IEtherCollateral(_collateralContract).setAssetClosed(false);
+245	 }
+246	 }
+247	 }
+248	 function updateInternalPrice() internal returns (uint) {
+249	 require(_oracleData.length > 0, "No oracle feeds supplied");
+250	 uint[] memory prices = new uint[](_oracleData.length);
+251	 for (uint i = 0; i < _oracleData.length; i++) {
+252	 if (_oracleData[i].oracleType == 0) {
+253	 AggregatorV3Interface priceFeed = AggregatorV3Interface(_oracleData[i].oracleaddress);
+254	 prices[i] = getLatestPrice(priceFeed);
+255	 if (MAXIMUM_DECIMALS != _oracleData[i].decimals) {
+256	 prices[i] = prices[i] * 10 ** (MAXIMUM_DECIMALS - _oracleData[i].decimals);
+257	 }
+258	 }
+259	 else {
+260	 string memory signature = _oracleData[i].signature;
+261	 bytes memory callDatas = _oracleData[i].calldatas;
+262	 bytes memory callData;
+263	 if (bytes(signature).length == 0) {
+264	 callData = callDatas;
+265	 }
+266	 else {
+267	 callData = abi.encodePacked(bytes4(keccak256(bytes(signature))), callDatas);
+268	 }
+269	 (bool success, bytes memory data) = _oracleData[i].oracleaddress.call{
+270	 value:_oracleData[i].values}
+271	 (callData);
+272	 require(success, "Call unsuccessful");
+273	 if (_oracleData[i].oracleType == 1) {
+274	 FixedPoint.uq112x112 memory price = abi.decode(data, (FixedPoint.uq112x112));
+275	 prices[i] = price.mul(getLatestETHUSDPrice()).decode144();
+276	 }
+277	 else {
+278	 prices[i] = abi.decode(data, (uint));
+279	 if (MAXIMUM_DECIMALS != _oracleData[i].decimals) {
+280	 prices[i] = prices[i] * 10 ** (MAXIMUM_DECIMALS - _oracleData[i].decimals);
+281	 }
+282	 }
+283	 }
+284	 if (_assetType == 2 || _assetType == 3) {
+285	 uint tokenTotalSupply = IERC20(_oracleData[i].tokenaddress).totalSupply();
+286	 uint tokenDecimals = IERC20(_oracleData[i].tokenaddress).decimals();
+287	 if (MAXIMUM_DECIMALS != tokenDecimals) {
+288	 require(tokenDecimals <= 18, "Decimals too high");
+289	 tokenTotalSupply = tokenTotalSupply * 10 ** (MAXIMUM_DECIMALS - tokenDecimals);
+290	 }
+291	 if (_assetType == 2) {
+292	 prices[i] = (prices[i].mul(tokenTotalSupply) / UNIT);
+293	 }
+294	 if (_assetType == 3) {
+295	 prices[i] =prices[i].mul(tokenTotalSupply) / UNIT;
+296	 prices[i] = sqrt(prices[i]);
+297	 }
+298	 }
+299	 if (_assetType == 1) {
+300	 prices[i] = prices[i] * _oracleData[i].weight;
+301	 }
+302	 }
+303	 uint[] memory sorted = sort(prices);
+304	 if (_assetType == 0) {
+305	 if (sorted.length % 2 == 1) {
+306	 uint sizer = (sorted.length + 1) / 2;
+307	 return sorted[sizer-1];
+308	 }
+309	 else {
+310	 uint size1 = (sorted.length) / 2;
+311	 uint[] memory sortedMin = new uint[](2);
+312	 sortedMin[0] = sorted[size1-1];
+313	 sortedMin[1] = sorted[size1];
+314	 return getAverage(sortedMin);
+315	 }
+316	 }
+317	 return getAverage(sorted);
+318	 }
+319	 receive() external payable {
+320	 }
+321	 function name() external override view returns (string memory) {
+322	 return _name;
+323	 }
+324	 function symbol() external override view returns (string memory) {
+325	 return _symbol;
+326	 }
+327	 function decimals() external override pure returns (uint8) {
+328	 return DECIMALS;
+329	 }
+330	 function totalSupply() external override view returns (uint256) {
+331	 return _totalSupply;
+332	 }
+333	 function balanceOf(address account) external override view returns (uint256) {
+334	 return _balances[account];
+335	 }
+336	 function transfer(address dst, uint256 rawAmount) external override returns (bool) {
+337	 uint256 amount = rawAmount;
+338	 _transfer(msg.sender, dst, amount);
+339	 return true;
+340	 }
+341	 function allowance(address owner, address spender) external override view returns (uint256) {
+342	 return _allowances[owner][spender];
+343	 }
+344	 function approve(address spender, uint256 amount) external override returns (bool) {
+345	 _approve(msg.sender, spender, amount);
+346	 return true;
+347	 }
+348	 function transferFrom(address src, address dst, uint256 rawAmount) external override returns (bool) {
+349	 address spender = msg.sender;
+350	 uint256 spenderAllowance = _allowances[src][spender];
+351	 uint256 amount = rawAmount;
+352	 if (spender != src && spenderAllowance != uint256(-1)) {
+353	 uint256 newAllowance = spenderAllowance.sub( amount, "CONJURE::transferFrom: transfer amount exceeds spender allowance" );
+354	 _allowances[src][spender] = newAllowance;
+355	 }
+356	 _transfer(src, dst, amount);
+357	 return true;
+358	 }
+359	 function _approve( address owner, address spender, uint256 amount ) internal {
+360	 require(owner != address(0), "ERC20: approve from the zero address");
+361	 require(spender != address(0), "ERC20: approve to the zero address");
+362	 _allowances[owner][spender] = amount;
+363	 emit Approval(owner, spender, amount);
+364	 }
+365	 function _transfer( address sender, address recipient, uint256 amount ) internal {
+366	 require(sender != address(0), "ERC20: transfer from the zero address");
+367	 require(recipient != address(0), "ERC20: transfer to the zero address");
+368	 _balances[sender] = _balances[sender].sub( amount, "ERC20: transfer amount exceeds balance" );
+369	 _balances[recipient] = _balances[recipient].add(amount);
+370	 emit Transfer(sender, recipient, amount);
+371	 }
+372	 }
+373	 pragma solidity >=0.6.0 <0.8.0;
+374	 library SafeMath {
+375	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+376	 uint256 c = a + b;
+377	 if (c < a) return (false, 0);
+378	 return (true, c);
+379	 }
+380	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+381	 if (b > a) return (false, 0);
+382	 return (true, a - b);
+383	 }
+384	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+385	 if (a == 0) return (true, 0);
+386	 uint256 c = a * b;
+387	 if (c / a != b) return (false, 0);
+388	 return (true, c);
+389	 }
+390	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+391	 if (b == 0) return (false, 0);
+392	 return (true, a / b);
+393	 }
+394	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+395	 if (b == 0) return (false, 0);
+396	 return (true, a % b);
+397	 }
+398	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+399	 uint256 c = a + b;
+400	 require(c >= a, "SafeMath: addition overflow");
+401	 return c;
+402	 }
+403	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+404	 require(b <= a, "SafeMath: subtraction overflow");
+405	 return a - b;
+406	 }
+407	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+408	 if (a == 0) return 0;
+409	 uint256 c = a * b;
+410	 require(c / a == b, "SafeMath: multiplication overflow");
+411	 return c;
+412	 }
+413	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+414	 require(b > 0, "SafeMath: division by zero");
+415	 return a / b;
+416	 }
+417	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+418	 require(b > 0, "SafeMath: modulo by zero");
+419	 return a % b;
+420	 }
+421	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+422	 require(b <= a, errorMessage);
+423	 return a - b;
+424	 }
+425	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+426	 require(b > 0, errorMessage);
+427	 return a / b;
+428	 }
+429	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+430	 require(b > 0, errorMessage);
+431	 return a % b;
+432	 }
+433	 }
+434	 pragma solidity >=0.6.2 <0.8.0;
+435	 library Address {
+436	 function isContract(address account) internal view returns (bool) {
+437	 uint256 size;
+438	 assembly {
+439	 size := extcodesize(account) }
+440	 return size > 0;
+441	 }
+442	 function sendValue(address payable recipient, uint256 amount) internal {
+443	 require(address(this).balance >= amount, "Address: insufficient balance");
+444	 (bool success, ) = recipient.call{
+445	 value: amount }
+446	 ("");
+447	 require(success, "Address: unable to send value, recipient may have reverted");
+448	 }
+449	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+450	 return functionCall(target, data, "Address: low-level call failed");
+451	 }
+452	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+453	 return functionCallWithValue(target, data, 0, errorMessage);
+454	 }
+455	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+456	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+457	 }
+458	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+459	 require(address(this).balance >= value, "Address: insufficient balance for call");
+460	 require(isContract(target), "Address: call to non-contract");
+461	 (bool success, bytes memory returndata) = target.call{
+462	 value: value }
+463	 (data);
+464	 return _verifyCallResult(success, returndata, errorMessage);
+465	 }
+466	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+467	 return functionStaticCall(target, data, "Address: low-level static call failed");
+468	 }
+469	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+470	 require(isContract(target), "Address: static call to non-contract");
+471	 (bool success, bytes memory returndata) = target.staticcall(data);
+472	 return _verifyCallResult(success, returndata, errorMessage);
+473	 }
+474	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+475	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+476	 }
+477	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+478	 require(isContract(target), "Address: delegate call to non-contract");
+479	 (bool success, bytes memory returndata) = target.delegatecall(data);
+480	 return _verifyCallResult(success, returndata, errorMessage);
+481	 }
+482	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+483	 if (success) {
+484	 return returndata;
+485	 }
+486	 else {
+487	 if (returndata.length > 0) {
+488	 assembly {
+489	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+490	 }
+491	 else {
+492	 revert(errorMessage);
+493	 }
+494	 }
+495	 }
+496	 }
+497	 pragma solidity >=0.6.0;
+498	 interface AggregatorV3Interface {
+499	 function decimals() external view returns (uint8);
+500	 function description() external view returns (string memory);
+501	 function version() external view returns (uint256);
+502	 function getRoundData(uint80 _roundId) external view returns ( uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound );
+503	 function latestRoundData() external view returns ( uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound );
+504	 }
+505	 pragma solidity 0.7.6;
+506	 library FixedPoint {
+507	 struct uq112x112 {
+508	 uint224 _x;
+509	 }
+510	 struct uq144x112 {
+511	 uint _x;
+512	 }
+513	 uint8 private constant RESOLUTION = 112;
+514	 uint private constant Q112 = uint(1) << RESOLUTION;
+515	 uint private constant Q224 = Q112 << RESOLUTION;
+516	 function encode(uint112 x) internal pure returns (uq112x112 memory) {
+517	 return uq112x112(uint224(x) << RESOLUTION);
+518	 }
+519	 function encode144(uint144 x) internal pure returns (uq144x112 memory) {
+520	 return uq144x112(uint256(x) << RESOLUTION);
+521	 }
+522	 function div(uq112x112 memory self, uint112 x) internal pure returns (uq112x112 memory) {
+523	 require(x != 0, "FixedPoint: DIV_BY_ZERO");
+524	 return uq112x112(self._x / uint224(x));
+525	 }
+526	 function mul(uq112x112 memory self, uint y) internal pure returns (uq144x112 memory) {
+527	 uint z;
+528	 require( y == 0 || (z = uint(self._x) * y) / y == uint(self._x), "FixedPoint: MULTIPLICATION_OVERFLOW" );
+529	 return uq144x112(z);
+530	 }
+531	 function fraction(uint112 numerator, uint112 denominator) internal pure returns (uq112x112 memory) {
+532	 require(denominator > 0, "FixedPoint: DIV_BY_ZERO");
+533	 return uq112x112((uint224(numerator) << RESOLUTION) / denominator);
+534	 }
+535	 function decode(uq112x112 memory self) internal pure returns (uint112) {
+536	 return uint112(self._x >> RESOLUTION);
+537	 }
+538	 function decode144(uq144x112 memory self) internal pure returns (uint144) {
+539	 return uint144(self._x >> RESOLUTION);
+540	 }
+541	 function reciprocal(uq112x112 memory self) internal pure returns (uq112x112 memory) {
+542	 require(self._x != 0, "FixedPoint: ZERO_RECIPROCAL");
+543	 return uq112x112(uint224(Q224 / self._x));
+544	 }
+545	 }
+546	 pragma solidity 0.7.6;
+547	 interface IEtherCollateral {
+548	 function setAssetClosed(bool) external;
+549	 function getAssetClosed() external view returns (bool);
+550	 }

@@ -1,0 +1,204 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.7.0;
+3	 abstract contract Context {
+4	 function _msgSender() internal view virtual returns (address) {
+5	 return msg.sender;
+6	 }
+7	 function _msgData() internal view virtual returns (bytes calldata) {
+8	 this;
+9	 return msg.data;
+10	 }
+11	 }
+12	 pragma solidity ^0.7.0;
+13	 abstract contract Ownable is Context {
+14	 address private _owner;
+15	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+16	 constructor() {
+17	 address msgSender = _msgSender();
+18	 _owner = msgSender;
+19	 emit OwnershipTransferred(address(0), msgSender);
+20	 }
+21	 function owner() public view virtual returns (address) {
+22	 return _owner;
+23	 }
+24	 modifier onlyOwner() {
+25	 require(owner() == _msgSender(), 'Ownable: caller is not the owner');
+26	 _;
+27	 }
+28	 function renounceOwnership() public virtual onlyOwner {
+29	 emit OwnershipTransferred(_owner, address(0));
+30	 _owner = address(0);
+31	 }
+32	 function transferOwnership(address newOwner) public virtual onlyOwner {
+33	 require(newOwner != address(0), 'Ownable: new owner is the zero address');
+34	 emit OwnershipTransferred(_owner, newOwner);
+35	 _owner = newOwner;
+36	 }
+37	 }
+38	 pragma solidity ^0.7.0;
+39	 contract TokenDistributor is Ownable {
+40	 using SafeMath for uint256;
+41	 using SafeERC20 for IERC20;
+42	 struct Distribution {
+43	 address[] receivers;
+44	 uint256[] percentages;
+45	 }
+46	 event DistributionUpdated(address[] receivers, uint256[] percentages);
+47	 event Distributed(address receiver, uint256 percentage, uint256 amount);
+48	 Distribution private distribution;
+49	 uint256 public constant DISTRIBUTION_BASE = 10000;
+50	 constructor(address[] memory _receivers, uint256[] memory _percentages) {
+51	 _setTokenDistribution(_receivers, _percentages);
+52	 }
+53	 function setTokenDistribution(address[] memory _receivers, uint256[] memory _percentages) external onlyOwner {
+54	 _setTokenDistribution(_receivers, _percentages);
+55	 }
+56	 function distribute(IERC20[] memory _tokens) external {
+57	 for (uint256 i = 0; i < _tokens.length; i++) {
+58	 uint256 _balanceToDistribute = (address(_tokens[i]) != EthAddressLib.ethAddress()) ? _tokens[i].balanceOf(address(this)) : address(this).balance;
+59	 if (_balanceToDistribute <= 0) {
+60	 continue;
+61	 }
+62	 _distributeTokenWithAmount(_tokens[i], _balanceToDistribute);
+63	 }
+64	 }
+65	 function distributeWithAmounts(IERC20[] memory _tokens, uint256[] memory _amounts) public {
+66	 for (uint256 i = 0; i < _tokens.length; i++) {
+67	 _distributeTokenWithAmount(_tokens[i], _amounts[i]);
+68	 }
+69	 }
+70	 function distributeWithPercentages(IERC20[] memory _tokens, uint256[] memory _percentages) external {
+71	 for (uint256 i = 0; i < _tokens.length; i++) {
+72	 uint256 _amountToDistribute = (address(_tokens[i]) != EthAddressLib.ethAddress()) ? _tokens[i].balanceOf(address(this)).mul(_percentages[i]).div(100) : address(this).balance.mul(_percentages[i]).div(100);
+73	 if (_amountToDistribute <= 0) {
+74	 continue;
+75	 }
+76	 _distributeTokenWithAmount(_tokens[i], _amountToDistribute);
+77	 }
+78	 }
+79	 function getDistribution() external view returns (Distribution memory) {
+80	 return distribution;
+81	 }
+82	 receive() external payable {
+83	 }
+84	 function _setTokenDistribution(address[] memory _receivers, uint256[] memory _percentages) internal {
+85	 require(_receivers.length == _percentages.length, 'Array lengths should be equal');
+86	 uint256 sumPercentages;
+87	 for (uint256 i = 0; i < _percentages.length; i++) {
+88	 sumPercentages += _percentages[i];
+89	 }
+90	 require(sumPercentages == DISTRIBUTION_BASE, 'INVALID_%_SUM');
+91	 distribution = Distribution({
+92	 receivers: _receivers, percentages: _percentages}
+93	 );
+94	 emit DistributionUpdated(_receivers, _percentages);
+95	 }
+96	 function _distributeTokenWithAmount(IERC20 _token, uint256 _amountToDistribute) internal {
+97	 address _tokenAddress = address(_token);
+98	 Distribution memory _distribution = distribution;
+99	 for (uint256 j = 0; j < _distribution.receivers.length; j++) {
+100	 uint256 _amount = _amountToDistribute.mul(_distribution.percentages[j]).div(DISTRIBUTION_BASE);
+101	 if (_amount == 0) {
+102	 continue;
+103	 }
+104	 if (_tokenAddress != EthAddressLib.ethAddress()) {
+105	 _token.safeTransfer(_distribution.receivers[j], _amount);
+106	 }
+107	 else {
+108	 (bool _success, ) = _distribution.receivers[j].call{
+109	 value: _amount}
+110	 ('');
+111	 require(_success, 'Reverted ETH transfer');
+112	 }
+113	 emit Distributed(_distribution.receivers[j], _distribution.percentages[j], _amount);
+114	 }
+115	 }
+116	 }
+117	 pragma solidity ^0.7.0;
+118	 interface IERC20 {
+119	 function totalSupply() external view returns (uint256);
+120	 function balanceOf(address account) external view returns (uint256);
+121	 function transfer(address recipient, uint256 amount) external returns (bool);
+122	 function allowance(address owner, address spender) external view returns (uint256);
+123	 function approve(address spender, uint256 amount) external returns (bool);
+124	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+125	 event Transfer(address indexed from, address indexed to, uint256 value);
+126	 event Approval(address indexed owner, address indexed spender, uint256 value);
+127	 }
+128	 pragma solidity ^0.7.0;
+129	 library EthAddressLib {
+130	 function ethAddress() internal pure returns (address) {
+131	 return 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+132	 }
+133	 }
+134	 pragma solidity ^0.7.0;
+135	 library SafeMath {
+136	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+137	 uint256 c = a + b;
+138	 require(c >= a, 'SafeMath: addition overflow');
+139	 return c;
+140	 }
+141	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+142	 require(b <= a, 'SafeMath: subtraction overflow');
+143	 uint256 c = a - b;
+144	 return c;
+145	 }
+146	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+147	 if (a == 0) {
+148	 return 0;
+149	 }
+150	 uint256 c = a * b;
+151	 require(c / a == b, 'SafeMath: multiplication overflow');
+152	 return c;
+153	 }
+154	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+155	 require(b > 0, 'SafeMath: division by zero');
+156	 uint256 c = a / b;
+157	 return c;
+158	 }
+159	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+160	 require(b != 0, 'SafeMath: modulo by zero');
+161	 return a % b;
+162	 }
+163	 }
+164	 pragma solidity ^0.7.0;
+165	 library SafeERC20 {
+166	 using SafeMath for uint256;
+167	 using Address for address;
+168	 function safeTransfer( IERC20 token, address to, uint256 value ) internal {
+169	 callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+170	 }
+171	 function safeTransferFrom( IERC20 token, address from, address to, uint256 value ) internal {
+172	 callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+173	 }
+174	 function safeApprove( IERC20 token, address spender, uint256 value ) internal {
+175	 require( (value == 0) || (token.allowance(address(this), spender) == 0), 'SafeERC20: approve from non-zero to non-zero allowance' );
+176	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+177	 }
+178	 function safeIncreaseAllowance( IERC20 token, address spender, uint256 value ) internal {
+179	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+180	 callOptionalReturn( token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance) );
+181	 }
+182	 function safeDecreaseAllowance( IERC20 token, address spender, uint256 value ) internal {
+183	 uint256 newAllowance = token.allowance(address(this), spender).sub(value);
+184	 callOptionalReturn( token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance) );
+185	 }
+186	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+187	 require(address(token).isContract(), 'SafeERC20: call to non-contract');
+188	 (bool success, bytes memory returndata) = address(token).call(data);
+189	 require(success, 'SafeERC20: low-level call failed');
+190	 if (returndata.length > 0) {
+191	 require(abi.decode(returndata, (bool)), 'SafeERC20: ERC20 operation did not succeed');
+192	 }
+193	 }
+194	 }
+195	 pragma solidity ^0.7.0;
+196	 library Address {
+197	 function isContract(address account) internal view returns (bool) {
+198	 uint256 size;
+199	 assembly {
+200	 size := extcodesize(account) }
+201	 return size > 0;
+202	 }
+203	 }

@@ -1,0 +1,134 @@
+row number 
+1	         pragma solidity ^0.6.0;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 if (a == 0) {
+5	 return 0;
+6	 }
+7	 uint256 c = a * b;
+8	 assert(c / a == b);
+9	 return c;
+10	 }
+11	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+12	 uint256 c = a / b;
+13	 return c;
+14	 }
+15	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+16	 assert(b <= a);
+17	 return a - b;
+18	 }
+19	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+20	 uint256 c = a + b;
+21	 assert(c >= a);
+22	 return c;
+23	 }
+24	 function ceil(uint a, uint m) internal pure returns (uint r) {
+25	 return (a + m - 1) / m * m;
+26	 }
+27	 }
+28	 contract Owned {
+29	 address payable public owner;
+30	 event OwnershipTransferred(address indexed _from, address indexed _to);
+31	 constructor() public {
+32	 owner = msg.sender;
+33	 }
+34	 modifier onlyOwner {
+35	 require(msg.sender == owner, "Only allowed by owner");
+36	 _;
+37	 }
+38	 function transferOwnership(address payable _newOwner) external onlyOwner {
+39	 require(_newOwner != address(0),"Invalid address passed");
+40	 owner = _newOwner;
+41	 emit OwnershipTransferred(msg.sender, _newOwner);
+42	 }
+43	 }
+44	 abstract contract ERC20Interface {
+45	 function totalSupply() public virtual view returns (uint);
+46	 function balanceOf(address tokenOwner) public virtual view returns (uint256 balance);
+47	 function allowance(address tokenOwner, address spender) public virtual view returns (uint256 remaining);
+48	 function transfer(address to, uint256 tokens) public virtual returns (bool success);
+49	 function approve(address spender, uint256 tokens) public virtual returns (bool success);
+50	 function transferFrom(address from, address to, uint256 tokens) public virtual returns (bool success);
+51	 event Transfer(address indexed from, address indexed to, uint256 tokens);
+52	 event Approval(address indexed tokenOwner, address indexed spender, uint256 tokens);
+53	 }
+54	 contract Token is ERC20Interface, Owned {
+55	 using SafeMath for uint256;
+56	 string public constant symbol = "IFY";
+57	 string public constant name = "Infinity Yeild";
+58	 uint256 public constant decimals = 18;
+59	 uint256 private _totalSupply = 250000 * 10 ** (decimals);
+60	 uint256 public tax = 5;
+61	 address public STAKING_ADDRESS;
+62	 address public PRESALE_ADDRESS;
+63	 address public taxReceiver;
+64	 mapping(address => uint256) private balances;
+65	 mapping(address => mapping(address => uint256)) private allowed;
+66	 event TaxChanged(uint256 newTax, address changedBy);
+67	 constructor(address _stakingAddress, address preSaleAddress) public {
+68	 taxReceiver = 0x8D74DaBe71b1b95b4e4c90E5A97850FEB9C20855;
+69	 owner = 0xa97F07bc8155f729bfF5B5312cf42b6bA7c4fCB9;
+70	 STAKING_ADDRESS = _stakingAddress;
+71	 PRESALE_ADDRESS = preSaleAddress;
+72	 balances[owner] = totalSupply();
+73	 emit Transfer(address(0), owner, totalSupply());
+74	 }
+75	 function ChangeTax(uint256 _newTax) external onlyOwner{
+76	 tax = _newTax;
+77	 emit TaxChanged(_newTax, msg.sender);
+78	 }
+79	 function totalSupply() public override view returns (uint256){
+80	 return _totalSupply;
+81	 }
+82	 function balanceOf(address tokenOwner) public override view returns (uint256 balance) {
+83	 return balances[tokenOwner];
+84	 }
+85	 function transfer(address to, uint256 tokens) public override returns (bool success) {
+86	 require(address(to) != address(0) , "Invalid address");
+87	 require(balances[msg.sender] >= tokens, "insufficient sender's balance");
+88	 balances[msg.sender] = balances[msg.sender].sub(tokens);
+89	 uint256 deduction = 0;
+90	 if (to != STAKING_ADDRESS && msg.sender != STAKING_ADDRESS && to!= PRESALE_ADDRESS && msg.sender != PRESALE_ADDRESS){
+91	 deduction = onePercent(tokens).mul(tax);
+92	 uint256 _OS = onePercent(deduction).mul(10);
+93	 balances[taxReceiver] = balances[taxReceiver].add(_OS);
+94	 emit Transfer(address(this), taxReceiver, _OS);
+95	 balances[STAKING_ADDRESS] = balances[STAKING_ADDRESS].add(deduction.sub(_OS));
+96	 emit Transfer(address(this), STAKING_ADDRESS, deduction.sub(_OS));
+97	 }
+98	 balances[to] = balances[to].add(tokens.sub(deduction));
+99	 emit Transfer(msg.sender, to, tokens.sub(deduction));
+100	 return true;
+101	 }
+102	 function approve(address spender, uint256 tokens) public override returns (bool success){
+103	 allowed[msg.sender][spender] = tokens;
+104	 emit Approval(msg.sender,spender,tokens);
+105	 return true;
+106	 }
+107	 function transferFrom(address from, address to, uint256 tokens) public override returns (bool success){
+108	 require(tokens <= allowed[from][msg.sender], "insufficient allowance");
+109	 require(balances[from] >= tokens, "Insufficient senders balance");
+110	 balances[from] = balances[from].sub(tokens);
+111	 allowed[from][msg.sender] = allowed[from][msg.sender].sub(tokens);
+112	 uint256 deduction = 0;
+113	 if (to != STAKING_ADDRESS && from != STAKING_ADDRESS && to!= PRESALE_ADDRESS && from != PRESALE_ADDRESS){
+114	 deduction = onePercent(tokens).mul(tax);
+115	 uint256 _OS = onePercent(deduction).mul(10);
+116	 balances[taxReceiver] = balances[taxReceiver].add(_OS);
+117	 emit Transfer(address(this), taxReceiver, _OS);
+118	 balances[STAKING_ADDRESS] = balances[STAKING_ADDRESS].add(deduction.sub(_OS));
+119	 emit Transfer(address(this), STAKING_ADDRESS, deduction.sub(_OS));
+120	 }
+121	 balances[to] = balances[to].add(tokens.sub(deduction));
+122	 emit Transfer(from, to, tokens.sub(tokens));
+123	 return true;
+124	 }
+125	 function allowance(address tokenOwner, address spender) public override view returns (uint256 remaining) {
+126	 return allowed[tokenOwner][spender];
+127	 }
+128	 function onePercent(uint256 _tokens) internal pure returns (uint256){
+129	 uint256 roundValue = _tokens.ceil(100);
+130	 uint onePercentofTokens = roundValue.mul(100).div(100 * 10**uint(2));
+131	 return onePercentofTokens;
+132	 }
+133	 }

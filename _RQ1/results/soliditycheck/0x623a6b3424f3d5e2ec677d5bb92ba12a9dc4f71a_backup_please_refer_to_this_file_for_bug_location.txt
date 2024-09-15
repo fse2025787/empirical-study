@@ -1,0 +1,989 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.7.0;
+3	 interface ILimitOrder {
+4	 event OperatorNominated(address indexed newOperator);
+5	 event OperatorChanged(address indexed oldOperator, address indexed newOperator);
+6	 event UpgradeSpender(address newSpender);
+7	 event UpgradeCoordinator(address newCoordinator);
+8	 event AllowTransfer(address spender);
+9	 event DisallowTransfer(address spender);
+10	 event DepositETH(uint256 ethBalance);
+11	 event FactorsUpdated(uint16 makerFeeFactor, uint16 takerFeeFactor, uint16 profitFeeFactor);
+12	 event SetFeeCollector(address newFeeCollector);
+13	 event LimitOrderFilledByTrader( bytes32 indexed orderHash, address indexed maker, address indexed taker, bytes32 allowFillHash, address recipient, FillReceipt fillReceipt );
+14	 event LimitOrderFilledByProtocol( bytes32 indexed orderHash, address indexed maker, address indexed taker, bytes32 allowFillHash, address relayer, address profitRecipient, FillReceipt fillReceipt, uint256 relayerTakerTokenProfit, uint256 relayerTakerTokenProfitFee );
+15	 event OrderCancelled(bytes32 orderHash, address maker);
+16	 struct FillReceipt {
+17	 address makerToken;
+18	 address takerToken;
+19	 uint256 makerTokenFilledAmount;
+20	 uint256 takerTokenFilledAmount;
+21	 uint256 remainingAmount;
+22	 uint256 makerTokenFee;
+23	 uint256 takerTokenFee;
+24	 }
+25	 struct CoordinatorParams {
+26	 bytes sig;
+27	 uint256 salt;
+28	 uint64 expiry;
+29	 }
+30	 struct TraderParams {
+31	 address taker;
+32	 address recipient;
+33	 uint256 takerTokenAmount;
+34	 uint256 salt;
+35	 uint64 expiry;
+36	 bytes takerSig;
+37	 }
+38	 function fillLimitOrderByTrader( LimitOrderLibEIP712.Order calldata _order, bytes calldata _orderMakerSig, TraderParams calldata _params, CoordinatorParams calldata _crdParams ) external returns (uint256, uint256);
+39	 enum Protocol {
+40	 UniswapV3, Sushiswap }
+41	 struct ProtocolParams {
+42	 Protocol protocol;
+43	 bytes data;
+44	 address profitRecipient;
+45	 uint256 takerTokenAmount;
+46	 uint256 protocolOutMinimum;
+47	 uint64 expiry;
+48	 }
+49	 function fillLimitOrderByProtocol( LimitOrderLibEIP712.Order calldata _order, bytes calldata _orderMakerSig, ProtocolParams calldata _params, CoordinatorParams calldata _crdParams ) external returns (uint256);
+50	 function cancelLimitOrder(LimitOrderLibEIP712.Order calldata _order, bytes calldata _cancelMakerSig) external;
+51	 }
+52	 pragma solidity >=0.7.0;
+53	 interface IUniswapV3SwapCallback {
+54	 function uniswapV3SwapCallback( int256 amount0Delta, int256 amount1Delta, bytes calldata data ) external;
+55	 }
+56	 pragma solidity ^0.7.6;
+57	 abstract contract BaseLibEIP712 {
+58	 string public constant EIP191_HEADER = "\x19\x01";
+59	 string public constant EIP712_DOMAIN_NAME = "Tokenlon";
+60	 string public constant EIP712_DOMAIN_VERSION = "v5";
+61	 bytes32 public immutable EIP712_DOMAIN_SEPARATOR = keccak256( abi.encode( keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"), keccak256(bytes(EIP712_DOMAIN_NAME)), keccak256(bytes(EIP712_DOMAIN_VERSION)), getChainID(), address(this) ) );
+62	 function getChainID() internal pure returns (uint256) {
+63	 uint256 chainId;
+64	 assembly {
+65	 chainId := chainid() }
+66	 return chainId;
+67	 }
+68	 function getEIP712Hash(bytes32 structHash) internal view returns (bytes32) {
+69	 return keccak256(abi.encodePacked(EIP191_HEADER, EIP712_DOMAIN_SEPARATOR, structHash));
+70	 }
+71	 }
+72	 contract SignatureValidator {
+73	 using LibBytes for bytes;
+74	 bytes4 internal constant ERC1271_MAGICVALUE = 0x20c13b0b;
+75	 bytes4 internal constant ERC1271_MAGICVALUE_BYTES32 = 0x1626ba7e;
+76	 bytes4 internal constant ERC1271_FALLBACK_MAGICVALUE_BYTES32 = 0xb0671381;
+77	 enum SignatureType {
+78	 Illegal, Invalid, EIP712, EthSign, WalletBytes, WalletBytes32, Wallet, NSignatureTypes }
+79	 function isValidSignature( address _signerAddress, bytes32 _hash, bytes memory _data, bytes memory _sig ) public view returns (bool isValid) {
+80	 require(_sig.length > 0, "SignatureValidator#isValidSignature: length greater than 0 required");
+81	 require(_signerAddress != address(0x0), "SignatureValidator#isValidSignature: invalid signer");
+82	 uint8 signatureTypeRaw = uint8(_sig.popLastByte());
+83	 require(signatureTypeRaw < uint8(SignatureType.NSignatureTypes), "SignatureValidator#isValidSignature: unsupported signature");
+84	 SignatureType signatureType = SignatureType(signatureTypeRaw);
+85	 uint8 v;
+86	 bytes32 r;
+87	 bytes32 s;
+88	 address recovered;
+89	 if (signatureType == SignatureType.Illegal) {
+90	 revert("SignatureValidator#isValidSignature: illegal signature");
+91	 }
+92	 else if (signatureType == SignatureType.EIP712) {
+93	 require(_sig.length == 97, "SignatureValidator#isValidSignature: length 97 required");
+94	 r = _sig.readBytes32(0);
+95	 s = _sig.readBytes32(32);
+96	 v = uint8(_sig[64]);
+97	 recovered = ecrecover(_hash, v, r, s);
+98	 isValid = _signerAddress == recovered;
+99	 return isValid;
+100	 }
+101	 else if (signatureType == SignatureType.EthSign) {
+102	 require(_sig.length == 97, "SignatureValidator#isValidSignature: length 97 required");
+103	 r = _sig.readBytes32(0);
+104	 s = _sig.readBytes32(32);
+105	 v = uint8(_sig[64]);
+106	 recovered = ecrecover(keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", _hash)), v, r, s);
+107	 isValid = _signerAddress == recovered;
+108	 return isValid;
+109	 }
+110	 else if (signatureType == SignatureType.WalletBytes) {
+111	 isValid = ERC1271_MAGICVALUE == IERC1271Wallet(_signerAddress).isValidSignature(_data, _sig);
+112	 return isValid;
+113	 }
+114	 else if (signatureType == SignatureType.WalletBytes32) {
+115	 isValid = ERC1271_MAGICVALUE_BYTES32 == IERC1271Wallet(_signerAddress).isValidSignature(_hash, _sig);
+116	 return isValid;
+117	 }
+118	 else if (signatureType == SignatureType.Wallet) {
+119	 isValid = isValidWalletSignature(_hash, _signerAddress, _sig);
+120	 return isValid;
+121	 }
+122	 revert("SignatureValidator#isValidSignature: unsupported signature");
+123	 }
+124	 function isValidWalletSignature( bytes32 hash, address walletAddress, bytes memory signature ) internal view returns (bool isValid) {
+125	 bytes memory _calldata = abi.encodeWithSelector(IWallet(walletAddress).isValidSignature.selector, hash, signature);
+126	 bytes32 magic_salt = bytes32(bytes4(keccak256("isValidWalletSignature(bytes32,address,bytes)")));
+127	 assembly {
+128	 if iszero(extcodesize(walletAddress)) {
+129	 mstore(0, 0x08c379a000000000000000000000000000000000000000000000000000000000) mstore(32, 0x0000002000000000000000000000000000000000000000000000000000000000) mstore(64, 0x0000000c57414c4c45545f4552524f5200000000000000000000000000000000) mstore(96, 0) revert(0, 100) }
+130	 let cdStart := add(_calldata, 32) let success := staticcall( gas(), walletAddress, cdStart, mload(_calldata), cdStart, 32 ) if iszero(eq(returndatasize(), 32)) {
+131	 mstore(0, 0x08c379a000000000000000000000000000000000000000000000000000000000) mstore(32, 0x0000002000000000000000000000000000000000000000000000000000000000) mstore(64, 0x0000000c57414c4c45545f4552524f5200000000000000000000000000000000) mstore(96, 0) revert(0, 100) }
+132	 switch success case 0 {
+133	 mstore(0, 0x08c379a000000000000000000000000000000000000000000000000000000000) mstore(32, 0x0000002000000000000000000000000000000000000000000000000000000000) mstore(64, 0x0000000c57414c4c45545f4552524f5200000000000000000000000000000000) mstore(96, 0) revert(0, 100) }
+134	 case 1 {
+135	 isValid := eq( and(mload(cdStart), 0xffffffff00000000000000000000000000000000000000000000000000000000), and(magic_salt, 0xffffffff00000000000000000000000000000000000000000000000000000000) ) }
+136	 }
+137	 return isValid;
+138	 }
+139	 }
+140	 pragma solidity ^0.7.0;
+141	 abstract contract ReentrancyGuard {
+142	 uint256 private constant _NOT_ENTERED = 1;
+143	 uint256 private constant _ENTERED = 2;
+144	 uint256 private _status;
+145	 constructor () {
+146	 _status = _NOT_ENTERED;
+147	 }
+148	 modifier nonReentrant() {
+149	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+150	 _status = _ENTERED;
+151	 _;
+152	 _status = _NOT_ENTERED;
+153	 }
+154	 }
+155	 pragma solidity 0.7.6;
+156	 contract LimitOrder is ILimitOrder, BaseLibEIP712, SignatureValidator, ReentrancyGuard {
+157	 using SafeMath for uint256;
+158	 using SafeERC20 for IERC20;
+159	 string public constant version = "1.0.0";
+160	 uint256 public immutable factorActivateDelay;
+161	 IPermanentStorage public immutable permStorage;
+162	 address public immutable userProxy;
+163	 IWETH public immutable weth;
+164	 address public immutable uniswapV3RouterAddress;
+165	 address public immutable sushiswapRouterAddress;
+166	 address public operator;
+167	 address public coordinator;
+168	 ISpender public spender;
+169	 address public feeCollector;
+170	 address private nominatedOperator;
+171	 uint256 public factorsTimeLock;
+172	 uint16 public makerFeeFactor = 0;
+173	 uint16 public pendingMakerFeeFactor;
+174	 uint16 public takerFeeFactor = 0;
+175	 uint16 public pendingTakerFeeFactor;
+176	 uint16 public profitFeeFactor = 0;
+177	 uint16 public pendingProfitFeeFactor;
+178	 constructor( address _operator, address _coordinator, address _userProxy, ISpender _spender, IPermanentStorage _permStorage, IWETH _weth, uint256 _factorActivateDelay, address _uniswapV3RouterAddress, address _sushiswapRouterAddress, address _feeCollector ) {
+179	 operator = _operator;
+180	 coordinator = _coordinator;
+181	 userProxy = _userProxy;
+182	 spender = _spender;
+183	 permStorage = _permStorage;
+184	 weth = _weth;
+185	 factorActivateDelay = _factorActivateDelay;
+186	 uniswapV3RouterAddress = _uniswapV3RouterAddress;
+187	 sushiswapRouterAddress = _sushiswapRouterAddress;
+188	 feeCollector = _feeCollector;
+189	 }
+190	 receive() external payable {
+191	 }
+192	 modifier onlyOperator() {
+193	 require(operator == msg.sender, "LimitOrder: not operator");
+194	 _;
+195	 }
+196	 modifier onlyUserProxy() {
+197	 require(address(userProxy) == msg.sender, "LimitOrder: not the UserProxy contract");
+198	 _;
+199	 }
+200	 function nominateNewOperator(address _newOperator) external onlyOperator {
+201	 require(_newOperator != address(0), "LimitOrder: operator can not be zero address");
+202	 nominatedOperator = _newOperator;
+203	 emit OperatorNominated(_newOperator);
+204	 }
+205	 function acceptOwnership() external {
+206	 require(msg.sender == nominatedOperator, "LimitOrder: not nominated");
+207	 emit OperatorChanged(operator, nominatedOperator);
+208	 operator = nominatedOperator;
+209	 nominatedOperator = address(0);
+210	 }
+211	 function upgradeSpender(address _newSpender) external onlyOperator {
+212	 require(_newSpender != address(0), "LimitOrder: spender can not be zero address");
+213	 spender = ISpender(_newSpender);
+214	 emit UpgradeSpender(_newSpender);
+215	 }
+216	 function upgradeCoordinator(address _newCoordinator) external onlyOperator {
+217	 require(_newCoordinator != address(0), "LimitOrder: coordinator can not be zero address");
+218	 coordinator = _newCoordinator;
+219	 emit UpgradeCoordinator(_newCoordinator);
+220	 }
+221	 function setAllowance(address[] calldata _tokenList, address _spender) external onlyOperator {
+222	 for (uint256 i = 0; i < _tokenList.length; ++i) {
+223	 IERC20(_tokenList[i]).safeApprove(_spender, LibConstant.MAX_UINT);
+224	 emit AllowTransfer(_spender);
+225	 }
+226	 }
+227	 function closeAllowance(address[] calldata _tokenList, address _spender) external onlyOperator {
+228	 for (uint256 i = 0; i < _tokenList.length; ++i) {
+229	 IERC20(_tokenList[i]).safeApprove(_spender, 0);
+230	 emit DisallowTransfer(_spender);
+231	 }
+232	 }
+233	 function depositETH() external onlyOperator {
+234	 uint256 balance = address(this).balance;
+235	 if (balance > 0) {
+236	 weth.deposit{
+237	 value: balance }
+238	 ();
+239	 emit DepositETH(balance);
+240	 }
+241	 }
+242	 function proposeFactors( uint16 _makerFeeFactor, uint16 _takerFeeFactor, uint16 _profitFeeFactor ) external onlyOperator {
+243	 require(_makerFeeFactor <= LibConstant.BPS_MAX, "LimitOrder: Invalid maker fee factor");
+244	 require(_takerFeeFactor <= LibConstant.BPS_MAX, "LimitOrder: Invalid taker fee factor");
+245	 require(_profitFeeFactor <= LibConstant.BPS_MAX, "LimitOrder: Invalid profit fee factor");
+246	 pendingMakerFeeFactor = _makerFeeFactor;
+247	 pendingTakerFeeFactor = _takerFeeFactor;
+248	 pendingProfitFeeFactor = _profitFeeFactor;
+249	 factorsTimeLock = block.timestamp + factorActivateDelay;
+250	 }
+251	 function activateFactors() external {
+252	 require(factorsTimeLock != 0, "LimitOrder: no pending fee factors");
+253	 require(block.timestamp >= factorsTimeLock, "LimitOrder: fee factors timelocked");
+254	 factorsTimeLock = 0;
+255	 makerFeeFactor = pendingMakerFeeFactor;
+256	 takerFeeFactor = pendingTakerFeeFactor;
+257	 profitFeeFactor = pendingProfitFeeFactor;
+258	 pendingMakerFeeFactor = 0;
+259	 pendingTakerFeeFactor = 0;
+260	 pendingProfitFeeFactor = 0;
+261	 emit FactorsUpdated(makerFeeFactor, takerFeeFactor, profitFeeFactor);
+262	 }
+263	 function setFeeCollector(address _newFeeCollector) external onlyOperator {
+264	 require(_newFeeCollector != address(0), "LimitOrder: fee collector can not be zero address");
+265	 feeCollector = _newFeeCollector;
+266	 emit SetFeeCollector(_newFeeCollector);
+267	 }
+268	 function fillLimitOrderByTrader( LimitOrderLibEIP712.Order calldata _order, bytes calldata _orderMakerSig, TraderParams calldata _params, CoordinatorParams calldata _crdParams ) external override onlyUserProxy nonReentrant returns (uint256, uint256) {
+269	 bytes32 orderHash = getEIP712Hash(LimitOrderLibEIP712._getOrderStructHash(_order));
+270	 _validateOrder(_order, orderHash, _orderMakerSig);
+271	 bytes32 allowFillHash = _validateFillPermission(orderHash, _params.takerTokenAmount, _params.taker, _crdParams);
+272	 _validateOrderTaker(_order, _params.taker);
+273	 {
+274	 LimitOrderLibEIP712.Fill memory fill = LimitOrderLibEIP712.Fill({
+275	 orderHash: orderHash, taker: _params.taker, recipient: _params.recipient, takerTokenAmount: _params.takerTokenAmount, takerSalt: _params.salt, expiry: _params.expiry }
+276	 );
+277	 _validateTraderFill(fill, _params.takerSig);
+278	 }
+279	 (uint256 makerTokenAmount, uint256 takerTokenAmount, uint256 remainingAmount) = _quoteOrder(_order, orderHash, _params.takerTokenAmount);
+280	 uint256 makerTokenOut = _settleForTrader( TraderSettlement({
+281	 orderHash: orderHash, allowFillHash: allowFillHash, trader: _params.taker, recipient: _params.recipient, maker: _order.maker, taker: _order.taker, makerToken: _order.makerToken, takerToken: _order.takerToken, makerTokenAmount: makerTokenAmount, takerTokenAmount: takerTokenAmount, remainingAmount: remainingAmount }
+282	 ) );
+283	 _recordOrderFilled(orderHash, takerTokenAmount);
+284	 return (takerTokenAmount, makerTokenOut);
+285	 }
+286	 function _validateTraderFill(LimitOrderLibEIP712.Fill memory _fill, bytes memory _fillTakerSig) internal {
+287	 require(_fill.expiry > uint64(block.timestamp), "LimitOrder: Fill request is expired");
+288	 require(_fill.recipient != address(0), "LimitOrder: recipient can not be zero address");
+289	 bytes32 fillHash = getEIP712Hash(LimitOrderLibEIP712._getFillStructHash(_fill));
+290	 require(isValidSignature(_fill.taker, fillHash, bytes(""), _fillTakerSig), "LimitOrder: Fill is not signed by taker");
+291	 permStorage.setLimitOrderTransactionSeen(fillHash);
+292	 }
+293	 function _validateFillPermission( bytes32 _orderHash, uint256 _fillAmount, address _executor, CoordinatorParams memory _crdParams ) internal returns (bytes32) {
+294	 require(_crdParams.expiry > uint64(block.timestamp), "LimitOrder: Fill permission is expired");
+295	 bytes32 allowFillHash = getEIP712Hash( LimitOrderLibEIP712._getAllowFillStructHash( LimitOrderLibEIP712.AllowFill({
+296	 orderHash: _orderHash, executor: _executor, fillAmount: _fillAmount, salt: _crdParams.salt, expiry: _crdParams.expiry }
+297	 ) ) );
+298	 require(isValidSignature(coordinator, allowFillHash, bytes(""), _crdParams.sig), "LimitOrder: AllowFill is not signed by coordinator");
+299	 permStorage.setLimitOrderAllowFillSeen(allowFillHash);
+300	 return allowFillHash;
+301	 }
+302	 struct TraderSettlement {
+303	 bytes32 orderHash;
+304	 bytes32 allowFillHash;
+305	 address trader;
+306	 address recipient;
+307	 address maker;
+308	 address taker;
+309	 IERC20 makerToken;
+310	 IERC20 takerToken;
+311	 uint256 makerTokenAmount;
+312	 uint256 takerTokenAmount;
+313	 uint256 remainingAmount;
+314	 }
+315	 function _settleForTrader(TraderSettlement memory _settlement) internal returns (uint256) {
+316	 ISpender _spender = spender;
+317	 address _feeCollector = feeCollector;
+318	 uint256 takerTokenFee = _mulFactor(_settlement.takerTokenAmount, makerFeeFactor);
+319	 uint256 takerTokenForMaker = _settlement.takerTokenAmount.sub(takerTokenFee);
+320	 uint256 makerTokenFee = _mulFactor(_settlement.makerTokenAmount, takerFeeFactor);
+321	 uint256 makerTokenForTrader = _settlement.makerTokenAmount.sub(makerTokenFee);
+322	 _spender.spendFromUser(_settlement.trader, address(_settlement.takerToken), _settlement.takerTokenAmount);
+323	 _settlement.takerToken.safeTransfer(_settlement.maker, takerTokenForMaker);
+324	 if (takerTokenFee > 0) {
+325	 _settlement.takerToken.safeTransfer(_feeCollector, takerTokenFee);
+326	 }
+327	 _spender.spendFromUser(_settlement.maker, address(_settlement.makerToken), _settlement.makerTokenAmount);
+328	 _settlement.makerToken.safeTransfer(_settlement.recipient, makerTokenForTrader);
+329	 if (makerTokenFee > 0) {
+330	 _settlement.makerToken.safeTransfer(_feeCollector, makerTokenFee);
+331	 }
+332	 _emitLimitOrderFilledByTrader( LimitOrderFilledByTraderParams({
+333	 orderHash: _settlement.orderHash, maker: _settlement.maker, taker: _settlement.trader, allowFillHash: _settlement.allowFillHash, recipient: _settlement.recipient, makerToken: address(_settlement.makerToken), takerToken: address(_settlement.takerToken), makerTokenFilledAmount: _settlement.makerTokenAmount, takerTokenFilledAmount: _settlement.takerTokenAmount, remainingAmount: _settlement.remainingAmount, makerTokenFee: makerTokenFee, takerTokenFee: takerTokenFee }
+334	 ) );
+335	 return makerTokenForTrader;
+336	 }
+337	 function fillLimitOrderByProtocol( LimitOrderLibEIP712.Order calldata _order, bytes calldata _orderMakerSig, ProtocolParams calldata _params, CoordinatorParams calldata _crdParams ) external override onlyUserProxy nonReentrant returns (uint256) {
+338	 bytes32 orderHash = getEIP712Hash(LimitOrderLibEIP712._getOrderStructHash(_order));
+339	 _validateOrder(_order, orderHash, _orderMakerSig);
+340	 bytes32 allowFillHash = _validateFillPermission(orderHash, _params.takerTokenAmount, tx.origin, _crdParams);
+341	 address protocolAddress = _getProtocolAddress(_params.protocol);
+342	 _validateOrderTaker(_order, protocolAddress);
+343	 (uint256 makerTokenAmount, uint256 takerTokenAmount, uint256 remainingAmount) = _quoteOrder(_order, orderHash, _params.takerTokenAmount);
+344	 uint256 relayerTakerTokenProfit = _settleForProtocol( ProtocolSettlement({
+345	 orderHash: orderHash, allowFillHash: allowFillHash, protocolAddress: protocolAddress, protocol: _params.protocol, data: _params.data, relayer: tx.origin, profitRecipient: _params.profitRecipient, maker: _order.maker, taker: _order.taker, makerToken: _order.makerToken, takerToken: _order.takerToken, makerTokenAmount: makerTokenAmount, takerTokenAmount: takerTokenAmount, remainingAmount: remainingAmount, protocolOutMinimum: _params.protocolOutMinimum, expiry: _params.expiry }
+346	 ) );
+347	 _recordOrderFilled(orderHash, takerTokenAmount);
+348	 return relayerTakerTokenProfit;
+349	 }
+350	 function _getProtocolAddress(Protocol protocol) internal view returns (address) {
+351	 if (protocol == Protocol.UniswapV3) {
+352	 return uniswapV3RouterAddress;
+353	 }
+354	 if (protocol == Protocol.Sushiswap) {
+355	 return sushiswapRouterAddress;
+356	 }
+357	 revert("LimitOrder: Unknown protocol");
+358	 }
+359	 struct ProtocolSettlement {
+360	 bytes32 orderHash;
+361	 bytes32 allowFillHash;
+362	 address protocolAddress;
+363	 Protocol protocol;
+364	 bytes data;
+365	 address relayer;
+366	 address profitRecipient;
+367	 address maker;
+368	 address taker;
+369	 IERC20 makerToken;
+370	 IERC20 takerToken;
+371	 uint256 makerTokenAmount;
+372	 uint256 takerTokenAmount;
+373	 uint256 remainingAmount;
+374	 uint256 protocolOutMinimum;
+375	 uint64 expiry;
+376	 }
+377	 function _settleForProtocol(ProtocolSettlement memory _settlement) internal returns (uint256) {
+378	 require(_settlement.profitRecipient != address(0), "LimitOrder: profitRecipient can not be zero address");
+379	 spender.spendFromUser(_settlement.maker, address(_settlement.makerToken), _settlement.makerTokenAmount);
+380	 uint256 takerTokenOut = _swapByProtocol(_settlement);
+381	 require(takerTokenOut >= _settlement.takerTokenAmount, "LimitOrder: Insufficient token amount out from protocol");
+382	 uint256 ammOutputExtra = takerTokenOut.sub(_settlement.takerTokenAmount);
+383	 uint256 relayerTakerTokenProfitFee = _mulFactor(ammOutputExtra, profitFeeFactor);
+384	 uint256 relayerTakerTokenProfit = ammOutputExtra.sub(relayerTakerTokenProfitFee);
+385	 _settlement.takerToken.safeTransfer(_settlement.profitRecipient, relayerTakerTokenProfit);
+386	 uint256 takerTokenFee = _mulFactor(_settlement.takerTokenAmount, makerFeeFactor);
+387	 uint256 takerTokenForMaker = _settlement.takerTokenAmount.sub(takerTokenFee);
+388	 _settlement.takerToken.safeTransfer(_settlement.maker, takerTokenForMaker);
+389	 uint256 feeTotal = takerTokenFee.add(relayerTakerTokenProfitFee);
+390	 if (feeTotal > 0) {
+391	 _settlement.takerToken.safeTransfer(feeCollector, feeTotal);
+392	 }
+393	 _emitLimitOrderFilledByProtocol( LimitOrderFilledByProtocolParams({
+394	 orderHash: _settlement.orderHash, maker: _settlement.maker, taker: _settlement.protocolAddress, allowFillHash: _settlement.allowFillHash, relayer: _settlement.relayer, profitRecipient: _settlement.profitRecipient, makerToken: address(_settlement.makerToken), takerToken: address(_settlement.takerToken), makerTokenFilledAmount: _settlement.makerTokenAmount, takerTokenFilledAmount: _settlement.takerTokenAmount, remainingAmount: _settlement.remainingAmount, makerTokenFee: 0, takerTokenFee: takerTokenFee, relayerTakerTokenProfit: relayerTakerTokenProfit, relayerTakerTokenProfitFee: relayerTakerTokenProfitFee }
+395	 ) );
+396	 return relayerTakerTokenProfit;
+397	 }
+398	 function _swapByProtocol(ProtocolSettlement memory _settlement) internal returns (uint256 amountOut) {
+399	 _settlement.makerToken.safeApprove(_settlement.protocolAddress, _settlement.makerTokenAmount);
+400	 if (_settlement.protocol == Protocol.UniswapV3) {
+401	 amountOut = LibUniswapV3.exactInput( _settlement.protocolAddress, LibUniswapV3.ExactInputParams({
+402	 tokenIn: address(_settlement.makerToken), tokenOut: address(_settlement.takerToken), path: _settlement.data, recipient: address(this), deadline: _settlement.expiry, amountIn: _settlement.makerTokenAmount, amountOutMinimum: _settlement.protocolOutMinimum }
+403	 ) );
+404	 }
+405	 else {
+406	 address[] memory path = abi.decode(_settlement.data, (address[]));
+407	 amountOut = LibUniswapV2.swapExactTokensForTokens( _settlement.protocolAddress, LibUniswapV2.SwapExactTokensForTokensParams({
+408	 tokenIn: address(_settlement.makerToken), tokenInAmount: _settlement.makerTokenAmount, tokenOut: address(_settlement.takerToken), tokenOutAmountMin: _settlement.protocolOutMinimum, path: path, to: address(this), deadline: _settlement.expiry }
+409	 ) );
+410	 }
+411	 _settlement.makerToken.safeApprove(_settlement.protocolAddress, 0);
+412	 }
+413	 function cancelLimitOrder(LimitOrderLibEIP712.Order calldata _order, bytes calldata _cancelOrderMakerSig) external override onlyUserProxy nonReentrant {
+414	 require(_order.expiry > uint64(block.timestamp), "LimitOrder: Order is expired");
+415	 bytes32 orderHash = getEIP712Hash(LimitOrderLibEIP712._getOrderStructHash(_order));
+416	 bool isCancelled = LibOrderStorage.getStorage().orderHashToCancelled[orderHash];
+417	 require(!isCancelled, "LimitOrder: Order is cancelled already");
+418	 {
+419	 LimitOrderLibEIP712.Order memory cancelledOrder = _order;
+420	 cancelledOrder.takerTokenAmount = 0;
+421	 bytes32 cancelledOrderHash = getEIP712Hash(LimitOrderLibEIP712._getOrderStructHash(cancelledOrder));
+422	 require(isValidSignature(_order.maker, cancelledOrderHash, bytes(""), _cancelOrderMakerSig), "LimitOrder: Cancel request is not signed by maker");
+423	 }
+424	 LibOrderStorage.getStorage().orderHashToCancelled[orderHash] = true;
+425	 emit OrderCancelled(orderHash, _order.maker);
+426	 }
+427	 function _validateOrder( LimitOrderLibEIP712.Order memory _order, bytes32 _orderHash, bytes memory _orderMakerSig ) internal view {
+428	 require(_order.expiry > uint64(block.timestamp), "LimitOrder: Order is expired");
+429	 bool isCancelled = LibOrderStorage.getStorage().orderHashToCancelled[_orderHash];
+430	 require(!isCancelled, "LimitOrder: Order is cancelled");
+431	 require(isValidSignature(_order.maker, _orderHash, bytes(""), _orderMakerSig), "LimitOrder: Order is not signed by maker");
+432	 }
+433	 function _validateOrderTaker(LimitOrderLibEIP712.Order memory _order, address _taker) internal pure {
+434	 if (_order.taker != address(0)) {
+435	 require(_order.taker == _taker, "LimitOrder: Order cannot be filled by this taker");
+436	 }
+437	 }
+438	 function _quoteOrder( LimitOrderLibEIP712.Order memory _order, bytes32 _orderHash, uint256 _takerTokenAmount ) internal view returns ( uint256, uint256, uint256 ) {
+439	 uint256 takerTokenFilledAmount = LibOrderStorage.getStorage().orderHashToTakerTokenFilledAmount[_orderHash];
+440	 require(takerTokenFilledAmount < _order.takerTokenAmount, "LimitOrder: Order is filled");
+441	 uint256 takerTokenFillableAmount = _order.takerTokenAmount.sub(takerTokenFilledAmount);
+442	 uint256 takerTokenQuota = Math.min(_takerTokenAmount, takerTokenFillableAmount);
+443	 uint256 makerTokenQuota = takerTokenQuota.mul(_order.makerTokenAmount).div(_order.takerTokenAmount);
+444	 uint256 remainingAfterFill = takerTokenFillableAmount.sub(takerTokenQuota);
+445	 require(makerTokenQuota != 0 && takerTokenQuota != 0, "LimitOrder: zero token amount");
+446	 return (makerTokenQuota, takerTokenQuota, remainingAfterFill);
+447	 }
+448	 function _recordOrderFilled(bytes32 _orderHash, uint256 _takerTokenAmount) internal {
+449	 LibOrderStorage.Storage storage stor = LibOrderStorage.getStorage();
+450	 uint256 takerTokenFilledAmount = stor.orderHashToTakerTokenFilledAmount[_orderHash];
+451	 stor.orderHashToTakerTokenFilledAmount[_orderHash] = takerTokenFilledAmount.add(_takerTokenAmount);
+452	 }
+453	 function _mulFactor(uint256 amount, uint256 factor) internal returns (uint256) {
+454	 return amount.mul(factor).div(LibConstant.BPS_MAX);
+455	 }
+456	 struct LimitOrderFilledByTraderParams {
+457	 bytes32 orderHash;
+458	 address maker;
+459	 address taker;
+460	 bytes32 allowFillHash;
+461	 address recipient;
+462	 address makerToken;
+463	 address takerToken;
+464	 uint256 makerTokenFilledAmount;
+465	 uint256 takerTokenFilledAmount;
+466	 uint256 remainingAmount;
+467	 uint256 makerTokenFee;
+468	 uint256 takerTokenFee;
+469	 }
+470	 function _emitLimitOrderFilledByTrader(LimitOrderFilledByTraderParams memory _params) internal {
+471	 emit LimitOrderFilledByTrader( _params.orderHash, _params.maker, _params.taker, _params.allowFillHash, _params.recipient, FillReceipt({
+472	 makerToken: _params.makerToken, takerToken: _params.takerToken, makerTokenFilledAmount: _params.makerTokenFilledAmount, takerTokenFilledAmount: _params.takerTokenFilledAmount, remainingAmount: _params.remainingAmount, makerTokenFee: _params.makerTokenFee, takerTokenFee: _params.takerTokenFee }
+473	 ) );
+474	 }
+475	 struct LimitOrderFilledByProtocolParams {
+476	 bytes32 orderHash;
+477	 address maker;
+478	 address taker;
+479	 bytes32 allowFillHash;
+480	 address relayer;
+481	 address profitRecipient;
+482	 address makerToken;
+483	 address takerToken;
+484	 uint256 makerTokenFilledAmount;
+485	 uint256 takerTokenFilledAmount;
+486	 uint256 remainingAmount;
+487	 uint256 makerTokenFee;
+488	 uint256 takerTokenFee;
+489	 uint256 relayerTakerTokenProfit;
+490	 uint256 relayerTakerTokenProfitFee;
+491	 }
+492	 function _emitLimitOrderFilledByProtocol(LimitOrderFilledByProtocolParams memory _params) internal {
+493	 emit LimitOrderFilledByProtocol( _params.orderHash, _params.maker, _params.taker, _params.allowFillHash, _params.relayer, _params.profitRecipient, FillReceipt({
+494	 makerToken: _params.makerToken, takerToken: _params.takerToken, makerTokenFilledAmount: _params.makerTokenFilledAmount, takerTokenFilledAmount: _params.takerTokenFilledAmount, remainingAmount: _params.remainingAmount, makerTokenFee: _params.makerTokenFee, takerTokenFee: _params.takerTokenFee }
+495	 ), _params.relayerTakerTokenProfit, _params.relayerTakerTokenProfitFee );
+496	 }
+497	 }
+498	 pragma solidity >=0.7.0;
+499	 interface IERC1271Wallet {
+500	 function isValidSignature(bytes calldata _data, bytes calldata _signature) external view returns (bytes4 magicValue);
+501	 function isValidSignature(bytes32 _hash, bytes calldata _signature) external view returns (bytes4 magicValue);
+502	 }
+503	 pragma solidity >=0.7.0;
+504	 interface IPermanentStorage {
+505	 function wethAddr() external view returns (address);
+506	 function getCurvePoolInfo( address _makerAddr, address _takerAssetAddr, address _makerAssetAddr ) external view returns ( int128 takerAssetIndex, int128 makerAssetIndex, uint16 swapMethod, bool supportGetDx );
+507	 function setCurvePoolInfo( address _makerAddr, address[] calldata _underlyingCoins, address[] calldata _coins, bool _supportGetDx ) external;
+508	 function isTransactionSeen(bytes32 _transactionHash) external view returns (bool);
+509	 function isAMMTransactionSeen(bytes32 _transactionHash) external view returns (bool);
+510	 function isRFQTransactionSeen(bytes32 _transactionHash) external view returns (bool);
+511	 function isLimitOrderTransactionSeen(bytes32 _transactionHash) external view returns (bool);
+512	 function isLimitOrderAllowFillSeen(bytes32 _allowFillHash) external view returns (bool);
+513	 function isRelayerValid(address _relayer) external view returns (bool);
+514	 function setTransactionSeen(bytes32 _transactionHash) external;
+515	 function setAMMTransactionSeen(bytes32 _transactionHash) external;
+516	 function setRFQTransactionSeen(bytes32 _transactionHash) external;
+517	 function setLimitOrderTransactionSeen(bytes32 _transactionHash) external;
+518	 function setLimitOrderAllowFillSeen(bytes32 _allowFillHash) external;
+519	 function setRelayersValid(address[] memory _relayers, bool[] memory _isValids) external;
+520	 }
+521	 pragma solidity >=0.7.0;
+522	 interface ISpender {
+523	 function spendFromUser( address _user, address _tokenAddr, uint256 _amount ) external;
+524	 function spendFromUserTo( address _user, address _tokenAddr, address _receiverAddr, uint256 _amount ) external;
+525	 }
+526	 pragma solidity >=0.7.0;
+527	 interface IUniswapRouterV2 {
+528	 function swapExactTokensForTokens( uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline ) external returns (uint256[] memory amounts);
+529	 function addLiquidity( address tokenA, address tokenB, uint256 amountADesired, uint256 amountBDesired, uint256 amountAMin, uint256 amountBMin, address to, uint256 deadline ) external returns ( uint256 amountA, uint256 amountB, uint256 liquidity );
+530	 function addLiquidityETH( address token, uint256 amountTokenDesired, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline ) external payable returns ( uint256 amountToken, uint256 amountETH, uint256 liquidity );
+531	 function removeLiquidity( address tokenA, address tokenB, uint256 liquidity, uint256 amountAMin, uint256 amountBMin, address to, uint256 deadline ) external returns (uint256 amountA, uint256 amountB);
+532	 function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts);
+533	 function getAmountsIn(uint256 amountOut, address[] calldata path) external view returns (uint256[] memory amounts);
+534	 function swapETHForExactTokens( uint256 amountOut, address[] calldata path, address to, uint256 deadline ) external payable returns (uint256[] memory amounts);
+535	 function swapExactETHForTokens( uint256 amountOutMin, address[] calldata path, address to, uint256 deadline ) external payable returns (uint256[] memory amounts);
+536	 }
+537	 pragma solidity >=0.7.0;
+538	 interface ISwapRouter is IUniswapV3SwapCallback {
+539	 struct ExactInputSingleParams {
+540	 address tokenIn;
+541	 address tokenOut;
+542	 uint24 fee;
+543	 address recipient;
+544	 uint256 deadline;
+545	 uint256 amountIn;
+546	 uint256 amountOutMinimum;
+547	 uint160 sqrtPriceLimitX96;
+548	 }
+549	 function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+550	 struct ExactInputParams {
+551	 bytes path;
+552	 address recipient;
+553	 uint256 deadline;
+554	 uint256 amountIn;
+555	 uint256 amountOutMinimum;
+556	 }
+557	 function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
+558	 struct ExactOutputSingleParams {
+559	 address tokenIn;
+560	 address tokenOut;
+561	 uint24 fee;
+562	 address recipient;
+563	 uint256 deadline;
+564	 uint256 amountOut;
+565	 uint256 amountInMaximum;
+566	 uint160 sqrtPriceLimitX96;
+567	 }
+568	 function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
+569	 struct ExactOutputParams {
+570	 bytes path;
+571	 address recipient;
+572	 uint256 deadline;
+573	 uint256 amountOut;
+574	 uint256 amountInMaximum;
+575	 }
+576	 function exactOutput(ExactOutputParams calldata params) external payable returns (uint256 amountIn);
+577	 }
+578	 pragma solidity >=0.7.0;
+579	 interface IWETH {
+580	 function balanceOf(address account) external view returns (uint256);
+581	 function deposit() external payable;
+582	 function withdraw(uint256 amount) external;
+583	 function transferFrom( address src, address dst, uint256 wad ) external returns (bool);
+584	 }
+585	 pragma solidity ^0.7.6;
+586	 library LibBytes {
+587	 using LibBytes for bytes;
+588	 function popLastByte(bytes memory b) internal pure returns (bytes1 result) {
+589	 require(b.length > 0, "LibBytes#popLastByte: greater than zero length required");
+590	 result = b[b.length - 1];
+591	 assembly {
+592	 let newLen := sub(mload(b), 1) mstore(b, newLen) }
+593	 return result;
+594	 }
+595	 function readAddress(bytes memory b, uint256 index) internal pure returns (address result) {
+596	 require( b.length >= index + 20, "LibBytes#readAddress greater or equal to 20 length required" );
+597	 index += 20;
+598	 assembly {
+599	 result := and(mload(add(b, index)), 0xffffffffffffffffffffffffffffffffffffffff) }
+600	 return result;
+601	 }
+602	 function readBytes32(bytes memory b, uint256 index) internal pure returns (bytes32 result) {
+603	 require(b.length >= index + 32, "LibBytes#readBytes32 greater or equal to 32 length required");
+604	 index += 32;
+605	 assembly {
+606	 result := mload(add(b, index)) }
+607	 return result;
+608	 }
+609	 function readBytes4(bytes memory b, uint256 index) internal pure returns (bytes4 result) {
+610	 require(b.length >= index + 4, "LibBytes#readBytes4 greater or equal to 4 length required");
+611	 index += 32;
+612	 assembly {
+613	 result := mload(add(b, index)) result := and(result, 0xFFFFFFFF00000000000000000000000000000000000000000000000000000000) }
+614	 return result;
+615	 }
+616	 function readBytes2(bytes memory b, uint256 index) internal pure returns (bytes2 result) {
+617	 require(b.length >= index + 2, "LibBytes#readBytes2 greater or equal to 2 length required");
+618	 index += 32;
+619	 assembly {
+620	 result := mload(add(b, index)) result := and(result, 0xFFFF000000000000000000000000000000000000000000000000000000000000) }
+621	 return result;
+622	 }
+623	 }
+624	 pragma solidity ^0.7.6;
+625	 library LibConstant {
+626	 int256 internal constant MAX_INT = 2**255 - 1;
+627	 uint256 internal constant MAX_UINT = 2**256 - 1;
+628	 uint16 internal constant BPS_MAX = 10000;
+629	 }
+630	 pragma solidity ^0.7.6;
+631	 library LibOrderStorage {
+632	 bytes32 private constant STORAGE_SLOT = 0x341a85fd45142738553ca9f88acd66d751d05662e7332a1dd940f22830435fb4;
+633	 struct Storage {
+634	 mapping(bytes32 => uint256) orderHashToTakerTokenFilledAmount;
+635	 mapping(bytes32 => bool) orderHashToCancelled;
+636	 }
+637	 function getStorage() internal pure returns (Storage storage stor) {
+638	 assert(STORAGE_SLOT == bytes32(uint256(keccak256("limitorder.order.storage")) - 1));
+639	 assembly {
+640	 stor.slot := STORAGE_SLOT }
+641	 }
+642	 }
+643	 pragma solidity ^0.7.6;
+644	 library LibUniswapV2 {
+645	 struct SwapExactTokensForTokensParams {
+646	 address tokenIn;
+647	 uint256 tokenInAmount;
+648	 address tokenOut;
+649	 uint256 tokenOutAmountMin;
+650	 address[] path;
+651	 address to;
+652	 uint256 deadline;
+653	 }
+654	 function swapExactTokensForTokens(address _uniswapV2Router, SwapExactTokensForTokensParams memory _params) internal returns (uint256 amount) {
+655	 _validatePath(_params.path, _params.tokenIn, _params.tokenOut);
+656	 uint256[] memory amounts = IUniswapRouterV2(_uniswapV2Router).swapExactTokensForTokens( _params.tokenInAmount, _params.tokenOutAmountMin, _params.path, _params.to, _params.deadline );
+657	 return amounts[amounts.length - 1];
+658	 }
+659	 function _validatePath( address[] memory _path, address _tokenIn, address _tokenOut ) internal {
+660	 require(_path.length >= 2, "UniswapV2: Path length must be at least two");
+661	 require(_path[0] == _tokenIn, "UniswapV2: First element of path must match token in");
+662	 require(_path[_path.length - 1] == _tokenOut, "UniswapV2: Last element of path must match token out");
+663	 }
+664	 }
+665	 pragma solidity ^0.7.6;
+666	 library LibUniswapV3 {
+667	 using Path for bytes;
+668	 enum SwapType {
+669	 None, ExactInputSingle, ExactInput }
+670	 struct ExactInputSingleParams {
+671	 address tokenIn;
+672	 address tokenOut;
+673	 uint24 fee;
+674	 address recipient;
+675	 uint256 deadline;
+676	 uint256 amountIn;
+677	 uint256 amountOutMinimum;
+678	 }
+679	 function exactInputSingle(address _uniswapV3Router, ExactInputSingleParams memory _params) internal returns (uint256 amount) {
+680	 return ISwapRouter(_uniswapV3Router).exactInputSingle( ISwapRouter.ExactInputSingleParams({
+681	 tokenIn: _params.tokenIn, tokenOut: _params.tokenOut, fee: _params.fee, recipient: _params.recipient, deadline: _params.deadline, amountIn: _params.amountIn, amountOutMinimum: _params.amountOutMinimum, sqrtPriceLimitX96: 0 }
+682	 ) );
+683	 }
+684	 struct ExactInputParams {
+685	 address tokenIn;
+686	 address tokenOut;
+687	 bytes path;
+688	 address recipient;
+689	 uint256 deadline;
+690	 uint256 amountIn;
+691	 uint256 amountOutMinimum;
+692	 }
+693	 function exactInput(address _uniswapV3Router, ExactInputParams memory _params) internal returns (uint256 amount) {
+694	 _validatePath(_params.path, _params.tokenIn, _params.tokenOut);
+695	 return ISwapRouter(_uniswapV3Router).exactInput( ISwapRouter.ExactInputParams({
+696	 path: _params.path, recipient: _params.recipient, deadline: _params.deadline, amountIn: _params.amountIn, amountOutMinimum: _params.amountOutMinimum }
+697	 ) );
+698	 }
+699	 function _validatePath( bytes memory _path, address _tokenIn, address _tokenOut ) internal {
+700	 (address tokenA, address tokenB, ) = _path.decodeFirstPool();
+701	 if (_path.hasMultiplePools()) {
+702	 _path = _path.skipToken();
+703	 while (_path.hasMultiplePools()) {
+704	 _path = _path.skipToken();
+705	 }
+706	 (, tokenB, ) = _path.decodeFirstPool();
+707	 }
+708	 require(tokenA == _tokenIn, "UniswapV3: first element of path must match token in");
+709	 require(tokenB == _tokenOut, "UniswapV3: last element of path must match token out");
+710	 }
+711	 }
+712	 pragma solidity ^0.7.6;
+713	 library LimitOrderLibEIP712 {
+714	 struct Order {
+715	 IERC20 makerToken;
+716	 IERC20 takerToken;
+717	 uint256 makerTokenAmount;
+718	 uint256 takerTokenAmount;
+719	 address maker;
+720	 address taker;
+721	 uint256 salt;
+722	 uint64 expiry;
+723	 }
+724	 uint256 private constant ORDER_TYPEHASH = 0x025174f0ee45736f4e018e96c368bd4baf3dce8d278860936559209f568c8ecb;
+725	 function _getOrderStructHash(Order memory _order) internal pure returns (bytes32) {
+726	 return keccak256( abi.encode( ORDER_TYPEHASH, address(_order.makerToken), address(_order.takerToken), _order.makerTokenAmount, _order.takerTokenAmount, _order.maker, _order.taker, _order.salt, _order.expiry ) );
+727	 }
+728	 struct Fill {
+729	 bytes32 orderHash;
+730	 address taker;
+731	 address recipient;
+732	 uint256 takerTokenAmount;
+733	 uint256 takerSalt;
+734	 uint64 expiry;
+735	 }
+736	 uint256 private constant FILL_TYPEHASH = 0x4ef294060cea2f973f7fe2a6d78624328586118efb1c4d640855aac3ba70e9c9;
+737	 function _getFillStructHash(Fill memory _fill) internal pure returns (bytes32) {
+738	 return keccak256(abi.encode(FILL_TYPEHASH, _fill.orderHash, _fill.taker, _fill.recipient, _fill.takerTokenAmount, _fill.takerSalt, _fill.expiry));
+739	 }
+740	 struct AllowFill {
+741	 bytes32 orderHash;
+742	 address executor;
+743	 uint256 fillAmount;
+744	 uint256 salt;
+745	 uint64 expiry;
+746	 }
+747	 uint256 private constant ALLOW_FILL_TYPEHASH = 0xa471a3189b88889758f25ee2ce05f58964c40b03edc9cc9066079fd2b547f074;
+748	 function _getAllowFillStructHash(AllowFill memory _allowFill) internal pure returns (bytes32) {
+749	 return keccak256(abi.encode(ALLOW_FILL_TYPEHASH, _allowFill.orderHash, _allowFill.executor, _allowFill.fillAmount, _allowFill.salt, _allowFill.expiry));
+750	 }
+751	 }
+752	 pragma solidity 0.7.6;
+753	 interface IWallet {
+754	 function isValidSignature(bytes32 hash, bytes memory signature) external view returns (bool isValid);
+755	 }
+756	 pragma solidity >=0.7.0;
+757	 library BytesLib {
+758	 function slice( bytes memory _bytes, uint256 _start, uint256 _length ) internal pure returns (bytes memory) {
+759	 require(_length + 31 >= _length, "slice_overflow");
+760	 require(_start + _length >= _start, "slice_overflow");
+761	 require(_bytes.length >= _start + _length, "slice_outOfBounds");
+762	 bytes memory tempBytes;
+763	 assembly {
+764	 switch iszero(_length) case 0 {
+765	 tempBytes := mload(0x40) let lengthmod := and(_length, 31) let mc := add(add(tempBytes, lengthmod), mul(0x20, iszero(lengthmod))) let end := add(mc, _length) for {
+766	 let cc := add(add(add(_bytes, lengthmod), mul(0x20, iszero(lengthmod))), _start) }
+767	 lt(mc, end) {
+768	 mc := add(mc, 0x20) cc := add(cc, 0x20) }
+769	 {
+770	 mstore(mc, mload(cc)) }
+771	 mstore(tempBytes, _length) mstore(0x40, and(add(mc, 31), not(31))) }
+772	 default {
+773	 tempBytes := mload(0x40) mstore(tempBytes, 0) mstore(0x40, add(tempBytes, 0x20)) }
+774	 }
+775	 return tempBytes;
+776	 }
+777	 function toAddress(bytes memory _bytes, uint256 _start) internal pure returns (address) {
+778	 require(_start + 20 >= _start, "toAddress_overflow");
+779	 require(_bytes.length >= _start + 20, "toAddress_outOfBounds");
+780	 address tempAddress;
+781	 assembly {
+782	 tempAddress := div(mload(add(add(_bytes, 0x20), _start)), 0x1000000000000000000000000) }
+783	 return tempAddress;
+784	 }
+785	 function toUint24(bytes memory _bytes, uint256 _start) internal pure returns (uint24) {
+786	 require(_start + 3 >= _start, "toUint24_overflow");
+787	 require(_bytes.length >= _start + 3, "toUint24_outOfBounds");
+788	 uint24 tempUint;
+789	 assembly {
+790	 tempUint := mload(add(add(_bytes, 0x3), _start)) }
+791	 return tempUint;
+792	 }
+793	 }
+794	 library Path {
+795	 using BytesLib for bytes;
+796	 uint256 private constant ADDR_SIZE = 20;
+797	 uint256 private constant FEE_SIZE = 3;
+798	 uint256 private constant NEXT_OFFSET = ADDR_SIZE + FEE_SIZE;
+799	 uint256 private constant POP_OFFSET = NEXT_OFFSET + ADDR_SIZE;
+800	 uint256 private constant MULTIPLE_POOLS_MIN_LENGTH = POP_OFFSET + NEXT_OFFSET;
+801	 function hasMultiplePools(bytes memory path) internal pure returns (bool) {
+802	 return path.length >= MULTIPLE_POOLS_MIN_LENGTH;
+803	 }
+804	 function decodeFirstPool(bytes memory path) internal pure returns ( address tokenA, address tokenB, uint24 fee ) {
+805	 tokenA = path.toAddress(0);
+806	 fee = path.toUint24(ADDR_SIZE);
+807	 tokenB = path.toAddress(NEXT_OFFSET);
+808	 }
+809	 function skipToken(bytes memory path) internal pure returns (bytes memory) {
+810	 return path.slice(NEXT_OFFSET, path.length - NEXT_OFFSET);
+811	 }
+812	 }
+813	 pragma solidity ^0.7.0;
+814	 library Math {
+815	 function max(uint256 a, uint256 b) internal pure returns (uint256) {
+816	 return a >= b ? a : b;
+817	 }
+818	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+819	 return a < b ? a : b;
+820	 }
+821	 function average(uint256 a, uint256 b) internal pure returns (uint256) {
+822	 return (a / 2) + (b / 2) + ((a % 2 + b % 2) / 2);
+823	 }
+824	 }
+825	 pragma solidity ^0.7.0;
+826	 library SafeMath {
+827	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+828	 uint256 c = a + b;
+829	 if (c < a) return (false, 0);
+830	 return (true, c);
+831	 }
+832	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+833	 if (b > a) return (false, 0);
+834	 return (true, a - b);
+835	 }
+836	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+837	 if (a == 0) return (true, 0);
+838	 uint256 c = a * b;
+839	 if (c / a != b) return (false, 0);
+840	 return (true, c);
+841	 }
+842	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+843	 if (b == 0) return (false, 0);
+844	 return (true, a / b);
+845	 }
+846	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+847	 if (b == 0) return (false, 0);
+848	 return (true, a % b);
+849	 }
+850	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+851	 uint256 c = a + b;
+852	 require(c >= a, "SafeMath: addition overflow");
+853	 return c;
+854	 }
+855	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+856	 require(b <= a, "SafeMath: subtraction overflow");
+857	 return a - b;
+858	 }
+859	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+860	 if (a == 0) return 0;
+861	 uint256 c = a * b;
+862	 require(c / a == b, "SafeMath: multiplication overflow");
+863	 return c;
+864	 }
+865	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+866	 require(b > 0, "SafeMath: division by zero");
+867	 return a / b;
+868	 }
+869	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+870	 require(b > 0, "SafeMath: modulo by zero");
+871	 return a % b;
+872	 }
+873	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+874	 require(b <= a, errorMessage);
+875	 return a - b;
+876	 }
+877	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+878	 require(b > 0, errorMessage);
+879	 return a / b;
+880	 }
+881	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+882	 require(b > 0, errorMessage);
+883	 return a % b;
+884	 }
+885	 }
+886	 pragma solidity ^0.7.0;
+887	 interface IERC20 {
+888	 function totalSupply() external view returns (uint256);
+889	 function balanceOf(address account) external view returns (uint256);
+890	 function transfer(address recipient, uint256 amount) external returns (bool);
+891	 function allowance(address owner, address spender) external view returns (uint256);
+892	 function approve(address spender, uint256 amount) external returns (bool);
+893	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+894	 event Transfer(address indexed from, address indexed to, uint256 value);
+895	 event Approval(address indexed owner, address indexed spender, uint256 value);
+896	 }
+897	 pragma solidity ^0.7.0;
+898	 library SafeERC20 {
+899	 using SafeMath for uint256;
+900	 using Address for address;
+901	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+902	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+903	 }
+904	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+905	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+906	 }
+907	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+908	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+909	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+910	 }
+911	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+912	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+913	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+914	 }
+915	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+916	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+917	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+918	 }
+919	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+920	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+921	 if (returndata.length > 0) {
+922	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+923	 }
+924	 }
+925	 }
+926	 pragma solidity ^0.7.0;
+927	 library Address {
+928	 function isContract(address account) internal view returns (bool) {
+929	 uint256 size;
+930	 assembly {
+931	 size := extcodesize(account) }
+932	 return size > 0;
+933	 }
+934	 function sendValue(address payable recipient, uint256 amount) internal {
+935	 require(address(this).balance >= amount, "Address: insufficient balance");
+936	 (bool success, ) = recipient.call{
+937	 value: amount }
+938	 ("");
+939	 require(success, "Address: unable to send value, recipient may have reverted");
+940	 }
+941	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+942	 return functionCall(target, data, "Address: low-level call failed");
+943	 }
+944	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+945	 return functionCallWithValue(target, data, 0, errorMessage);
+946	 }
+947	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+948	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+949	 }
+950	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+951	 require(address(this).balance >= value, "Address: insufficient balance for call");
+952	 require(isContract(target), "Address: call to non-contract");
+953	 (bool success, bytes memory returndata) = target.call{
+954	 value: value }
+955	 (data);
+956	 return _verifyCallResult(success, returndata, errorMessage);
+957	 }
+958	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+959	 return functionStaticCall(target, data, "Address: low-level static call failed");
+960	 }
+961	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+962	 require(isContract(target), "Address: static call to non-contract");
+963	 (bool success, bytes memory returndata) = target.staticcall(data);
+964	 return _verifyCallResult(success, returndata, errorMessage);
+965	 }
+966	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+967	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+968	 }
+969	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+970	 require(isContract(target), "Address: delegate call to non-contract");
+971	 (bool success, bytes memory returndata) = target.delegatecall(data);
+972	 return _verifyCallResult(success, returndata, errorMessage);
+973	 }
+974	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+975	 if (success) {
+976	 return returndata;
+977	 }
+978	 else {
+979	 if (returndata.length > 0) {
+980	 assembly {
+981	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+982	 }
+983	 else {
+984	 revert(errorMessage);
+985	 }
+986	 }
+987	 }
+988	 }

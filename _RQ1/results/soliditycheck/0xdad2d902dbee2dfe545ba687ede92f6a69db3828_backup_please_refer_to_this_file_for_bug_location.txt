@@ -1,0 +1,216 @@
+row number 
+1	         pragma solidity ^0.7.6;
+2	 interface IMultiOwnedEvents {
+3	 event Confirmation(address owner, uint txId);
+4	 event Revoke(address owner, uint txId);
+5	 event OwnerChanged(address oldOwner, address newOwner);
+6	 event OwnerAdded(address newOwner);
+7	 event OwnerRemoved(address oldOwner);
+8	 event RequirementChanged(uint newRequirement);
+9	 }
+10	 interface IMultiOwnedState {
+11	 function requiredNum() external view returns(uint);
+12	 function ownerNums() external view returns(uint);
+13	 function pendingOf(uint txId) external view returns(uint yetNeeded, uint ownersDone);
+14	 function nextPendingTxId() external view returns(uint);
+15	 function getOwner(uint ownerIndex) external view returns (address);
+16	 function isOwner(address addr) external view returns (bool);
+17	 function hasConfirmed(uint txId, address owner) external view returns (bool);
+18	 }
+19	 interface IMultiOwnedActions {
+20	 function revoke(uint txId) external;
+21	 function changeOwner(address from, address to) external;
+22	 function addOwner(address newOwner) external;
+23	 function removeOwner(address owner) external;
+24	 function changeRequirement(uint newRequired) external;
+25	 }
+26	 interface IMultiOwned is IMultiOwnedEvents, IMultiOwnedState, IMultiOwnedActions {
+27	 }
+28	 contract MultiOwned is IMultiOwned {
+29	 uint public override requiredNum;
+30	 uint public override ownerNums;
+31	 uint public constant MAX_OWNERS = 16;
+32	 address[MAX_OWNERS + 1] owners;
+33	 mapping(address => uint) ownerIndexOf;
+34	 mapping(uint => PendingState) public override pendingOf;
+35	 uint public override nextPendingTxId = 1;
+36	 struct PendingState {
+37	 uint yetNeeded;
+38	 uint ownersDone;
+39	 }
+40	 modifier onlySelfCall() {
+41	 require(msg.sender == address(this), "OSC");
+42	 _;
+43	 }
+44	 constructor(address[] memory _owners, uint _required) {
+45	 uint nums = _owners.length + 1;
+46	 require(MAX_OWNERS >= nums, "MAX");
+47	 require(_required <= nums && _required > 0, "REQ");
+48	 ownerNums = nums;
+49	 owners[1] = msg.sender;
+50	 ownerIndexOf[msg.sender] = 1;
+51	 for (uint i = 0; i < _owners.length; ++i) {
+52	 require(_owners[i] != address(0), "ZA");
+53	 require(!isOwner(_owners[i]), "ISO");
+54	 owners[2 + i] = _owners[i];
+55	 ownerIndexOf[_owners[i]] = 2 + i;
+56	 }
+57	 requiredNum = _required;
+58	 }
+59	 function revoke(uint txId) external override {
+60	 uint ownerIndex = ownerIndexOf[msg.sender];
+61	 require(ownerIndex != 0, "OC");
+62	 uint ownerIndexBit = 2**ownerIndex;
+63	 PendingState storage pending = pendingOf[txId];
+64	 require(pending.ownersDone & ownerIndexBit > 0, "OD");
+65	 pending.yetNeeded++;
+66	 pending.ownersDone -= ownerIndexBit;
+67	 emit Revoke(msg.sender, txId);
+68	 }
+69	 function changeOwner(address from, address to) onlySelfCall external override {
+70	 uint ownerIndex = ownerIndexOf[from];
+71	 require(ownerIndex > 0, "COF");
+72	 require(!isOwner(to) && to != address(0), "COT");
+73	 clearPending();
+74	 owners[ownerIndex] = to;
+75	 ownerIndexOf[from] = 0;
+76	 ownerIndexOf[to] = ownerIndex;
+77	 emit OwnerChanged(from, to);
+78	 }
+79	 function addOwner(address newOwner) onlySelfCall external override {
+80	 require(!isOwner(newOwner), "AON");
+81	 require(ownerNums < MAX_OWNERS, "AOM");
+82	 clearPending();
+83	 ownerNums++;
+84	 owners[ownerNums] = newOwner;
+85	 ownerIndexOf[newOwner] = ownerNums;
+86	 emit OwnerAdded(newOwner);
+87	 }
+88	 function removeOwner(address owner) onlySelfCall external override {
+89	 uint ownerIndex = ownerIndexOf[owner];
+90	 require(ownerIndex > 0, "ROI");
+91	 require(requiredNum <= ownerNums - 1, "RON");
+92	 owners[ownerIndex] = address(0);
+93	 ownerIndexOf[owner] = 0;
+94	 clearPending();
+95	 reorganizeOwners();
+96	 emit OwnerRemoved(owner);
+97	 }
+98	 function changeRequirement(uint newRequired) onlySelfCall external override {
+99	 require(newRequired <= ownerNums && newRequired > 0, "CR");
+100	 requiredNum = newRequired;
+101	 clearPending();
+102	 emit RequirementChanged(newRequired);
+103	 }
+104	 function getOwner(uint ownerIndex) external override view returns (address) {
+105	 return address(owners[ownerIndex + 1]);
+106	 }
+107	 function isOwner(address addr) public override view returns (bool) {
+108	 return ownerIndexOf[addr] > 0;
+109	 }
+110	 function hasConfirmed(uint txId, address owner) external override view returns (bool) {
+111	 PendingState storage pending = pendingOf[txId];
+112	 uint ownerIndex = ownerIndexOf[owner];
+113	 if (ownerIndex == 0) return false;
+114	 uint ownerIndexBit = 2**ownerIndex;
+115	 return (pending.ownersDone & ownerIndexBit > 0);
+116	 }
+117	 function confirmAndCheck(uint txId, uint ownerIndex) internal returns (bool) {
+118	 PendingState storage pending = pendingOf[txId];
+119	 if (pending.yetNeeded == 0) {
+120	 pending.yetNeeded = requiredNum;
+121	 pending.ownersDone = 0;
+122	 nextPendingTxId = txId + 1;
+123	 }
+124	 uint ownerIndexBit = 2**ownerIndex;
+125	 if (pending.ownersDone & ownerIndexBit == 0) {
+126	 emit Confirmation(msg.sender, txId);
+127	 if (pending.yetNeeded <= 1) {
+128	 delete pendingOf[txId];
+129	 return true;
+130	 }
+131	 else {
+132	 pending.yetNeeded--;
+133	 pending.ownersDone |= ownerIndexBit;
+134	 }
+135	 }
+136	 return false;
+137	 }
+138	 function reorganizeOwners() private {
+139	 uint free = 1;
+140	 while (free < ownerNums) {
+141	 while (free < ownerNums && owners[free] != address(0)) free++;
+142	 while (ownerNums > 1 && owners[ownerNums] == address(0)) ownerNums--;
+143	 if (free < ownerNums && owners[ownerNums] != address(0) && owners[free] == address(0)) {
+144	 owners[free] = owners[ownerNums];
+145	 ownerIndexOf[owners[free]] = free;
+146	 owners[ownerNums] = address(0);
+147	 }
+148	 }
+149	 }
+150	 function clearPending() virtual internal {
+151	 uint length = nextPendingTxId;
+152	 for (uint i = 1; i < length; ++i) if (pendingOf[i].yetNeeded != 0) delete pendingOf[i];
+153	 nextPendingTxId = 1;
+154	 }
+155	 }
+156	 interface IMultiSigWallet {
+157	 event MultiTransact(address owner, uint txId, uint value, address to, bytes data);
+158	 event ConfirmationNeeded(uint txId, address initiator, uint value, address to, bytes data);
+159	 function txsOf(uint txId) external view returns( address to, uint value, bytes memory data );
+160	 function execute(address to, uint value, bytes memory data) external returns (uint txId);
+161	 function confirm(uint txId) external returns (bool success);
+162	 }
+163	 contract MultiSigWallet is IMultiSigWallet, MultiOwned {
+164	 mapping (uint => Transaction) public override txsOf;
+165	 struct Transaction {
+166	 address to;
+167	 uint value;
+168	 bytes data;
+169	 }
+170	 constructor(address[] memory _owners, uint _required) MultiOwned(_owners, _required) {
+171	 }
+172	 function kill(address payable to) onlySelfCall external {
+173	 selfdestruct(to);
+174	 }
+175	 receive() external payable {
+176	 }
+177	 function execute(address to, uint value, bytes memory data) override external returns (uint txId) {
+178	 uint ownerIndex = ownerIndexOf[msg.sender];
+179	 require(ownerIndex != 0, "OC");
+180	 require(to != address(0), "EXT");
+181	 if(requiredNum <= 1){
+182	 (bool success, ) = to.call{
+183	 value:value}
+184	 (data);
+185	 require(success, "EXC");
+186	 emit MultiTransact(msg.sender, txId, value, to, data);
+187	 return 0;
+188	 }
+189	 txId = nextPendingTxId;
+190	 confirmAndCheck(txId, ownerIndex);
+191	 txsOf[txId].to = to;
+192	 txsOf[txId].value = value;
+193	 txsOf[txId].data = data;
+194	 emit ConfirmationNeeded(txId, msg.sender, value, to, data);
+195	 }
+196	 function confirm(uint txId) override external returns (bool success) {
+197	 uint ownerIndex = ownerIndexOf[msg.sender];
+198	 require(ownerIndex != 0, "OC");
+199	 address to = txsOf[txId].to;
+200	 uint value = txsOf[txId].value;
+201	 bytes memory data = txsOf[txId].data;
+202	 require(to != address(0), "TXI");
+203	 if(!confirmAndCheck(txId, ownerIndex)) return true;
+204	 (success, ) = to.call{
+205	 value:value}
+206	 (data);
+207	 emit MultiTransact(msg.sender, txId, value, to, data);
+208	 if (to != address(this)) delete txsOf[txId];
+209	 }
+210	 function clearPending() override internal {
+211	 uint length = nextPendingTxId;
+212	 for (uint i = 1; i < length; ++i) if (txsOf[i].to != address(0)) delete txsOf[i];
+213	 super.clearPending();
+214	 }
+215	 }

@@ -1,0 +1,76 @@
+row number 
+1	            pragma solidity ^0.7.1;
+2	 interface IERC20 {
+3	 function totalSupply() external view returns (uint256);
+4	 function balanceOf(address account) external view returns (uint256);
+5	 function decimals() external returns (uint8);
+6	 function transfer(address recipient, uint256 amount) external returns (bool);
+7	 function allowance(address owner, address spender) external view returns (uint256);
+8	 function approve(address spender, uint256 amount) external returns (bool);
+9	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+10	 event Transfer(address indexed from, address indexed to, uint256 value);
+11	 event Approval( address indexed owner, address indexed spender, uint256 value );
+12	 }
+13	 contract Ownable {
+14	 address private _owner;
+15	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+16	 constructor () {
+17	 _owner = msg.sender;
+18	 emit OwnershipTransferred(address(0), msg.sender);
+19	 }
+20	 function owner() public view returns (address) {
+21	 return _owner;
+22	 }
+23	 modifier onlyOwner() {
+24	 require(_owner == msg.sender, "Ownable: caller is not the owner");
+25	 _;
+26	 }
+27	 function renounceOwnership() public virtual onlyOwner {
+28	 emit OwnershipTransferred(_owner, address(0));
+29	 _owner = address(0);
+30	 }
+31	 function transferOwnership(address newOwner) public virtual onlyOwner {
+32	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+33	 emit OwnershipTransferred(_owner, newOwner);
+34	 _owner = newOwner;
+35	 }
+36	 }
+37	 abstract contract SCX {
+38	 function burn(uint256 value) external virtual;
+39	 function migrateMint(address recipient, uint256 value) public virtual;
+40	 }
+41	 contract ScarcityBridge is Ownable {
+42	 struct ScarcityTotals {
+43	 uint256 total_v1;
+44	 uint256 total_v2;
+45	 uint256 blockRecorded;
+46	 address scarcity1;
+47	 address scarcity2;
+48	 }
+49	 uint256 public exchangeRate;
+50	 ScarcityTotals public totals;
+51	 constructor(address scarcity1, address scarcity2) {
+52	 totals.scarcity1 = scarcity1;
+53	 totals.scarcity2 = scarcity2;
+54	 }
+55	 function collectScarcity2BeforeBurning() public onlyOwner {
+56	 uint balanceOfSender = IERC20(totals.scarcity2).balanceOf(msg.sender);
+57	 IERC20(totals.scarcity2).transferFrom(msg.sender,address(this), balanceOfSender);
+58	 totals.total_v2 += balanceOfSender;
+59	 }
+60	 function recordExchangeRate() public onlyOwner {
+61	 totals.total_v1 = IERC20(totals.scarcity1).totalSupply();
+62	 exchangeRate = totals.total_v1 / totals.total_v2;
+63	 totals.blockRecorded = block.number;
+64	 }
+65	 function swap() public {
+66	 uint256 v1Balance = IERC20(totals.scarcity1).balanceOf(msg.sender);
+67	 require( IERC20(totals.scarcity1).transferFrom( msg.sender, address(this), v1Balance ), "SCX BRIDGE: transfer failed." );
+68	 uint256 newSCX = v1Balance / exchangeRate;
+69	 require(newSCX > 0, "SCX BRIDGE: insufficient SCX sent.");
+70	 uint256 thisBalance = IERC20(totals.scarcity1).balanceOf(address(this));
+71	 require(thisBalance == v1Balance, "Invariant fail");
+72	 SCX(totals.scarcity1).burn(v1Balance);
+73	 IERC20(totals.scarcity2).transfer(msg.sender, newSCX);
+74	 }
+75	 }

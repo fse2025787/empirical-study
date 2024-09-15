@@ -1,0 +1,500 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity 0.7.6;
+3	 abstract contract Parameters {
+4	 uint256 public warmUpDuration = 2 days;
+5	 uint256 public activeDuration = 2 days;
+6	 uint256 public queueDuration = 1 days;
+7	 uint256 public gracePeriodDuration = 4 days;
+8	 uint256 public acceptanceThreshold = 60;
+9	 uint256 public minQuorum = 40;
+10	 uint256 constant ACTIVATION_THRESHOLD = 50_000_000 * 10**18;
+11	 uint256 constant PROPOSAL_MAX_ACTIONS = 10;
+12	 modifier onlyDAO() {
+13	 require(msg.sender == address(this), "Only DAO can call");
+14	 _;
+15	 }
+16	 function setWarmUpDuration(uint256 period) public onlyDAO {
+17	 warmUpDuration = period;
+18	 }
+19	 function setActiveDuration(uint256 period) public onlyDAO {
+20	 require(period >= 4 hours, "period must be > 0");
+21	 activeDuration = period;
+22	 }
+23	 function setQueueDuration(uint256 period) public onlyDAO {
+24	 queueDuration = period;
+25	 }
+26	 function setGracePeriodDuration(uint256 period) public onlyDAO {
+27	 require(period >= 4 hours, "period must be > 0");
+28	 gracePeriodDuration = period;
+29	 }
+30	 function setAcceptanceThreshold(uint256 threshold) public onlyDAO {
+31	 require(threshold <= 100, "Maximum is 100.");
+32	 require(threshold > 50, "Minimum is 50.");
+33	 acceptanceThreshold = threshold;
+34	 }
+35	 function setMinQuorum(uint256 quorum) public onlyDAO {
+36	 require(quorum > 5, "quorum must be greater than 5");
+37	 require(quorum <= 100, "Maximum is 100.");
+38	 minQuorum = quorum;
+39	 }
+40	 }
+41	 pragma solidity 0.7.6;
+42	 abstract contract Bridge is Parameters {
+43	 mapping(bytes32 => bool) public queuedTransactions;
+44	 function queueTransaction(address target, uint256 value, string memory signature, bytes memory data, uint256 eta) internal returns (bytes32) {
+45	 bytes32 txHash = _getTxHash(target, value, signature, data, eta);
+46	 queuedTransactions[txHash] = true;
+47	 return txHash;
+48	 }
+49	 function cancelTransaction(address target, uint256 value, string memory signature, bytes memory data, uint256 eta) internal {
+50	 bytes32 txHash = _getTxHash(target, value, signature, data, eta);
+51	 queuedTransactions[txHash] = false;
+52	 }
+53	 function executeTransaction(address target, uint256 value, string memory signature, bytes memory data, uint256 eta) internal returns (bytes memory) {
+54	 bytes32 txHash = _getTxHash(target, value, signature, data, eta);
+55	 require(block.timestamp >= eta, "executeTransaction: Transaction hasn't surpassed time lock.");
+56	 require(block.timestamp <= eta + gracePeriodDuration, "executeTransaction: Transaction is stale.");
+57	 queuedTransactions[txHash] = false;
+58	 bytes memory callData;
+59	 if (bytes(signature).length == 0) {
+60	 callData = data;
+61	 }
+62	 else {
+63	 callData = abi.encodePacked(bytes4(keccak256(bytes(signature))), data);
+64	 }
+65	 (bool success, bytes memory returnData) = target.call{
+66	 value : value}
+67	 (callData);
+68	 require(success, string(returnData));
+69	 return returnData;
+70	 }
+71	 function _getTxHash(address target, uint256 value, string memory signature, bytes memory data, uint256 eta) internal returns (bytes32) {
+72	 return keccak256(abi.encode(target, value, signature, data, eta));
+73	 }
+74	 }
+75	 pragma solidity 0.7.6;
+76	 contract Governance is Bridge {
+77	 using SafeMath for uint256;
+78	 enum ProposalState {
+79	 WarmUp, Active, Canceled, Failed, Accepted, Queued, Grace, Expired, Executed, Abrogated }
+80	 struct Receipt {
+81	 bool hasVoted;
+82	 uint256 votes;
+83	 bool support;
+84	 }
+85	 struct AbrogationProposal {
+86	 address creator;
+87	 uint256 createTime;
+88	 string description;
+89	 uint256 forVotes;
+90	 uint256 againstVotes;
+91	 mapping(address => Receipt) receipts;
+92	 }
+93	 struct ProposalParameters {
+94	 uint256 warmUpDuration;
+95	 uint256 activeDuration;
+96	 uint256 queueDuration;
+97	 uint256 gracePeriodDuration;
+98	 uint256 acceptanceThreshold;
+99	 uint256 minQuorum;
+100	 }
+101	 struct Proposal {
+102	 uint256 id;
+103	 address proposer;
+104	 string description;
+105	 string title;
+106	 address[] targets;
+107	 uint256[] values;
+108	 string[] signatures;
+109	 bytes[] calldatas;
+110	 uint256 createTime;
+111	 uint256 eta;
+112	 uint256 forVotes;
+113	 uint256 againstVotes;
+114	 bool canceled;
+115	 bool executed;
+116	 mapping(address => Receipt) receipts;
+117	 ProposalParameters parameters;
+118	 }
+119	 uint256 public lastProposalId;
+120	 mapping(uint256 => Proposal) public proposals;
+121	 mapping(uint256 => AbrogationProposal) public abrogationProposals;
+122	 mapping(address => uint256) public latestProposalIds;
+123	 ISupernova supernova;
+124	 bool isInitialized;
+125	 bool public isActive;
+126	 event ProposalCreated(uint256 indexed proposalId);
+127	 event Vote(uint256 indexed proposalId, address indexed user, bool support, uint256 power);
+128	 event VoteCanceled(uint256 indexed proposalId, address indexed user);
+129	 event ProposalQueued(uint256 indexed proposalId, address caller, uint256 eta);
+130	 event ProposalExecuted(uint256 indexed proposalId, address caller);
+131	 event ProposalCanceled(uint256 indexed proposalId, address caller);
+132	 event AbrogationProposalStarted(uint256 indexed proposalId, address caller);
+133	 event AbrogationProposalExecuted(uint256 indexed proposalId, address caller);
+134	 event AbrogationProposalVote(uint256 indexed proposalId, address indexed user, bool support, uint256 power);
+135	 event AbrogationProposalVoteCancelled(uint256 indexed proposalId, address indexed user);
+136	 receive() external payable {
+137	 }
+138	 function initialize(address supernovaAddr) public {
+139	 require(isInitialized == false, "Contract already initialized.");
+140	 require(supernovaAddr != address(0), "supernova must not be 0x0");
+141	 supernova = ISupernova(supernovaAddr);
+142	 isInitialized = true;
+143	 }
+144	 function activate() public {
+145	 require(!isActive, "DAO already active");
+146	 require(supernova.xyzStaked() >= ACTIVATION_THRESHOLD, "Threshold not met yet");
+147	 isActive = true;
+148	 }
+149	 function propose( address[] memory targets, uint256[] memory values, string[] memory signatures, bytes[] memory calldatas, string memory description, string memory title ) public returns (uint256) {
+150	 if (!isActive) {
+151	 require(supernova.xyzStaked() >= ACTIVATION_THRESHOLD, "DAO not yet active");
+152	 isActive = true;
+153	 }
+154	 require( supernova.votingPowerAtTs(msg.sender, block.timestamp - 1) >= _getCreationThreshold(), "Creation threshold not met" );
+155	 require( targets.length == values.length && targets.length == signatures.length && targets.length == calldatas.length, "Proposal function information arity mismatch" );
+156	 require(targets.length != 0, "Must provide actions");
+157	 require(targets.length <= PROPOSAL_MAX_ACTIONS, "Too many actions on a vote");
+158	 require(bytes(title).length > 0, "title can't be empty");
+159	 require(bytes(description).length > 0, "description can't be empty");
+160	 uint256 previousProposalId = latestProposalIds[msg.sender];
+161	 if (previousProposalId != 0) {
+162	 require(_isLiveState(previousProposalId) == false, "One live proposal per proposer");
+163	 }
+164	 uint256 newProposalId = lastProposalId + 1;
+165	 Proposal storage newProposal = proposals[newProposalId];
+166	 newProposal.id = newProposalId;
+167	 newProposal.proposer = msg.sender;
+168	 newProposal.description = description;
+169	 newProposal.title = title;
+170	 newProposal.targets = targets;
+171	 newProposal.values = values;
+172	 newProposal.signatures = signatures;
+173	 newProposal.calldatas = calldatas;
+174	 newProposal.createTime = block.timestamp - 1;
+175	 newProposal.parameters.warmUpDuration = warmUpDuration;
+176	 newProposal.parameters.activeDuration = activeDuration;
+177	 newProposal.parameters.queueDuration = queueDuration;
+178	 newProposal.parameters.gracePeriodDuration = gracePeriodDuration;
+179	 newProposal.parameters.acceptanceThreshold = acceptanceThreshold;
+180	 newProposal.parameters.minQuorum = minQuorum;
+181	 lastProposalId = newProposalId;
+182	 latestProposalIds[msg.sender] = newProposalId;
+183	 emit ProposalCreated(newProposalId);
+184	 return newProposalId;
+185	 }
+186	 function queue(uint256 proposalId) public {
+187	 require(state(proposalId) == ProposalState.Accepted, "Proposal can only be queued if it is succeeded");
+188	 Proposal storage proposal = proposals[proposalId];
+189	 uint256 eta = proposal.createTime + proposal.parameters.warmUpDuration + proposal.parameters.activeDuration + proposal.parameters.queueDuration;
+190	 proposal.eta = eta;
+191	 for (uint256 i = 0; i < proposal.targets.length; i++) {
+192	 require( !queuedTransactions[_getTxHash(proposal.targets[i], proposal.values[i], proposal.signatures[i], proposal.calldatas[i], eta)], "proposal action already queued at eta" );
+193	 queueTransaction(proposal.targets[i], proposal.values[i], proposal.signatures[i], proposal.calldatas[i], eta);
+194	 }
+195	 emit ProposalQueued(proposalId, msg.sender, eta);
+196	 }
+197	 function execute(uint256 proposalId) public payable {
+198	 require(_canBeExecuted(proposalId), "Cannot be executed");
+199	 Proposal storage proposal = proposals[proposalId];
+200	 proposal.executed = true;
+201	 for (uint256 i = 0; i < proposal.targets.length; i++) {
+202	 executeTransaction(proposal.targets[i], proposal.values[i], proposal.signatures[i], proposal.calldatas[i], proposal.eta);
+203	 }
+204	 emit ProposalExecuted(proposalId, msg.sender);
+205	 }
+206	 function cancelProposal(uint256 proposalId) public {
+207	 require(_isCancellableState(proposalId), "Proposal in state that does not allow cancellation");
+208	 require(_canCancelProposal(proposalId), "Cancellation requirements not met");
+209	 Proposal storage proposal = proposals[proposalId];
+210	 proposal.canceled = true;
+211	 for (uint256 i = 0; i < proposal.targets.length; i++) {
+212	 cancelTransaction(proposal.targets[i], proposal.values[i], proposal.signatures[i], proposal.calldatas[i], proposal.eta);
+213	 }
+214	 emit ProposalCanceled(proposalId, msg.sender);
+215	 }
+216	 function castVote(uint256 proposalId, bool support) public {
+217	 require(state(proposalId) == ProposalState.Active, "Voting is closed");
+218	 Proposal storage proposal = proposals[proposalId];
+219	 Receipt storage receipt = proposal.receipts[msg.sender];
+220	 require(receipt.hasVoted == false || receipt.hasVoted && receipt.support != support, "Already voted this option");
+221	 uint256 votes = supernova.votingPowerAtTs(msg.sender, _getSnapshotTimestamp(proposal));
+222	 require(votes > 0, "no voting power");
+223	 if (receipt.hasVoted) {
+224	 if (receipt.support) {
+225	 proposal.forVotes = proposal.forVotes.sub(receipt.votes);
+226	 }
+227	 else {
+228	 proposal.againstVotes = proposal.againstVotes.sub(receipt.votes);
+229	 }
+230	 }
+231	 if (support) {
+232	 proposal.forVotes = proposal.forVotes.add(votes);
+233	 }
+234	 else {
+235	 proposal.againstVotes = proposal.againstVotes.add(votes);
+236	 }
+237	 receipt.hasVoted = true;
+238	 receipt.votes = votes;
+239	 receipt.support = support;
+240	 emit Vote(proposalId, msg.sender, support, votes);
+241	 }
+242	 function cancelVote(uint256 proposalId) public {
+243	 require(state(proposalId) == ProposalState.Active, "Voting is closed");
+244	 Proposal storage proposal = proposals[proposalId];
+245	 Receipt storage receipt = proposal.receipts[msg.sender];
+246	 uint256 votes = supernova.votingPowerAtTs(msg.sender, _getSnapshotTimestamp(proposal));
+247	 require(receipt.hasVoted, "Cannot cancel if not voted yet");
+248	 if (receipt.support) {
+249	 proposal.forVotes = proposal.forVotes.sub(votes);
+250	 }
+251	 else {
+252	 proposal.againstVotes = proposal.againstVotes.sub(votes);
+253	 }
+254	 receipt.hasVoted = false;
+255	 receipt.votes = 0;
+256	 receipt.support = false;
+257	 emit VoteCanceled(proposalId, msg.sender);
+258	 }
+259	 function startAbrogationProposal(uint256 proposalId, string memory description) public {
+260	 require(state(proposalId) == ProposalState.Queued, "Proposal must be in queue");
+261	 require( supernova.votingPowerAtTs(msg.sender, block.timestamp - 1) >= _getCreationThreshold(), "Creation threshold not met" );
+262	 AbrogationProposal storage ap = abrogationProposals[proposalId];
+263	 require(ap.createTime == 0, "Abrogation proposal already exists");
+264	 require(bytes(description).length > 0, "description can't be empty");
+265	 ap.createTime = block.timestamp;
+266	 ap.creator = msg.sender;
+267	 ap.description = description;
+268	 emit AbrogationProposalStarted(proposalId, msg.sender);
+269	 }
+270	 function abrogateProposal(uint256 proposalId) public {
+271	 require(state(proposalId) == ProposalState.Abrogated, "Cannot be abrogated");
+272	 Proposal storage proposal = proposals[proposalId];
+273	 require(proposal.canceled == false, "Cannot be abrogated");
+274	 proposal.canceled = true;
+275	 for (uint256 i = 0; i < proposal.targets.length; i++) {
+276	 cancelTransaction(proposal.targets[i], proposal.values[i], proposal.signatures[i], proposal.calldatas[i], proposal.eta);
+277	 }
+278	 emit AbrogationProposalExecuted(proposalId, msg.sender);
+279	 }
+280	 function abrogationProposal_castVote(uint256 proposalId, bool support) public {
+281	 require(0 < proposalId && proposalId <= lastProposalId, "invalid proposal id");
+282	 AbrogationProposal storage abrogationProposal = abrogationProposals[proposalId];
+283	 require( state(proposalId) == ProposalState.Queued && abrogationProposal.createTime != 0, "Abrogation Proposal not active" );
+284	 Receipt storage receipt = abrogationProposal.receipts[msg.sender];
+285	 require( receipt.hasVoted == false || receipt.hasVoted && receipt.support != support, "Already voted this option" );
+286	 uint256 votes = supernova.votingPowerAtTs(msg.sender, abrogationProposal.createTime - 1);
+287	 require(votes > 0, "no voting power");
+288	 if (receipt.hasVoted) {
+289	 if (receipt.support) {
+290	 abrogationProposal.forVotes = abrogationProposal.forVotes.sub(receipt.votes);
+291	 }
+292	 else {
+293	 abrogationProposal.againstVotes = abrogationProposal.againstVotes.sub(receipt.votes);
+294	 }
+295	 }
+296	 if (support) {
+297	 abrogationProposal.forVotes = abrogationProposal.forVotes.add(votes);
+298	 }
+299	 else {
+300	 abrogationProposal.againstVotes = abrogationProposal.againstVotes.add(votes);
+301	 }
+302	 receipt.hasVoted = true;
+303	 receipt.votes = votes;
+304	 receipt.support = support;
+305	 emit AbrogationProposalVote(proposalId, msg.sender, support, votes);
+306	 }
+307	 function abrogationProposal_cancelVote(uint256 proposalId) public {
+308	 require(0 < proposalId && proposalId <= lastProposalId, "invalid proposal id");
+309	 AbrogationProposal storage abrogationProposal = abrogationProposals[proposalId];
+310	 Receipt storage receipt = abrogationProposal.receipts[msg.sender];
+311	 require( state(proposalId) == ProposalState.Queued && abrogationProposal.createTime != 0, "Abrogation Proposal not active" );
+312	 uint256 votes = supernova.votingPowerAtTs(msg.sender, abrogationProposal.createTime - 1);
+313	 require(receipt.hasVoted, "Cannot cancel if not voted yet");
+314	 if (receipt.support) {
+315	 abrogationProposal.forVotes = abrogationProposal.forVotes.sub(votes);
+316	 }
+317	 else {
+318	 abrogationProposal.againstVotes = abrogationProposal.againstVotes.sub(votes);
+319	 }
+320	 receipt.hasVoted = false;
+321	 receipt.votes = 0;
+322	 receipt.support = false;
+323	 emit AbrogationProposalVoteCancelled(proposalId, msg.sender);
+324	 }
+325	 function state(uint256 proposalId) public view returns (ProposalState) {
+326	 require(0 < proposalId && proposalId <= lastProposalId, "invalid proposal id");
+327	 Proposal storage proposal = proposals[proposalId];
+328	 if (proposal.canceled) {
+329	 return ProposalState.Canceled;
+330	 }
+331	 if (proposal.executed) {
+332	 return ProposalState.Executed;
+333	 }
+334	 if (block.timestamp <= proposal.createTime + proposal.parameters.warmUpDuration) {
+335	 return ProposalState.WarmUp;
+336	 }
+337	 if (block.timestamp <= proposal.createTime + proposal.parameters.warmUpDuration + proposal.parameters.activeDuration) {
+338	 return ProposalState.Active;
+339	 }
+340	 if ((proposal.forVotes + proposal.againstVotes) < _getQuorum(proposal) || (proposal.forVotes < _getMinForVotes(proposal))) {
+341	 return ProposalState.Failed;
+342	 }
+343	 if (proposal.eta == 0) {
+344	 return ProposalState.Accepted;
+345	 }
+346	 if (block.timestamp < proposal.eta) {
+347	 return ProposalState.Queued;
+348	 }
+349	 if (_proposalAbrogated(proposalId)) {
+350	 return ProposalState.Abrogated;
+351	 }
+352	 if (block.timestamp <= proposal.eta + proposal.parameters.gracePeriodDuration) {
+353	 return ProposalState.Grace;
+354	 }
+355	 return ProposalState.Expired;
+356	 }
+357	 function getReceipt(uint256 proposalId, address voter) public view returns (Receipt memory) {
+358	 return proposals[proposalId].receipts[voter];
+359	 }
+360	 function getProposalParameters(uint256 proposalId) public view returns (ProposalParameters memory) {
+361	 return proposals[proposalId].parameters;
+362	 }
+363	 function getAbrogationProposalReceipt(uint256 proposalId, address voter) public view returns (Receipt memory) {
+364	 return abrogationProposals[proposalId].receipts[voter];
+365	 }
+366	 function getActions(uint256 proposalId) public view returns ( address[] memory targets, uint256[] memory values, string[] memory signatures, bytes[] memory calldatas ) {
+367	 Proposal storage p = proposals[proposalId];
+368	 return (p.targets, p.values, p.signatures, p.calldatas);
+369	 }
+370	 function getProposalQuorum(uint256 proposalId) public view returns (uint256) {
+371	 require(0 < proposalId && proposalId <= lastProposalId, "invalid proposal id");
+372	 return _getQuorum(proposals[proposalId]);
+373	 }
+374	 function _canCancelProposal(uint256 proposalId) internal view returns (bool){
+375	 Proposal storage proposal = proposals[proposalId];
+376	 if (msg.sender == proposal.proposer || supernova.votingPower(proposal.proposer) < _getCreationThreshold() ) {
+377	 return true;
+378	 }
+379	 return false;
+380	 }
+381	 function _isCancellableState(uint256 proposalId) internal view returns (bool) {
+382	 ProposalState s = state(proposalId);
+383	 return s == ProposalState.WarmUp || s == ProposalState.Active;
+384	 }
+385	 function _isLiveState(uint256 proposalId) internal view returns (bool) {
+386	 ProposalState s = state(proposalId);
+387	 return s == ProposalState.WarmUp || s == ProposalState.Active || s == ProposalState.Accepted || s == ProposalState.Queued || s == ProposalState.Grace;
+388	 }
+389	 function _canBeExecuted(uint256 proposalId) internal view returns (bool) {
+390	 return state(proposalId) == ProposalState.Grace;
+391	 }
+392	 function _getMinForVotes(Proposal storage proposal) internal view returns (uint256) {
+393	 return (proposal.forVotes + proposal.againstVotes).mul(proposal.parameters.acceptanceThreshold).div(100);
+394	 }
+395	 function _getCreationThreshold() internal view returns (uint256) {
+396	 return supernova.xyzStaked().div(100);
+397	 }
+398	 function _getSnapshotTimestamp(Proposal storage proposal) internal view returns (uint256) {
+399	 return proposal.createTime + proposal.parameters.warmUpDuration;
+400	 }
+401	 function _getQuorum(Proposal storage proposal) internal view returns (uint256) {
+402	 return supernova.xyzStakedAtTs(_getSnapshotTimestamp(proposal)).mul(proposal.parameters.minQuorum).div(100);
+403	 }
+404	 function _proposalAbrogated(uint256 proposalId) internal view returns (bool) {
+405	 Proposal storage p = proposals[proposalId];
+406	 AbrogationProposal storage cp = abrogationProposals[proposalId];
+407	 if (cp.createTime == 0 || block.timestamp < p.eta) {
+408	 return false;
+409	 }
+410	 return cp.forVotes >= supernova.xyzStakedAtTs(cp.createTime - 1).div(2);
+411	 }
+412	 }
+413	 pragma solidity 0.7.6;
+414	 interface ISupernova {
+415	 struct Stake {
+416	 uint256 timestamp;
+417	 uint256 amount;
+418	 uint256 expiryTimestamp;
+419	 address delegatedTo;
+420	 }
+421	 function deposit(uint256 amount) external;
+422	 function withdraw(uint256 amount) external;
+423	 function lock(uint256 timestamp) external;
+424	 function delegate(address to) external;
+425	 function stopDelegate() external;
+426	 function balanceOf(address user) external view returns (uint256);
+427	 function balanceAtTs(address user, uint256 timestamp) external view returns (uint256);
+428	 function stakeAtTs(address user, uint256 timestamp) external view returns (Stake memory);
+429	 function votingPower(address user) external view returns (uint256);
+430	 function votingPowerAtTs(address user, uint256 timestamp) external view returns (uint256);
+431	 function xyzStaked() external view returns (uint256);
+432	 function xyzStakedAtTs(uint256 timestamp) external view returns (uint256);
+433	 function delegatedPower(address user) external view returns (uint256);
+434	 function delegatedPowerAtTs(address user, uint256 timestamp) external view returns (uint256);
+435	 function multiplierAtTs(address user, uint256 timestamp) external view returns (uint256);
+436	 function userLockedUntil(address user) external view returns (uint256);
+437	 function userDelegatedTo(address user) external view returns (address);
+438	 }
+439	 pragma solidity >=0.6.0 <0.8.0;
+440	 library SafeMath {
+441	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+442	 uint256 c = a + b;
+443	 if (c < a) return (false, 0);
+444	 return (true, c);
+445	 }
+446	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+447	 if (b > a) return (false, 0);
+448	 return (true, a - b);
+449	 }
+450	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+451	 if (a == 0) return (true, 0);
+452	 uint256 c = a * b;
+453	 if (c / a != b) return (false, 0);
+454	 return (true, c);
+455	 }
+456	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+457	 if (b == 0) return (false, 0);
+458	 return (true, a / b);
+459	 }
+460	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+461	 if (b == 0) return (false, 0);
+462	 return (true, a % b);
+463	 }
+464	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+465	 uint256 c = a + b;
+466	 require(c >= a, "SafeMath: addition overflow");
+467	 return c;
+468	 }
+469	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+470	 require(b <= a, "SafeMath: subtraction overflow");
+471	 return a - b;
+472	 }
+473	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+474	 if (a == 0) return 0;
+475	 uint256 c = a * b;
+476	 require(c / a == b, "SafeMath: multiplication overflow");
+477	 return c;
+478	 }
+479	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+480	 require(b > 0, "SafeMath: division by zero");
+481	 return a / b;
+482	 }
+483	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+484	 require(b > 0, "SafeMath: modulo by zero");
+485	 return a % b;
+486	 }
+487	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+488	 require(b <= a, errorMessage);
+489	 return a - b;
+490	 }
+491	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+492	 require(b > 0, errorMessage);
+493	 return a / b;
+494	 }
+495	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+496	 require(b > 0, errorMessage);
+497	 return a % b;
+498	 }
+499	 }

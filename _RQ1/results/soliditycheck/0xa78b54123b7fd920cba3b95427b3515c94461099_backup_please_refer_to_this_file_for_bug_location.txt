@@ -1,0 +1,279 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract SnailFarm2 {
+3	 using SafeMath for uint;
+4	 event SoldAcorn (address indexed seller, uint acorns, uint eth);
+5	 event BoughtAcorn (address indexed buyer, uint acorns, uint eth);
+6	 event BecameMaster (address indexed newmaster, uint indexed round, uint reward, uint pot);
+7	 event WithdrewEarnings (address indexed player, uint eth);
+8	 event Hatched (address indexed player, uint eggs, uint snails);
+9	 event SoldEgg (address indexed seller, uint eggs, uint eth);
+10	 event BoughtEgg (address indexed buyer, uint eggs, uint eth);
+11	 event StartedSnailing (address indexed player, uint indexed round);
+12	 event BecameQueen (address indexed newqueen, uint indexed round, uint newreq);
+13	 event BecameDuke (address indexed newduke, uint indexed round, uint newreq);
+14	 event BecamePrince (address indexed newprince, uint indexed round, uint newreq);
+15	 uint256 public TIME_TO_HATCH_1SNAIL = 86400;
+16	 uint256 public STARTING_SNAIL = 200;
+17	 uint256 public SNAILMASTER_INCREASE = 100000;
+18	 uint256 public STARTING_SNAIL_COST = 0.004 ether;
+19	 uint256 public HATCHING_COST = 0.0008 ether;
+20	 uint256 public SPIDER_BASE_REQ = 80;
+21	 uint256 public SPIDER_BOOST = 1;
+22	 uint256 public TADPOLE_BASE_REQ = 0.02 ether;
+23	 uint256 public TADPOLE_BOOST = 1;
+24	 uint256 public SQUIRREL_BASE_REQ = 1;
+25	 uint256 public SQUIRREL_BOOST = 1;
+26	 bool public gameStarted = false;
+27	 address public gameOwner;
+28	 uint256 public round = 0;
+29	 address public currentSpiderOwner;
+30	 address public currentTadpoleOwner;
+31	 address public currentSquirrelOwner;
+32	 uint256 public spiderReq;
+33	 uint256 public tadpoleReq;
+34	 uint256 public squirrelReq;
+35	 uint256 public snailmasterReq = SNAILMASTER_INCREASE;
+36	 uint256 public startingSnailAmount = STARTING_SNAIL;
+37	 uint256 public marketEggs;
+38	 uint256 public totalAcorns;
+39	 uint256 public snailPot;
+40	 uint256 public previousSnailPot;
+41	 uint256 public treePot;
+42	 mapping (address => bool) public hasStartingSnails;
+43	 mapping (address => uint256) public hatcherySnail;
+44	 mapping (address => uint256) public claimedEggs;
+45	 mapping (address => uint256) public lastHatch;
+46	 mapping (address => uint256) public playerAcorns;
+47	 mapping (address => uint256) public playerEarnings;
+48	 mapping (address => uint256) public playerProdBoost;
+49	 constructor() public {
+50	 gameOwner = msg.sender;
+51	 currentTadpoleOwner = gameOwner;
+52	 currentSquirrelOwner = gameOwner;
+53	 currentSpiderOwner = gameOwner;
+54	 hasStartingSnails[gameOwner] = true;
+55	 playerProdBoost[gameOwner] = 4;
+56	 }
+57	 function SeedMarket(uint256 _eggs, uint256 _acorns) public payable {
+58	 require(msg.value > 0);
+59	 require(round == 0);
+60	 require(msg.sender == gameOwner);
+61	 marketEggs = _eggs.mul(TIME_TO_HATCH_1SNAIL);
+62	 snailPot = msg.value.div(10);
+63	 treePot = msg.value.sub(snailPot);
+64	 previousSnailPot = snailPot.mul(10);
+65	 totalAcorns = _acorns;
+66	 playerAcorns[msg.sender] = _acorns.mul(99).div(100);
+67	 spiderReq = SPIDER_BASE_REQ;
+68	 tadpoleReq = TADPOLE_BASE_REQ;
+69	 squirrelReq = SQUIRREL_BASE_REQ;
+70	 round = 1;
+71	 gameStarted = true;
+72	 }
+73	 function SellAcorns(uint256 _acorns) public {
+74	 require(playerAcorns[msg.sender] > 0);
+75	 playerAcorns[msg.sender] = playerAcorns[msg.sender].sub(_acorns);
+76	 uint256 _acornEth = ComputeAcornPrice().mul(_acorns);
+77	 totalAcorns = totalAcorns.sub(_acorns);
+78	 treePot = treePot.sub(_acornEth);
+79	 playerEarnings[msg.sender] = playerEarnings[msg.sender].add(_acornEth);
+80	 emit SoldAcorn(msg.sender, _acorns, _acornEth);
+81	 }
+82	 function BuyAcorns() public payable {
+83	 require(msg.value > 0);
+84	 require(tx.origin == msg.sender);
+85	 require(gameStarted);
+86	 if (snailPot < previousSnailPot) {
+87	 uint256 _acornBought = ((msg.value.div(ComputeAcornPrice())).mul(3)).div(4);
+88	 AcornPotSplit(msg.value);
+89	 }
+90	 else {
+91	 _acornBought = (msg.value.div(ComputeAcornPrice())).div(2);
+92	 PotSplit(msg.value);
+93	 }
+94	 totalAcorns = totalAcorns.add(_acornBought);
+95	 playerAcorns[msg.sender] = playerAcorns[msg.sender].add(_acornBought);
+96	 emit BoughtAcorn(msg.sender, _acornBought, msg.value);
+97	 }
+98	 function BecomeSnailmaster() public {
+99	 require(gameStarted);
+100	 require(hatcherySnail[msg.sender] >= snailmasterReq);
+101	 hatcherySnail[msg.sender] = hatcherySnail[msg.sender].div(10);
+102	 uint256 _snailReqIncrease = round.mul(SNAILMASTER_INCREASE);
+103	 snailmasterReq = snailmasterReq.add(_snailReqIncrease);
+104	 uint256 _startingSnailIncrease = round.mul(STARTING_SNAIL);
+105	 startingSnailAmount = startingSnailAmount.add(_startingSnailIncrease);
+106	 spiderReq = SPIDER_BASE_REQ;
+107	 tadpoleReq = TADPOLE_BASE_REQ;
+108	 squirrelReq = SQUIRREL_BASE_REQ;
+109	 previousSnailPot = snailPot;
+110	 uint256 _rewardSnailmaster = snailPot.div(5);
+111	 snailPot = snailPot.sub(_rewardSnailmaster);
+112	 round++;
+113	 playerEarnings[msg.sender] = playerEarnings[msg.sender].add(_rewardSnailmaster);
+114	 emit BecameMaster(msg.sender, round, _rewardSnailmaster, snailPot);
+115	 }
+116	 function WithdrawEarnings() public {
+117	 require(playerEarnings[msg.sender] > 0);
+118	 uint _amount = playerEarnings[msg.sender];
+119	 playerEarnings[msg.sender] = 0;
+120	 msg.sender.transfer(_amount);
+121	 emit WithdrewEarnings(msg.sender, _amount);
+122	 }
+123	 function PotSplit(uint256 _msgValue) private {
+124	 uint256 _potBoost = _msgValue.div(2);
+125	 snailPot = snailPot.add(_potBoost);
+126	 treePot = treePot.add(_potBoost);
+127	 }
+128	 function AcornPotSplit(uint256 _msgValue) private {
+129	 uint256 _snailBoost = _msgValue.div(4);
+130	 uint256 _treeBoost = _msgValue.sub(_snailBoost);
+131	 snailPot = snailPot.add(_snailBoost);
+132	 treePot = treePot.add(_treeBoost);
+133	 }
+134	 function HatchEggs() public payable {
+135	 require(gameStarted);
+136	 require(msg.value == HATCHING_COST);
+137	 PotSplit(msg.value);
+138	 uint256 eggsUsed = ComputeMyEggs();
+139	 uint256 newSnail = (eggsUsed.div(TIME_TO_HATCH_1SNAIL)).mul(playerProdBoost[msg.sender]);
+140	 claimedEggs[msg.sender]= 0;
+141	 lastHatch[msg.sender]= now;
+142	 hatcherySnail[msg.sender] = hatcherySnail[msg.sender].add(newSnail);
+143	 emit Hatched(msg.sender, eggsUsed, newSnail);
+144	 }
+145	 function SellEggs() public {
+146	 require(gameStarted);
+147	 uint256 eggsSold = ComputeMyEggs();
+148	 uint256 eggValue = ComputeSell(eggsSold);
+149	 claimedEggs[msg.sender] = 0;
+150	 lastHatch[msg.sender] = now;
+151	 marketEggs = marketEggs.add(eggsSold);
+152	 playerEarnings[msg.sender] = playerEarnings[msg.sender].add(eggValue);
+153	 emit SoldEgg(msg.sender, eggsSold, eggValue);
+154	 }
+155	 function BuyEggs() public payable {
+156	 require(gameStarted);
+157	 require(hasStartingSnails[msg.sender] == true);
+158	 require(msg.sender != gameOwner);
+159	 uint256 eggsBought = ComputeBuy(msg.value);
+160	 PotSplit(msg.value);
+161	 marketEggs = marketEggs.sub(eggsBought);
+162	 claimedEggs[msg.sender] = claimedEggs[msg.sender].add(eggsBought);
+163	 emit BoughtEgg(msg.sender, eggsBought, msg.value);
+164	 }
+165	 function BuyStartingSnails() public payable {
+166	 require(gameStarted);
+167	 require(tx.origin == msg.sender);
+168	 require(hasStartingSnails[msg.sender] == false);
+169	 require(msg.value == STARTING_SNAIL_COST);
+170	 PotSplit(msg.value);
+171	 hasStartingSnails[msg.sender] = true;
+172	 lastHatch[msg.sender] = now;
+173	 playerProdBoost[msg.sender] = 1;
+174	 hatcherySnail[msg.sender] = startingSnailAmount;
+175	 emit StartedSnailing(msg.sender, round);
+176	 }
+177	 function BecomeSpiderQueen() public {
+178	 require(gameStarted);
+179	 require(hatcherySnail[msg.sender] >= spiderReq);
+180	 hatcherySnail[msg.sender] = hatcherySnail[msg.sender].sub(spiderReq);
+181	 spiderReq = spiderReq.mul(2);
+182	 playerProdBoost[currentSpiderOwner] = playerProdBoost[currentSpiderOwner].sub(SPIDER_BOOST);
+183	 currentSpiderOwner = msg.sender;
+184	 playerProdBoost[currentSpiderOwner] = playerProdBoost[currentSpiderOwner].add(SPIDER_BOOST);
+185	 emit BecameQueen(msg.sender, round, spiderReq);
+186	 }
+187	 function BecomeSquirrelDuke() public {
+188	 require(gameStarted);
+189	 require(hasStartingSnails[msg.sender] == true);
+190	 require(playerAcorns[msg.sender] >= squirrelReq);
+191	 playerAcorns[msg.sender] = playerAcorns[msg.sender].sub(squirrelReq);
+192	 totalAcorns = totalAcorns.sub(squirrelReq);
+193	 squirrelReq = squirrelReq.mul(2);
+194	 playerProdBoost[currentSquirrelOwner] = playerProdBoost[currentSquirrelOwner].sub(SQUIRREL_BOOST);
+195	 currentSquirrelOwner = msg.sender;
+196	 playerProdBoost[currentSquirrelOwner] = playerProdBoost[currentSquirrelOwner].add(SQUIRREL_BOOST);
+197	 emit BecameDuke(msg.sender, round, squirrelReq);
+198	 }
+199	 function BecomeTadpolePrince() public payable {
+200	 require(gameStarted);
+201	 require(hasStartingSnails[msg.sender] == true);
+202	 require(msg.value >= tadpoleReq);
+203	 if (msg.value > tadpoleReq) {
+204	 uint _excess = msg.value.sub(tadpoleReq);
+205	 playerEarnings[msg.sender] = playerEarnings[msg.sender].add(_excess);
+206	 }
+207	 uint _extra = tadpoleReq.div(12);
+208	 PotSplit(_extra);
+209	 uint _previousFlip = tadpoleReq.mul(11).div(12);
+210	 playerEarnings[currentTadpoleOwner] = playerEarnings[currentTadpoleOwner].add(_previousFlip);
+211	 tadpoleReq = (tadpoleReq.mul(6)).div(5);
+212	 playerProdBoost[currentTadpoleOwner] = playerProdBoost[currentTadpoleOwner].sub(TADPOLE_BOOST);
+213	 currentTadpoleOwner = msg.sender;
+214	 playerProdBoost[currentTadpoleOwner] = playerProdBoost[currentTadpoleOwner].add(TADPOLE_BOOST);
+215	 emit BecamePrince(msg.sender, round, tadpoleReq);
+216	 }
+217	 function ComputeAcornPrice() public view returns(uint256) {
+218	 return treePot.div(totalAcorns);
+219	 }
+220	 function ComputeSell(uint256 eggspent) public view returns(uint256) {
+221	 uint256 _eggPool = eggspent.add(marketEggs);
+222	 uint256 _eggFactor = eggspent.mul(snailPot).div(_eggPool);
+223	 return _eggFactor.div(2);
+224	 }
+225	 function ComputeBuy(uint256 ethspent) public view returns(uint256) {
+226	 uint256 _ethPool = ethspent.add(snailPot);
+227	 uint256 _ethFactor = ethspent.mul(marketEggs).div(_ethPool);
+228	 return _ethFactor;
+229	 }
+230	 function ComputeMyEggs() public view returns(uint256) {
+231	 return claimedEggs[msg.sender].add(ComputeEggsSinceLastHatch(msg.sender));
+232	 }
+233	 function ComputeEggsSinceLastHatch(address adr) public view returns(uint256) {
+234	 uint256 secondsPassed = min(TIME_TO_HATCH_1SNAIL , now.sub(lastHatch[adr]));
+235	 return secondsPassed.mul(hatcherySnail[adr]);
+236	 }
+237	 function min(uint256 a, uint256 b) private pure returns (uint256) {
+238	 return a < b ? a : b;
+239	 }
+240	 function GetMySnail() public view returns(uint256) {
+241	 return hatcherySnail[msg.sender];
+242	 }
+243	 function GetMyProd() public view returns(uint256) {
+244	 return playerProdBoost[msg.sender];
+245	 }
+246	 function GetMyEgg() public view returns(uint256) {
+247	 return ComputeMyEggs().div(TIME_TO_HATCH_1SNAIL);
+248	 }
+249	 function GetMyAcorn() public view returns(uint256) {
+250	 return playerAcorns[msg.sender];
+251	 }
+252	 function GetMyEarning() public view returns(uint256) {
+253	 return playerEarnings[msg.sender];
+254	 }
+255	 }
+256	 library SafeMath {
+257	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+258	 if (a == 0) {
+259	 return 0;
+260	 }
+261	 uint256 c = a * b;
+262	 assert(c / a == b);
+263	 return c;
+264	 }
+265	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+266	 uint256 c = a / b;
+267	 return c;
+268	 }
+269	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+270	 assert(b <= a);
+271	 return a - b;
+272	 }
+273	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+274	 uint256 c = a + b;
+275	 assert(c >= a);
+276	 return c;
+277	 }
+278	 }

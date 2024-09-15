@@ -1,0 +1,935 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma experimental ABIEncoderV2;
+3	 pragma solidity >=0.7.6;
+4	 interface IUnipilotFarm {
+5	 struct PoolInfo {
+6	 uint256 startBlock;
+7	 uint256 globalReward;
+8	 uint256 lastRewardBlock;
+9	 uint256 totalLockedLiquidity;
+10	 uint256 rewardMultiplier;
+11	 bool isRewardActive;
+12	 bool isAltActive;
+13	 }
+14	 struct PoolAltInfo {
+15	 address altToken;
+16	 uint256 startBlock;
+17	 uint256 globalReward;
+18	 uint256 lastRewardBlock;
+19	 }
+20	 struct UserInfo {
+21	 bool boosterActive;
+22	 address pool;
+23	 address user;
+24	 uint256 reward;
+25	 uint256 altReward;
+26	 uint256 liquidity;
+27	 }
+28	 struct TempInfo {
+29	 uint256 globalReward;
+30	 uint256 lastRewardBlock;
+31	 uint256 rewardMultiplier;
+32	 }
+33	 enum DirectTo {
+34	 GRforPilot, GRforAlt }
+35	 event Deposit( address pool, uint256 tokenId, uint256 liquidity, uint256 totalSupply, uint256 globalReward, uint256 rewardMultiplier, uint256 rewardPerBlock );
+36	 event WithdrawReward( address pool, uint256 tokenId, uint256 liquidity, uint256 reward, uint256 globalReward, uint256 totalSupply, uint256 lastRewardTransferred );
+37	 event WithdrawNFT( address pool, address userAddress, uint256 tokenId, uint256 totalSupply );
+38	 event NewPool( address pool, uint256 rewardPerBlock, uint256 rewardMultiplier, uint256 lastRewardBlock, bool status );
+39	 event BlacklistPool(address pool, bool status, uint256 time);
+40	 event UpdateULM(address oldAddress, address newAddress, uint256 time);
+41	 event UpdatePilotPerBlock(address pool, uint256 updated);
+42	 event UpdateMultiplier(address pool, uint256 old, uint256 updated);
+43	 event UpdateActiveAlt(address old, address updated, address pool);
+44	 event UpdateAltState(bool old, bool updated, address pool);
+45	 event UpdateFarmingLimit(uint256 old, uint256 updated);
+46	 event RewardStatus(address pool, bool old, bool updated);
+47	 event MigrateFunds(address account, address token, uint256 amount);
+48	 event FarmingStatus(bool old, bool updated, uint256 time);
+49	 event Stake(address old, address updated);
+50	 event ToggleBooster(uint256 tokenId, bool old, bool updated);
+51	 event UserBooster(uint256 tokenId, uint256 booster);
+52	 event BackwardCompatible(bool old, bool updated);
+53	 event GovernanceUpdated(address old, address updated);
+54	 function initializer(address[] memory pools, uint256[] memory _multipliers) external;
+55	 function blacklistPools(address[] memory pools) external;
+56	 function updatePilotPerBlock(uint256 value) external;
+57	 function updateMultiplier(address pool, uint256 value) external;
+58	 function updateULM(address _ULM) external;
+59	 function totalUserNftWRTPool(address userAddress, address pool) external view returns (uint256 tokenCount, uint256[] memory tokenIds);
+60	 function nftStatus(uint256 tokenId) external view returns (bool);
+61	 function depositNFT(uint256 tokenId) external returns (bool);
+62	 function withdrawNFT(uint256 tokenId) external;
+63	 function withdrawReward(uint256 tokenId) external;
+64	 function currentReward(uint256 _tokenId) external view returns ( uint256 pilotReward, uint256 globalReward, uint256 globalAltReward, uint256 altReward );
+65	 function toggleRewardStatus(address pool) external;
+66	 function toggleFarmingActive() external;
+67	 }
+68	 pragma solidity ^0.7.0;
+69	 interface IERC721Receiver {
+70	 function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) external returns (bytes4);
+71	 }
+72	 pragma solidity ^0.7.0;
+73	 abstract contract ReentrancyGuard {
+74	 uint8 private _unlocked = 1;
+75	 modifier nonReentrant() {
+76	 require(_unlocked == 1, "ReentrancyGuard: reentrant call");
+77	 _unlocked = 0;
+78	 _;
+79	 _unlocked = 1;
+80	 }
+81	 }
+82	 pragma solidity >=0.7.6;
+83	 interface IULMEvents {
+84	 event PoolCreated( address indexed token0, address indexed token1, address indexed pool, uint24 fee, uint160 sqrtPriceX96 );
+85	 event PoolReajusted( address pool, uint128 baseLiquidity, uint128 rangeLiquidity, int24 newBaseTickLower, int24 newBaseTickUpper, int24 newRangeTickLower, int24 newRangeTickUpper );
+86	 event Deposited( address indexed pool, uint256 tokenId, uint256 amount0, uint256 amount1, uint256 liquidity );
+87	 event Collect( uint256 tokenId, uint256 userAmount0, uint256 userAmount1, uint256 pilotAmount, address pool, address recipient );
+88	 event Withdrawn( address indexed pool, address indexed recipient, uint256 tokenId, uint256 amount0, uint256 amount1 );
+89	 }
+90	 pragma solidity ^0.7.0;
+91	 interface IERC165 {
+92	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+93	 }
+94	 pragma solidity >=0.7.6;
+95	 contract UnipilotFarm is IUnipilotFarm, ReentrancyGuard, IERC721Receiver {
+96	 using SafeMath for uint256;
+97	 using SafeERC20 for IERC20;
+98	 bool public isFarmingActive;
+99	 bool public backwardCompatible;
+100	 address public governance;
+101	 uint256 public pilotPerBlock = 1e18;
+102	 uint256 public farmingGrowthBlockLimit;
+103	 uint256 public totalRewardSent;
+104	 address private ulm;
+105	 address private stakeContract;
+106	 address[2] private deprecated;
+107	 address private constant PILOT_TOKEN = 0x37C997B35C619C21323F3518B9357914E8B99525;
+108	 address private constant UNIPILOT = 0xde5bF92E3372AA59C73Ca7dFc6CEc599E1B2b08C;
+109	 address[] public poolListed;
+110	 mapping(uint256 => bool) public farmingActive;
+111	 mapping(address => bool) public poolWhitelist;
+112	 mapping(address => PoolInfo) public poolInfo;
+113	 mapping(address => PoolAltInfo) public poolAltInfo;
+114	 mapping(uint256 => UserInfo) public userInfo;
+115	 mapping(address => mapping(address => uint256[])) public userToPoolToTokenIds;
+116	 modifier onlyGovernance() {
+117	 require(msg.sender == governance, "NA");
+118	 _;
+119	 }
+120	 modifier isActive() {
+121	 require(isFarmingActive, "FNA");
+122	 _;
+123	 }
+124	 modifier isLimitActive() {
+125	 require(farmingGrowthBlockLimit == 0, "LA");
+126	 _;
+127	 }
+128	 modifier onlyOwner(uint256 _tokenId) {
+129	 require(IERC721(UNIPILOT).ownerOf(_tokenId) == msg.sender, "NO");
+130	 _;
+131	 }
+132	 modifier isPoolRewardActive(address pool) {
+133	 require(poolInfo[pool].isRewardActive, "RNA");
+134	 _;
+135	 }
+136	 modifier onlyStake() {
+137	 require(msg.sender == stakeContract, "NS");
+138	 _;
+139	 }
+140	 constructor( address _ulm, address _governance, address[2] memory _deprecated ) {
+141	 governance = _governance;
+142	 ulm = _ulm;
+143	 isFarmingActive = true;
+144	 deprecated = _deprecated;
+145	 backwardCompatible = true;
+146	 }
+147	 function withdrawNFT(uint256 _tokenId) external override {
+148	 UserInfo storage userState = userInfo[_tokenId];
+149	 PoolInfo storage poolState = poolInfo[userState.pool];
+150	 PoolAltInfo storage poolAltState = poolAltInfo[userState.pool];
+151	 withdrawReward(_tokenId);
+152	 poolState.totalLockedLiquidity = poolState.totalLockedLiquidity.sub( userState.liquidity );
+153	 IERC721(UNIPILOT).safeTransferFrom(address(this), msg.sender, _tokenId);
+154	 farmingActive[_tokenId] = false;
+155	 emit WithdrawNFT( userState.pool, userState.user, _tokenId, poolState.totalLockedLiquidity );
+156	 if (poolState.totalLockedLiquidity == 0) {
+157	 poolState.startBlock = block.number;
+158	 poolState.lastRewardBlock = block.number;
+159	 poolState.globalReward = 0;
+160	 poolAltState.startBlock = block.number;
+161	 poolAltState.lastRewardBlock = block.number;
+162	 poolAltState.globalReward = 0;
+163	 }
+164	 uint256 index = callIndex(userState.pool, _tokenId);
+165	 updateNFTList(index, userState.user, userState.pool);
+166	 delete userInfo[_tokenId];
+167	 }
+168	 function emergencyNFTWithdraw(uint256 _tokenId) external {
+169	 UserInfo storage userState = userInfo[_tokenId];
+170	 require(userState.user == msg.sender, "NOO");
+171	 PoolInfo storage poolState = poolInfo[userState.pool];
+172	 PoolAltInfo storage poolAltState = poolAltInfo[userState.pool];
+173	 poolState.totalLockedLiquidity = poolState.totalLockedLiquidity.sub( userState.liquidity );
+174	 IERC721(UNIPILOT).safeTransferFrom(address(this), userState.user, _tokenId);
+175	 if (poolState.totalLockedLiquidity == 0) {
+176	 poolState.startBlock = block.number;
+177	 poolState.lastRewardBlock = block.number;
+178	 poolState.globalReward = 0;
+179	 poolAltState.startBlock = block.number;
+180	 poolAltState.lastRewardBlock = block.number;
+181	 poolAltState.globalReward = 0;
+182	 }
+183	 uint256 index = callIndex(userState.pool, _tokenId);
+184	 updateNFTList(index, userState.user, userState.pool);
+185	 delete userInfo[_tokenId];
+186	 }
+187	 function migrateFunds( address _newContract, address _tokenAddress, uint256 _amount ) external onlyGovernance {
+188	 require(_newContract != address(0), "CNE");
+189	 IERC20(_tokenAddress).safeTransfer(_newContract, _amount);
+190	 emit MigrateFunds(_newContract, _tokenAddress, _amount);
+191	 }
+192	 function blacklistPools(address[] memory _pools) external override onlyGovernance {
+193	 for (uint256 i = 0; i < _pools.length; i++) {
+194	 poolWhitelist[_pools[i]] = false;
+195	 poolInfo[_pools[i]].rewardMultiplier = 0;
+196	 emit BlacklistPool(_pools[i], poolWhitelist[_pools[i]], block.timestamp);
+197	 }
+198	 }
+199	 function updateULM(address _ulm) external override onlyGovernance {
+200	 emit UpdateULM(ulm, ulm = _ulm, block.timestamp);
+201	 }
+202	 function updatePilotPerBlock(uint256 _value) external override onlyGovernance {
+203	 address[] memory pools = poolListed;
+204	 pilotPerBlock = _value;
+205	 for (uint256 i = 0; i < pools.length; i++) {
+206	 if (poolWhitelist[pools[i]]) {
+207	 if (poolInfo[pools[i]].totalLockedLiquidity != 0) {
+208	 updatePoolState(pools[i]);
+209	 }
+210	 emit UpdatePilotPerBlock(pools[i], pilotPerBlock);
+211	 }
+212	 }
+213	 }
+214	 function updateMultiplier(address _pool, uint256 _value) external override onlyGovernance {
+215	 updatePoolState(_pool);
+216	 emit UpdateMultiplier( _pool, poolInfo[_pool].rewardMultiplier, poolInfo[_pool].rewardMultiplier = _value );
+217	 }
+218	 function totalUserNftWRTPool(address _user, address _pool) external view override returns (uint256 tokenCount, uint256[] memory tokenIds) {
+219	 tokenCount = userToPoolToTokenIds[_user][_pool].length;
+220	 tokenIds = userToPoolToTokenIds[_user][_pool];
+221	 }
+222	 function nftStatus(uint256 _tokenId) external view override returns (bool) {
+223	 return farmingActive[_tokenId];
+224	 }
+225	 function depositNFT(uint256 _tokenId) external override isActive isLimitActive onlyOwner(_tokenId) returns (bool) {
+226	 address sender = msg.sender;
+227	 IUniswapLiquidityManager.Position memory positions = IUniswapLiquidityManager(ulm) .userPositions(_tokenId);
+228	 (address pool, uint256 liquidity) = (positions.pool, positions.liquidity);
+229	 require(poolWhitelist[pool], "PNW");
+230	 IUniswapLiquidityManager.LiquidityPosition memory liquidityPositions = IUniswapLiquidityManager(ulm).poolPositions(pool);
+231	 uint256 totalLiquidity = liquidityPositions.totalLiquidity;
+232	 require(totalLiquidity >= liquidity && liquidity > 0, "IL");
+233	 PoolInfo storage poolState = poolInfo[pool];
+234	 if (poolState.lastRewardBlock != poolState.startBlock) {
+235	 uint256 blockDifference = (block.number).sub(poolState.lastRewardBlock);
+236	 poolState.globalReward = getGlobalReward( pool, blockDifference, pilotPerBlock, poolState.rewardMultiplier, poolState.globalReward );
+237	 }
+238	 poolState.totalLockedLiquidity = poolState.totalLockedLiquidity.add(liquidity);
+239	 userInfo[_tokenId] = UserInfo({
+240	 pool: pool, liquidity: liquidity, user: sender, reward: poolState.globalReward, altReward: userInfo[_tokenId].altReward, boosterActive: false }
+241	 );
+242	 userToPoolToTokenIds[sender][pool].push(_tokenId);
+243	 farmingActive[_tokenId] = true;
+244	 IERC721(UNIPILOT).safeTransferFrom(sender, address(this), _tokenId);
+245	 if (poolState.isAltActive) {
+246	 altGR(pool, _tokenId);
+247	 }
+248	 poolState.lastRewardBlock = block.number;
+249	 emit Deposit( pool, _tokenId, userInfo[_tokenId].liquidity, poolState.totalLockedLiquidity, poolState.globalReward, poolState.rewardMultiplier, pilotPerBlock );
+250	 return farmingActive[_tokenId];
+251	 }
+252	 function toggleActiveAlt(address _pool) external onlyGovernance returns (bool) {
+253	 require(poolAltInfo[_pool].altToken != address(0), "TNE");
+254	 emit UpdateAltState( poolInfo[_pool].isAltActive, poolInfo[_pool].isAltActive = !poolInfo[_pool].isAltActive, _pool );
+255	 if (poolInfo[_pool].isAltActive) {
+256	 updateAltPoolState(_pool);
+257	 }
+258	 else {
+259	 poolAltInfo[_pool].lastRewardBlock = block.number;
+260	 }
+261	 return poolInfo[_pool].isAltActive;
+262	 }
+263	 function updateAltToken(address _pool, address _altToken) external onlyGovernance {
+264	 emit UpdateActiveAlt( poolAltInfo[_pool].altToken, poolAltInfo[_pool].altToken = _altToken, _pool );
+265	 PoolAltInfo memory poolAltState = poolAltInfo[_pool];
+266	 poolAltState = PoolAltInfo({
+267	 globalReward: 0, lastRewardBlock: block.number, altToken: poolAltInfo[_pool].altToken, startBlock: block.number }
+268	 );
+269	 poolAltInfo[_pool] = poolAltState;
+270	 }
+271	 function initializer(address[] memory _pools, uint256[] memory _multipliers) public override onlyGovernance {
+272	 require(_pools.length == _multipliers.length, "LNS");
+273	 for (uint256 i = 0; i < _pools.length; i++) {
+274	 if ( !poolWhitelist[_pools[i]] && poolInfo[_pools[i]].startBlock == 0 ) {
+275	 insertPool(_pools[i], _multipliers[i]);
+276	 }
+277	 else {
+278	 poolWhitelist[_pools[i]] = true;
+279	 poolInfo[_pools[i]].rewardMultiplier = _multipliers[i];
+280	 }
+281	 }
+282	 }
+283	 function getGlobalReward( address pool, uint256 blockDifference, uint256 rewardPerBlock, uint256 multiplier, uint256 _globalReward ) public view returns (uint256 globalReward) {
+284	 uint256 tvl;
+285	 if (backwardCompatible) {
+286	 for(uint i = 0; i < deprecated.length; i++){
+287	 uint256 prevTvl=(IUnipilotFarmV1(deprecated[i]).poolInfo(pool).totalLockedLiquidity);
+288	 tvl=tvl.add(prevTvl);
+289	 }
+290	 tvl = tvl.add(poolInfo[pool].totalLockedLiquidity);
+291	 }
+292	 else {
+293	 tvl = poolInfo[pool].totalLockedLiquidity;
+294	 }
+295	 uint256 temp = FullMath.mulDiv(rewardPerBlock, multiplier, 1e18);
+296	 globalReward = FullMath.mulDiv(blockDifference.mul(temp), 1e18, tvl).add( _globalReward );
+297	 }
+298	 function currentReward(uint256 _tokenId) public view override returns ( uint256 pilotReward, uint256 globalReward, uint256 globalAltReward, uint256 altReward ) {
+299	 UserInfo memory userState = userInfo[_tokenId];
+300	 PoolInfo memory poolState = poolInfo[userState.pool];
+301	 PoolAltInfo memory poolAltState = poolAltInfo[userState.pool];
+302	 DirectTo check = DirectTo.GRforPilot;
+303	 if (isFarmingActive) {
+304	 globalReward = checkLimit(_tokenId, check);
+305	 if (poolState.isAltActive) {
+306	 check = DirectTo.GRforAlt;
+307	 globalAltReward = checkLimit(_tokenId, check);
+308	 }
+309	 else {
+310	 globalAltReward = poolAltState.globalReward;
+311	 }
+312	 }
+313	 else {
+314	 globalReward = poolState.globalReward;
+315	 globalAltReward = poolAltState.globalReward;
+316	 }
+317	 uint256 userReward = globalReward.sub(userState.reward);
+318	 uint256 _reward = (userReward.mul(userState.liquidity)).div(1e18);
+319	 if (userState.boosterActive) {
+320	 uint256 multiplier = IUnipilotStake(stakeContract).getBoostMultiplier( userState.user, userState.pool, _tokenId );
+321	 uint256 boostedReward = (_reward.mul(multiplier)).div(1e18);
+322	 pilotReward = _reward.add((boostedReward));
+323	 }
+324	 else {
+325	 pilotReward = _reward;
+326	 }
+327	 _reward = globalAltReward.sub(userState.altReward);
+328	 altReward = (_reward.mul(userState.liquidity)).div(1e18);
+329	 }
+330	 function checkLimit(uint256 _tokenId, DirectTo _check) internal view returns (uint256 globalReward) {
+331	 address pool = userInfo[_tokenId].pool;
+332	 TempInfo memory poolState;
+333	 if (_check == DirectTo.GRforPilot) {
+334	 poolState = TempInfo({
+335	 globalReward: poolInfo[pool].globalReward, lastRewardBlock: poolInfo[pool].lastRewardBlock, rewardMultiplier: poolInfo[pool].rewardMultiplier }
+336	 );
+337	 }
+338	 else if (_check == DirectTo.GRforAlt) {
+339	 poolState = TempInfo({
+340	 globalReward: poolAltInfo[pool].globalReward, lastRewardBlock: poolAltInfo[pool].lastRewardBlock, rewardMultiplier: poolInfo[pool].rewardMultiplier }
+341	 );
+342	 }
+343	 if ( poolState.lastRewardBlock < farmingGrowthBlockLimit && block.number > farmingGrowthBlockLimit ) {
+344	 globalReward = getGlobalReward( pool, farmingGrowthBlockLimit.sub(poolState.lastRewardBlock), pilotPerBlock, poolState.rewardMultiplier, poolState.globalReward );
+345	 }
+346	 else if ( poolState.lastRewardBlock > farmingGrowthBlockLimit && farmingGrowthBlockLimit > 0 ) {
+347	 globalReward = poolState.globalReward;
+348	 }
+349	 else {
+350	 uint256 blockDifference = (block.number).sub(poolState.lastRewardBlock);
+351	 globalReward = getGlobalReward( pool, blockDifference, pilotPerBlock, poolState.rewardMultiplier, poolState.globalReward );
+352	 }
+353	 }
+354	 function withdrawReward(uint256 _tokenId) public override nonReentrant isPoolRewardActive(userInfo[_tokenId].pool) {
+355	 UserInfo storage userState = userInfo[_tokenId];
+356	 PoolInfo storage poolState = poolInfo[userState.pool];
+357	 require(userState.user == msg.sender, "NO");
+358	 ( uint256 pilotReward, uint256 globalReward, uint256 globalAltReward, uint256 altReward ) = currentReward(_tokenId);
+359	 require(IERC20(PILOT_TOKEN).balanceOf(address(this)) >= pilotReward, "IF");
+360	 poolState.globalReward = globalReward;
+361	 poolState.lastRewardBlock = block.number;
+362	 userState.reward = globalReward;
+363	 totalRewardSent += pilotReward;
+364	 IERC20(PILOT_TOKEN).safeTransfer(userInfo[_tokenId].user, pilotReward);
+365	 if (poolState.isAltActive) {
+366	 altWithdraw(_tokenId, globalAltReward, altReward);
+367	 }
+368	 emit WithdrawReward( userState.pool, _tokenId, userState.liquidity, userState.reward, poolState.globalReward, poolState.totalLockedLiquidity, pilotReward );
+369	 }
+370	 function insertPool(address _pool, uint256 _multiplier) internal {
+371	 poolWhitelist[_pool] = true;
+372	 poolListed.push(_pool);
+373	 poolInfo[_pool] = PoolInfo({
+374	 startBlock: block.number, globalReward: 0, lastRewardBlock: block.number, totalLockedLiquidity: 0, rewardMultiplier: _multiplier, isRewardActive: true, isAltActive: poolInfo[_pool].isAltActive }
+375	 );
+376	 emit NewPool( _pool, pilotPerBlock, poolInfo[_pool].rewardMultiplier, poolInfo[_pool].lastRewardBlock, poolWhitelist[_pool] );
+377	 }
+378	 function altGR(address _pool, uint256 _tokenId) internal {
+379	 PoolAltInfo storage poolAltState = poolAltInfo[_pool];
+380	 if (poolAltState.lastRewardBlock != poolAltState.startBlock) {
+381	 uint256 blockDifference = (block.number).sub(poolAltState.lastRewardBlock);
+382	 poolAltState.globalReward = getGlobalReward( _pool, blockDifference, pilotPerBlock, poolInfo[_pool].rewardMultiplier, poolAltState.globalReward );
+383	 }
+384	 poolAltState.lastRewardBlock = block.number;
+385	 userInfo[_tokenId].altReward = poolAltState.globalReward;
+386	 }
+387	 function callIndex(address pool, uint256 _tokenId) internal view returns (uint256 index) {
+388	 uint256[] memory tokens = userToPoolToTokenIds[msg.sender][pool];
+389	 for (uint256 i = 0; i <= tokens.length; i++) {
+390	 if (_tokenId == userToPoolToTokenIds[msg.sender][pool][i]) {
+391	 index = i;
+392	 break;
+393	 }
+394	 }
+395	 return index;
+396	 }
+397	 function updateNFTList( uint256 _index, address user, address pool ) internal {
+398	 require(_index < userToPoolToTokenIds[user][pool].length, "IOB");
+399	 uint256 temp = userToPoolToTokenIds[user][pool][ userToPoolToTokenIds[user][pool].length.sub(1) ];
+400	 userToPoolToTokenIds[user][pool][_index] = temp;
+401	 userToPoolToTokenIds[user][pool].pop();
+402	 }
+403	 function toggleFarmingActive() external override onlyGovernance {
+404	 emit FarmingStatus( isFarmingActive, isFarmingActive = !isFarmingActive, block.timestamp );
+405	 }
+406	 function altWithdraw( uint256 _tokenId, uint256 altGlobalReward, uint256 altReward ) internal {
+407	 PoolAltInfo storage poolAltState = poolAltInfo[userInfo[_tokenId].pool];
+408	 require( IERC20(poolAltState.altToken).balanceOf(address(this)) >= altReward, "IF" );
+409	 poolAltState.lastRewardBlock = block.number;
+410	 poolAltState.globalReward = altGlobalReward;
+411	 userInfo[_tokenId].altReward = altGlobalReward;
+412	 IERC20(poolAltState.altToken).safeTransfer(userInfo[_tokenId].user, altReward);
+413	 }
+414	 function toggleRewardStatus(address _pool) external override onlyGovernance {
+415	 if (poolInfo[_pool].isRewardActive) {
+416	 updatePoolState(_pool);
+417	 }
+418	 else {
+419	 poolInfo[_pool].lastRewardBlock = block.number;
+420	 }
+421	 emit RewardStatus( _pool, poolInfo[_pool].isRewardActive, poolInfo[_pool].isRewardActive = !poolInfo[_pool].isRewardActive );
+422	 }
+423	 function updatePoolState(address _pool) internal {
+424	 PoolInfo storage poolState = poolInfo[_pool];
+425	 if (poolState.totalLockedLiquidity > 0) {
+426	 uint256 currentGlobalReward = getGlobalReward( _pool, (block.number).sub(poolState.lastRewardBlock), pilotPerBlock, poolState.rewardMultiplier, poolState.globalReward );
+427	 poolState.globalReward = currentGlobalReward;
+428	 poolState.lastRewardBlock = block.number;
+429	 }
+430	 }
+431	 function updateAltPoolState(address _pool) internal {
+432	 PoolAltInfo storage poolAltState = poolAltInfo[_pool];
+433	 if (poolInfo[_pool].totalLockedLiquidity > 0) {
+434	 uint256 currentGlobalReward = getGlobalReward( _pool, (block.number).sub(poolAltState.lastRewardBlock), pilotPerBlock, poolInfo[_pool].rewardMultiplier, poolAltState.globalReward );
+435	 poolAltState.globalReward = currentGlobalReward;
+436	 poolAltState.lastRewardBlock = block.number;
+437	 }
+438	 }
+439	 function updateFarmingLimit(uint256 _blockNumber) external onlyGovernance {
+440	 emit UpdateFarmingLimit( farmingGrowthBlockLimit, farmingGrowthBlockLimit = _blockNumber );
+441	 }
+442	 function toggleBooster(uint256 tokenId) external onlyStake {
+443	 emit ToggleBooster( tokenId, userInfo[tokenId].boosterActive, userInfo[tokenId].boosterActive = !userInfo[tokenId].boosterActive );
+444	 }
+445	 function setStake(address _stakeContract) external onlyGovernance {
+446	 emit Stake(stakeContract, stakeContract = _stakeContract);
+447	 }
+448	 function toggleBackwardCompatibility() external onlyGovernance {
+449	 emit BackwardCompatible( backwardCompatible, backwardCompatible = !backwardCompatible );
+450	 }
+451	 function updateGovernance(address _governance) external onlyGovernance {
+452	 emit GovernanceUpdated(governance, governance = _governance);
+453	 }
+454	 function onERC721Received( address, address, uint256, bytes memory ) public virtual override returns (bytes4) {
+455	 return this.onERC721Received.selector;
+456	 }
+457	 receive() external payable {
+458	 }
+459	 }
+460	 pragma solidity >=0.7.6;
+461	 interface IUniswapLiquidityManager is IULMEvents {
+462	 struct LiquidityPosition {
+463	 int24 baseTickLower;
+464	 int24 baseTickUpper;
+465	 uint128 baseLiquidity;
+466	 int24 rangeTickLower;
+467	 int24 rangeTickUpper;
+468	 uint128 rangeLiquidity;
+469	 uint256 fees0;
+470	 uint256 fees1;
+471	 uint256 feeGrowthGlobal0;
+472	 uint256 feeGrowthGlobal1;
+473	 uint256 totalLiquidity;
+474	 bool feesInPilot;
+475	 address oracle0;
+476	 address oracle1;
+477	 uint256 timestamp;
+478	 uint8 counter;
+479	 bool status;
+480	 bool managed;
+481	 }
+482	 struct Position {
+483	 uint256 nonce;
+484	 address pool;
+485	 uint256 liquidity;
+486	 uint256 feeGrowth0;
+487	 uint256 feeGrowth1;
+488	 uint256 tokensOwed0;
+489	 uint256 tokensOwed1;
+490	 }
+491	 struct ReadjustVars {
+492	 bool zeroForOne;
+493	 address poolAddress;
+494	 int24 currentTick;
+495	 uint160 sqrtPriceX96;
+496	 uint160 exactSqrtPriceImpact;
+497	 uint160 sqrtPriceLimitX96;
+498	 uint128 baseLiquidity;
+499	 uint256 amount0;
+500	 uint256 amount1;
+501	 uint256 amountIn;
+502	 uint256 amount0Added;
+503	 uint256 amount1Added;
+504	 uint256 amount0Range;
+505	 uint256 amount1Range;
+506	 uint256 currentTimestamp;
+507	 uint256 gasUsed;
+508	 uint256 pilotAmount;
+509	 }
+510	 struct VarsEmerency {
+511	 address token;
+512	 address pool;
+513	 int24 tickLower;
+514	 int24 tickUpper;
+515	 uint128 liquidity;
+516	 }
+517	 struct WithdrawVars {
+518	 address recipient;
+519	 uint256 amount0Removed;
+520	 uint256 amount1Removed;
+521	 uint256 userAmount0;
+522	 uint256 userAmount1;
+523	 uint256 pilotAmount;
+524	 }
+525	 struct WithdrawTokenOwedParams {
+526	 address token0;
+527	 address token1;
+528	 uint256 tokensOwed0;
+529	 uint256 tokensOwed1;
+530	 }
+531	 struct MintCallbackData {
+532	 address payer;
+533	 address token0;
+534	 address token1;
+535	 uint24 fee;
+536	 }
+537	 struct UnipilotProtocolDetails {
+538	 uint8 swapPercentage;
+539	 uint24 swapPriceThreshold;
+540	 uint256 premium;
+541	 uint256 gasPriceLimit;
+542	 uint256 userPilotPercentage;
+543	 uint256 feesPercentageIndexFund;
+544	 uint24 readjustFrequencyTime;
+545	 uint16 poolCardinalityDesired;
+546	 address pilotWethPair;
+547	 address oracle;
+548	 address indexFund;
+549	 address uniStrategy;
+550	 address unipilot;
+551	 }
+552	 struct SwapCallbackData {
+553	 address token0;
+554	 address token1;
+555	 uint24 fee;
+556	 }
+557	 struct AddLiquidityParams {
+558	 address token0;
+559	 address token1;
+560	 uint24 fee;
+561	 int24 tickLower;
+562	 int24 tickUpper;
+563	 uint256 amount0Desired;
+564	 uint256 amount1Desired;
+565	 }
+566	 struct RemoveLiquidity {
+567	 uint256 amount0;
+568	 uint256 amount1;
+569	 uint128 liquidityRemoved;
+570	 uint256 feesCollected0;
+571	 uint256 feesCollected1;
+572	 }
+573	 struct Tick {
+574	 int24 baseTickLower;
+575	 int24 baseTickUpper;
+576	 int24 bidTickLower;
+577	 int24 bidTickUpper;
+578	 int24 rangeTickLower;
+579	 int24 rangeTickUpper;
+580	 }
+581	 struct TokenDetails {
+582	 address token0;
+583	 address token1;
+584	 uint24 fee;
+585	 int24 currentTick;
+586	 uint16 poolCardinality;
+587	 uint128 baseLiquidity;
+588	 uint128 bidLiquidity;
+589	 uint128 rangeLiquidity;
+590	 uint256 amount0Added;
+591	 uint256 amount1Added;
+592	 }
+593	 struct DistributeFeesParams {
+594	 bool pilotToken;
+595	 bool wethToken;
+596	 address pool;
+597	 address recipient;
+598	 uint256 tokenId;
+599	 uint256 liquidity;
+600	 uint256 amount0Removed;
+601	 uint256 amount1Removed;
+602	 }
+603	 struct AddLiquidityManagerParams {
+604	 address pool;
+605	 uint256 amount0Desired;
+606	 uint256 amount1Desired;
+607	 uint256 shares;
+608	 }
+609	 struct DepositVars {
+610	 uint24 fee;
+611	 address pool;
+612	 uint256 amount0Base;
+613	 uint256 amount1Base;
+614	 uint256 amount0Range;
+615	 uint256 amount1Range;
+616	 }
+617	 struct RangeLiquidityVars {
+618	 address token0;
+619	 address token1;
+620	 uint24 fee;
+621	 uint128 rangeLiquidity;
+622	 uint256 amount0Range;
+623	 uint256 amount1Range;
+624	 }
+625	 struct IncreaseParams {
+626	 address token0;
+627	 address token1;
+628	 uint24 fee;
+629	 int24 currentTick;
+630	 uint128 baseLiquidity;
+631	 uint256 baseAmount0;
+632	 uint256 baseAmount1;
+633	 uint128 rangeLiquidity;
+634	 uint256 rangeAmount0;
+635	 uint256 rangeAmount1;
+636	 }
+637	 function uniswapV3MintCallback( uint256 amount0Owed, uint256 amount1Owed, bytes calldata data ) external;
+638	 function uniswapV3SwapCallback( int256 amount0Delta, int256 amount1Delta, bytes calldata data ) external;
+639	 function userPositions(uint256 tokenId) external view returns (Position memory);
+640	 function poolPositions(address pool) external view returns (LiquidityPosition memory);
+641	 function updatePositionTotalAmounts(address _pool) external view returns ( uint256 amount0, uint256 amount1, uint256 totalLiquidity );
+642	 function getReserves( address token0, address token1, bytes calldata data ) external returns ( uint256 totalAmount0, uint256 totalAmount1, uint256 totalLiquidity );
+643	 function createPair( address _token0, address _token1, bytes memory data ) external returns (address _pool);
+644	 function deposit( address token0, address token1, uint256 amount0Desired, uint256 amount1Desired, uint256 shares, uint256 tokenId, bool isTokenMinted, bytes memory data ) external payable;
+645	 function withdraw( bool pilotToken, bool wethToken, uint256 liquidity, uint256 tokenId, bytes memory data ) external payable;
+646	 function collect( bool pilotToken, bool wethToken, uint256 tokenId, bytes memory data ) external payable;
+647	 }
+648	 pragma solidity >=0.7.6;
+649	 interface IUnipilot {
+650	 struct DepositVars {
+651	 uint256 totalAmount0;
+652	 uint256 totalAmount1;
+653	 uint256 totalLiquidity;
+654	 uint256 shares;
+655	 uint256 amount0;
+656	 uint256 amount1;
+657	 }
+658	 function governance() external view returns (address);
+659	 function mintPilot(address recipient, uint256 amount) external;
+660	 function mintUnipilotNFT(address sender) external returns (uint256 mintedTokenId);
+661	 function deposit(IHandler.DepositParams memory params, bytes memory data) external payable returns ( uint256 amount0Base, uint256 amount1Base, uint256 amount0Range, uint256 amount1Range, uint256 mintedTokenId );
+662	 function createPoolAndDeposit( IHandler.DepositParams memory params, bytes[2] calldata data ) external payable returns ( uint256 amount0Base, uint256 amount1Base, uint256 amount0Range, uint256 amount1Range, uint256 mintedTokenId );
+663	 }
+664	 pragma solidity >=0.7.6;
+665	 interface IUnipilotFarmV1 {
+666	 struct PoolInfo {
+667	 uint256 startBlock;
+668	 uint256 globalReward;
+669	 uint256 lastRewardBlock;
+670	 uint256 totalLockedLiquidity;
+671	 uint256 rewardMultiplier;
+672	 bool isRewardActive;
+673	 bool isAltActive;
+674	 }
+675	 function poolInfo(address pool) external view returns (PoolInfo memory);
+676	 }
+677	 pragma solidity >=0.7.6;
+678	 interface IUnipilotStake {
+679	 function getBoostMultiplier( address userAddress, address poolAddress, uint256 tokenId ) external view returns (uint256);
+680	 function userMultiplier(address userAddress, address poolAddress) external view returns (uint256);
+681	 }
+682	 pragma solidity >=0.4.0;
+683	 library FullMath {
+684	 function mulDiv( uint256 a, uint256 b, uint256 denominator ) internal pure returns (uint256 result) {
+685	 uint256 prod0;
+686	 uint256 prod1;
+687	 assembly {
+688	 let mm := mulmod(a, b, not(0)) prod0 := mul(a, b) prod1 := sub(sub(mm, prod0), lt(mm, prod0)) }
+689	 if (prod1 == 0) {
+690	 require(denominator > 0);
+691	 assembly {
+692	 result := div(prod0, denominator) }
+693	 return result;
+694	 }
+695	 require(denominator > prod1);
+696	 uint256 remainder;
+697	 assembly {
+698	 remainder := mulmod(a, b, denominator) }
+699	 assembly {
+700	 prod1 := sub(prod1, gt(remainder, prod0)) prod0 := sub(prod0, remainder) }
+701	 uint256 twos = -denominator & denominator;
+702	 assembly {
+703	 denominator := div(denominator, twos) }
+704	 assembly {
+705	 prod0 := div(prod0, twos) }
+706	 assembly {
+707	 twos := add(div(sub(0, twos), twos), 1) }
+708	 prod0 |= prod1 * twos;
+709	 uint256 inv = (3 * denominator) ^ 2;
+710	 inv *= 2 - denominator * inv;
+711	 inv *= 2 - denominator * inv;
+712	 inv *= 2 - denominator * inv;
+713	 inv *= 2 - denominator * inv;
+714	 inv *= 2 - denominator * inv;
+715	 inv *= 2 - denominator * inv;
+716	 result = prod0 * inv;
+717	 return result;
+718	 }
+719	 function mulDivRoundingUp( uint256 a, uint256 b, uint256 denominator ) internal pure returns (uint256 result) {
+720	 result = mulDiv(a, b, denominator);
+721	 if (mulmod(a, b, denominator) > 0) {
+722	 require(result < type(uint256).max);
+723	 result++;
+724	 }
+725	 }
+726	 }
+727	 pragma solidity ^0.7.0;
+728	 library SafeMath {
+729	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+730	 uint256 c = a + b;
+731	 if (c < a) return (false, 0);
+732	 return (true, c);
+733	 }
+734	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+735	 if (b > a) return (false, 0);
+736	 return (true, a - b);
+737	 }
+738	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+739	 if (a == 0) return (true, 0);
+740	 uint256 c = a * b;
+741	 if (c / a != b) return (false, 0);
+742	 return (true, c);
+743	 }
+744	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+745	 if (b == 0) return (false, 0);
+746	 return (true, a / b);
+747	 }
+748	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+749	 if (b == 0) return (false, 0);
+750	 return (true, a % b);
+751	 }
+752	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+753	 uint256 c = a + b;
+754	 require(c >= a, "SafeMath: addition overflow");
+755	 return c;
+756	 }
+757	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+758	 require(b <= a, "SafeMath: subtraction overflow");
+759	 return a - b;
+760	 }
+761	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+762	 if (a == 0) return 0;
+763	 uint256 c = a * b;
+764	 require(c / a == b, "SafeMath: multiplication overflow");
+765	 return c;
+766	 }
+767	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+768	 require(b > 0, "SafeMath: division by zero");
+769	 return a / b;
+770	 }
+771	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+772	 require(b > 0, "SafeMath: modulo by zero");
+773	 return a % b;
+774	 }
+775	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+776	 require(b <= a, errorMessage);
+777	 return a - b;
+778	 }
+779	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+780	 require(b > 0, errorMessage);
+781	 return a / b;
+782	 }
+783	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+784	 require(b > 0, errorMessage);
+785	 return a % b;
+786	 }
+787	 }
+788	 pragma solidity ^0.7.0;
+789	 interface IERC721 is IERC165 {
+790	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+791	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+792	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+793	 function balanceOf(address owner) external view returns (uint256 balance);
+794	 function ownerOf(uint256 tokenId) external view returns (address owner);
+795	 function safeTransferFrom(address from, address to, uint256 tokenId) external;
+796	 function transferFrom(address from, address to, uint256 tokenId) external;
+797	 function approve(address to, uint256 tokenId) external;
+798	 function getApproved(uint256 tokenId) external view returns (address operator);
+799	 function setApprovalForAll(address operator, bool _approved) external;
+800	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+801	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;
+802	 }
+803	 pragma solidity ^0.7.0;
+804	 interface IERC20 {
+805	 function totalSupply() external view returns (uint256);
+806	 function balanceOf(address account) external view returns (uint256);
+807	 function transfer(address recipient, uint256 amount) external returns (bool);
+808	 function allowance(address owner, address spender) external view returns (uint256);
+809	 function approve(address spender, uint256 amount) external returns (bool);
+810	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+811	 event Transfer(address indexed from, address indexed to, uint256 value);
+812	 event Approval(address indexed owner, address indexed spender, uint256 value);
+813	 }
+814	 pragma solidity ^0.7.0;
+815	 library SafeERC20 {
+816	 using SafeMath for uint256;
+817	 using Address for address;
+818	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+819	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+820	 }
+821	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+822	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+823	 }
+824	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+825	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+826	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+827	 }
+828	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+829	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+830	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+831	 }
+832	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+833	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+834	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+835	 }
+836	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+837	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+838	 if (returndata.length > 0) {
+839	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+840	 }
+841	 }
+842	 }
+843	 pragma solidity >=0.7.6;
+844	 interface IHandler {
+845	 struct DepositParams {
+846	 address sender;
+847	 address exchangeAddress;
+848	 address token0;
+849	 address token1;
+850	 uint256 amount0Desired;
+851	 uint256 amount1Desired;
+852	 }
+853	 struct WithdrawParams {
+854	 bool pilotToken;
+855	 bool wethToken;
+856	 address exchangeAddress;
+857	 uint256 liquidity;
+858	 uint256 tokenId;
+859	 }
+860	 struct CollectParams {
+861	 bool pilotToken;
+862	 bool wethToken;
+863	 address exchangeAddress;
+864	 uint256 tokenId;
+865	 }
+866	 function createPair( address _token0, address _token1, bytes calldata data ) external;
+867	 function deposit( address token0, address token1, address sender, uint256 amount0, uint256 amount1, uint256 shares, bytes calldata data ) external returns ( uint256 amount0Base, uint256 amount1Base, uint256 amount0Range, uint256 amount1Range, uint256 mintedTokenId );
+868	 function withdraw( bool pilotToken, bool wethToken, uint256 liquidity, uint256 tokenId, bytes calldata data ) external;
+869	 function getReserves( address token0, address token1, bytes calldata data ) external returns ( uint256 shares, uint256 amount0, uint256 amount1 );
+870	 function collect( bool pilotToken, bool wethToken, uint256 tokenId, bytes calldata data ) external payable;
+871	 }
+872	 pragma solidity ^0.7.0;
+873	 library Address {
+874	 function isContract(address account) internal view returns (bool) {
+875	 uint256 size;
+876	 assembly {
+877	 size := extcodesize(account) }
+878	 return size > 0;
+879	 }
+880	 function sendValue(address payable recipient, uint256 amount) internal {
+881	 require(address(this).balance >= amount, "Address: insufficient balance");
+882	 (bool success, ) = recipient.call{
+883	 value: amount }
+884	 ("");
+885	 require(success, "Address: unable to send value, recipient may have reverted");
+886	 }
+887	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+888	 return functionCall(target, data, "Address: low-level call failed");
+889	 }
+890	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+891	 return functionCallWithValue(target, data, 0, errorMessage);
+892	 }
+893	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+894	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+895	 }
+896	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+897	 require(address(this).balance >= value, "Address: insufficient balance for call");
+898	 require(isContract(target), "Address: call to non-contract");
+899	 (bool success, bytes memory returndata) = target.call{
+900	 value: value }
+901	 (data);
+902	 return _verifyCallResult(success, returndata, errorMessage);
+903	 }
+904	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+905	 return functionStaticCall(target, data, "Address: low-level static call failed");
+906	 }
+907	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+908	 require(isContract(target), "Address: static call to non-contract");
+909	 (bool success, bytes memory returndata) = target.staticcall(data);
+910	 return _verifyCallResult(success, returndata, errorMessage);
+911	 }
+912	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+913	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+914	 }
+915	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+916	 require(isContract(target), "Address: delegate call to non-contract");
+917	 (bool success, bytes memory returndata) = target.delegatecall(data);
+918	 return _verifyCallResult(success, returndata, errorMessage);
+919	 }
+920	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+921	 if (success) {
+922	 return returndata;
+923	 }
+924	 else {
+925	 if (returndata.length > 0) {
+926	 assembly {
+927	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+928	 }
+929	 else {
+930	 revert(errorMessage);
+931	 }
+932	 }
+933	 }
+934	 }

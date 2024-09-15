@@ -1,0 +1,493 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.4.24 <0.8.0;
+3	 abstract contract Initializable {
+4	 bool private _initialized;
+5	 bool private _initializing;
+6	 modifier initializer() {
+7	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+8	 bool isTopLevelCall = !_initializing;
+9	 if (isTopLevelCall) {
+10	 _initializing = true;
+11	 _initialized = true;
+12	 }
+13	 _;
+14	 if (isTopLevelCall) {
+15	 _initializing = false;
+16	 }
+17	 }
+18	 function _isConstructor() private view returns (bool) {
+19	 return !AddressUpgradeable.isContract(address(this));
+20	 }
+21	 }
+22	 pragma solidity ^0.7.0;
+23	 abstract contract ReentrancyGuardUpgradeable is Initializable {
+24	 uint256 private constant _NOT_ENTERED = 1;
+25	 uint256 private constant _ENTERED = 2;
+26	 uint256 private _status;
+27	 function __ReentrancyGuard_init() internal initializer {
+28	 __ReentrancyGuard_init_unchained();
+29	 }
+30	 function __ReentrancyGuard_init_unchained() internal initializer {
+31	 _status = _NOT_ENTERED;
+32	 }
+33	 modifier nonReentrant() {
+34	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+35	 _status = _ENTERED;
+36	 _;
+37	 _status = _NOT_ENTERED;
+38	 }
+39	 uint256[49] private __gap;
+40	 }
+41	 pragma solidity ^0.7.0;
+42	 abstract contract FoundationTreasuryNode is Initializable {
+43	 using AddressUpgradeable for address payable;
+44	 address payable private treasury;
+45	 function _initializeFoundationTreasuryNode(address payable _treasury) internal initializer {
+46	 require(_treasury.isContract(), "FoundationTreasuryNode: Address is not a contract");
+47	 treasury = _treasury;
+48	 }
+49	 function getFoundationTreasury() public view returns (address payable) {
+50	 return treasury;
+51	 }
+52	 uint256[2000] private __gap;
+53	 }
+54	 pragma solidity ^0.7.0;
+55	 abstract contract NFTMarketCore {
+56	 function _getSellerFor(address nftContract, uint256 tokenId) internal view virtual returns (address) {
+57	 return IERC721Upgradeable(nftContract).ownerOf(tokenId);
+58	 }
+59	 uint256[950] private ______gap;
+60	 }
+61	 pragma solidity ^0.7.0;
+62	 abstract contract SendValueWithFallbackWithdraw is ReentrancyGuardUpgradeable {
+63	 using AddressUpgradeable for address payable;
+64	 using SafeMathUpgradeable for uint256;
+65	 mapping(address => uint256) private pendingWithdrawals;
+66	 event WithdrawPending(address indexed user, uint256 amount);
+67	 event Withdrawal(address indexed user, uint256 amount);
+68	 function getPendingWithdrawal(address user) public view returns (uint256) {
+69	 return pendingWithdrawals[user];
+70	 }
+71	 function withdraw() public nonReentrant {
+72	 uint256 amount = pendingWithdrawals[msg.sender];
+73	 require(amount > 0, "No funds are pending withdrawal");
+74	 pendingWithdrawals[msg.sender] = 0;
+75	 msg.sender.sendValue(amount);
+76	 emit Withdrawal(msg.sender, amount);
+77	 }
+78	 function _sendValueWithFallbackWithdraw(address payable user, uint256 amount) internal {
+79	 if (amount == 0) {
+80	 return;
+81	 }
+82	 (bool success, ) = user.call{
+83	 value: amount, gas: 20000 }
+84	 ("");
+85	 if (!success) {
+86	 pendingWithdrawals[user] = pendingWithdrawals[user].add(amount);
+87	 emit WithdrawPending(user, amount);
+88	 }
+89	 }
+90	 uint256[499] private ______gap;
+91	 }
+92	 pragma solidity ^0.7.0;
+93	 abstract contract NFTMarketCreators is ReentrancyGuardUpgradeable {
+94	 function getCreator(address nftContract, uint256 tokenId) internal view returns (address payable) {
+95	 try IFNDNFT721(nftContract).tokenCreator(tokenId) returns (address payable creator) {
+96	 return creator;
+97	 }
+98	 catch {
+99	 return address(0);
+100	 }
+101	 }
+102	 uint256[500] private ______gap;
+103	 }
+104	 pragma solidity ^0.7.0;
+105	 abstract contract Constants {
+106	 uint256 internal constant BASIS_POINTS = 10000;
+107	 }
+108	 pragma solidity ^0.7.0;
+109	 abstract contract FoundationAdminRole is FoundationTreasuryNode {
+110	 modifier onlyFoundationAdmin() {
+111	 require( IAdminRole(getFoundationTreasury()).isAdmin(msg.sender), "FoundationAdminRole: caller does not have the Admin role" );
+112	 _;
+113	 }
+114	 }
+115	 pragma solidity ^0.7.0;
+116	 abstract contract NFTMarketFees is Constants, Initializable, FoundationTreasuryNode, NFTMarketCore, NFTMarketCreators, SendValueWithFallbackWithdraw {
+117	 using SafeMathUpgradeable for uint256;
+118	 event MarketFeesUpdated( uint256 primaryFoundationFeeBasisPoints, uint256 secondaryFoundationFeeBasisPoints, uint256 secondaryCreatorFeeBasisPoints );
+119	 uint256 private _primaryFoundationFeeBasisPoints;
+120	 uint256 private _secondaryFoundationFeeBasisPoints;
+121	 uint256 private _secondaryCreatorFeeBasisPoints;
+122	 mapping(address => mapping(uint256 => bool)) private nftContractToTokenIdToFirstSaleCompleted;
+123	 function getIsPrimary(address nftContract, uint256 tokenId) public view returns (bool) {
+124	 return _getIsPrimary(nftContract, tokenId, _getSellerFor(nftContract, tokenId));
+125	 }
+126	 function _getIsPrimary( address nftContract, uint256 tokenId, address seller ) private view returns (bool) {
+127	 return !nftContractToTokenIdToFirstSaleCompleted[nftContract][tokenId] && getCreator(nftContract, tokenId) == seller;
+128	 }
+129	 function getFeeConfig() public view returns ( uint256 primaryFoundationFeeBasisPoints, uint256 secondaryFoundationFeeBasisPoints, uint256 secondaryCreatorFeeBasisPoints ) {
+130	 return (_primaryFoundationFeeBasisPoints, _secondaryFoundationFeeBasisPoints, _secondaryCreatorFeeBasisPoints);
+131	 }
+132	 function getFees( address nftContract, uint256 tokenId, uint256 price ) public view returns ( uint256 foundationFee, uint256 creatorSecondaryFee, uint256 ownerRev ) {
+133	 return _getFees(nftContract, tokenId, _getSellerFor(nftContract, tokenId), price);
+134	 }
+135	 function _getFees( address nftContract, uint256 tokenId, address seller, uint256 price ) public view returns ( uint256 foundationFee, uint256 creatorSecondaryFee, uint256 ownerRev ) {
+136	 uint256 foundationFeeBasisPoints;
+137	 if (_getIsPrimary(nftContract, tokenId, seller)) {
+138	 foundationFeeBasisPoints = _primaryFoundationFeeBasisPoints;
+139	 }
+140	 else {
+141	 foundationFeeBasisPoints = _secondaryFoundationFeeBasisPoints;
+142	 creatorSecondaryFee = price.mul(_secondaryCreatorFeeBasisPoints) / BASIS_POINTS;
+143	 }
+144	 foundationFee = price.mul(foundationFeeBasisPoints) / BASIS_POINTS;
+145	 ownerRev = price.sub(foundationFee).sub(creatorSecondaryFee);
+146	 }
+147	 function _distributeFunds( address nftContract, uint256 tokenId, address payable seller, uint256 price ) internal returns ( uint256 foundationFee, uint256 creatorFee, uint256 ownerRev ) {
+148	 (foundationFee, creatorFee, ownerRev) = _getFees(nftContract, tokenId, seller, price);
+149	 nftContractToTokenIdToFirstSaleCompleted[nftContract][tokenId] = true;
+150	 _sendValueWithFallbackWithdraw(getFoundationTreasury(), foundationFee);
+151	 if (creatorFee > 0) {
+152	 address payable creator = getCreator(nftContract, tokenId);
+153	 if (creator == address(0)) {
+154	 ownerRev = ownerRev.add(creatorFee);
+155	 creatorFee = 0;
+156	 }
+157	 else {
+158	 _sendValueWithFallbackWithdraw(creator, creatorFee);
+159	 }
+160	 }
+161	 _sendValueWithFallbackWithdraw(seller, ownerRev);
+162	 }
+163	 function _updateMarketFees( uint256 primaryFoundationFeeBasisPoints, uint256 secondaryFoundationFeeBasisPoints, uint256 secondaryCreatorFeeBasisPoints ) internal {
+164	 require(primaryFoundationFeeBasisPoints < BASIS_POINTS, "NFTMarketFees: Fees >= 100%");
+165	 require( secondaryFoundationFeeBasisPoints.add(secondaryCreatorFeeBasisPoints) < BASIS_POINTS, "NFTMarketFees: Fees >= 100%" );
+166	 _primaryFoundationFeeBasisPoints = primaryFoundationFeeBasisPoints;
+167	 _secondaryFoundationFeeBasisPoints = secondaryFoundationFeeBasisPoints;
+168	 _secondaryCreatorFeeBasisPoints = secondaryCreatorFeeBasisPoints;
+169	 emit MarketFeesUpdated( primaryFoundationFeeBasisPoints, secondaryFoundationFeeBasisPoints, secondaryCreatorFeeBasisPoints );
+170	 }
+171	 uint256[1000] private ______gap;
+172	 }
+173	 pragma solidity ^0.7.0;
+174	 abstract contract NFTMarketAuction {
+175	 uint256 private nextAuctionId;
+176	 function _initializeNFTMarketAuction() internal {
+177	 nextAuctionId = 1;
+178	 }
+179	 function _getNextAndIncrementAuctionId() internal returns (uint256) {
+180	 return nextAuctionId++;
+181	 }
+182	 uint256[1000] private ______gap;
+183	 }
+184	 pragma solidity ^0.7.0;
+185	 abstract contract NFTMarketReserveAuction is Constants, FoundationAdminRole, NFTMarketCore, ReentrancyGuardUpgradeable, SendValueWithFallbackWithdraw, NFTMarketFees, NFTMarketAuction {
+186	 using SafeMathUpgradeable for uint256;
+187	 struct ReserveAuction {
+188	 address nftContract;
+189	 uint256 tokenId;
+190	 address payable seller;
+191	 uint256 duration;
+192	 uint256 extensionDuration;
+193	 uint256 endTime;
+194	 address payable bidder;
+195	 uint256 amount;
+196	 }
+197	 mapping(address => mapping(uint256 => uint256)) private nftContractToTokenIdToAuctionId;
+198	 mapping(uint256 => ReserveAuction) private auctionIdToAuction;
+199	 uint256 private _minPercentIncrementInBasisPoints;
+200	 uint256 private ______gap_was_maxBidIncrementRequirement;
+201	 uint256 private _duration;
+202	 uint256 private ______gap_was_extensionDuration;
+203	 uint256 private ______gap_was_goLiveDate;
+204	 uint256 private constant MAX_MAX_DURATION = 1000 days;
+205	 uint256 private constant EXTENSION_DURATION = 15 minutes;
+206	 event ReserveAuctionConfigUpdated( uint256 minPercentIncrementInBasisPoints, uint256 maxBidIncrementRequirement, uint256 duration, uint256 extensionDuration, uint256 goLiveDate );
+207	 event ReserveAuctionCreated( address indexed seller, address indexed nftContract, uint256 indexed tokenId, uint256 duration, uint256 extensionDuration, uint256 reservePrice, uint256 auctionId );
+208	 event ReserveAuctionUpdated(uint256 indexed auctionId, uint256 reservePrice);
+209	 event ReserveAuctionCanceled(uint256 indexed auctionId);
+210	 event ReserveAuctionBidPlaced(uint256 indexed auctionId, address indexed bidder, uint256 amount, uint256 endTime);
+211	 event ReserveAuctionFinalized( uint256 indexed auctionId, address indexed seller, address indexed bidder, uint256 f8nFee, uint256 creatorFee, uint256 ownerRev );
+212	 event ReserveAuctionCanceledByAdmin(uint256 indexed auctionId, string reason);
+213	 modifier onlyValidAuctionConfig(uint256 reservePrice) {
+214	 require(reservePrice > 0, "NFTMarketReserveAuction: Reserve price must be at least 1 wei");
+215	 _;
+216	 }
+217	 function getReserveAuction(uint256 auctionId) public view returns (ReserveAuction memory) {
+218	 return auctionIdToAuction[auctionId];
+219	 }
+220	 function getReserveAuctionIdFor(address nftContract, uint256 tokenId) public view returns (uint256) {
+221	 return nftContractToTokenIdToAuctionId[nftContract][tokenId];
+222	 }
+223	 function _getSellerFor(address nftContract, uint256 tokenId) internal view virtual override returns (address) {
+224	 address seller = auctionIdToAuction[nftContractToTokenIdToAuctionId[nftContract][tokenId]].seller;
+225	 if (seller == address(0)) {
+226	 return super._getSellerFor(nftContract, tokenId);
+227	 }
+228	 return seller;
+229	 }
+230	 function getReserveAuctionConfig() public view returns (uint256 minPercentIncrementInBasisPoints, uint256 duration) {
+231	 minPercentIncrementInBasisPoints = _minPercentIncrementInBasisPoints;
+232	 duration = _duration;
+233	 }
+234	 function _initializeNFTMarketReserveAuction() internal {
+235	 _duration = 24 hours;
+236	 }
+237	 function _updateReserveAuctionConfig(uint256 minPercentIncrementInBasisPoints, uint256 duration) internal {
+238	 require(minPercentIncrementInBasisPoints <= BASIS_POINTS, "NFTMarketReserveAuction: Min increment must be <= 100%");
+239	 require(duration <= MAX_MAX_DURATION, "NFTMarketReserveAuction: Duration must be <= 1000 days");
+240	 require(duration >= EXTENSION_DURATION, "NFTMarketReserveAuction: Duration must be >= EXTENSION_DURATION");
+241	 _minPercentIncrementInBasisPoints = minPercentIncrementInBasisPoints;
+242	 _duration = duration;
+243	 emit ReserveAuctionConfigUpdated(minPercentIncrementInBasisPoints, 0, duration, EXTENSION_DURATION, 0);
+244	 }
+245	 function createReserveAuction( address nftContract, uint256 tokenId, uint256 reservePrice ) public onlyValidAuctionConfig(reservePrice) nonReentrant {
+246	 uint256 auctionId = _getNextAndIncrementAuctionId();
+247	 nftContractToTokenIdToAuctionId[nftContract][tokenId] = auctionId;
+248	 auctionIdToAuction[auctionId] = ReserveAuction( nftContract, tokenId, msg.sender, _duration, EXTENSION_DURATION, 0, address(0), reservePrice );
+249	 IERC721Upgradeable(nftContract).transferFrom(msg.sender, address(this), tokenId);
+250	 emit ReserveAuctionCreated( msg.sender, nftContract, tokenId, _duration, EXTENSION_DURATION, reservePrice, auctionId );
+251	 }
+252	 function updateReserveAuction(uint256 auctionId, uint256 reservePrice) public onlyValidAuctionConfig(reservePrice) {
+253	 ReserveAuction storage auction = auctionIdToAuction[auctionId];
+254	 require(auction.seller == msg.sender, "NFTMarketReserveAuction: Not your auction");
+255	 require(auction.endTime == 0, "NFTMarketReserveAuction: Auction in progress");
+256	 auction.amount = reservePrice;
+257	 emit ReserveAuctionUpdated(auctionId, reservePrice);
+258	 }
+259	 function cancelReserveAuction(uint256 auctionId) public nonReentrant {
+260	 ReserveAuction memory auction = auctionIdToAuction[auctionId];
+261	 require(auction.seller == msg.sender, "NFTMarketReserveAuction: Not your auction");
+262	 require(auction.endTime == 0, "NFTMarketReserveAuction: Auction in progress");
+263	 delete nftContractToTokenIdToAuctionId[auction.nftContract][auction.tokenId];
+264	 delete auctionIdToAuction[auctionId];
+265	 IERC721Upgradeable(auction.nftContract).transferFrom(address(this), auction.seller, auction.tokenId);
+266	 emit ReserveAuctionCanceled(auctionId);
+267	 }
+268	 function placeBid(uint256 auctionId) public payable nonReentrant {
+269	 ReserveAuction storage auction = auctionIdToAuction[auctionId];
+270	 require(auction.amount != 0, "NFTMarketReserveAuction: Auction not found");
+271	 if (auction.endTime == 0) {
+272	 require(auction.amount <= msg.value, "NFTMarketReserveAuction: Bid must be at least the reserve price");
+273	 }
+274	 else {
+275	 require(auction.endTime >= block.timestamp, "NFTMarketReserveAuction: Auction is over");
+276	 require(auction.bidder != msg.sender, "NFTMarketReserveAuction: You already have an outstanding bid");
+277	 uint256 minAmount = _getMinBidAmountForReserveAuction(auction.amount);
+278	 require(msg.value >= minAmount, "NFTMarketReserveAuction: Bid amount too low");
+279	 }
+280	 if (auction.endTime == 0) {
+281	 auction.amount = msg.value;
+282	 auction.bidder = msg.sender;
+283	 auction.endTime = block.timestamp + auction.duration;
+284	 }
+285	 else {
+286	 uint256 originalAmount = auction.amount;
+287	 address payable originalBidder = auction.bidder;
+288	 auction.amount = msg.value;
+289	 auction.bidder = msg.sender;
+290	 if (auction.endTime - block.timestamp < auction.extensionDuration) {
+291	 auction.endTime = block.timestamp + auction.extensionDuration;
+292	 }
+293	 _sendValueWithFallbackWithdraw(originalBidder, originalAmount);
+294	 }
+295	 emit ReserveAuctionBidPlaced(auctionId, msg.sender, msg.value, auction.endTime);
+296	 }
+297	 function finalizeReserveAuction(uint256 auctionId) public nonReentrant {
+298	 ReserveAuction memory auction = auctionIdToAuction[auctionId];
+299	 require(auction.endTime > 0, "NFTMarketReserveAuction: Auction has not started");
+300	 require(auction.endTime < block.timestamp, "NFTMarketReserveAuction: Auction still in progress");
+301	 delete nftContractToTokenIdToAuctionId[auction.nftContract][auction.tokenId];
+302	 delete auctionIdToAuction[auctionId];
+303	 IERC721Upgradeable(auction.nftContract).transferFrom(address(this), auction.bidder, auction.tokenId);
+304	 (uint256 f8nFee, uint256 creatorFee, uint256 ownerRev) = _distributeFunds(auction.nftContract, auction.tokenId, auction.seller, auction.amount);
+305	 emit ReserveAuctionFinalized(auctionId, auction.seller, auction.bidder, f8nFee, creatorFee, ownerRev);
+306	 }
+307	 function getMinBidAmount(uint256 auctionId) public view returns (uint256) {
+308	 ReserveAuction storage auction = auctionIdToAuction[auctionId];
+309	 if (auction.endTime == 0) {
+310	 return auction.amount;
+311	 }
+312	 return _getMinBidAmountForReserveAuction(auction.amount);
+313	 }
+314	 function _getMinBidAmountForReserveAuction(uint256 currentBidAmount) private view returns (uint256) {
+315	 uint256 minIncrement = currentBidAmount.mul(_minPercentIncrementInBasisPoints) / BASIS_POINTS;
+316	 if (minIncrement == 0) {
+317	 return currentBidAmount.add(1);
+318	 }
+319	 return minIncrement.add(currentBidAmount);
+320	 }
+321	 function adminCancelReserveAuction(uint256 auctionId, string memory reason) public onlyFoundationAdmin {
+322	 require(bytes(reason).length > 0, "NFTMarketReserveAuction: Include a reason for this cancellation");
+323	 ReserveAuction memory auction = auctionIdToAuction[auctionId];
+324	 require(auction.amount > 0, "NFTMarketReserveAuction: Auction not found");
+325	 delete nftContractToTokenIdToAuctionId[auction.nftContract][auction.tokenId];
+326	 delete auctionIdToAuction[auctionId];
+327	 IERC721Upgradeable(auction.nftContract).transferFrom(address(this), auction.seller, auction.tokenId);
+328	 if (auction.bidder != address(0)) {
+329	 _sendValueWithFallbackWithdraw(auction.bidder, auction.amount);
+330	 }
+331	 emit ReserveAuctionCanceledByAdmin(auctionId, reason);
+332	 }
+333	 uint256[1000] private ______gap;
+334	 }
+335	 pragma solidity ^0.7.0;
+336	 interface IERC165Upgradeable {
+337	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+338	 }
+339	 pragma solidity ^0.7.0;
+340	 contract FNDNFTMarket is FoundationTreasuryNode, FoundationAdminRole, NFTMarketCore, ReentrancyGuardUpgradeable, NFTMarketCreators, SendValueWithFallbackWithdraw, NFTMarketFees, NFTMarketAuction, NFTMarketReserveAuction {
+341	 function initialize(address payable treasury) public initializer {
+342	 FoundationTreasuryNode._initializeFoundationTreasuryNode(treasury);
+343	 NFTMarketAuction._initializeNFTMarketAuction();
+344	 NFTMarketReserveAuction._initializeNFTMarketReserveAuction();
+345	 }
+346	 function adminUpdateConfig( uint256 minPercentIncrementInBasisPoints, uint256 duration, uint256 primaryF8nFeeBasisPoints, uint256 secondaryF8nFeeBasisPoints, uint256 secondaryCreatorFeeBasisPoints ) public onlyFoundationAdmin {
+347	 _updateReserveAuctionConfig(minPercentIncrementInBasisPoints, duration);
+348	 _updateMarketFees(primaryF8nFeeBasisPoints, secondaryF8nFeeBasisPoints, secondaryCreatorFeeBasisPoints);
+349	 }
+350	 function _getSellerFor(address nftContract, uint256 tokenId) internal view virtual override(NFTMarketCore, NFTMarketReserveAuction) returns (address) {
+351	 return super._getSellerFor(nftContract, tokenId);
+352	 }
+353	 }
+354	 pragma solidity ^0.7.0;
+355	 library AddressUpgradeable {
+356	 function isContract(address account) internal view returns (bool) {
+357	 uint256 size;
+358	 assembly {
+359	 size := extcodesize(account) }
+360	 return size > 0;
+361	 }
+362	 function sendValue(address payable recipient, uint256 amount) internal {
+363	 require(address(this).balance >= amount, "Address: insufficient balance");
+364	 (bool success, ) = recipient.call{
+365	 value: amount }
+366	 ("");
+367	 require(success, "Address: unable to send value, recipient may have reverted");
+368	 }
+369	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+370	 return functionCall(target, data, "Address: low-level call failed");
+371	 }
+372	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+373	 return functionCallWithValue(target, data, 0, errorMessage);
+374	 }
+375	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+376	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+377	 }
+378	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+379	 require(address(this).balance >= value, "Address: insufficient balance for call");
+380	 require(isContract(target), "Address: call to non-contract");
+381	 (bool success, bytes memory returndata) = target.call{
+382	 value: value }
+383	 (data);
+384	 return _verifyCallResult(success, returndata, errorMessage);
+385	 }
+386	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+387	 return functionStaticCall(target, data, "Address: low-level static call failed");
+388	 }
+389	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+390	 require(isContract(target), "Address: static call to non-contract");
+391	 (bool success, bytes memory returndata) = target.staticcall(data);
+392	 return _verifyCallResult(success, returndata, errorMessage);
+393	 }
+394	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+395	 if (success) {
+396	 return returndata;
+397	 }
+398	 else {
+399	 if (returndata.length > 0) {
+400	 assembly {
+401	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+402	 }
+403	 else {
+404	 revert(errorMessage);
+405	 }
+406	 }
+407	 }
+408	 }
+409	 pragma solidity ^0.7.0;
+410	 interface IAdminRole {
+411	 function isAdmin(address account) external view returns (bool);
+412	 }
+413	 pragma solidity ^0.7.0;
+414	 interface IERC721Upgradeable is IERC165Upgradeable {
+415	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+416	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+417	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+418	 function balanceOf(address owner) external view returns (uint256 balance);
+419	 function ownerOf(uint256 tokenId) external view returns (address owner);
+420	 function safeTransferFrom(address from, address to, uint256 tokenId) external;
+421	 function transferFrom(address from, address to, uint256 tokenId) external;
+422	 function approve(address to, uint256 tokenId) external;
+423	 function getApproved(uint256 tokenId) external view returns (address operator);
+424	 function setApprovalForAll(address operator, bool _approved) external;
+425	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+426	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;
+427	 }
+428	 pragma solidity ^0.7.0;
+429	 library SafeMathUpgradeable {
+430	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+431	 uint256 c = a + b;
+432	 if (c < a) return (false, 0);
+433	 return (true, c);
+434	 }
+435	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+436	 if (b > a) return (false, 0);
+437	 return (true, a - b);
+438	 }
+439	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+440	 if (a == 0) return (true, 0);
+441	 uint256 c = a * b;
+442	 if (c / a != b) return (false, 0);
+443	 return (true, c);
+444	 }
+445	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+446	 if (b == 0) return (false, 0);
+447	 return (true, a / b);
+448	 }
+449	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+450	 if (b == 0) return (false, 0);
+451	 return (true, a % b);
+452	 }
+453	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+454	 uint256 c = a + b;
+455	 require(c >= a, "SafeMath: addition overflow");
+456	 return c;
+457	 }
+458	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+459	 require(b <= a, "SafeMath: subtraction overflow");
+460	 return a - b;
+461	 }
+462	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+463	 if (a == 0) return 0;
+464	 uint256 c = a * b;
+465	 require(c / a == b, "SafeMath: multiplication overflow");
+466	 return c;
+467	 }
+468	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+469	 require(b > 0, "SafeMath: division by zero");
+470	 return a / b;
+471	 }
+472	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+473	 require(b > 0, "SafeMath: modulo by zero");
+474	 return a % b;
+475	 }
+476	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+477	 require(b <= a, errorMessage);
+478	 return a - b;
+479	 }
+480	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+481	 require(b > 0, errorMessage);
+482	 return a / b;
+483	 }
+484	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+485	 require(b > 0, errorMessage);
+486	 return a % b;
+487	 }
+488	 }
+489	 pragma solidity ^0.7.0;
+490	 interface IFNDNFT721 {
+491	 function tokenCreator(uint256 tokenId) external view returns (address payable);
+492	 }

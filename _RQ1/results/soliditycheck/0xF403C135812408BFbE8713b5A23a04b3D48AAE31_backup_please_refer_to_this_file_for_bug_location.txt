@@ -1,0 +1,603 @@
+row number 
+1	            pragma solidity 0.6.12;
+2	 library MathUtil {
+3	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 return a < b ? a : b;
+5	 }
+6	 }
+7	 contract ReentrancyGuard {
+8	 uint256 private _guardCounter;
+9	 constructor () internal {
+10	 _guardCounter = 1;
+11	 }
+12	 modifier nonReentrant() {
+13	 _guardCounter += 1;
+14	 uint256 localCounter = _guardCounter;
+15	 _;
+16	 require(localCounter == _guardCounter, "ReentrancyGuard: reentrant call");
+17	 }
+18	 }
+19	 interface ICurveGauge {
+20	 function deposit(uint256) external;
+21	 function balanceOf(address) external view returns (uint256);
+22	 function withdraw(uint256) external;
+23	 function claim_rewards() external;
+24	 function reward_tokens(uint256) external view returns(address);
+25	 function rewarded_token() external view returns(address);
+26	 }
+27	 interface ICurveVoteEscrow {
+28	 function create_lock(uint256, uint256) external;
+29	 function increase_amount(uint256) external;
+30	 function increase_unlock_time(uint256) external;
+31	 function withdraw() external;
+32	 function smart_wallet_checker() external view returns (address);
+33	 }
+34	 interface IWalletChecker {
+35	 function check(address) external view returns (bool);
+36	 }
+37	 interface IVoting{
+38	 function vote(uint256, bool, bool) external;
+39	 function getVote(uint256) external view returns(bool,bool,uint64,uint64,uint64,uint64,uint256,uint256,uint256,bytes memory);
+40	 function vote_for_gauge_weights(address,uint256) external;
+41	 }
+42	 interface IMinter{
+43	 function mint(address) external;
+44	 }
+45	 interface IRegistry{
+46	 function get_registry() external view returns(address);
+47	 function get_address(uint256 _id) external view returns(address);
+48	 function gauge_controller() external view returns(address);
+49	 function get_lp_token(address) external view returns(address);
+50	 function get_gauges(address) external view returns(address[10] memory,uint128[10] memory);
+51	 }
+52	 interface IStaker{
+53	 function deposit(address, address) external;
+54	 function withdraw(address) external;
+55	 function withdraw(address, address, uint256) external;
+56	 function withdrawAll(address, address) external;
+57	 function createLock(uint256, uint256) external;
+58	 function increaseAmount(uint256) external;
+59	 function increaseTime(uint256) external;
+60	 function release() external;
+61	 function claimCrv(address) external returns (uint256);
+62	 function claimRewards(address) external;
+63	 function claimFees(address,address) external;
+64	 function setStashAccess(address, bool) external;
+65	 function vote(uint256,address,bool) external;
+66	 function voteGaugeWeight(address,uint256) external;
+67	 function balanceOfPool(address) external view returns (uint256);
+68	 function operator() external view returns (address);
+69	 function execute(address _to, uint256 _value, bytes calldata _data) external returns (bool, bytes memory);
+70	 }
+71	 interface IRewards{
+72	 function stake(address, uint256) external;
+73	 function stakeFor(address, uint256) external;
+74	 function withdraw(address, uint256) external;
+75	 function exit(address) external;
+76	 function getReward(address) external;
+77	 function queueNewRewards(uint256) external;
+78	 function notifyRewardAmount(uint256) external;
+79	 function addExtraReward(address) external;
+80	 function stakingToken() external returns (address);
+81	 }
+82	 interface IStash{
+83	 function stashRewards() external returns (bool);
+84	 function processStash() external returns (bool);
+85	 function claimRewards() external returns (bool);
+86	 }
+87	 interface IFeeDistro{
+88	 function claim() external;
+89	 function token() external view returns(address);
+90	 }
+91	 interface ITokenMinter{
+92	 function mint(address,uint256) external;
+93	 function burn(address,uint256) external;
+94	 }
+95	 interface IDeposit{
+96	 function isShutdown() external view returns(bool);
+97	 function balanceOf(address _account) external view returns(uint256);
+98	 function totalSupply() external view returns(uint256);
+99	 function poolInfo(uint256) external view returns(address,address,address,address,address, bool);
+100	 function rewardClaimed(uint256,address,uint256) external;
+101	 function withdrawTo(uint256,uint256,address) external;
+102	 function claimRewards(uint256,address) external returns(bool);
+103	 function rewardArbitrator() external returns(address);
+104	 }
+105	 interface ICrvDeposit{
+106	 function deposit(uint256, bool) external;
+107	 function lockIncentive() external view returns(uint256);
+108	 }
+109	 interface IRewardFactory{
+110	 function setAccess(address,bool) external;
+111	 function CreateCrvRewards(uint256,address) external returns(address);
+112	 function CreateTokenRewards(address,address,address) external returns(address);
+113	 function activeRewardCount(address) external view returns(uint256);
+114	 function addActiveReward(address,uint256) external returns(bool);
+115	 function removeActiveReward(address,uint256) external returns(bool);
+116	 }
+117	 interface IStashFactory{
+118	 function CreateStash(uint256,address,address,uint256) external returns(address);
+119	 }
+120	 interface ITokenFactory{
+121	 function CreateDepositToken(address) external returns(address);
+122	 }
+123	 interface IPools{
+124	 function addPool(address _lptoken, address _gauge, uint256 _stashVersion) external returns(bool);
+125	 function shutdownPool(uint256 _pid) external returns(bool);
+126	 function poolInfo(uint256) external view returns(address,address,address,address,address,bool);
+127	 function poolLength() external view returns (uint256);
+128	 function gaugeMap(address) external view returns(bool);
+129	 function setPoolManager(address _poolM) external;
+130	 }
+131	 interface IVestedEscrow{
+132	 function fund(address[] calldata _recipient, uint256[] calldata _amount) external returns(bool);
+133	 }
+134	 pragma solidity >=0.6.0 <0.8.0;
+135	 library SafeMath {
+136	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+137	 uint256 c = a + b;
+138	 if (c < a) return (false, 0);
+139	 return (true, c);
+140	 }
+141	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+142	 if (b > a) return (false, 0);
+143	 return (true, a - b);
+144	 }
+145	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+146	 if (a == 0) return (true, 0);
+147	 uint256 c = a * b;
+148	 if (c / a != b) return (false, 0);
+149	 return (true, c);
+150	 }
+151	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+152	 if (b == 0) return (false, 0);
+153	 return (true, a / b);
+154	 }
+155	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+156	 if (b == 0) return (false, 0);
+157	 return (true, a % b);
+158	 }
+159	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+160	 uint256 c = a + b;
+161	 require(c >= a, "SafeMath: addition overflow");
+162	 return c;
+163	 }
+164	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+165	 require(b <= a, "SafeMath: subtraction overflow");
+166	 return a - b;
+167	 }
+168	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+169	 if (a == 0) return 0;
+170	 uint256 c = a * b;
+171	 require(c / a == b, "SafeMath: multiplication overflow");
+172	 return c;
+173	 }
+174	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+175	 require(b > 0, "SafeMath: division by zero");
+176	 return a / b;
+177	 }
+178	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+179	 require(b > 0, "SafeMath: modulo by zero");
+180	 return a % b;
+181	 }
+182	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+183	 require(b <= a, errorMessage);
+184	 return a - b;
+185	 }
+186	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+187	 require(b > 0, errorMessage);
+188	 return a / b;
+189	 }
+190	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+191	 require(b > 0, errorMessage);
+192	 return a % b;
+193	 }
+194	 }
+195	 pragma solidity >=0.6.0 <0.8.0;
+196	 interface IERC20 {
+197	 function totalSupply() external view returns (uint256);
+198	 function balanceOf(address account) external view returns (uint256);
+199	 function transfer(address recipient, uint256 amount) external returns (bool);
+200	 function allowance(address owner, address spender) external view returns (uint256);
+201	 function approve(address spender, uint256 amount) external returns (bool);
+202	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+203	 event Transfer(address indexed from, address indexed to, uint256 value);
+204	 event Approval(address indexed owner, address indexed spender, uint256 value);
+205	 }
+206	 pragma solidity >=0.6.2 <0.8.0;
+207	 library Address {
+208	 function isContract(address account) internal view returns (bool) {
+209	 uint256 size;
+210	 assembly {
+211	 size := extcodesize(account) }
+212	 return size > 0;
+213	 }
+214	 function sendValue(address payable recipient, uint256 amount) internal {
+215	 require(address(this).balance >= amount, "Address: insufficient balance");
+216	 (bool success, ) = recipient.call{
+217	 value: amount }
+218	 ("");
+219	 require(success, "Address: unable to send value, recipient may have reverted");
+220	 }
+221	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+222	 return functionCall(target, data, "Address: low-level call failed");
+223	 }
+224	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+225	 return functionCallWithValue(target, data, 0, errorMessage);
+226	 }
+227	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+228	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+229	 }
+230	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+231	 require(address(this).balance >= value, "Address: insufficient balance for call");
+232	 require(isContract(target), "Address: call to non-contract");
+233	 (bool success, bytes memory returndata) = target.call{
+234	 value: value }
+235	 (data);
+236	 return _verifyCallResult(success, returndata, errorMessage);
+237	 }
+238	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+239	 return functionStaticCall(target, data, "Address: low-level static call failed");
+240	 }
+241	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+242	 require(isContract(target), "Address: static call to non-contract");
+243	 (bool success, bytes memory returndata) = target.staticcall(data);
+244	 return _verifyCallResult(success, returndata, errorMessage);
+245	 }
+246	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+247	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+248	 }
+249	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+250	 require(isContract(target), "Address: delegate call to non-contract");
+251	 (bool success, bytes memory returndata) = target.delegatecall(data);
+252	 return _verifyCallResult(success, returndata, errorMessage);
+253	 }
+254	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+255	 if (success) {
+256	 return returndata;
+257	 }
+258	 else {
+259	 if (returndata.length > 0) {
+260	 assembly {
+261	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+262	 }
+263	 else {
+264	 revert(errorMessage);
+265	 }
+266	 }
+267	 }
+268	 }
+269	 pragma solidity >=0.6.0 <0.8.0;
+270	 library SafeERC20 {
+271	 using SafeMath for uint256;
+272	 using Address for address;
+273	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+274	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+275	 }
+276	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+277	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+278	 }
+279	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+280	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+281	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+282	 }
+283	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+284	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+285	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+286	 }
+287	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+288	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+289	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+290	 }
+291	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+292	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+293	 if (returndata.length > 0) {
+294	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+295	 }
+296	 }
+297	 }
+298	 pragma solidity 0.6.12;
+299	 contract Booster{
+300	 using SafeERC20 for IERC20;
+301	 using Address for address;
+302	 using SafeMath for uint256;
+303	 address public constant crv = address(0xD533a949740bb3306d119CC777fa900bA034cd52);
+304	 address public constant registry = address(0x0000000022D53366457F9d5E68Ec105046FC4383);
+305	 uint256 public constant distributionAddressId = 4;
+306	 address public constant voteOwnership = address(0xE478de485ad2fe566d49342Cbd03E49ed7DB3356);
+307	 address public constant voteParameter = address(0xBCfF8B0b9419b9A88c44546519b1e909cF330399);
+308	 uint256 public lockIncentive = 1000;
+309	 uint256 public stakerIncentive = 450;
+310	 uint256 public earmarkIncentive = 50;
+311	 uint256 public platformFee = 0;
+312	 uint256 public constant MaxFees = 2000;
+313	 uint256 public constant FEE_DENOMINATOR = 10000;
+314	 address public owner;
+315	 address public feeManager;
+316	 address public poolManager;
+317	 address public immutable staker;
+318	 address public immutable minter;
+319	 address public rewardFactory;
+320	 address public stashFactory;
+321	 address public tokenFactory;
+322	 address public rewardArbitrator;
+323	 address public voteDelegate;
+324	 address public treasury;
+325	 address public stakerRewards;
+326	 address public lockRewards;
+327	 address public lockFees;
+328	 address public feeDistro;
+329	 address public feeToken;
+330	 bool public isShutdown;
+331	 struct PoolInfo {
+332	 address lptoken;
+333	 address token;
+334	 address gauge;
+335	 address crvRewards;
+336	 address stash;
+337	 bool shutdown;
+338	 }
+339	 PoolInfo[] public poolInfo;
+340	 mapping(address => bool) public gaugeMap;
+341	 event Deposited(address indexed user, uint256 indexed poolid, uint256 amount);
+342	 event Withdrawn(address indexed user, uint256 indexed poolid, uint256 amount);
+343	 constructor(address _staker, address _minter) public {
+344	 isShutdown = false;
+345	 staker = _staker;
+346	 owner = msg.sender;
+347	 voteDelegate = msg.sender;
+348	 feeManager = msg.sender;
+349	 poolManager = msg.sender;
+350	 feeDistro = address(0);
+351	 feeToken = address(0);
+352	 treasury = address(0);
+353	 minter = _minter;
+354	 }
+355	 function setOwner(address _owner) external {
+356	 require(msg.sender == owner, "!auth");
+357	 owner = _owner;
+358	 }
+359	 function setFeeManager(address _feeM) external {
+360	 require(msg.sender == feeManager, "!auth");
+361	 feeManager = _feeM;
+362	 }
+363	 function setPoolManager(address _poolM) external {
+364	 require(msg.sender == poolManager, "!auth");
+365	 poolManager = _poolM;
+366	 }
+367	 function setFactories(address _rfactory, address _sfactory, address _tfactory) external {
+368	 require(msg.sender == owner, "!auth");
+369	 if(rewardFactory == address(0)){
+370	 rewardFactory = _rfactory;
+371	 tokenFactory = _tfactory;
+372	 }
+373	 stashFactory = _sfactory;
+374	 }
+375	 function setArbitrator(address _arb) external {
+376	 require(msg.sender==owner, "!auth");
+377	 rewardArbitrator = _arb;
+378	 }
+379	 function setVoteDelegate(address _voteDelegate) external {
+380	 require(msg.sender==voteDelegate, "!auth");
+381	 voteDelegate = _voteDelegate;
+382	 }
+383	 function setRewardContracts(address _rewards, address _stakerRewards) external {
+384	 require(msg.sender == owner, "!auth");
+385	 if(lockRewards == address(0)){
+386	 lockRewards = _rewards;
+387	 stakerRewards = _stakerRewards;
+388	 }
+389	 }
+390	 function setFeeInfo() external {
+391	 require(msg.sender==feeManager, "!auth");
+392	 feeDistro = IRegistry(registry).get_address(distributionAddressId);
+393	 address _feeToken = IFeeDistro(feeDistro).token();
+394	 if(feeToken != _feeToken){
+395	 lockFees = IRewardFactory(rewardFactory).CreateTokenRewards(_feeToken,lockRewards,address(this));
+396	 feeToken = _feeToken;
+397	 }
+398	 }
+399	 function setFees(uint256 _lockFees, uint256 _stakerFees, uint256 _callerFees, uint256 _platform) external{
+400	 require(msg.sender==feeManager, "!auth");
+401	 uint256 total = _lockFees.add(_stakerFees).add(_callerFees).add(_platform);
+402	 require(total <= MaxFees, ">MaxFees");
+403	 if(_lockFees >= 1000 && _lockFees <= 1500 && _stakerFees >= 300 && _stakerFees <= 600 && _callerFees >= 10 && _callerFees <= 100 && _platform <= 200){
+404	 lockIncentive = _lockFees;
+405	 stakerIncentive = _stakerFees;
+406	 earmarkIncentive = _callerFees;
+407	 platformFee = _platform;
+408	 }
+409	 }
+410	 function setTreasury(address _treasury) external {
+411	 require(msg.sender==feeManager, "!auth");
+412	 treasury = _treasury;
+413	 }
+414	 function poolLength() external view returns (uint256) {
+415	 return poolInfo.length;
+416	 }
+417	 function addPool(address _lptoken, address _gauge, uint256 _stashVersion) external returns(bool){
+418	 require(msg.sender==poolManager && !isShutdown, "!add");
+419	 require(_gauge != address(0) && _lptoken != address(0),"!param");
+420	 uint256 pid = poolInfo.length;
+421	 address token = ITokenFactory(tokenFactory).CreateDepositToken(_lptoken);
+422	 address newRewardPool = IRewardFactory(rewardFactory).CreateCrvRewards(pid,token);
+423	 address stash = IStashFactory(stashFactory).CreateStash(pid,_gauge,staker,_stashVersion);
+424	 poolInfo.push( PoolInfo({
+425	 lptoken: _lptoken, token: token, gauge: _gauge, crvRewards: newRewardPool, stash: stash, shutdown: false }
+426	 ) );
+427	 gaugeMap[_gauge] = true;
+428	 if(stash != address(0)){
+429	 poolInfo[pid].stash = stash;
+430	 IStaker(staker).setStashAccess(stash,true);
+431	 IRewardFactory(rewardFactory).setAccess(stash,true);
+432	 }
+433	 return true;
+434	 }
+435	 function shutdownPool(uint256 _pid) external returns(bool){
+436	 require(msg.sender==poolManager, "!auth");
+437	 PoolInfo storage pool = poolInfo[_pid];
+438	 try IStaker(staker).withdrawAll(pool.lptoken,pool.gauge){
+439	 }
+440	 catch{
+441	 }
+442	 pool.shutdown = true;
+443	 gaugeMap[pool.gauge] = false;
+444	 return true;
+445	 }
+446	 function shutdownSystem() external{
+447	 require(msg.sender == owner, "!auth");
+448	 isShutdown = true;
+449	 for(uint i=0; i < poolInfo.length; i++){
+450	 PoolInfo storage pool = poolInfo[i];
+451	 if (pool.shutdown) continue;
+452	 address token = pool.lptoken;
+453	 address gauge = pool.gauge;
+454	 try IStaker(staker).withdrawAll(token,gauge){
+455	 pool.shutdown = true;
+456	 }
+457	 catch{
+458	 }
+459	 }
+460	 }
+461	 function deposit(uint256 _pid, uint256 _amount, bool _stake) public returns(bool){
+462	 require(!isShutdown,"shutdown");
+463	 PoolInfo storage pool = poolInfo[_pid];
+464	 require(pool.shutdown == false, "pool is closed");
+465	 address lptoken = pool.lptoken;
+466	 IERC20(lptoken).safeTransferFrom(msg.sender, staker, _amount);
+467	 address gauge = pool.gauge;
+468	 require(gauge != address(0),"!gauge setting");
+469	 IStaker(staker).deposit(lptoken,gauge);
+470	 address stash = pool.stash;
+471	 if(stash != address(0)){
+472	 IStash(stash).stashRewards();
+473	 }
+474	 address token = pool.token;
+475	 if(_stake){
+476	 ITokenMinter(token).mint(address(this),_amount);
+477	 address rewardContract = pool.crvRewards;
+478	 IERC20(token).safeApprove(rewardContract,0);
+479	 IERC20(token).safeApprove(rewardContract,_amount);
+480	 IRewards(rewardContract).stakeFor(msg.sender,_amount);
+481	 }
+482	 else{
+483	 ITokenMinter(token).mint(msg.sender,_amount);
+484	 }
+485	 emit Deposited(msg.sender, _pid, _amount);
+486	 return true;
+487	 }
+488	 function depositAll(uint256 _pid, bool _stake) external returns(bool){
+489	 address lptoken = poolInfo[_pid].lptoken;
+490	 uint256 balance = IERC20(lptoken).balanceOf(msg.sender);
+491	 deposit(_pid,balance,_stake);
+492	 return true;
+493	 }
+494	 function _withdraw(uint256 _pid, uint256 _amount, address _from, address _to) internal {
+495	 PoolInfo storage pool = poolInfo[_pid];
+496	 address lptoken = pool.lptoken;
+497	 address gauge = pool.gauge;
+498	 address token = pool.token;
+499	 ITokenMinter(token).burn(_from,_amount);
+500	 if (!pool.shutdown) {
+501	 IStaker(staker).withdraw(lptoken,gauge, _amount);
+502	 }
+503	 address stash = pool.stash;
+504	 if(stash != address(0) && !isShutdown && !pool.shutdown){
+505	 IStash(stash).stashRewards();
+506	 }
+507	 IERC20(lptoken).safeTransfer(_to, _amount);
+508	 emit Withdrawn(_to, _pid, _amount);
+509	 }
+510	 function withdraw(uint256 _pid, uint256 _amount) public returns(bool){
+511	 _withdraw(_pid,_amount,msg.sender,msg.sender);
+512	 return true;
+513	 }
+514	 function withdrawAll(uint256 _pid) public returns(bool){
+515	 address token = poolInfo[_pid].token;
+516	 uint256 userBal = IERC20(token).balanceOf(msg.sender);
+517	 withdraw(_pid, userBal);
+518	 return true;
+519	 }
+520	 function withdrawTo(uint256 _pid, uint256 _amount, address _to) external returns(bool){
+521	 address rewardContract = poolInfo[_pid].crvRewards;
+522	 require(msg.sender == rewardContract,"!auth");
+523	 _withdraw(_pid,_amount,msg.sender,_to);
+524	 return true;
+525	 }
+526	 function vote(uint256 _voteId, address _votingAddress, bool _support) external returns(bool){
+527	 require(msg.sender == voteDelegate, "!auth");
+528	 require(_votingAddress == voteOwnership || _votingAddress == voteParameter, "!voteAddr");
+529	 IStaker(staker).vote(_voteId,_votingAddress,_support);
+530	 return true;
+531	 }
+532	 function voteGaugeWeight(address[] calldata _gauge, uint256[] calldata _weight ) external returns(bool){
+533	 require(msg.sender == voteDelegate, "!auth");
+534	 for(uint256 i = 0; i < _gauge.length; i++){
+535	 IStaker(staker).voteGaugeWeight(_gauge[i],_weight[i]);
+536	 }
+537	 return true;
+538	 }
+539	 function claimRewards(uint256 _pid, address _gauge) external returns(bool){
+540	 address stash = poolInfo[_pid].stash;
+541	 require(msg.sender == stash,"!auth");
+542	 IStaker(staker).claimRewards(_gauge);
+543	 return true;
+544	 }
+545	 function setGaugeRedirect(uint256 _pid) external returns(bool){
+546	 address stash = poolInfo[_pid].stash;
+547	 require(msg.sender == stash,"!auth");
+548	 address gauge = poolInfo[_pid].gauge;
+549	 bytes memory data = abi.encodeWithSelector(bytes4(keccak256("set_rewards_receiver(address)")), stash);
+550	 IStaker(staker).execute(gauge,uint256(0),data);
+551	 return true;
+552	 }
+553	 function _earmarkRewards(uint256 _pid) internal {
+554	 PoolInfo storage pool = poolInfo[_pid];
+555	 require(pool.shutdown == false, "pool is closed");
+556	 address gauge = pool.gauge;
+557	 IStaker(staker).claimCrv(gauge);
+558	 address stash = pool.stash;
+559	 if(stash != address(0)){
+560	 IStash(stash).claimRewards();
+561	 IStash(stash).processStash();
+562	 }
+563	 uint256 crvBal = IERC20(crv).balanceOf(address(this));
+564	 if (crvBal > 0) {
+565	 uint256 _lockIncentive = crvBal.mul(lockIncentive).div(FEE_DENOMINATOR);
+566	 uint256 _stakerIncentive = crvBal.mul(stakerIncentive).div(FEE_DENOMINATOR);
+567	 uint256 _callIncentive = crvBal.mul(earmarkIncentive).div(FEE_DENOMINATOR);
+568	 if(treasury != address(0) && treasury != address(this) && platformFee > 0){
+569	 uint256 _platform = crvBal.mul(platformFee).div(FEE_DENOMINATOR);
+570	 crvBal = crvBal.sub(_platform);
+571	 IERC20(crv).safeTransfer(treasury, _platform);
+572	 }
+573	 crvBal = crvBal.sub(_lockIncentive).sub(_callIncentive).sub(_stakerIncentive);
+574	 IERC20(crv).safeTransfer(msg.sender, _callIncentive);
+575	 address rewardContract = pool.crvRewards;
+576	 IERC20(crv).safeTransfer(rewardContract, crvBal);
+577	 IRewards(rewardContract).queueNewRewards(crvBal);
+578	 IERC20(crv).safeTransfer(lockRewards, _lockIncentive);
+579	 IRewards(lockRewards).queueNewRewards(_lockIncentive);
+580	 IERC20(crv).safeTransfer(stakerRewards, _stakerIncentive);
+581	 IRewards(stakerRewards).queueNewRewards(_stakerIncentive);
+582	 }
+583	 }
+584	 function earmarkRewards(uint256 _pid) external returns(bool){
+585	 require(!isShutdown,"shutdown");
+586	 _earmarkRewards(_pid);
+587	 return true;
+588	 }
+589	 function earmarkFees() external returns(bool){
+590	 IStaker(staker).claimFees(feeDistro, feeToken);
+591	 uint256 _balance = IERC20(feeToken).balanceOf(address(this));
+592	 IERC20(feeToken).safeTransfer(lockFees, _balance);
+593	 IRewards(lockFees).queueNewRewards(_balance);
+594	 return true;
+595	 }
+596	 function rewardClaimed(uint256 _pid, address _address, uint256 _amount) external returns(bool){
+597	 address rewardContract = poolInfo[_pid].crvRewards;
+598	 require(msg.sender == rewardContract || msg.sender == lockRewards, "!auth");
+599	 ITokenMinter(minter).mint(_address,_amount);
+600	 return true;
+601	 }
+602	 }

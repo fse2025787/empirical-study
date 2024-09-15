@@ -1,0 +1,345 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity >=0.6.0 <0.8.0;
+12	 abstract contract Proxy {
+13	 function _delegate(address implementation) internal virtual {
+14	 assembly {
+15	 calldatacopy(0, 0, calldatasize()) let result := delegatecall(gas(), implementation, 0, calldatasize(), 0, 0) returndatacopy(0, 0, returndatasize()) switch result case 0 {
+16	 revert(0, returndatasize()) }
+17	 default {
+18	 return(0, returndatasize()) }
+19	 }
+20	 }
+21	 function _implementation() internal view virtual returns (address);
+22	 function _fallback() internal virtual {
+23	 _beforeFallback();
+24	 _delegate(_implementation());
+25	 }
+26	 fallback () external payable virtual {
+27	 _fallback();
+28	 }
+29	 receive () external payable virtual {
+30	 _fallback();
+31	 }
+32	 function _beforeFallback() internal virtual {
+33	 }
+34	 }
+35	 pragma solidity 0.7.6;
+36	 interface IGardenFactory {
+37	 function createGarden( address _reserveAsset, address _creator, string memory _name, string memory _symbol, string memory _tokenURI, uint256 _seed, uint256[] calldata _gardenParams, uint256 _initialContribution, bool[] memory _publicGardenStrategistsStewards ) external returns (address);
+38	 }
+39	 pragma solidity >=0.6.0 <0.8.0;
+40	 interface IBeacon {
+41	 function implementation() external view returns (address);
+42	 }
+43	 pragma solidity >=0.6.0 <0.8.0;
+44	 abstract contract Ownable is Context {
+45	 address private _owner;
+46	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+47	 constructor () internal {
+48	 address msgSender = _msgSender();
+49	 _owner = msgSender;
+50	 emit OwnershipTransferred(address(0), msgSender);
+51	 }
+52	 function owner() public view virtual returns (address) {
+53	 return _owner;
+54	 }
+55	 modifier onlyOwner() {
+56	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+57	 _;
+58	 }
+59	 function renounceOwnership() public virtual onlyOwner {
+60	 emit OwnershipTransferred(_owner, address(0));
+61	 _owner = address(0);
+62	 }
+63	 function transferOwnership(address newOwner) public virtual onlyOwner {
+64	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+65	 emit OwnershipTransferred(_owner, newOwner);
+66	 _owner = newOwner;
+67	 }
+68	 }
+69	 pragma solidity >=0.6.0 <0.8.0;
+70	 contract BeaconProxy is Proxy {
+71	 bytes32 private constant _BEACON_SLOT = 0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50;
+72	 constructor(address beacon, bytes memory data) public payable {
+73	 assert(_BEACON_SLOT == bytes32(uint256(keccak256("eip1967.proxy.beacon")) - 1));
+74	 _setBeacon(beacon, data);
+75	 }
+76	 function _beacon() internal view virtual returns (address beacon) {
+77	 bytes32 slot = _BEACON_SLOT;
+78	 assembly {
+79	 beacon := sload(slot) }
+80	 }
+81	 function _implementation() internal view virtual override returns (address) {
+82	 return IBeacon(_beacon()).implementation();
+83	 }
+84	 function _setBeacon(address beacon, bytes memory data) internal virtual {
+85	 require( Address.isContract(beacon), "BeaconProxy: beacon is not a contract" );
+86	 require( Address.isContract(IBeacon(beacon).implementation()), "BeaconProxy: beacon implementation is not a contract" );
+87	 bytes32 slot = _BEACON_SLOT;
+88	 assembly {
+89	 sstore(slot, beacon) }
+90	 if (data.length > 0) {
+91	 Address.functionDelegateCall(_implementation(), data, "BeaconProxy: function call failed");
+92	 }
+93	 }
+94	 }
+95	 pragma solidity 0.7.6;
+96	 contract GardenFactory is IGardenFactory {
+97	 IBabController private immutable controller;
+98	 UpgradeableBeacon private immutable beacon;
+99	 constructor(IBabController _controller, UpgradeableBeacon _beacon) {
+100	 require(address(_controller) != address(0), 'Controller is zero');
+101	 require(address(_beacon) != address(0), 'Beacon is zero');
+102	 controller = IBabController(_controller);
+103	 beacon = _beacon;
+104	 }
+105	 function createGarden( address _reserveAsset, address _creator, string memory _name, string memory _symbol, string memory _tokenURI, uint256 _seed, uint256[] calldata _gardenParams, uint256 _initialContribution, bool[] memory _publicGardenStrategistsStewards ) external override returns (address) {
+106	 require(msg.sender == address(controller), 'Only the controller can create gardens');
+107	 address payable proxy = payable( new SafeBeaconProxy( address(beacon), abi.encodeWithSelector( IGarden.initialize.selector, _reserveAsset, controller, _creator, _name, _symbol, _gardenParams, _initialContribution, _publicGardenStrategistsStewards ) ) );
+108	 IGardenNFT(controller.gardenNFT()).saveGardenURIAndSeed(proxy, _tokenURI, _seed);
+109	 return proxy;
+110	 }
+111	 }
+112	 pragma solidity >=0.6.0 <0.8.0;
+113	 library Clones {
+114	 function clone(address master) internal returns (address instance) {
+115	 assembly {
+116	 let ptr := mload(0x40) mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(ptr, 0x14), shl(0x60, master)) mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000) instance := create(0, ptr, 0x37) }
+117	 require(instance != address(0), "ERC1167: create failed");
+118	 }
+119	 function cloneDeterministic(address master, bytes32 salt) internal returns (address instance) {
+120	 assembly {
+121	 let ptr := mload(0x40) mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(ptr, 0x14), shl(0x60, master)) mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000) instance := create2(0, ptr, 0x37, salt) }
+122	 require(instance != address(0), "ERC1167: create2 failed");
+123	 }
+124	 function predictDeterministicAddress(address master, bytes32 salt, address deployer) internal pure returns (address predicted) {
+125	 assembly {
+126	 let ptr := mload(0x40) mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(ptr, 0x14), shl(0x60, master)) mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf3ff00000000000000000000000000000000) mstore(add(ptr, 0x38), shl(0x60, deployer)) mstore(add(ptr, 0x4c), salt) mstore(add(ptr, 0x6c), keccak256(ptr, 0x37)) predicted := keccak256(add(ptr, 0x37), 0x55) }
+127	 }
+128	 function predictDeterministicAddress(address master, bytes32 salt) internal view returns (address predicted) {
+129	 return predictDeterministicAddress(master, salt, address(this));
+130	 }
+131	 }
+132	 pragma solidity >=0.6.0 <0.8.0;
+133	 contract UpgradeableBeacon is IBeacon, Ownable {
+134	 address private _implementation;
+135	 event Upgraded(address indexed implementation);
+136	 constructor(address implementation_) public {
+137	 _setImplementation(implementation_);
+138	 }
+139	 function implementation() public view virtual override returns (address) {
+140	 return _implementation;
+141	 }
+142	 function upgradeTo(address newImplementation) public virtual onlyOwner {
+143	 _setImplementation(newImplementation);
+144	 emit Upgraded(newImplementation);
+145	 }
+146	 function _setImplementation(address newImplementation) private {
+147	 require(Address.isContract(newImplementation), "UpgradeableBeacon: implementation is not a contract");
+148	 _implementation = newImplementation;
+149	 }
+150	 }
+151	 pragma solidity 0.7.6;
+152	 contract SafeBeaconProxy is BeaconProxy {
+153	 constructor(address beacon, bytes memory data) public payable BeaconProxy(beacon, data) {
+154	 }
+155	 receive() external payable override {
+156	 }
+157	 }
+158	 pragma solidity 0.7.6;
+159	 interface IBabController {
+160	 function createGarden( address _reserveAsset, string memory _name, string memory _symbol, string memory _tokenURI, uint256 _seed, uint256[] calldata _gardenParams, uint256 _initialContribution, bool[] memory _publicGardenStrategistsStewards, uint256[] memory _profitSharing ) external payable returns (address);
+161	 function removeGarden(address _garden) external;
+162	 function addReserveAsset(address _reserveAsset) external;
+163	 function removeReserveAsset(address _reserveAsset) external;
+164	 function disableGarden(address _garden) external;
+165	 function editPriceOracle(address _priceOracle) external;
+166	 function editIshtarGate(address _ishtarGate) external;
+167	 function editGardenValuer(address _gardenValuer) external;
+168	 function editRewardsDistributor(address _rewardsDistributor) external;
+169	 function editTreasury(address _newTreasury) external;
+170	 function editGardenFactory(address _newGardenFactory) external;
+171	 function editGardenNFT(address _newGardenNFT) external;
+172	 function editStrategyNFT(address _newStrategyNFT) external;
+173	 function editStrategyFactory(address _newStrategyFactory) external;
+174	 function setOperation(uint8 _kind, address _operation) external;
+175	 function setDefaultTradeIntegration(address _newDefaultTradeIntegation) external;
+176	 function addKeeper(address _keeper) external;
+177	 function addKeepers(address[] memory _keepers) external;
+178	 function removeKeeper(address _keeper) external;
+179	 function enableGardenTokensTransfers() external;
+180	 function enableBABLMiningProgram() external;
+181	 function setAllowPublicGardens() external;
+182	 function editLiquidityReserve(address _reserve, uint256 _minRiskyPairLiquidityEth) external;
+183	 function maxContributorsPerGarden() external view returns (uint256);
+184	 function gardenCreationIsOpen() external view returns (bool);
+185	 function openPublicGardenCreation() external;
+186	 function setMaxContributorsPerGarden(uint256 _newMax) external;
+187	 function owner() external view returns (address);
+188	 function guardianGlobalPaused() external view returns (bool);
+189	 function guardianPaused(address _address) external view returns (bool);
+190	 function setPauseGuardian(address _guardian) external;
+191	 function setGlobalPause(bool _state) external returns (bool);
+192	 function setSomePause(address[] memory _address, bool _state) external returns (bool);
+193	 function isPaused(address _contract) external view returns (bool);
+194	 function priceOracle() external view returns (address);
+195	 function gardenValuer() external view returns (address);
+196	 function gardenNFT() external view returns (address);
+197	 function strategyNFT() external view returns (address);
+198	 function rewardsDistributor() external view returns (address);
+199	 function gardenFactory() external view returns (address);
+200	 function treasury() external view returns (address);
+201	 function ishtarGate() external view returns (address);
+202	 function strategyFactory() external view returns (address);
+203	 function defaultTradeIntegration() external view returns (address);
+204	 function gardenTokensTransfersEnabled() external view returns (bool);
+205	 function bablMiningProgramEnabled() external view returns (bool);
+206	 function allowPublicGardens() external view returns (bool);
+207	 function enabledOperations(uint256 _kind) external view returns (address);
+208	 function getProfitSharing() external view returns ( uint256, uint256, uint256 );
+209	 function getBABLSharing() external view returns ( uint256, uint256, uint256, uint256 );
+210	 function getGardens() external view returns (address[] memory);
+211	 function getOperations() external view returns (address[20] memory);
+212	 function isGarden(address _garden) external view returns (bool);
+213	 function isValidReserveAsset(address _reserveAsset) external view returns (bool);
+214	 function isValidKeeper(address _keeper) external view returns (bool);
+215	 function isSystemContract(address _contractAddress) external view returns (bool);
+216	 function getMinCooldownPeriod() external view returns (uint256);
+217	 function getMaxCooldownPeriod() external view returns (uint256);
+218	 function protocolPerformanceFee() external view returns (uint256);
+219	 function protocolManagementFee() external view returns (uint256);
+220	 function minLiquidityPerReserve(address _reserve) external view returns (uint256);
+221	 }
+222	 pragma solidity 0.7.6;
+223	 interface IGarden {
+224	 function initialize( address _reserveAsset, address _controller, address _creator, string memory _name, string memory _symbol, uint256[] calldata _gardenParams, uint256 _initialContribution, bool[] memory _publicGardenStrategistsStewards ) external payable;
+225	 function makeGardenPublic() external;
+226	 function setPublicRights(bool _publicStrategist, bool _publicStewards) external;
+227	 function setActive(bool _val) external;
+228	 function active() external view returns (bool);
+229	 function privateGarden() external view returns (bool);
+230	 function publicStrategists() external view returns (bool);
+231	 function publicStewards() external view returns (bool);
+232	 function controller() external view returns (address);
+233	 function creator() external view returns (address);
+234	 function isGardenStrategy(address _strategy) external view returns (bool);
+235	 function getContributor(address _contributor) external view returns ( uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256 );
+236	 function reserveAsset() external view returns (address);
+237	 function totalContributors() external view returns (uint256);
+238	 function gardenInitializedAt() external view returns (uint256);
+239	 function minContribution() external view returns (uint256);
+240	 function maxContributors() external view returns (uint256);
+241	 function depositHardlock() external view returns (uint256);
+242	 function minLiquidityAsset() external view returns (uint256);
+243	 function minStrategyDuration() external view returns (uint256);
+244	 function maxStrategyDuration() external view returns (uint256);
+245	 function principal() external view returns (uint256);
+246	 function reserveAssetRewardsSetAside() external view returns (uint256);
+247	 function absoluteReturns() external view returns (int256);
+248	 function totalStake() external view returns (uint256);
+249	 function minVotesQuorum() external view returns (uint256);
+250	 function minVoters() external view returns (uint256);
+251	 function maxDepositLimit() external view returns (uint256);
+252	 function strategyCooldownPeriod() external view returns (uint256);
+253	 function getStrategies() external view returns (address[] memory);
+254	 function getFinalizedStrategies() external view returns (address[] memory);
+255	 function strategyMapping(address _strategy) external view returns (bool);
+256	 function finalizeStrategy(uint256 _profits, int256 _returns) external;
+257	 function allocateCapitalToStrategy(uint256 _capital) external;
+258	 function addStrategy( string memory _name, string memory _symbol, uint256[] calldata _stratParams, uint8[] calldata _opTypes, address[] calldata _opIntegrations, bytes calldata _opEncodedDatas ) external;
+259	 function deposit( uint256 _reserveAssetQuantity, uint256 _minGardenTokenReceiveQuantity, address _to, bool mintNFT ) external payable;
+260	 function depositBySig( uint256 _amountIn, uint256 _minAmountOut, bool _mintNft, uint256 _nonce, uint256 _pricePerShare, uint8 v, bytes32 r, bytes32 s ) external;
+261	 function withdraw( uint256 _gardenTokenQuantity, uint256 _minReserveReceiveQuantity, address payable _to, bool _withPenalty, address _unwindStrategy ) external;
+262	 function withdrawBySig( uint256 _gardenTokenQuantity, uint256 _minReserveReceiveQuantity, uint256 _nonce, uint256 _pricePerShare, uint8 v, bytes32 r, bytes32 s ) external;
+263	 function claimReturns(address[] calldata _finalizedStrategies) external;
+264	 function getLockedBalance(address _contributor) external view returns (uint256);
+265	 function expireCandidateStrategy(address _strategy) external;
+266	 function burnStrategistStake(address _strategist, uint256 _amount) external;
+267	 function payKeeper(address payable _keeper, uint256 _fee) external;
+268	 function keeperDebt() external view returns (uint256);
+269	 function totalKeeperFees() external view returns (uint256);
+270	 }
+271	 pragma solidity 0.7.6;
+272	 interface IGardenNFT {
+273	 function grantGardenNFT(address _user) external returns (uint256);
+274	 function saveGardenURIAndSeed( address _garden, string memory _gardenTokenURI, uint256 _seed ) external;
+275	 function gardenTokenURIs(address _garden) external view returns (string memory);
+276	 function gardenSeeds(address _garden) external view returns (uint256);
+277	 }
+278	 pragma solidity >=0.6.2 <0.8.0;
+279	 library Address {
+280	 function isContract(address account) internal view returns (bool) {
+281	 uint256 size;
+282	 assembly {
+283	 size := extcodesize(account) }
+284	 return size > 0;
+285	 }
+286	 function sendValue(address payable recipient, uint256 amount) internal {
+287	 require(address(this).balance >= amount, "Address: insufficient balance");
+288	 (bool success, ) = recipient.call{
+289	 value: amount }
+290	 ("");
+291	 require(success, "Address: unable to send value, recipient may have reverted");
+292	 }
+293	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+294	 return functionCall(target, data, "Address: low-level call failed");
+295	 }
+296	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+297	 return functionCallWithValue(target, data, 0, errorMessage);
+298	 }
+299	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+300	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+301	 }
+302	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+303	 require(address(this).balance >= value, "Address: insufficient balance for call");
+304	 require(isContract(target), "Address: call to non-contract");
+305	 (bool success, bytes memory returndata) = target.call{
+306	 value: value }
+307	 (data);
+308	 return _verifyCallResult(success, returndata, errorMessage);
+309	 }
+310	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+311	 return functionStaticCall(target, data, "Address: low-level static call failed");
+312	 }
+313	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+314	 require(isContract(target), "Address: static call to non-contract");
+315	 (bool success, bytes memory returndata) = target.staticcall(data);
+316	 return _verifyCallResult(success, returndata, errorMessage);
+317	 }
+318	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+319	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+320	 }
+321	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+322	 require(isContract(target), "Address: delegate call to non-contract");
+323	 (bool success, bytes memory returndata) = target.delegatecall(data);
+324	 return _verifyCallResult(success, returndata, errorMessage);
+325	 }
+326	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+327	 if (success) {
+328	 return returndata;
+329	 }
+330	 else {
+331	 if (returndata.length > 0) {
+332	 assembly {
+333	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+334	 }
+335	 else {
+336	 revert(errorMessage);
+337	 }
+338	 }
+339	 }
+340	 }
+341	 pragma solidity 0.7.6;
+342	 interface IIntegration {
+343	 function getName() external view returns (string memory);
+344	 }

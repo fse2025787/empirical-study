@@ -1,0 +1,547 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity 0.6.12;
+3	 struct StrategyParams {
+4	 uint256 performanceFee;
+5	 uint256 activation;
+6	 uint256 debtRatio;
+7	 uint256 rateLimit;
+8	 uint256 lastReport;
+9	 uint256 totalDebt;
+10	 uint256 totalGain;
+11	 uint256 totalLoss;
+12	 }
+13	 interface IUniswapV2Router01 {
+14	 function factory() external pure returns (address);
+15	 function WETH() external pure returns (address);
+16	 function addLiquidity( address tokenA, address tokenB, uint256 amountADesired, uint256 amountBDesired, uint256 amountAMin, uint256 amountBMin, address to, uint256 deadline ) external returns ( uint256 amountA, uint256 amountB, uint256 liquidity );
+17	 function addLiquidityETH( address token, uint256 amountTokenDesired, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline ) external payable returns ( uint256 amountToken, uint256 amountETH, uint256 liquidity );
+18	 function removeLiquidity( address tokenA, address tokenB, uint256 liquidity, uint256 amountAMin, uint256 amountBMin, address to, uint256 deadline ) external returns (uint256 amountA, uint256 amountB);
+19	 function removeLiquidityETH( address token, uint256 liquidity, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline ) external returns (uint256 amountToken, uint256 amountETH);
+20	 function removeLiquidityWithPermit( address tokenA, address tokenB, uint256 liquidity, uint256 amountAMin, uint256 amountBMin, address to, uint256 deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s ) external returns (uint256 amountA, uint256 amountB);
+21	 function removeLiquidityETHWithPermit( address token, uint256 liquidity, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s ) external returns (uint256 amountToken, uint256 amountETH);
+22	 function swapExactTokensForTokens( uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline ) external returns (uint256[] memory amounts);
+23	 function swapTokensForExactTokens( uint256 amountOut, uint256 amountInMax, address[] calldata path, address to, uint256 deadline ) external returns (uint256[] memory amounts);
+24	 function swapExactETHForTokens( uint256 amountOutMin, address[] calldata path, address to, uint256 deadline ) external payable returns (uint256[] memory amounts);
+25	 function swapTokensForExactETH( uint256 amountOut, uint256 amountInMax, address[] calldata path, address to, uint256 deadline ) external returns (uint256[] memory amounts);
+26	 function swapExactTokensForETH( uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline ) external returns (uint256[] memory amounts);
+27	 function swapETHForExactTokens( uint256 amountOut, address[] calldata path, address to, uint256 deadline ) external payable returns (uint256[] memory amounts);
+28	 function quote( uint256 amountA, uint256 reserveA, uint256 reserveB ) external pure returns (uint256 amountB);
+29	 function getAmountOut( uint256 amountIn, uint256 reserveIn, uint256 reserveOut ) external pure returns (uint256 amountOut);
+30	 function getAmountIn( uint256 amountOut, uint256 reserveIn, uint256 reserveOut ) external pure returns (uint256 amountIn);
+31	 function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts);
+32	 function getAmountsIn(uint256 amountOut, address[] calldata path) external view returns (uint256[] memory amounts);
+33	 }
+34	 interface InterestRateModel {
+35	 function getBorrowRate( uint256 cash, uint256 borrows, uint256 reserves ) external view returns (uint256, uint256);
+36	 function getSupplyRate( uint256 cash, uint256 borrows, uint256 reserves, uint256 reserveFactorMantissa ) external view returns (uint256);
+37	 }
+38	 library Address {
+39	 function isContract(address account) internal view returns (bool) {
+40	 bytes32 codehash;
+41	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+42	 assembly {
+43	 codehash := extcodehash(account) }
+44	 return (codehash != accountHash && codehash != 0x0);
+45	 }
+46	 function sendValue(address payable recipient, uint256 amount) internal {
+47	 require(address(this).balance >= amount, "Address: insufficient balance");
+48	 (bool success, ) = recipient.call{
+49	 value: amount }
+50	 ("");
+51	 require(success, "Address: unable to send value, recipient may have reverted");
+52	 }
+53	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+54	 return functionCall(target, data, "Address: low-level call failed");
+55	 }
+56	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+57	 return _functionCallWithValue(target, data, 0, errorMessage);
+58	 }
+59	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+60	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+61	 }
+62	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+63	 require(address(this).balance >= value, "Address: insufficient balance for call");
+64	 return _functionCallWithValue(target, data, value, errorMessage);
+65	 }
+66	 function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+67	 require(isContract(target), "Address: call to non-contract");
+68	 (bool success, bytes memory returndata) = target.call{
+69	 value: weiValue }
+70	 (data);
+71	 if (success) {
+72	 return returndata;
+73	 }
+74	 else {
+75	 if (returndata.length > 0) {
+76	 assembly {
+77	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+78	 }
+79	 else {
+80	 revert(errorMessage);
+81	 }
+82	 }
+83	 }
+84	 }
+85	 interface IERC20 {
+86	 function totalSupply() external view returns (uint256);
+87	 function balanceOf(address account) external view returns (uint256);
+88	 function transfer(address recipient, uint256 amount) external returns (bool);
+89	 function allowance(address owner, address spender) external view returns (uint256);
+90	 function approve(address spender, uint256 amount) external returns (bool);
+91	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+92	 event Transfer(address indexed from, address indexed to, uint256 value);
+93	 event Approval(address indexed owner, address indexed spender, uint256 value);
+94	 }
+95	 library Math {
+96	 function max(uint256 a, uint256 b) internal pure returns (uint256) {
+97	 return a >= b ? a : b;
+98	 }
+99	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+100	 return a < b ? a : b;
+101	 }
+102	 function average(uint256 a, uint256 b) internal pure returns (uint256) {
+103	 return (a / 2) + (b / 2) + ((a % 2 + b % 2) / 2);
+104	 }
+105	 }
+106	 library SafeMath {
+107	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+108	 uint256 c = a + b;
+109	 require(c >= a, "SafeMath: addition overflow");
+110	 return c;
+111	 }
+112	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+113	 return sub(a, b, "SafeMath: subtraction overflow");
+114	 }
+115	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+116	 require(b <= a, errorMessage);
+117	 uint256 c = a - b;
+118	 return c;
+119	 }
+120	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+121	 if (a == 0) {
+122	 return 0;
+123	 }
+124	 uint256 c = a * b;
+125	 require(c / a == b, "SafeMath: multiplication overflow");
+126	 return c;
+127	 }
+128	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+129	 return div(a, b, "SafeMath: division by zero");
+130	 }
+131	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+132	 require(b > 0, errorMessage);
+133	 uint256 c = a / b;
+134	 return c;
+135	 }
+136	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+137	 return mod(a, b, "SafeMath: modulo by zero");
+138	 }
+139	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+140	 require(b != 0, errorMessage);
+141	 return a % b;
+142	 }
+143	 }
+144	 interface CTokenI {
+145	 event AccrueInterest(uint256 cashPrior, uint256 interestAccumulated, uint256 borrowIndex, uint256 totalBorrows);
+146	 event Mint(address minter, uint256 mintAmount, uint256 mintTokens);
+147	 event Redeem(address redeemer, uint256 redeemAmount, uint256 redeemTokens);
+148	 event Borrow(address borrower, uint256 borrowAmount, uint256 accountBorrows, uint256 totalBorrows);
+149	 event RepayBorrow(address payer, address borrower, uint256 repayAmount, uint256 accountBorrows, uint256 totalBorrows);
+150	 event LiquidateBorrow(address liquidator, address borrower, uint256 repayAmount, address cTokenCollateral, uint256 seizeTokens);
+151	 event NewPendingAdmin(address oldPendingAdmin, address newPendingAdmin);
+152	 event NewAdmin(address oldAdmin, address newAdmin);
+153	 event NewReserveFactor(uint256 oldReserveFactorMantissa, uint256 newReserveFactorMantissa);
+154	 event ReservesAdded(address benefactor, uint256 addAmount, uint256 newTotalReserves);
+155	 event ReservesReduced(address admin, uint256 reduceAmount, uint256 newTotalReserves);
+156	 event Transfer(address indexed from, address indexed to, uint256 amount);
+157	 event Approval(address indexed owner, address indexed spender, uint256 amount);
+158	 event Failure(uint256 error, uint256 info, uint256 detail);
+159	 function transfer(address dst, uint256 amount) external returns (bool);
+160	 function transferFrom( address src, address dst, uint256 amount ) external returns (bool);
+161	 function approve(address spender, uint256 amount) external returns (bool);
+162	 function allowance(address owner, address spender) external view returns (uint256);
+163	 function balanceOf(address owner) external view returns (uint256);
+164	 function balanceOfUnderlying(address owner) external returns (uint256);
+165	 function symbol() external view returns (string memory);
+166	 function getAccountSnapshot(address account) external view returns ( uint256, uint256, uint256, uint256 );
+167	 function borrowRatePerBlock() external view returns (uint256);
+168	 function supplyRatePerBlock() external view returns (uint256);
+169	 function totalBorrowsCurrent() external returns (uint256);
+170	 function borrowBalanceCurrent(address account) external returns (uint256);
+171	 function borrowBalanceStored(address account) external view returns (uint256);
+172	 function exchangeRateCurrent() external returns (uint256);
+173	 function accrualBlockNumber() external view returns (uint256);
+174	 function exchangeRateStored() external view returns (uint256);
+175	 function getCash() external view returns (uint256);
+176	 function accrueInterest() external returns (uint256);
+177	 function interestRateModel() external view returns (InterestRateModel);
+178	 function totalReserves() external view returns (uint256);
+179	 function reserveFactorMantissa() external view returns (uint256);
+180	 function seize( address liquidator, address borrower, uint256 seizeTokens ) external returns (uint256);
+181	 function totalBorrows() external view returns (uint256);
+182	 function totalSupply() external view returns (uint256);
+183	 }
+184	 interface ISafeBox is IERC20{
+185	 function cToken() external returns (address);
+186	 function uToken() external returns (address);
+187	 function deposit(uint amount) external;
+188	 function withdraw(uint amount) external;
+189	 function claim(uint totalReward, bytes32[] memory proof) external;
+190	 }
+191	 interface IUniswapV2Router02 is IUniswapV2Router01 {
+192	 function removeLiquidityETHSupportingFeeOnTransferTokens( address token, uint256 liquidity, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline ) external returns (uint256 amountETH);
+193	 function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens( address token, uint256 liquidity, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s ) external returns (uint256 amountETH);
+194	 function swapExactTokensForTokensSupportingFeeOnTransferTokens( uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline ) external;
+195	 function swapExactETHForTokensSupportingFeeOnTransferTokens( uint256 amountOutMin, address[] calldata path, address to, uint256 deadline ) external payable;
+196	 function swapExactTokensForETHSupportingFeeOnTransferTokens( uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline ) external;
+197	 }
+198	 library SafeERC20 {
+199	 using SafeMath for uint256;
+200	 using Address for address;
+201	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+202	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+203	 }
+204	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+205	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+206	 }
+207	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+208	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+209	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+210	 }
+211	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+212	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+213	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+214	 }
+215	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+216	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+217	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+218	 }
+219	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+220	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+221	 if (returndata.length > 0) {
+222	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+223	 }
+224	 }
+225	 }
+226	 interface VaultAPI is IERC20 {
+227	 function apiVersion() external view returns (string memory);
+228	 function withdraw(uint256 shares, address recipient) external;
+229	 function token() external view returns (address);
+230	 function strategies(address _strategy) external view returns (StrategyParams memory);
+231	 function creditAvailable() external view returns (uint256);
+232	 function debtOutstanding() external view returns (uint256);
+233	 function expectedReturn() external view returns (uint256);
+234	 function report( uint256 _gain, uint256 _loss, uint256 _debtPayment ) external returns (uint256);
+235	 function revokeStrategy() external;
+236	 function governance() external view returns (address);
+237	 }
+238	 interface CErc20I is CTokenI {
+239	 function mint(uint256 mintAmount) external returns (uint256);
+240	 function redeem(uint256 redeemTokens) external returns (uint256);
+241	 function redeemUnderlying(uint256 redeemAmount) external returns (uint256);
+242	 function borrow(uint256 borrowAmount) external returns (uint256);
+243	 function repayBorrow(uint256 repayAmount) external returns (uint256);
+244	 function repayBorrowBehalf(address borrower, uint256 repayAmount) external returns (uint256);
+245	 function liquidateBorrow( address borrower, uint256 repayAmount, CTokenI cTokenCollateral ) external returns (uint256);
+246	 function underlying() external view returns (address);
+247	 }
+248	 abstract contract BaseStrategy {
+249	 using SafeMath for uint256;
+250	 function apiVersion() public pure returns (string memory) {
+251	 return "0.3.0";
+252	 }
+253	 function name() external virtual view returns (string memory);
+254	 function delegatedAssets() external virtual view returns (uint256) {
+255	 return 0;
+256	 }
+257	 VaultAPI public vault;
+258	 address public strategist;
+259	 address public rewards;
+260	 address public keeper;
+261	 IERC20 public want;
+262	 event Harvested(uint256 profit, uint256 loss, uint256 debtPayment, uint256 debtOutstanding);
+263	 event UpdatedStrategist(address newStrategist);
+264	 event UpdatedKeeper(address newKeeper);
+265	 event UpdatedRewards(address rewards);
+266	 event UpdatedReportDelay(uint256 delay);
+267	 event UpdatedProfitFactor(uint256 profitFactor);
+268	 event UpdatedDebtThreshold(uint256 debtThreshold);
+269	 event EmergencyExitEnabled();
+270	 uint256 public maxReportDelay = 86400;
+271	 uint256 public profitFactor = 100;
+272	 uint256 public debtThreshold = 0;
+273	 bool public emergencyExit;
+274	 modifier onlyAuthorized() {
+275	 require(msg.sender == strategist || msg.sender == governance(), "!authorized");
+276	 _;
+277	 }
+278	 modifier onlyStrategist() {
+279	 require(msg.sender == strategist, "!strategist");
+280	 _;
+281	 }
+282	 modifier onlyGovernance() {
+283	 require(msg.sender == governance(), "!authorized");
+284	 _;
+285	 }
+286	 modifier onlyKeepers() {
+287	 require(msg.sender == keeper || msg.sender == strategist || msg.sender == governance(), "!authorized");
+288	 _;
+289	 }
+290	 constructor(address _vault) public {
+291	 vault = VaultAPI(_vault);
+292	 want = IERC20(vault.token());
+293	 want.approve(_vault, uint256(-1));
+294	 strategist = msg.sender;
+295	 rewards = msg.sender;
+296	 keeper = msg.sender;
+297	 }
+298	 function setStrategist(address _strategist) external onlyAuthorized {
+299	 require(_strategist != address(0));
+300	 strategist = _strategist;
+301	 emit UpdatedStrategist(_strategist);
+302	 }
+303	 function setKeeper(address _keeper) external onlyAuthorized {
+304	 require(_keeper != address(0));
+305	 keeper = _keeper;
+306	 emit UpdatedKeeper(_keeper);
+307	 }
+308	 function setRewards(address _rewards) external onlyStrategist {
+309	 require(_rewards != address(0));
+310	 rewards = _rewards;
+311	 emit UpdatedRewards(_rewards);
+312	 }
+313	 function setMaxReportDelay(uint256 _delay) external onlyAuthorized {
+314	 maxReportDelay = _delay;
+315	 emit UpdatedReportDelay(_delay);
+316	 }
+317	 function setProfitFactor(uint256 _profitFactor) external onlyAuthorized {
+318	 profitFactor = _profitFactor;
+319	 emit UpdatedProfitFactor(_profitFactor);
+320	 }
+321	 function setDebtThreshold(uint256 _debtThreshold) external onlyAuthorized {
+322	 debtThreshold = _debtThreshold;
+323	 emit UpdatedDebtThreshold(_debtThreshold);
+324	 }
+325	 function governance() internal view returns (address) {
+326	 return vault.governance();
+327	 }
+328	 function estimatedTotalAssets() public virtual view returns (uint256);
+329	 function isActive() public view returns (bool) {
+330	 return vault.strategies(address(this)).debtRatio > 0 || estimatedTotalAssets() > 0;
+331	 }
+332	 function prepareReturn(uint256 _debtOutstanding) internal virtual returns ( uint256 _profit, uint256 _loss, uint256 _debtPayment );
+333	 function adjustPosition(uint256 _debtOutstanding) internal virtual;
+334	 function liquidatePosition(uint256 _amountNeeded) internal virtual returns (uint256 _liquidatedAmount, uint256 _loss);
+335	 function distributeRewards() internal virtual {
+336	 uint256 balance = vault.balanceOf(address(this));
+337	 if (balance > 0) {
+338	 vault.transfer(rewards, balance);
+339	 }
+340	 }
+341	 function tendTrigger(uint256 callCost) public virtual view returns (bool) {
+342	 return false;
+343	 }
+344	 function tend() external onlyKeepers {
+345	 adjustPosition(vault.debtOutstanding());
+346	 }
+347	 function harvestTrigger(uint256 callCost) public virtual view returns (bool) {
+348	 StrategyParams memory params = vault.strategies(address(this));
+349	 if (params.activation == 0) return false;
+350	 if (block.timestamp.sub(params.lastReport) >= maxReportDelay) return true;
+351	 uint256 outstanding = vault.debtOutstanding();
+352	 if (outstanding > debtThreshold) return true;
+353	 uint256 total = estimatedTotalAssets();
+354	 if (total.add(debtThreshold) < params.totalDebt) return true;
+355	 uint256 profit = 0;
+356	 if (total > params.totalDebt) profit = total.sub(params.totalDebt);
+357	 uint256 credit = vault.creditAvailable();
+358	 return (profitFactor.mul(callCost) < credit.add(profit));
+359	 }
+360	 function harvest() external onlyKeepers {
+361	 uint256 profit = 0;
+362	 uint256 loss = 0;
+363	 uint256 debtOutstanding = vault.debtOutstanding();
+364	 uint256 debtPayment = 0;
+365	 if (emergencyExit) {
+366	 uint256 totalAssets = estimatedTotalAssets();
+367	 (debtPayment, loss) = liquidatePosition(totalAssets > debtOutstanding ? totalAssets : debtOutstanding);
+368	 if (debtPayment > debtOutstanding) {
+369	 profit = debtPayment.sub(debtOutstanding);
+370	 debtPayment = debtOutstanding;
+371	 }
+372	 }
+373	 else {
+374	 (profit, loss, debtPayment) = prepareReturn(debtOutstanding);
+375	 }
+376	 debtOutstanding = vault.report(profit, loss, debtPayment);
+377	 distributeRewards();
+378	 adjustPosition(debtOutstanding);
+379	 emit Harvested(profit, loss, debtPayment, debtOutstanding);
+380	 }
+381	 function withdraw(uint256 _amountNeeded) external returns (uint256 _loss) {
+382	 require(msg.sender == address(vault), "!vault");
+383	 uint256 amountFreed;
+384	 (amountFreed, _loss) = liquidatePosition(_amountNeeded);
+385	 want.transfer(msg.sender, amountFreed);
+386	 }
+387	 function prepareMigration(address _newStrategy) internal virtual;
+388	 function migrate(address _newStrategy) external {
+389	 require(msg.sender == address(vault) || msg.sender == governance());
+390	 require(BaseStrategy(_newStrategy).vault() == vault);
+391	 prepareMigration(_newStrategy);
+392	 want.transfer(_newStrategy, want.balanceOf(address(this)));
+393	 }
+394	 function setEmergencyExit() external onlyAuthorized {
+395	 emergencyExit = true;
+396	 vault.revokeStrategy();
+397	 emit EmergencyExitEnabled();
+398	 }
+399	 function protectedTokens() internal virtual view returns (address[] memory);
+400	 function sweep(address _token) external onlyGovernance {
+401	 require(_token != address(want), "!want");
+402	 require(_token != address(vault), "!shares");
+403	 address[] memory _protectedTokens = protectedTokens();
+404	 for (uint256 i; i < _protectedTokens.length; i++) require(_token != _protectedTokens[i], "!protected");
+405	 IERC20(_token).transfer(governance(), IERC20(_token).balanceOf(address(this)));
+406	 }
+407	 }
+408	 contract Strategy is BaseStrategy {
+409	 using SafeERC20 for IERC20;
+410	 using Address for address;
+411	 using SafeMath for uint256;
+412	 address private uniswapRouter = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
+413	 ISafeBox public safeBox;
+414	 CErc20I public crToken;
+415	 address public constant weth = address(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+416	 constructor(address _vault, address _safeBox) public BaseStrategy(_vault) {
+417	 profitFactor = 1000;
+418	 debtThreshold = 1_000_000 *1e18;
+419	 safeBox = ISafeBox(_safeBox);
+420	 require(address(want) == safeBox.uToken(), "Wrong safebox");
+421	 crToken = CErc20I(safeBox.cToken());
+422	 want.safeApprove(_safeBox, uint256(-1));
+423	 }
+424	 function name() external override view returns (string memory) {
+425	 return string(abi.encodePacked("StrategyAH2Earn", crToken.symbol()));
+426	 }
+427	 function claim(uint totalReward, bytes32[] memory proof) public onlyAuthorized {
+428	 safeBox.claim(totalReward, proof);
+429	 }
+430	 function estimatedTotalAssets() public override view returns (uint256) {
+431	 return want.balanceOf(address(this)).add(convertToUnderlying(safeBox.balanceOf(address(this))));
+432	 }
+433	 function convertToUnderlying(uint256 amountOfTokens) public view returns (uint256 balance){
+434	 if (amountOfTokens == 0) {
+435	 balance = 0;
+436	 }
+437	 else {
+438	 balance = amountOfTokens.mul(crToken.exchangeRateStored()).div(1e18);
+439	 }
+440	 }
+441	 function convertFromUnderlying(uint256 amountOfUnderlying) public view returns (uint256 balance){
+442	 if (amountOfUnderlying == 0) {
+443	 balance = 0;
+444	 }
+445	 else {
+446	 balance = amountOfUnderlying.mul(1e18).div(crToken.exchangeRateStored());
+447	 }
+448	 }
+449	 function prepareReturn(uint256 _debtOutstanding) internal override returns ( uint256 _profit, uint256 _loss, uint256 _debtPayment ) {
+450	 _debtPayment = _debtOutstanding;
+451	 uint256 lentAssets = convertToUnderlying(safeBox.balanceOf(address(this)));
+452	 uint256 looseAssets = want.balanceOf(address(this));
+453	 uint256 total = looseAssets.add(lentAssets);
+454	 if (lentAssets == 0) {
+455	 if (_debtPayment > looseAssets) {
+456	 _debtPayment = looseAssets;
+457	 }
+458	 return (_profit, _loss, _debtPayment);
+459	 }
+460	 uint256 debt = vault.strategies(address(this)).totalDebt;
+461	 if (total > debt) {
+462	 _profit = total - debt;
+463	 uint256 amountToFree = _profit.add(_debtPayment);
+464	 if (amountToFree > 0 && looseAssets < amountToFree) {
+465	 _withdrawSome(amountToFree.sub(looseAssets));
+466	 uint256 newLoose = want.balanceOf(address(this));
+467	 if (newLoose < amountToFree) {
+468	 if (_profit > newLoose) {
+469	 _profit = newLoose;
+470	 _debtPayment = 0;
+471	 }
+472	 else {
+473	 _debtPayment = Math.min(newLoose - _profit, _debtPayment);
+474	 }
+475	 }
+476	 }
+477	 }
+478	 else {
+479	 _loss = debt - total;
+480	 uint256 amountToFree = _debtPayment;
+481	 if (amountToFree > 0 && looseAssets < amountToFree) {
+482	 _withdrawSome(amountToFree.sub(looseAssets));
+483	 uint256 newLoose = want.balanceOf(address(this));
+484	 if (newLoose < amountToFree) {
+485	 _debtPayment = newLoose;
+486	 }
+487	 }
+488	 }
+489	 }
+490	 function adjustPosition(uint256 _debtOutstanding) internal override {
+491	 uint256 _toInvest = want.balanceOf(address(this));
+492	 safeBox.deposit(_toInvest);
+493	 }
+494	 function _withdrawSome(uint256 _amount) internal returns (uint256) {
+495	 uint256 amountInCtokens = convertFromUnderlying(_amount);
+496	 uint256 balanceOfSafebox = safeBox.balanceOf(address(this));
+497	 uint256 balanceBefore = want.balanceOf(address(this));
+498	 if(balanceOfSafebox < 2){
+499	 return 0;
+500	 }
+501	 balanceOfSafebox = balanceOfSafebox-1;
+502	 if (amountInCtokens > balanceOfSafebox) {
+503	 amountInCtokens = balanceOfSafebox;
+504	 }
+505	 uint256 liquidity = want.balanceOf(address(crToken));
+506	 uint256 liquidityInCTokens = convertFromUnderlying(liquidity);
+507	 if (liquidityInCTokens > 2) {
+508	 liquidityInCTokens = liquidityInCTokens-1;
+509	 if (amountInCtokens <= liquidityInCTokens) {
+510	 safeBox.withdraw(amountInCtokens);
+511	 }
+512	 else {
+513	 safeBox.withdraw(liquidityInCTokens);
+514	 }
+515	 }
+516	 uint256 newBalance = want.balanceOf(address(this));
+517	 return newBalance.sub(balanceBefore);
+518	 }
+519	 function liquidatePosition(uint256 _amountNeeded) internal override returns (uint256 _liquidatedAmount, uint256 _loss) {
+520	 _loss;
+521	 uint256 looseAssets = want.balanceOf(address(this));
+522	 if(looseAssets < _amountNeeded){
+523	 _withdrawSome(_amountNeeded - looseAssets);
+524	 }
+525	 _liquidatedAmount = Math.min(_amountNeeded, want.balanceOf(address(this)));
+526	 }
+527	 function harvestTrigger(uint256 callCost) public override view returns (bool) {
+528	 uint256 wantCallCost = ethToWant(callCost);
+529	 return super.harvestTrigger(wantCallCost);
+530	 }
+531	 function ethToWant(uint256 _amount) internal view returns (uint256) {
+532	 address[] memory path = new address[](2);
+533	 path[0] = weth;
+534	 path[1] = address(want);
+535	 uint256[] memory amounts = IUniswapV2Router02(uniswapRouter).getAmountsOut(_amount, path);
+536	 return amounts[amounts.length - 1];
+537	 }
+538	 function prepareMigration(address _newStrategy) internal override {
+539	 safeBox.transfer(_newStrategy, safeBox.balanceOf(address(this)));
+540	 }
+541	 function protectedTokens() internal override view returns (address[] memory) {
+542	 address[] memory protected = new address[](1);
+543	 protected[0] = address(safeBox);
+544	 return protected;
+545	 }
+546	 }

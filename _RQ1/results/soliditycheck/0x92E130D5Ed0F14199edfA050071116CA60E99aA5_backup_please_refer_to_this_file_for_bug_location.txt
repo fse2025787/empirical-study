@@ -1,0 +1,115 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity >=0.6.0 <0.8.0;
+12	 abstract contract Ownable is Context {
+13	 address private _owner;
+14	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+15	 constructor () internal {
+16	 address msgSender = _msgSender();
+17	 _owner = msgSender;
+18	 emit OwnershipTransferred(address(0), msgSender);
+19	 }
+20	 function owner() public view virtual returns (address) {
+21	 return _owner;
+22	 }
+23	 modifier onlyOwner() {
+24	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+25	 _;
+26	 }
+27	 function renounceOwnership() public virtual onlyOwner {
+28	 emit OwnershipTransferred(_owner, address(0));
+29	 _owner = address(0);
+30	 }
+31	 function transferOwnership(address newOwner) public virtual onlyOwner {
+32	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+33	 emit OwnershipTransferred(_owner, newOwner);
+34	 _owner = newOwner;
+35	 }
+36	 }
+37	 pragma solidity >=0.5.0;
+38	 interface IMerkleDistributor {
+39	 function token() external view returns (address);
+40	 function merkleRoot() external view returns (bytes32);
+41	 function isClaimed(uint256 index) external view returns (bool);
+42	 function claim(uint256 index, address account, uint256 amount, bytes32[] calldata merkleProof) external;
+43	 event Claimed(uint256 index, address account, uint256 amount);
+44	 }
+45	 pragma solidity 0.7.6;
+46	 contract MerkleDistributor is IMerkleDistributor, Ownable {
+47	 address public immutable override token;
+48	 bytes32 public immutable override merkleRoot;
+49	 uint256 public immutable startTime;
+50	 uint256 public immutable endTime;
+51	 mapping(uint256 => uint256) private claimedBitMap;
+52	 constructor(address token_, bytes32 merkleRoot_, uint256 startTime_, uint256 endTime_) public {
+53	 require(token_ != address(0), 'Invalid token address');
+54	 require(startTime_ > block.timestamp, 'Invalid start time');
+55	 require(endTime_ > startTime_, 'Invalid end time');
+56	 token = token_;
+57	 merkleRoot = merkleRoot_;
+58	 startTime = startTime_;
+59	 endTime = endTime_;
+60	 }
+61	 function isClaimed(uint256 index) public view override returns (bool) {
+62	 uint256 claimedWordIndex = index / 256;
+63	 uint256 claimedBitIndex = index % 256;
+64	 uint256 claimedWord = claimedBitMap[claimedWordIndex];
+65	 uint256 mask = (1 << claimedBitIndex);
+66	 return claimedWord & mask == mask;
+67	 }
+68	 function _setClaimed(uint256 index) private {
+69	 uint256 claimedWordIndex = index / 256;
+70	 uint256 claimedBitIndex = index % 256;
+71	 claimedBitMap[claimedWordIndex] = claimedBitMap[claimedWordIndex] | (1 << claimedBitIndex);
+72	 }
+73	 function claim(uint256 index, address account, uint256 amount, bytes32[] calldata merkleProof) external override {
+74	 require(block.timestamp >= startTime, 'Drop not yet available.');
+75	 require(block.timestamp <= endTime, 'Drop already expired.');
+76	 require(!isClaimed(index), 'Drop already claimed.');
+77	 bytes32 node = keccak256(abi.encodePacked(index, account, amount));
+78	 require(MerkleProof.verify(merkleProof, merkleRoot, node), 'Invalid proof.');
+79	 _setClaimed(index);
+80	 require(IERC20(token).transfer(account, amount), 'Transfer failed.');
+81	 emit Claimed(index, account, amount);
+82	 }
+83	 function withdrawRemaining(address recipient) external onlyOwner {
+84	 uint256 balance = IERC20(token).balanceOf(address(this));
+85	 require(IERC20(token).transfer(recipient, balance), 'Withdraw remaining failed.');
+86	 }
+87	 }
+88	 pragma solidity >=0.6.0 <0.8.0;
+89	 interface IERC20 {
+90	 function totalSupply() external view returns (uint256);
+91	 function balanceOf(address account) external view returns (uint256);
+92	 function transfer(address recipient, uint256 amount) external returns (bool);
+93	 function allowance(address owner, address spender) external view returns (uint256);
+94	 function approve(address spender, uint256 amount) external returns (bool);
+95	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+96	 event Transfer(address indexed from, address indexed to, uint256 value);
+97	 event Approval(address indexed owner, address indexed spender, uint256 value);
+98	 }
+99	 pragma solidity >=0.6.0 <0.8.0;
+100	 library MerkleProof {
+101	 function verify(bytes32[] memory proof, bytes32 root, bytes32 leaf) internal pure returns (bool) {
+102	 bytes32 computedHash = leaf;
+103	 for (uint256 i = 0; i < proof.length; i++) {
+104	 bytes32 proofElement = proof[i];
+105	 if (computedHash <= proofElement) {
+106	 computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
+107	 }
+108	 else {
+109	 computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
+110	 }
+111	 }
+112	 return computedHash == root;
+113	 }
+114	 }

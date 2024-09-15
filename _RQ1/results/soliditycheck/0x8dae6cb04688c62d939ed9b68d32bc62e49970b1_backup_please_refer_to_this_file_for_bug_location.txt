@@ -1,0 +1,109 @@
+row number 
+1	               pragma solidity 0.6.12;
+2	 library Address {
+3	 function isContract(address account) internal view returns (bool) {
+4	 bytes32 codehash;
+5	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+6	 assembly {
+7	 codehash := extcodehash(account) }
+8	 return (codehash != accountHash && codehash != 0x0);
+9	 }
+10	 function sendValue(address payable recipient, uint256 amount) internal {
+11	 require(address(this).balance >= amount, 'Address: insufficient balance');
+12	 (bool success, ) = recipient.call{
+13	 value: amount}
+14	 ('');
+15	 require(success, 'Address: unable to send value, recipient may have reverted');
+16	 }
+17	 }
+18	 pragma solidity ^0.6.0;
+19	 abstract contract Proxy {
+20	 fallback() external payable {
+21	 _fallback();
+22	 }
+23	 function _implementation() internal virtual view returns (address);
+24	 function _delegate(address implementation) internal {
+25	 assembly {
+26	 calldatacopy(0, 0, calldatasize()) let result := delegatecall(gas(), implementation, 0, calldatasize(), 0, 0) returndatacopy(0, 0, returndatasize()) switch result case 0 {
+27	 revert(0, returndatasize()) }
+28	 default {
+29	 return(0, returndatasize()) }
+30	 }
+31	 }
+32	 function _willFallback() internal virtual {
+33	 }
+34	 function _fallback() internal {
+35	 _willFallback();
+36	 _delegate(_implementation());
+37	 }
+38	 }
+39	 pragma solidity 0.6.12;
+40	 contract BaseUpgradeabilityProxy is Proxy {
+41	 event Upgraded(address indexed implementation);
+42	 bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+43	 function _implementation() internal override view returns (address impl) {
+44	 bytes32 slot = IMPLEMENTATION_SLOT;
+45	 assembly {
+46	 impl := sload(slot) }
+47	 }
+48	 function _upgradeTo(address newImplementation) internal {
+49	 _setImplementation(newImplementation);
+50	 emit Upgraded(newImplementation);
+51	 }
+52	 function _setImplementation(address newImplementation) internal {
+53	 require( Address.isContract(newImplementation), 'Cannot set a proxy implementation to a non-contract address' );
+54	 bytes32 slot = IMPLEMENTATION_SLOT;
+55	 assembly {
+56	 sstore(slot, newImplementation) }
+57	 }
+58	 }
+59	 contract InitializableUpgradeabilityProxy is BaseUpgradeabilityProxy {
+60	 function initialize(address _logic, bytes memory _data) public payable {
+61	 require(_implementation() == address(0));
+62	 assert(IMPLEMENTATION_SLOT == bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1));
+63	 _setImplementation(_logic);
+64	 if (_data.length > 0) {
+65	 (bool success, ) = _logic.delegatecall(_data);
+66	 require(success);
+67	 }
+68	 }
+69	 }
+70	 contract BaseImmutableAdminUpgradeabilityProxy is BaseUpgradeabilityProxy {
+71	 address immutable ADMIN;
+72	 constructor(address admin) public {
+73	 ADMIN = admin;
+74	 }
+75	 modifier ifAdmin() {
+76	 if (msg.sender == ADMIN) {
+77	 _;
+78	 }
+79	 else {
+80	 _fallback();
+81	 }
+82	 }
+83	 function admin() external ifAdmin returns (address) {
+84	 return ADMIN;
+85	 }
+86	 function implementation() external ifAdmin returns (address) {
+87	 return _implementation();
+88	 }
+89	 function upgradeTo(address newImplementation) external ifAdmin {
+90	 _upgradeTo(newImplementation);
+91	 }
+92	 function upgradeToAndCall(address newImplementation, bytes calldata data) external payable ifAdmin {
+93	 _upgradeTo(newImplementation);
+94	 (bool success, ) = newImplementation.delegatecall(data);
+95	 require(success);
+96	 }
+97	 function _willFallback() internal virtual override {
+98	 require(msg.sender != ADMIN, 'Cannot call fallback function from the proxy admin');
+99	 super._willFallback();
+100	 }
+101	 }
+102	 contract InitializableImmutableAdminUpgradeabilityProxy is BaseImmutableAdminUpgradeabilityProxy, InitializableUpgradeabilityProxy {
+103	 constructor(address admin) public BaseImmutableAdminUpgradeabilityProxy(admin) {
+104	 }
+105	 function _willFallback() internal override(BaseImmutableAdminUpgradeabilityProxy, Proxy) {
+106	 BaseImmutableAdminUpgradeabilityProxy._willFallback();
+107	 }
+108	 }

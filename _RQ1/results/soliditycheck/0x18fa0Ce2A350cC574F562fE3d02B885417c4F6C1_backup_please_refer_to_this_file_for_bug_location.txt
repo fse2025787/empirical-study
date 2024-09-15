@@ -1,0 +1,622 @@
+row number 
+1	          pragma solidity >=0.4.24 <0.8.0;
+2	 abstract contract Initializable {
+3	 bool private _initialized;
+4	 bool private _initializing;
+5	 modifier initializer() {
+6	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+7	 bool isTopLevelCall = !_initializing;
+8	 if (isTopLevelCall) {
+9	 _initializing = true;
+10	 _initialized = true;
+11	 }
+12	 _;
+13	 if (isTopLevelCall) {
+14	 _initializing = false;
+15	 }
+16	 }
+17	 function _isConstructor() private view returns (bool) {
+18	 return !AddressUpgradeable.isContract(address(this));
+19	 }
+20	 }
+21	 pragma solidity >=0.6.0 <0.8.0;
+22	 abstract contract ContextUpgradeable is Initializable {
+23	 function __Context_init() internal initializer {
+24	 __Context_init_unchained();
+25	 }
+26	 function __Context_init_unchained() internal initializer {
+27	 }
+28	 function _msgSender() internal view virtual returns (address payable) {
+29	 return msg.sender;
+30	 }
+31	 function _msgData() internal view virtual returns (bytes memory) {
+32	 this;
+33	 return msg.data;
+34	 }
+35	 uint256[50] private __gap;
+36	 }
+37	 pragma solidity ^0.7.6;
+38	 interface IFurnace {
+39	 event Deposit(address indexed _account, uint256 _amount);
+40	 event Withdraw(address indexed _account, address _recipient, uint256 _amount);
+41	 event Claim(address indexed _account, address _recipient, uint256 _amount);
+42	 event Distribute(address indexed _origin, uint256 _amount);
+43	 event Harvest(address indexed _caller, uint256 _amount);
+44	 function getUserInfo(address _account) external view returns (uint256 unrealised, uint256 realised);
+45	 function deposit(uint256 _amount) external;
+46	 function depositFor(address _account, uint256 _amount) external;
+47	 function withdraw(address _recipient, uint256 _amount) external;
+48	 function withdrawAll(address _recipient) external;
+49	 function claim(address _recipient) external;
+50	 function exit(address _recipient) external;
+51	 function distribute(address _origin, uint256 _amount) external;
+52	 }
+53	 pragma solidity ^0.7.0;
+54	 abstract contract OwnableUpgradeable is Initializable, ContextUpgradeable {
+55	 address private _owner;
+56	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+57	 function __Ownable_init() internal initializer {
+58	 __Context_init_unchained();
+59	 __Ownable_init_unchained();
+60	 }
+61	 function __Ownable_init_unchained() internal initializer {
+62	 address msgSender = _msgSender();
+63	 _owner = msgSender;
+64	 emit OwnershipTransferred(address(0), msgSender);
+65	 }
+66	 function owner() public view virtual returns (address) {
+67	 return _owner;
+68	 }
+69	 modifier onlyOwner() {
+70	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+71	 _;
+72	 }
+73	 function renounceOwnership() public virtual onlyOwner {
+74	 emit OwnershipTransferred(_owner, address(0));
+75	 _owner = address(0);
+76	 }
+77	 function transferOwnership(address newOwner) public virtual onlyOwner {
+78	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+79	 emit OwnershipTransferred(_owner, newOwner);
+80	 _owner = newOwner;
+81	 }
+82	 uint256[49] private __gap;
+83	 }
+84	 pragma solidity ^0.7.0;
+85	 interface IERC20 {
+86	 function totalSupply() external view returns (uint256);
+87	 function balanceOf(address account) external view returns (uint256);
+88	 function transfer(address recipient, uint256 amount) external returns (bool);
+89	 function allowance(address owner, address spender) external view returns (uint256);
+90	 function approve(address spender, uint256 amount) external returns (bool);
+91	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+92	 event Transfer(address indexed from, address indexed to, uint256 value);
+93	 event Approval(address indexed owner, address indexed spender, uint256 value);
+94	 }
+95	 pragma solidity ^0.7.6;
+96	 contract Furnace is OwnableUpgradeable, IFurnace {
+97	 using SafeMathUpgradeable for uint256;
+98	 using SafeERC20Upgradeable for IERC20Upgradeable;
+99	 event UpdateWhitelist(address indexed _whitelist, bool _status);
+100	 event UpdateStakePercentage(uint256 _percentage);
+101	 event UpdateStakeThreshold(uint256 _threshold);
+102	 event UpdatePlatformFeePercentage(uint256 _feePercentage);
+103	 event UpdateHarvestBountyPercentage(uint256 _percentage);
+104	 event UpdatePlatform(address indexed _platform);
+105	 event UpdateZap(address indexed _zap);
+106	 event UpdateGovernor(address indexed _governor);
+107	 event UpdatePeriodLength(uint256 _length);
+108	 uint256 private constant E128 = 2**128;
+109	 uint256 private constant FEE_PRECISION = 1e9;
+110	 uint256 private constant MAX_PLATFORM_FEE = 2e8;
+111	 uint256 private constant MAX_HARVEST_BOUNTY = 1e8;
+112	 address private constant CVX = 0x4e3FBD56CD56c3e72c1403e103b45Db9da5B9D2B;
+113	 address private constant CVXCRV = 0x62B9c7356A2Dc64a1969e19C23e4f579F9810Aa7;
+114	 address private constant CVX_REWARD_POOL = 0xCF50b810E57Ac33B91dCF525C6ddd9881B139332;
+115	 struct UserInfo {
+116	 uint128 unrealised;
+117	 uint128 realised;
+118	 uint192 accUnrealisedFractionPaid;
+119	 uint64 lastDistributeIndex;
+120	 }
+121	 address public governor;
+122	 address public clevCVX;
+123	 uint128 public totalUnrealised;
+124	 uint128 public totalRealised;
+125	 uint128 public accUnrealisedFraction;
+126	 uint64 public distributeIndex;
+127	 uint64 public lastPaidOffDistributeIndex;
+128	 mapping(address => UserInfo) public userInfo;
+129	 mapping(address => bool) public isWhitelisted;
+130	 uint256 public stakePercentage;
+131	 uint256 public stakeThreshold;
+132	 address public zap;
+133	 uint256 public platformFeePercentage;
+134	 uint256 public harvestBountyPercentage;
+135	 address public platform;
+136	 struct LinearReward {
+137	 uint128 ratePerSecond;
+138	 uint32 periodLength;
+139	 uint48 lastUpdate;
+140	 uint48 finishAt;
+141	 }
+142	 LinearReward public rewardInfo;
+143	 modifier onlyWhitelisted() {
+144	 require(isWhitelisted[msg.sender], "Furnace: only whitelisted");
+145	 _;
+146	 }
+147	 modifier onlyGovernorOrOwner() {
+148	 require(msg.sender == governor || msg.sender == owner(), "Furnace: only governor or owner");
+149	 _;
+150	 }
+151	 function initialize( address _governor, address _clevCVX, address _zap, address _platform, uint256 _platformFeePercentage, uint256 _harvestBountyPercentage ) external initializer {
+152	 OwnableUpgradeable.__Ownable_init();
+153	 require(_governor != address(0), "Furnace: zero governor address");
+154	 require(_clevCVX != address(0), "Furnace: zero clevCVX address");
+155	 require(_zap != address(0), "Furnace: zero zap address");
+156	 require(_platform != address(0), "Furnace: zero platform address");
+157	 require(_platformFeePercentage <= MAX_PLATFORM_FEE, "Furnace: fee too large");
+158	 require(_harvestBountyPercentage <= MAX_HARVEST_BOUNTY, "Furnace: fee too large");
+159	 governor = _governor;
+160	 clevCVX = _clevCVX;
+161	 zap = _zap;
+162	 platform = _platform;
+163	 platformFeePercentage = _platformFeePercentage;
+164	 harvestBountyPercentage = _harvestBountyPercentage;
+165	 }
+166	 function getUserInfo(address _account) external view override returns (uint256 unrealised, uint256 realised) {
+167	 UserInfo memory _info = userInfo[_account];
+168	 if (_info.lastDistributeIndex < lastPaidOffDistributeIndex) {
+169	 return (0, _info.unrealised + _info.realised);
+170	 }
+171	 else {
+172	 uint128 _newUnrealised = _toU128( _muldiv128(_info.unrealised, accUnrealisedFraction, uint128(_info.accUnrealisedFractionPaid)) ) + 1;
+173	 if (_newUnrealised >= _info.unrealised) {
+174	 _newUnrealised = _info.unrealised;
+175	 }
+176	 uint128 _newRealised = _info.unrealised - _newUnrealised + _info.realised;
+177	 return (_newUnrealised, _newRealised);
+178	 }
+179	 }
+180	 function totalCVXInPool() public view returns (uint256) {
+181	 LinearReward memory _info = rewardInfo;
+182	 uint256 _leftover = 0;
+183	 if (_info.periodLength != 0) {
+184	 if (block.timestamp < _info.finishAt) {
+185	 _leftover = (_info.finishAt - block.timestamp) * _info.ratePerSecond;
+186	 }
+187	 }
+188	 return IERC20Upgradeable(CVX) .balanceOf(address(this)) .add(IConvexCVXRewardPool(CVX_REWARD_POOL).balanceOf(address(this))) .sub(_leftover);
+189	 }
+190	 function deposit(uint256 _amount) external override {
+191	 require(_amount > 0, "Furnace: deposit zero clevCVX");
+192	 IERC20Upgradeable(clevCVX).safeTransferFrom(msg.sender, address(this), _amount);
+193	 _deposit(msg.sender, _amount);
+194	 }
+195	 function depositFor(address _account, uint256 _amount) external override {
+196	 require(_amount > 0, "Furnace: deposit zero clevCVX");
+197	 IERC20Upgradeable(clevCVX).safeTransferFrom(msg.sender, address(this), _amount);
+198	 _deposit(_account, _amount);
+199	 }
+200	 function withdraw(address _recipient, uint256 _amount) external override {
+201	 require(_amount > 0, "Furnace: withdraw zero CVX");
+202	 _updateUserInfo(msg.sender);
+203	 _withdraw(_recipient, _amount);
+204	 }
+205	 function withdrawAll(address _recipient) external override {
+206	 _updateUserInfo(msg.sender);
+207	 _withdraw(_recipient, userInfo[msg.sender].unrealised);
+208	 }
+209	 function claim(address _recipient) external override {
+210	 _updateUserInfo(msg.sender);
+211	 _claim(_recipient);
+212	 }
+213	 function exit(address _recipient) external override {
+214	 _updateUserInfo(msg.sender);
+215	 _withdraw(_recipient, userInfo[msg.sender].unrealised);
+216	 _claim(_recipient);
+217	 }
+218	 function distribute(address _origin, uint256 _amount) external override onlyWhitelisted {
+219	 require(_amount > 0, "Furnace: distribute zero CVX");
+220	 IERC20Upgradeable(CVX).safeTransferFrom(_origin, address(this), _amount);
+221	 _distribute(_origin, _amount);
+222	 }
+223	 function harvest(address _recipient, uint256 _minimumOut) external returns (uint256) {
+224	 IConvexCVXRewardPool(CVX_REWARD_POOL).getReward(false);
+225	 uint256 _amount = IERC20Upgradeable(CVXCRV).balanceOf(address(this));
+226	 if (_amount > 0) {
+227	 IERC20Upgradeable(CVXCRV).safeTransfer(zap, _amount);
+228	 _amount = IZap(zap).zap(CVXCRV, _amount, CVX, _minimumOut);
+229	 }
+230	 emit Harvest(msg.sender, _amount);
+231	 if (_amount > 0) {
+232	 uint256 _distributeAmount = _amount;
+233	 uint256 _platformFee = platformFeePercentage;
+234	 if (_platformFee > 0) {
+235	 _platformFee = (_platformFee * _distributeAmount) / FEE_PRECISION;
+236	 IERC20Upgradeable(CVX).safeTransfer(platform, _platformFee);
+237	 _distributeAmount = _distributeAmount - _platformFee;
+238	 }
+239	 uint256 _harvestBounty = harvestBountyPercentage;
+240	 if (_harvestBounty > 0) {
+241	 _harvestBounty = (_harvestBounty * _distributeAmount) / FEE_PRECISION;
+242	 _distributeAmount = _distributeAmount - _harvestBounty;
+243	 IERC20Upgradeable(CVX).safeTransfer(_recipient, _harvestBounty);
+244	 }
+245	 _distribute(address(this), _distributeAmount);
+246	 }
+247	 return _amount;
+248	 }
+249	 function updatePendingDistribution() external {
+250	 _updatePendingDistribution();
+251	 }
+252	 function updateWhitelists(address[] memory _whitelists, bool _status) external onlyOwner {
+253	 for (uint256 i = 0; i < _whitelists.length; i++) {
+254	 require(_whitelists[i] != address(0), "Furnace: zero whitelist address");
+255	 isWhitelisted[_whitelists[i]] = _status;
+256	 emit UpdateWhitelist(_whitelists[i], _status);
+257	 }
+258	 }
+259	 function updateGovernor(address _governor) external onlyGovernorOrOwner {
+260	 require(_governor != address(0), "Furnace: zero governor address");
+261	 governor = _governor;
+262	 emit UpdateGovernor(_governor);
+263	 }
+264	 function updateStakePercentage(uint256 _percentage) external onlyGovernorOrOwner {
+265	 require(_percentage <= FEE_PRECISION, "Furnace: percentage too large");
+266	 stakePercentage = _percentage;
+267	 emit UpdateStakePercentage(_percentage);
+268	 }
+269	 function updateStakeThreshold(uint256 _threshold) external onlyGovernorOrOwner {
+270	 stakeThreshold = _threshold;
+271	 emit UpdateStakeThreshold(_threshold);
+272	 }
+273	 function updatePlatformFeePercentage(uint256 _feePercentage) external onlyOwner {
+274	 require(_feePercentage <= MAX_PLATFORM_FEE, "Furnace: fee too large");
+275	 platformFeePercentage = _feePercentage;
+276	 emit UpdatePlatformFeePercentage(_feePercentage);
+277	 }
+278	 function updateHarvestBountyPercentage(uint256 _percentage) external onlyOwner {
+279	 require(_percentage <= MAX_HARVEST_BOUNTY, "Furnace: fee too large");
+280	 harvestBountyPercentage = _percentage;
+281	 emit UpdateHarvestBountyPercentage(_percentage);
+282	 }
+283	 function updatePlatform(address _platform) external onlyOwner {
+284	 require(_platform != address(0), "Furnace: zero platform address");
+285	 platform = _platform;
+286	 emit UpdatePlatform(_platform);
+287	 }
+288	 function updateZap(address _zap) external onlyGovernorOrOwner {
+289	 require(_zap != address(0), "Furnace: zero zap address");
+290	 zap = _zap;
+291	 emit UpdateZap(_zap);
+292	 }
+293	 function updatePeriodLength(uint32 _length) external onlyGovernorOrOwner {
+294	 rewardInfo.periodLength = _length;
+295	 emit UpdatePeriodLength(_length);
+296	 }
+297	 function _updatePendingDistribution() internal {
+298	 LinearReward memory _info = rewardInfo;
+299	 if (_info.periodLength > 0) {
+300	 uint256 _currentTime = _info.finishAt;
+301	 if (_currentTime > block.timestamp) {
+302	 _currentTime = block.timestamp;
+303	 }
+304	 uint256 _duration = _currentTime >= _info.lastUpdate ? _currentTime - _info.lastUpdate : 0;
+305	 if (_duration > 0) {
+306	 _info.lastUpdate = uint48(block.timestamp);
+307	 rewardInfo = _info;
+308	 _reduceGlobalDebt(_duration.mul(_info.ratePerSecond));
+309	 }
+310	 }
+311	 }
+312	 function _updateUserInfo(address _account) internal {
+313	 _updatePendingDistribution();
+314	 UserInfo memory _info = userInfo[_account];
+315	 uint128 _accUnrealisedFraction = accUnrealisedFraction;
+316	 uint64 _distributeIndex = distributeIndex;
+317	 if (_info.lastDistributeIndex < lastPaidOffDistributeIndex) {
+318	 userInfo[_account] = UserInfo({
+319	 unrealised: 0, realised: _info.unrealised + _info.realised, accUnrealisedFractionPaid: _accUnrealisedFraction, lastDistributeIndex: _distributeIndex }
+320	 );
+321	 }
+322	 else {
+323	 uint128 _newUnrealised = _toU128( _muldiv128(_info.unrealised, _accUnrealisedFraction, uint128(_info.accUnrealisedFractionPaid)) ) + 1;
+324	 if (_newUnrealised >= _info.unrealised) {
+325	 _newUnrealised = _info.unrealised;
+326	 }
+327	 uint128 _newRealised = _info.unrealised - _newUnrealised + _info.realised;
+328	 userInfo[_account] = UserInfo({
+329	 unrealised: _newUnrealised, realised: _newRealised, accUnrealisedFractionPaid: _accUnrealisedFraction, lastDistributeIndex: _distributeIndex }
+330	 );
+331	 }
+332	 }
+333	 function _deposit(address _account, uint256 _amount) internal {
+334	 _updateUserInfo(_account);
+335	 uint256 _totalUnrealised = totalUnrealised;
+336	 uint256 _totalRealised = totalRealised;
+337	 uint256 _freeCVX = totalCVXInPool().sub(_totalRealised);
+338	 uint256 _newUnrealised;
+339	 uint256 _newRealised;
+340	 if (_freeCVX >= _amount) {
+341	 _newUnrealised = 0;
+342	 _newRealised = _amount;
+343	 }
+344	 else {
+345	 _newUnrealised = _amount - _freeCVX;
+346	 _newRealised = _freeCVX;
+347	 }
+348	 userInfo[_account].realised = _toU128(_newRealised.add(userInfo[_account].realised));
+349	 userInfo[_account].unrealised = _toU128(_newUnrealised.add(userInfo[_account].unrealised));
+350	 totalRealised = _toU128(_totalRealised.add(_newRealised));
+351	 totalUnrealised = _toU128(_totalUnrealised.add(_newUnrealised));
+352	 emit Deposit(_account, _amount);
+353	 }
+354	 function _withdraw(address _recipient, uint256 _amount) internal {
+355	 require(_amount <= userInfo[msg.sender].unrealised, "Furnace: clevCVX not enough");
+356	 userInfo[msg.sender].unrealised = uint128(uint256(userInfo[msg.sender].unrealised) - _amount);
+357	 totalUnrealised = uint128(uint256(totalUnrealised) - _amount);
+358	 IERC20Upgradeable(clevCVX).safeTransfer(_recipient, _amount);
+359	 emit Withdraw(msg.sender, _recipient, _amount);
+360	 }
+361	 function _claim(address _recipient) internal {
+362	 uint256 _amount = userInfo[msg.sender].realised;
+363	 totalRealised = uint128(uint256(totalRealised).sub(_amount));
+364	 userInfo[msg.sender].realised = 0;
+365	 uint256 _balanceInContract = IERC20Upgradeable(CVX).balanceOf(address(this));
+366	 if (_balanceInContract < _amount) {
+367	 IConvexCVXRewardPool(CVX_REWARD_POOL).withdraw(_amount - _balanceInContract, false);
+368	 }
+369	 IERC20Upgradeable(CVX).safeTransfer(_recipient, _amount);
+370	 ICLeverToken(clevCVX).burn(_amount);
+371	 emit Claim(msg.sender, _recipient, _amount);
+372	 }
+373	 function _distribute(address _origin, uint256 _amount) internal {
+374	 _updatePendingDistribution();
+375	 LinearReward memory _info = rewardInfo;
+376	 if (_info.periodLength == 0) {
+377	 _reduceGlobalDebt(_amount);
+378	 }
+379	 else {
+380	 if (block.timestamp >= _info.finishAt) {
+381	 _info.ratePerSecond = _toU128(_amount / _info.periodLength);
+382	 }
+383	 else {
+384	 uint256 _remaining = _info.finishAt - block.timestamp;
+385	 uint256 _leftover = _remaining * _info.ratePerSecond;
+386	 _info.ratePerSecond = _toU128((_amount + _leftover) / _info.periodLength);
+387	 }
+388	 _info.lastUpdate = uint48(block.timestamp);
+389	 _info.finishAt = uint48(block.timestamp + _info.periodLength);
+390	 rewardInfo = _info;
+391	 }
+392	 uint256 _toStake = totalCVXInPool().mul(stakePercentage).div(FEE_PRECISION);
+393	 uint256 _balanceStaked = IConvexCVXRewardPool(CVX_REWARD_POOL).balanceOf(address(this));
+394	 if (_balanceStaked < _toStake) {
+395	 _toStake = _toStake - _balanceStaked;
+396	 if (_toStake >= stakeThreshold) {
+397	 IERC20Upgradeable(CVX).safeApprove(CVX_REWARD_POOL, 0);
+398	 IERC20Upgradeable(CVX).safeApprove(CVX_REWARD_POOL, _toStake);
+399	 IConvexCVXRewardPool(CVX_REWARD_POOL).stake(_toStake);
+400	 }
+401	 }
+402	 emit Distribute(_origin, _amount);
+403	 }
+404	 function _reduceGlobalDebt(uint256 _amount) internal {
+405	 distributeIndex += 1;
+406	 uint256 _totalUnrealised = totalUnrealised;
+407	 uint256 _totalRealised = totalRealised;
+408	 uint128 _accUnrealisedFraction = accUnrealisedFraction;
+409	 if (_amount >= _totalUnrealised) {
+410	 totalUnrealised = 0;
+411	 totalRealised = _toU128(_totalUnrealised + _totalRealised);
+412	 accUnrealisedFraction = 0;
+413	 lastPaidOffDistributeIndex = distributeIndex;
+414	 }
+415	 else {
+416	 totalUnrealised = uint128(_totalUnrealised - _amount);
+417	 totalRealised = _toU128(_totalRealised + _amount);
+418	 uint128 _fraction = _toU128(((_totalUnrealised - _amount) * E128) / _totalUnrealised);
+419	 accUnrealisedFraction = _mul128(_accUnrealisedFraction, _fraction);
+420	 }
+421	 }
+422	 function _toU128(uint256 _value) internal pure returns (uint128) {
+423	 require(_value < 340282366920938463463374607431768211456, "Furnace: overflow");
+424	 return uint128(_value);
+425	 }
+426	 function _mul128(uint128 _a, uint128 _b) internal pure returns (uint128) {
+427	 if (_a == 0) return _b;
+428	 if (_b == 0) return _a;
+429	 return uint128((uint256(_a) * uint256(_b)) / E128);
+430	 }
+431	 function _muldiv128( uint256 _a, uint128 _b, uint128 _c ) internal pure returns (uint256) {
+432	 if (_b == 0) {
+433	 if (_c == 0) return _a;
+434	 else return _a / _c;
+435	 }
+436	 else {
+437	 if (_c == 0) return _a.mul(_b) / E128;
+438	 else return _a.mul(_b) / _c;
+439	 }
+440	 }
+441	 }
+442	 pragma solidity ^0.7.6;
+443	 interface IConvexCVXRewardPool {
+444	 function balanceOf(address account) external view returns (uint256);
+445	 function earned(address account) external view returns (uint256);
+446	 function withdraw(uint256 _amount, bool claim) external;
+447	 function withdrawAll(bool claim) external;
+448	 function stake(uint256 _amount) external;
+449	 function stakeAll() external;
+450	 function stakeFor(address _for, uint256 _amount) external;
+451	 function getReward( address _account, bool _claimExtras, bool _stake ) external;
+452	 function getReward(bool _stake) external;
+453	 }
+454	 pragma solidity ^0.7.6;
+455	 interface IZap {
+456	 function zap( address _fromToken, uint256 _amountIn, address _toToken, uint256 _minOut ) external payable returns (uint256);
+457	 function zapWithRoutes( address _fromToken, uint256 _amountIn, address _toToken, uint256[] calldata _routes, uint256 _minOut ) external payable returns (uint256);
+458	 function zapFrom( address _fromToken, uint256 _amountIn, address _toToken, uint256 _minOut ) external payable returns (uint256);
+459	 }
+460	 pragma solidity ^0.7.6;
+461	 interface ICLeverToken is IERC20 {
+462	 function mint(address _recipient, uint256 _amount) external;
+463	 function burn(uint256 _amount) external;
+464	 function burnFrom(address _account, uint256 _amount) external;
+465	 }
+466	 pragma solidity ^0.7.0;
+467	 interface IERC20Upgradeable {
+468	 function totalSupply() external view returns (uint256);
+469	 function balanceOf(address account) external view returns (uint256);
+470	 function transfer(address recipient, uint256 amount) external returns (bool);
+471	 function allowance(address owner, address spender) external view returns (uint256);
+472	 function approve(address spender, uint256 amount) external returns (bool);
+473	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+474	 event Transfer(address indexed from, address indexed to, uint256 value);
+475	 event Approval(address indexed owner, address indexed spender, uint256 value);
+476	 }
+477	 pragma solidity ^0.7.0;
+478	 library SafeERC20Upgradeable {
+479	 using SafeMathUpgradeable for uint256;
+480	 using AddressUpgradeable for address;
+481	 function safeTransfer(IERC20Upgradeable token, address to, uint256 value) internal {
+482	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+483	 }
+484	 function safeTransferFrom(IERC20Upgradeable token, address from, address to, uint256 value) internal {
+485	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+486	 }
+487	 function safeApprove(IERC20Upgradeable token, address spender, uint256 value) internal {
+488	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+489	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+490	 }
+491	 function safeIncreaseAllowance(IERC20Upgradeable token, address spender, uint256 value) internal {
+492	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+493	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+494	 }
+495	 function safeDecreaseAllowance(IERC20Upgradeable token, address spender, uint256 value) internal {
+496	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+497	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+498	 }
+499	 function _callOptionalReturn(IERC20Upgradeable token, bytes memory data) private {
+500	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+501	 if (returndata.length > 0) {
+502	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+503	 }
+504	 }
+505	 }
+506	 pragma solidity ^0.7.0;
+507	 library SafeMathUpgradeable {
+508	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+509	 uint256 c = a + b;
+510	 if (c < a) return (false, 0);
+511	 return (true, c);
+512	 }
+513	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+514	 if (b > a) return (false, 0);
+515	 return (true, a - b);
+516	 }
+517	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+518	 if (a == 0) return (true, 0);
+519	 uint256 c = a * b;
+520	 if (c / a != b) return (false, 0);
+521	 return (true, c);
+522	 }
+523	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+524	 if (b == 0) return (false, 0);
+525	 return (true, a / b);
+526	 }
+527	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+528	 if (b == 0) return (false, 0);
+529	 return (true, a % b);
+530	 }
+531	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+532	 uint256 c = a + b;
+533	 require(c >= a, "SafeMath: addition overflow");
+534	 return c;
+535	 }
+536	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+537	 require(b <= a, "SafeMath: subtraction overflow");
+538	 return a - b;
+539	 }
+540	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+541	 if (a == 0) return 0;
+542	 uint256 c = a * b;
+543	 require(c / a == b, "SafeMath: multiplication overflow");
+544	 return c;
+545	 }
+546	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+547	 require(b > 0, "SafeMath: division by zero");
+548	 return a / b;
+549	 }
+550	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+551	 require(b > 0, "SafeMath: modulo by zero");
+552	 return a % b;
+553	 }
+554	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+555	 require(b <= a, errorMessage);
+556	 return a - b;
+557	 }
+558	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+559	 require(b > 0, errorMessage);
+560	 return a / b;
+561	 }
+562	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+563	 require(b > 0, errorMessage);
+564	 return a % b;
+565	 }
+566	 }
+567	 pragma solidity ^0.7.0;
+568	 library AddressUpgradeable {
+569	 function isContract(address account) internal view returns (bool) {
+570	 uint256 size;
+571	 assembly {
+572	 size := extcodesize(account) }
+573	 return size > 0;
+574	 }
+575	 function sendValue(address payable recipient, uint256 amount) internal {
+576	 require(address(this).balance >= amount, "Address: insufficient balance");
+577	 (bool success, ) = recipient.call{
+578	 value: amount }
+579	 ("");
+580	 require(success, "Address: unable to send value, recipient may have reverted");
+581	 }
+582	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+583	 return functionCall(target, data, "Address: low-level call failed");
+584	 }
+585	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+586	 return functionCallWithValue(target, data, 0, errorMessage);
+587	 }
+588	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+589	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+590	 }
+591	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+592	 require(address(this).balance >= value, "Address: insufficient balance for call");
+593	 require(isContract(target), "Address: call to non-contract");
+594	 (bool success, bytes memory returndata) = target.call{
+595	 value: value }
+596	 (data);
+597	 return _verifyCallResult(success, returndata, errorMessage);
+598	 }
+599	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+600	 return functionStaticCall(target, data, "Address: low-level static call failed");
+601	 }
+602	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+603	 require(isContract(target), "Address: static call to non-contract");
+604	 (bool success, bytes memory returndata) = target.staticcall(data);
+605	 return _verifyCallResult(success, returndata, errorMessage);
+606	 }
+607	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+608	 if (success) {
+609	 return returndata;
+610	 }
+611	 else {
+612	 if (returndata.length > 0) {
+613	 assembly {
+614	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+615	 }
+616	 else {
+617	 revert(errorMessage);
+618	 }
+619	 }
+620	 }
+621	 }

@@ -1,0 +1,131 @@
+row number 
+1	   pragma solidity 0.4.24;
+2	 interface FreeDnaCardRepositoryInterface {
+3	 function airdrop(address to, uint256 animalId) external;
+4	 function giveaway( address to, uint256 animalId, uint8 effectiveness ) external;
+5	 }
+6	 contract Ownable {
+7	 address public owner;
+8	 event OwnershipRenounced(address indexed previousOwner);
+9	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+10	 constructor() public {
+11	 owner = msg.sender;
+12	 }
+13	 modifier onlyOwner() {
+14	 require(msg.sender == owner);
+15	 _;
+16	 }
+17	 function renounceOwnership() public onlyOwner {
+18	 emit OwnershipRenounced(owner);
+19	 owner = address(0);
+20	 }
+21	 function transferOwnership(address _newOwner) public onlyOwner {
+22	 _transferOwnership(_newOwner);
+23	 }
+24	 function _transferOwnership(address _newOwner) internal {
+25	 require(_newOwner != address(0));
+26	 emit OwnershipTransferred(owner, _newOwner);
+27	 owner = _newOwner;
+28	 }
+29	 }
+30	 contract Restricted is Ownable {
+31	 mapping(address => bool) private addressIsAdmin;
+32	 bool private isActive = true;
+33	 modifier onlyAdmin() {
+34	 require(addressIsAdmin[msg.sender] || msg.sender == owner);
+35	 _;
+36	 }
+37	 modifier contractIsActive() {
+38	 require(isActive);
+39	 _;
+40	 }
+41	 function addAdmin(address adminAddress) public onlyOwner {
+42	 addressIsAdmin[adminAddress] = true;
+43	 }
+44	 function removeAdmin(address adminAddress) public onlyOwner {
+45	 addressIsAdmin[adminAddress] = false;
+46	 }
+47	 function pauseContract() public onlyOwner {
+48	 isActive = false;
+49	 }
+50	 function activateContract() public onlyOwner {
+51	 isActive = true;
+52	 }
+53	 }
+54	 contract GameData {
+55	 struct Country {
+56	 bytes2 isoCode;
+57	 uint8 animalsCount;
+58	 uint256[3] animalIds;
+59	 }
+60	 struct Animal {
+61	 bool isSold;
+62	 uint256 currentValue;
+63	 uint8 rarity;
+64	 bytes32 name;
+65	 uint256 countryId;
+66	 }
+67	 struct Dna {
+68	 uint256 animalId;
+69	 uint8 effectiveness;
+70	 }
+71	 }
+72	 contract FreeDnaCardRepository is FreeDnaCardRepositoryInterface, GameData, Restricted {
+73	 event NewAirdrop( address to, uint256 animalId );
+74	 event NewGiveway( address to, uint256 animalId, uint8 effectiveness );
+75	 uint8 private constant AIRDROP_EFFECTIVENESS = 10;
+76	 uint256 private pendingGivewayCardCount;
+77	 uint256 private airdropEndTimestamp;
+78	 bool private migrated = false;
+79	 mapping (address => uint256[]) private addressDnaIds;
+80	 mapping (address => bool) public addressIsDonator;
+81	 mapping (uint => address) private dnaIdToOwnerAddress;
+82	 Dna[] private dnas;
+83	 constructor( uint256 _pendingGivewayCardCount, uint256 _airdropEndTimestamp ) public {
+84	 pendingGivewayCardCount = _pendingGivewayCardCount;
+85	 airdropEndTimestamp = _airdropEndTimestamp;
+86	 }
+87	 function getDna(uint dnaId) external view returns ( uint256 animalId, address ownerAddress, uint8 effectiveness, uint256 id ) {
+88	 Dna storage dna = dnas[dnaId];
+89	 return ( dna.animalId, dnaIdToOwnerAddress[dnaId], dna.effectiveness, dnaId );
+90	 }
+91	 function migrateData( address to, uint256 animalId, uint8 effectiveness ) external onlyOwner {
+92	 require(migrated == false);
+93	 donateDna(to, animalId, effectiveness);
+94	 }
+95	 function setMigrated() external onlyOwner {
+96	 migrated = true;
+97	 }
+98	 function addDonator(address donatorAddress) external onlyAdmin {
+99	 addressIsDonator[donatorAddress] = true;
+100	 }
+101	 function deleteDonator(address donatorAddress) external onlyAdmin {
+102	 delete addressIsDonator[donatorAddress];
+103	 }
+104	 function airdrop(address to, uint256 animalId) external contractIsActive {
+105	 require(now <= airdropEndTimestamp, "airdrop ended");
+106	 donateDnaFromContract(to, animalId, AIRDROP_EFFECTIVENESS);
+107	 emit NewAirdrop(to, animalId);
+108	 }
+109	 function giveaway( address to, uint256 animalId, uint8 effectiveness ) external contractIsActive {
+110	 require(pendingGivewayCardCount > 0);
+111	 donateDnaFromContract(to, animalId, effectiveness);
+112	 pendingGivewayCardCount--;
+113	 emit NewGiveway(to, animalId, effectiveness);
+114	 }
+115	 function getAddressDnaIds(address owner) external view returns(uint256[]) {
+116	 return addressDnaIds[owner];
+117	 }
+118	 function donateDnaFromContract( address to, uint256 animalId, uint8 effectiveness ) private contractIsActive {
+119	 require(migrated);
+120	 require(addressIsDonator[msg.sender], "donator not registered");
+121	 donateDna(to, animalId, effectiveness);
+122	 }
+123	 function donateDna( address to, uint256 animalId, uint8 effectiveness ) private {
+124	 uint256 id = dnas.length;
+125	 Dna memory dna = Dna(animalId, effectiveness);
+126	 dnas.push(dna);
+127	 dnaIdToOwnerAddress[id] = to;
+128	 addressDnaIds[to].push(id);
+129	 }
+130	 }

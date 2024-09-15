@@ -1,0 +1,267 @@
+row number 
+1	   pragma solidity ^0.4.21;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 uint256 c = a * b;
+5	 assert(a == 0 || c / a == b);
+6	 return c;
+7	 }
+8	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+9	 uint256 c = a / b;
+10	 return c;
+11	 }
+12	 function minus(uint256 a, uint256 b) internal pure returns (uint256) {
+13	 assert(b <= a);
+14	 return a - b;
+15	 }
+16	 function plus(uint256 a, uint256 b) internal pure returns (uint256) {
+17	 uint256 c = a + b;
+18	 assert(c >= a);
+19	 return c;
+20	 }
+21	 }
+22	 contract ERC20Token {
+23	 uint256 public totalSupply;
+24	 function balanceOf(address _owner) public view returns (uint256 balance);
+25	 function transfer(address _to, uint256 _value) public returns (bool success);
+26	 function transferFrom(address _from, address _to, uint256 _value) public returns (bool success);
+27	 function approve(address _spender, uint256 _value) public returns (bool success);
+28	 function allowance(address _owner, address _spender) public view returns (uint256 remaining);
+29	 event Transfer(address indexed _from, address indexed _to, uint256 _value);
+30	 event Approval(address indexed _owner, address indexed _spender, uint256 _value);
+31	 }
+32	 contract StandardToken is ERC20Token {
+33	 using SafeMath for uint256;
+34	 string public name;
+35	 string public symbol;
+36	 uint8 public decimals;
+37	 mapping (address => uint256) balances;
+38	 mapping (address => mapping (address => uint256)) internal allowed;
+39	 constructor(string _name, string _symbol, uint8 _decimals) internal {
+40	 name = _name;
+41	 symbol = _symbol;
+42	 decimals = _decimals;
+43	 }
+44	 function balanceOf(address _address) public view returns (uint256 balance) {
+45	 return balances[_address];
+46	 }
+47	 function allowance(address _owner, address _spender) public view returns (uint256 remaining) {
+48	 return allowed[_owner][_spender];
+49	 }
+50	 function approve(address _spender, uint256 _value) public returns (bool) {
+51	 allowed[msg.sender][_spender] = _value;
+52	 emit Approval(msg.sender, _spender, _value);
+53	 return true;
+54	 }
+55	 function transfer(address _to, uint256 _value) public returns (bool) {
+56	 executeTransfer(msg.sender, _to, _value);
+57	 return true;
+58	 }
+59	 function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+60	 require(_value <= allowed[_from][msg.sender]);
+61	 allowed[_from][msg.sender] = allowed[_from][msg.sender].minus(_value);
+62	 executeTransfer(_from, _to, _value);
+63	 return true;
+64	 }
+65	 function executeTransfer(address _from, address _to, uint256 _value) internal {
+66	 require(_to != address(0));
+67	 require(_value != 0 && _value <= balances[_from]);
+68	 balances[_from] = balances[_from].minus(_value);
+69	 balances[_to] = balances[_to].plus(_value);
+70	 emit Transfer(_from, _to, _value);
+71	 }
+72	 }
+73	 contract MintableToken is StandardToken {
+74	 address public minter;
+75	 bool public mintingDisabled = false;
+76	 event MintingDisabled();
+77	 modifier canMint() {
+78	 require(!mintingDisabled);
+79	 _;
+80	 }
+81	 modifier onlyMinter() {
+82	 require(msg.sender == minter);
+83	 _;
+84	 }
+85	 constructor(address _minter) internal {
+86	 minter = _minter;
+87	 }
+88	 function mint(address _to, uint256 _value) onlyMinter canMint public {
+89	 totalSupply = totalSupply.plus(_value);
+90	 balances[_to] = balances[_to].plus(_value);
+91	 emit Transfer(0x0, _to, _value);
+92	 }
+93	 function disableMinting() onlyMinter canMint public {
+94	 mintingDisabled = true;
+95	 emit MintingDisabled();
+96	 }
+97	 }
+98	 contract BurnableToken is StandardToken {
+99	 event Burn(address indexed _from, uint256 _value);
+100	 function burn(uint256 _value) public {
+101	 require(_value != 0);
+102	 address burner = msg.sender;
+103	 require(_value <= balances[burner]);
+104	 balances[burner] = balances[burner].minus(_value);
+105	 totalSupply = totalSupply.minus(_value);
+106	 emit Burn(burner, _value);
+107	 emit Transfer(burner, address(0), _value);
+108	 }
+109	 }
+110	 contract HasOwner {
+111	 address public owner;
+112	 address public newOwner;
+113	 constructor(address _owner) public {
+114	 owner = _owner;
+115	 }
+116	 modifier onlyOwner {
+117	 require(msg.sender == owner);
+118	 _;
+119	 }
+120	 event OwnershipTransfer(address indexed _oldOwner, address indexed _newOwner);
+121	 function transferOwnership(address _newOwner) public onlyOwner {
+122	 newOwner = _newOwner;
+123	 }
+124	 function acceptOwnership() public {
+125	 require(msg.sender == newOwner);
+126	 emit OwnershipTransfer(owner, newOwner);
+127	 owner = newOwner;
+128	 }
+129	 }
+130	 contract PausableToken is StandardToken, HasOwner {
+131	 bool public paused = false;
+132	 event Pause();
+133	 event Unpause();
+134	 modifier whenNotPaused() {
+135	 require(!paused);
+136	 _;
+137	 }
+138	 function pause() onlyOwner whenNotPaused public {
+139	 paused = true;
+140	 emit Pause();
+141	 }
+142	 function unpause() onlyOwner public {
+143	 require(paused);
+144	 paused = false;
+145	 emit Unpause();
+146	 }
+147	 function transfer(address _to, uint256 _value) public whenNotPaused returns (bool) {
+148	 return super.transfer(_to, _value);
+149	 }
+150	 function approve(address _spender, uint256 _value) public whenNotPaused returns (bool) {
+151	 return super.approve(_spender, _value);
+152	 }
+153	 function transferFrom(address _from, address _to, uint256 _value) public whenNotPaused returns (bool) {
+154	 return super.transferFrom(_from, _to, _value);
+155	 }
+156	 }
+157	 contract AbstractFundraiser {
+158	 ERC20Token public token;
+159	 event FundsReceived(address indexed _address, uint _ethers, uint _tokens);
+160	 function initializeFundraiserToken(address _token) internal {
+161	 token = ERC20Token(_token);
+162	 }
+163	 function() public payable {
+164	 receiveFunds(msg.sender, msg.value);
+165	 }
+166	 function getConversionRate() public view returns (uint256);
+167	 function hasEnded() public view returns (bool);
+168	 function receiveFunds(address _address, uint256 _amount) internal;
+169	 function validateTransaction() internal view;
+170	 function handleTokens(address _address, uint256 _tokens) internal;
+171	 function handleFunds(address _address, uint256 _ethers) internal;
+172	 }
+173	 contract BasicFundraiser is HasOwner, AbstractFundraiser {
+174	 using SafeMath for uint256;
+175	 uint8 constant DECIMALS = 18;
+176	 uint256 constant DECIMALS_FACTOR = 10 ** uint256(DECIMALS);
+177	 uint256 public startTime;
+178	 uint256 public endTime;
+179	 address public beneficiary;
+180	 uint256 public conversionRate;
+181	 uint256 public totalRaised;
+182	 event ConversionRateChanged(uint _conversionRate);
+183	 function initializeBasicFundraiser( uint256 _startTime, uint256 _endTime, uint256 _conversionRate, address _beneficiary ) internal {
+184	 require(_endTime >= _startTime);
+185	 require(_conversionRate > 0);
+186	 require(_beneficiary != address(0));
+187	 startTime = _startTime;
+188	 endTime = _endTime;
+189	 conversionRate = _conversionRate;
+190	 beneficiary = _beneficiary;
+191	 }
+192	 function setConversionRate(uint256 _conversionRate) public onlyOwner {
+193	 require(_conversionRate > 0);
+194	 conversionRate = _conversionRate;
+195	 emit ConversionRateChanged(_conversionRate);
+196	 }
+197	 function setBeneficiary(address _beneficiary) public onlyOwner {
+198	 require(_beneficiary != address(0));
+199	 beneficiary = _beneficiary;
+200	 }
+201	 function receiveFunds(address _address, uint256 _amount) internal {
+202	 validateTransaction();
+203	 uint256 tokens = calculateTokens(_amount);
+204	 require(tokens > 0);
+205	 totalRaised = totalRaised.plus(_amount);
+206	 handleTokens(_address, tokens);
+207	 handleFunds(_address, _amount);
+208	 emit FundsReceived(_address, msg.value, tokens);
+209	 }
+210	 function getConversionRate() public view returns (uint256) {
+211	 return conversionRate;
+212	 }
+213	 function calculateTokens(uint256 _amount) internal view returns(uint256 tokens) {
+214	 tokens = _amount.mul(getConversionRate());
+215	 }
+216	 function validateTransaction() internal view {
+217	 require(msg.value != 0);
+218	 require(now >= startTime && now < endTime);
+219	 }
+220	 function hasEnded() public view returns (bool) {
+221	 return now >= endTime;
+222	 }
+223	 }
+224	 contract StandardMintableToken is MintableToken {
+225	 constructor(address _minter, string _name, string _symbol, uint8 _decimals) StandardToken(_name, _symbol, _decimals) MintableToken(_minter) public {
+226	 }
+227	 }
+228	 contract MintableTokenFundraiser is BasicFundraiser {
+229	 function initializeMintableTokenFundraiser(string _name, string _symbol, uint8 _decimals) internal {
+230	 token = new StandardMintableToken( address(this), _name, _symbol, _decimals );
+231	 }
+232	 function handleTokens(address _address, uint256 _tokens) internal {
+233	 MintableToken(token).mint(_address, _tokens);
+234	 }
+235	 }
+236	 contract GasPriceLimitFundraiser is HasOwner, BasicFundraiser {
+237	 uint256 public gasPriceLimit;
+238	 event GasPriceLimitChanged(uint256 gasPriceLimit);
+239	 function initializeGasPriceLimitFundraiser(uint256 _gasPriceLimit) internal {
+240	 gasPriceLimit = _gasPriceLimit;
+241	 }
+242	 function changeGasPriceLimit(uint256 _gasPriceLimit) onlyOwner() public {
+243	 gasPriceLimit = _gasPriceLimit;
+244	 emit GasPriceLimitChanged(_gasPriceLimit);
+245	 }
+246	 function validateTransaction() internal view {
+247	 require(gasPriceLimit == 0 || tx.gasprice <= gasPriceLimit);
+248	 return super.validateTransaction();
+249	 }
+250	 }
+251	 contract ForwardFundsFundraiser is BasicFundraiser {
+252	 function handleFunds(address, uint256 _ethers) internal {
+253	 beneficiary.transfer(_ethers);
+254	 }
+255	 }
+256	 contract RealDirectToken is MintableToken, BurnableToken, PausableToken {
+257	 constructor(address _owner, address _minter) StandardToken( "Real Direct Token", "RDT", 18 ) HasOwner(_owner) MintableToken(_minter) public {
+258	 }
+259	 }
+260	 contract RealDirectTokenFundraiser is MintableTokenFundraiser, ForwardFundsFundraiser, GasPriceLimitFundraiser {
+261	 constructor() HasOwner(msg.sender) public {
+262	 token = new RealDirectToken( msg.sender, address(this) );
+263	 initializeBasicFundraiser( 1534291200, 1544918340, 20000, 0xEcB3c79EB0A9f539340adE65e8823CE8d248fbad );
+264	 initializeGasPriceLimitFundraiser( 50000000000 );
+265	 }
+266	 }

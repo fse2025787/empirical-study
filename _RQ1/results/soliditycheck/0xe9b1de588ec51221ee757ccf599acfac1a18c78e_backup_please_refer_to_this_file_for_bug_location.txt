@@ -1,0 +1,195 @@
+row number 
+1	        pragma solidity 0.6.12;
+2	 library SafeMath {
+3	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 uint256 c = a + b;
+5	 require(c >= a, "SafeMath: addition overflow");
+6	 return c;
+7	 }
+8	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+9	 return sub(a, b, "SafeMath: subtraction overflow");
+10	 }
+11	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+12	 require(b <= a, errorMessage);
+13	 uint256 c = a - b;
+14	 return c;
+15	 }
+16	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+17	 if (a == 0) {
+18	 return 0;
+19	 }
+20	 uint256 c = a * b;
+21	 require(c / a == b, "SafeMath: multiplication overflow");
+22	 return c;
+23	 }
+24	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+25	 return div(a, b, "SafeMath: division by zero");
+26	 }
+27	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+28	 require(b > 0, errorMessage);
+29	 uint256 c = a / b;
+30	 return c;
+31	 }
+32	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+33	 return mod(a, b, "SafeMath: modulo by zero");
+34	 }
+35	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+36	 require(b != 0, errorMessage);
+37	 return a % b;
+38	 }
+39	 }
+40	 abstract contract Context {
+41	 function _msgSender() internal view virtual returns (address payable) {
+42	 return msg.sender;
+43	 }
+44	 function _msgData() internal view virtual returns (bytes memory) {
+45	 this;
+46	 return msg.data;
+47	 }
+48	 }
+49	 abstract contract Ownable is Context {
+50	 address private _owner;
+51	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+52	 constructor () internal {
+53	 address msgSender = _msgSender();
+54	 _owner = msgSender;
+55	 emit OwnershipTransferred(address(0), msgSender);
+56	 }
+57	 function owner() public view returns (address) {
+58	 return _owner;
+59	 }
+60	 modifier onlyOwner() {
+61	 require(_owner == _msgSender(), "Ownable: caller is not the owner");
+62	 _;
+63	 }
+64	 function renounceOwnership() public virtual onlyOwner {
+65	 emit OwnershipTransferred(_owner, address(0));
+66	 _owner = address(0);
+67	 }
+68	 function transferOwnership(address newOwner) public virtual onlyOwner {
+69	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+70	 emit OwnershipTransferred(_owner, newOwner);
+71	 _owner = newOwner;
+72	 }
+73	 }
+74	 interface StakedToken {
+75	 function balanceOf(address account) external view returns (uint256);
+76	 function transfer(address recipient, uint256 amount) external returns (bool);
+77	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+78	 function approve(address spender, uint256 amount) external returns (bool);
+79	 }
+80	 interface IStakeAndYield {
+81	 function getRewardToken() external view returns(address);
+82	 function totalSupply(uint256 stakeType) external view returns(uint256);
+83	 function totalYieldWithdrawed() external view returns(uint256);
+84	 function notifyRewardAmount(uint256 reward, uint256 stakeType) external;
+85	 }
+86	 interface IController {
+87	 function withdrawETH(uint256 amount) external;
+88	 function depositForStrategy(uint256 amount, address addr) external;
+89	 function buyForStrategy( uint256 amount, address rewardToken, address recipient ) external;
+90	 }
+91	 interface IYearnVault {
+92	 function depositETH() external payable;
+93	 }
+94	 interface IYearnWETH{
+95	 function balanceOf(address account) external view returns (uint256);
+96	 function withdraw(uint256 amount, address recipient) external returns(uint256);
+97	 function pricePerShare() external view returns(uint256);
+98	 function deposit(uint256 _amount) external returns(uint256);
+99	 }
+100	 interface IWETH is StakedToken{
+101	 function withdraw(uint256 amount) external returns(uint256);
+102	 }
+103	 contract YearnStrategy is Ownable {
+104	 using SafeMath for uint256;
+105	 uint256 public lastEpochTime;
+106	 uint256 public lastBalance;
+107	 uint256 public lastYieldWithdrawed;
+108	 uint256 public yearFeesPercent = 2;
+109	 IStakeAndYield public vault;
+110	 StakedToken public token;
+111	 IController public controller;
+112	 IYearnWETH public yweth = IYearnWETH(0xa9fE4601811213c340e850ea305481afF02f5b28);
+113	 IWETH public weth = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+114	 address public operator;
+115	 modifier onlyOwnerOrOperator(){
+116	 require( msg.sender == owner() || msg.sender == operator, "!owner" );
+117	 _;
+118	 }
+119	 constructor( address _vault, address _controller ) public{
+120	 vault = IStakeAndYield(_vault);
+121	 controller = IController(_controller);
+122	 }
+123	 function epoch(uint256 ETHPerToken) public onlyOwnerOrOperator{
+124	 uint256 balance = pendingBalance();
+125	 harvest(balance.mul(ETHPerToken).div(1 ether));
+126	 lastEpochTime = block.timestamp;
+127	 lastBalance = lastBalance.add(balance);
+128	 uint256 currentWithdrawd = vault.totalYieldWithdrawed();
+129	 uint256 withdrawAmountToken = currentWithdrawd.sub(lastYieldWithdrawed);
+130	 if(withdrawAmountToken > 0){
+131	 lastYieldWithdrawed = currentWithdrawd;
+132	 uint256 ethWithdrawed = withdrawAmountToken.mul( ETHPerToken ).div(1 ether);
+133	 withdrawFromYearn(ethWithdrawed);
+134	 }
+135	 }
+136	 function harvest(uint256 ethBalance) private{
+137	 uint256 rewards = calculateRewards();
+138	 if(ethBalance > rewards){
+139	 controller.depositForStrategy(ethBalance.sub(rewards), address(this));
+140	 }
+141	 else{
+142	 rewards = withdrawFromYearn(rewards.sub(ethBalance));
+143	 }
+144	 if(rewards > 0){
+145	 controller.buyForStrategy( rewards, vault.getRewardToken(), address(vault) );
+146	 }
+147	 }
+148	 function withdrawFromYearn(uint256 ethAmount) private returns(uint256){
+149	 uint256 yShares = yweth.balanceOf(address(this));
+150	 uint256 sharesToWithdraw = ethAmount.div( yweth.pricePerShare() ).mul(1 ether);
+151	 require(yShares >= sharesToWithdraw, "Not enough shares");
+152	 return yweth.withdraw(sharesToWithdraw, address(controller));
+153	 }
+154	 function calculateRewards() public view returns(uint256){
+155	 uint256 yShares = yweth.balanceOf(address(this));
+156	 uint256 yETHBalance = yShares.mul( yweth.pricePerShare() ).div(1 ether);
+157	 yETHBalance = yETHBalance.mul(100 - yearFeesPercent).div(100);
+158	 if(yETHBalance > lastBalance){
+159	 return yETHBalance - lastBalance;
+160	 }
+161	 return 0;
+162	 }
+163	 function pendingBalance() public view returns(uint256){
+164	 uint256 vaultBalance = vault.totalSupply(2);
+165	 if(vaultBalance < lastBalance){
+166	 return 0;
+167	 }
+168	 return vaultBalance.sub(lastBalance);
+169	 }
+170	 function getLastEpochTime() public view returns(uint256){
+171	 return lastEpochTime;
+172	 }
+173	 function setYearnFeesPercent(uint256 _val) public onlyOwner{
+174	 yearFeesPercent = _val;
+175	 }
+176	 function setOperator(address _addr) public onlyOwner{
+177	 operator = _addr;
+178	 }
+179	 function setController(address _controller, address _vault) public onlyOwner{
+180	 if(_controller != address(0)){
+181	 controller = IController(_controller);
+182	 }
+183	 if(_vault != address(0)){
+184	 vault = IStakeAndYield(_vault);
+185	 }
+186	 }
+187	 function emergencyWithdrawETH(uint256 amount, address addr) public onlyOwner{
+188	 require(addr != address(0));
+189	 payable(addr).transfer(amount);
+190	 }
+191	 function emergencyWithdrawERC20Tokens(address _tokenAddr, address _to, uint _amount) public onlyOwner {
+192	 StakedToken(_tokenAddr).transfer(_to, _amount);
+193	 }
+194	 }

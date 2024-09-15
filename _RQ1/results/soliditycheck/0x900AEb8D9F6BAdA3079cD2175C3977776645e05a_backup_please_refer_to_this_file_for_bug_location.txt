@@ -1,0 +1,708 @@
+row number 
+1	          pragma solidity >=0.4.24 <0.8.0;
+2	 abstract contract Initializable {
+3	 bool private _initialized;
+4	 bool private _initializing;
+5	 modifier initializer() {
+6	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+7	 bool isTopLevelCall = !_initializing;
+8	 if (isTopLevelCall) {
+9	 _initializing = true;
+10	 _initialized = true;
+11	 }
+12	 _;
+13	 if (isTopLevelCall) {
+14	 _initializing = false;
+15	 }
+16	 }
+17	 function _isConstructor() private view returns (bool) {
+18	 return !AddressUpgradeable.isContract(address(this));
+19	 }
+20	 }
+21	 pragma solidity >=0.6.0 <0.8.0;
+22	 abstract contract ContextUpgradeable is Initializable {
+23	 function __Context_init() internal initializer {
+24	 __Context_init_unchained();
+25	 }
+26	 function __Context_init_unchained() internal initializer {
+27	 }
+28	 function _msgSender() internal view virtual returns (address payable) {
+29	 return msg.sender;
+30	 }
+31	 function _msgData() internal view virtual returns (bytes memory) {
+32	 this;
+33	 return msg.data;
+34	 }
+35	 uint256[50] private __gap;
+36	 }
+37	 pragma solidity 0.7.6;
+38	 abstract contract OwnableUpgradeable is Initializable, ContextUpgradeable {
+39	 address private _owner;
+40	 address private _pendingOwner;
+41	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+42	 function __Ownable_init(address _ownerAddress) internal initializer {
+43	 __Context_init_unchained();
+44	 __Ownable_init_unchained(_ownerAddress);
+45	 }
+46	 function __Ownable_init_unchained(address _ownerAddress) internal initializer {
+47	 _owner = _ownerAddress;
+48	 emit OwnershipTransferred(address(0), _ownerAddress);
+49	 }
+50	 function owner() public view virtual returns (address) {
+51	 return _owner;
+52	 }
+53	 function pendingOwner() public view virtual returns (address) {
+54	 return _pendingOwner;
+55	 }
+56	 modifier onlyOwner() {
+57	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+58	 _;
+59	 }
+60	 function renounceOwnership() public virtual onlyOwner {
+61	 emit OwnershipTransferred(_owner, address(0));
+62	 _owner = address(0);
+63	 }
+64	 function safeTransferOwnership(address newOwner, bool safely) public virtual onlyOwner {
+65	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+66	 if (safely) {
+67	 _pendingOwner = newOwner;
+68	 }
+69	 else {
+70	 emit OwnershipTransferred(_owner, newOwner);
+71	 _owner = newOwner;
+72	 _pendingOwner = address(0);
+73	 }
+74	 }
+75	 function safeAcceptOwnership() public virtual {
+76	 require(_msgSender() == _pendingOwner, "acceptOwnership: Call must come from pendingOwner.");
+77	 emit OwnershipTransferred(_owner, _pendingOwner);
+78	 _owner = _pendingOwner;
+79	 }
+80	 uint256[48] private __gap;
+81	 }
+82	 pragma solidity 0.7.6;
+83	 contract PriceOracleUpgradeable is OwnableUpgradeable {
+84	 using SafeMathUpgradeable for uint256;
+85	 using FixedPoint for *;
+86	 address public zoneToken;
+87	 bool public usePoolPrice;
+88	 IUniswapV2Pair public lpZoneEth;
+89	 uint256 public zoneReserveInLP;
+90	 uint256 public ethReserveInLP;
+91	 uint256 public constant PERIOD = 24 hours;
+92	 uint32 public blockTimestampLast;
+93	 uint256 public price0CumulativeLast;
+94	 uint256 public price1CumulativeLast;
+95	 FixedPoint.uq112x112 public price0AverageLast;
+96	 FixedPoint.uq112x112 public price1AverageLast;
+97	 event ActivatePoolPrice (bool newUsePoolPrice, uint256 newZoneReserveInLP, uint256 newEthReserveInLP);
+98	 event NewZoneEthLP (address indexed newZoneEthLP);
+99	 function initialize( address _ownerAddress, address _zoneTokenAddress, address _lpZoneEth, bool _usePoolPrice, uint256 _zoneReserveAmount, uint256 _ethReserveAmount ) public initializer {
+100	 require(_ownerAddress != address(0), "Owner address is invalid");
+101	 require(_zoneTokenAddress != address(0), "ZONE token address is invalid");
+102	 __Ownable_init(_ownerAddress);
+103	 zoneToken = _zoneTokenAddress;
+104	 _setZoneEthLP(_lpZoneEth);
+105	 _activatePoolPrice(_usePoolPrice, _zoneReserveAmount, _ethReserveAmount);
+106	 }
+107	 function activatePoolPrice(bool _usePoolPrice, uint256 _zoneReserveAmount, uint256 _ethReserveAmount) onlyOwner external {
+108	 _activatePoolPrice(_usePoolPrice, _zoneReserveAmount, _ethReserveAmount);
+109	 emit ActivatePoolPrice(usePoolPrice, zoneReserveInLP, ethReserveInLP);
+110	 }
+111	 function _activatePoolPrice(bool _usePoolPrice, uint256 _zoneReserveAmount, uint256 _ethReserveAmount) internal {
+112	 if (_usePoolPrice) {
+113	 require(address(lpZoneEth) != address(0), "Sushiswap LP token address must be valid to use the pool price");
+114	 usePoolPrice = true;
+115	 }
+116	 else {
+117	 require(0 < _zoneReserveAmount, "The ZONE reserve amount can not be 0");
+118	 require(0 < _ethReserveAmount, "The ETH reserve amount can not be 0");
+119	 usePoolPrice = false;
+120	 zoneReserveInLP = _zoneReserveAmount;
+121	 ethReserveInLP = _ethReserveAmount;
+122	 }
+123	 }
+124	 function setZoneEthLP(address _lpZoneEth) onlyOwner external {
+125	 _setZoneEthLP(_lpZoneEth);
+126	 emit NewZoneEthLP(address(lpZoneEth));
+127	 }
+128	 function _setZoneEthLP(address _lpZoneEth) internal {
+129	 lpZoneEth = IUniswapV2Pair(_lpZoneEth);
+130	 if (address(lpZoneEth) != address(0)) {
+131	 _updateFirst();
+132	 }
+133	 }
+134	 function _updateFirst() internal {
+135	 (uint112 reserve0, uint112 reserve1,) = lpZoneEth.getReserves();
+136	 require(reserve0 != 0 && reserve1 != 0, 'No liquidity on the pool');
+137	 price0AverageLast = FixedPoint.fraction(reserve1, reserve0);
+138	 price1AverageLast = FixedPoint.fraction(reserve0, reserve1);
+139	 (uint price0Cumulative, uint price1Cumulative, uint32 blockTimestamp) = UniswapV2OracleLibrary.currentCumulativePrices(address(lpZoneEth));
+140	 price0CumulativeLast = price0Cumulative;
+141	 price1CumulativeLast = price1Cumulative;
+142	 blockTimestampLast = blockTimestamp;
+143	 }
+144	 function update() public {
+145	 (uint price0Cumulative, uint price1Cumulative, uint32 blockTimestamp) = UniswapV2OracleLibrary.currentCumulativePrices(address(lpZoneEth));
+146	 uint32 timeElapsed = blockTimestamp - blockTimestampLast;
+147	 require(PERIOD <= timeElapsed, 'PriceOracleUpgradeable: PERIOD_NOT_ELAPSED');
+148	 price0AverageLast = FixedPoint.uq112x112(uint224((price0Cumulative - price0CumulativeLast) / timeElapsed));
+149	 price1AverageLast = FixedPoint.uq112x112(uint224((price1Cumulative - price1CumulativeLast) / timeElapsed));
+150	 price0CumulativeLast = price0Cumulative;
+151	 price1CumulativeLast = price1Cumulative;
+152	 blockTimestampLast = blockTimestamp;
+153	 }
+154	 function getOutAmount(address token, uint256 tokenAmount) public view returns (uint256) {
+155	 if (address(lpZoneEth) == address(0)) {
+156	 return 0;
+157	 }
+158	 (uint price0Cumulative, uint price1Cumulative, uint32 blockTimestamp) = UniswapV2OracleLibrary.currentCumulativePrices(address(lpZoneEth));
+159	 FixedPoint.uq112x112 memory price0Average;
+160	 FixedPoint.uq112x112 memory price1Average;
+161	 uint32 timeElapsed = blockTimestamp - blockTimestampLast;
+162	 if (PERIOD <= timeElapsed) {
+163	 price0Average = FixedPoint.uq112x112(uint224((price0Cumulative - price0CumulativeLast) / timeElapsed));
+164	 price1Average = FixedPoint.uq112x112(uint224((price1Cumulative - price1CumulativeLast) / timeElapsed));
+165	 }
+166	 else {
+167	 price0Average = price0AverageLast;
+168	 price1Average = price1AverageLast;
+169	 }
+170	 if (token == lpZoneEth.token0()) {
+171	 return price0Average.mul(tokenAmount).decode144();
+172	 }
+173	 else {
+174	 return price1Average.mul(tokenAmount).decode144();
+175	 }
+176	 }
+177	 function mintPriceInZone(uint256 _mintPriceInEth) external returns (uint256) {
+178	 if (_mintPriceInEth == 0) return 0;
+179	 if (usePoolPrice && address(lpZoneEth) != address(0)) {
+180	 uint32 blockTimestamp = UniswapV2OracleLibrary.currentBlockTimestamp();
+181	 uint32 timeElapsed = blockTimestamp - blockTimestampLast;
+182	 if (PERIOD <= timeElapsed) {
+183	 update();
+184	 }
+185	 return (zoneToken == lpZoneEth.token1()) ? price0AverageLast.mul(_mintPriceInEth).decode144() : price1AverageLast.mul(_mintPriceInEth).decode144();
+186	 }
+187	 else {
+188	 if (zoneReserveInLP == 0 || ethReserveInLP == 0) return 0;
+189	 return _mintPriceInEth.mul(zoneReserveInLP).div(ethReserveInLP);
+190	 }
+191	 }
+192	 function getLPFairPrice() public view returns (uint256) {
+193	 if (address(lpZoneEth) == address(0)) {
+194	 return 0;
+195	 }
+196	 uint256 totalSupply = lpZoneEth.totalSupply();
+197	 (uint256 r0, uint256 r1, ) = lpZoneEth.getReserves();
+198	 uint256 sqrtR = MathUtil.sqrt(r0.mul(r1));
+199	 uint256 p0 = 1e18;
+200	 uint256 p1 = getOutAmount(zoneToken, 1e18);
+201	 uint256 sqrtP = MathUtil.sqrt(p0.mul(p1));
+202	 return sqrtR.mul(sqrtP).mul(2).div(totalSupply);
+203	 }
+204	 uint256[40] private __gap;
+205	 }
+206	 pragma solidity >=0.6.0 <0.8.0;
+207	 library ECDSAUpgradeable {
+208	 function recover(bytes32 hash, bytes memory signature) internal pure returns (address) {
+209	 if (signature.length != 65) {
+210	 revert("ECDSA: invalid signature length");
+211	 }
+212	 bytes32 r;
+213	 bytes32 s;
+214	 uint8 v;
+215	 assembly {
+216	 r := mload(add(signature, 0x20)) s := mload(add(signature, 0x40)) v := byte(0, mload(add(signature, 0x60))) }
+217	 return recover(hash, v, r, s);
+218	 }
+219	 function recover(bytes32 hash, uint8 v, bytes32 r, bytes32 s) internal pure returns (address) {
+220	 require(uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0, "ECDSA: invalid signature 's' value");
+221	 require(v == 27 || v == 28, "ECDSA: invalid signature 'v' value");
+222	 address signer = ecrecover(hash, v, r, s);
+223	 require(signer != address(0), "ECDSA: invalid signature");
+224	 return signer;
+225	 }
+226	 function toEthSignedMessageHash(bytes32 hash) internal pure returns (bytes32) {
+227	 return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+228	 }
+229	 }
+230	 pragma solidity >=0.6.0 <0.8.0;
+231	 library SafeMathUpgradeable {
+232	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+233	 uint256 c = a + b;
+234	 if (c < a) return (false, 0);
+235	 return (true, c);
+236	 }
+237	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+238	 if (b > a) return (false, 0);
+239	 return (true, a - b);
+240	 }
+241	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+242	 if (a == 0) return (true, 0);
+243	 uint256 c = a * b;
+244	 if (c / a != b) return (false, 0);
+245	 return (true, c);
+246	 }
+247	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+248	 if (b == 0) return (false, 0);
+249	 return (true, a / b);
+250	 }
+251	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+252	 if (b == 0) return (false, 0);
+253	 return (true, a % b);
+254	 }
+255	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+256	 uint256 c = a + b;
+257	 require(c >= a, "SafeMath: addition overflow");
+258	 return c;
+259	 }
+260	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+261	 require(b <= a, "SafeMath: subtraction overflow");
+262	 return a - b;
+263	 }
+264	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+265	 if (a == 0) return 0;
+266	 uint256 c = a * b;
+267	 require(c / a == b, "SafeMath: multiplication overflow");
+268	 return c;
+269	 }
+270	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+271	 require(b > 0, "SafeMath: division by zero");
+272	 return a / b;
+273	 }
+274	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+275	 require(b > 0, "SafeMath: modulo by zero");
+276	 return a % b;
+277	 }
+278	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+279	 require(b <= a, errorMessage);
+280	 return a - b;
+281	 }
+282	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+283	 require(b > 0, errorMessage);
+284	 return a / b;
+285	 }
+286	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+287	 require(b > 0, errorMessage);
+288	 return a % b;
+289	 }
+290	 }
+291	 pragma solidity >=0.6.0 <0.8.0;
+292	 interface IERC20Upgradeable {
+293	 function totalSupply() external view returns (uint256);
+294	 function balanceOf(address account) external view returns (uint256);
+295	 function transfer(address recipient, uint256 amount) external returns (bool);
+296	 function allowance(address owner, address spender) external view returns (uint256);
+297	 function approve(address spender, uint256 amount) external returns (bool);
+298	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+299	 event Transfer(address indexed from, address indexed to, uint256 value);
+300	 event Approval(address indexed owner, address indexed spender, uint256 value);
+301	 }
+302	 pragma solidity >=0.4.0;
+303	 library FixedPoint {
+304	 struct uq112x112 {
+305	 uint224 _x;
+306	 }
+307	 struct uq144x112 {
+308	 uint256 _x;
+309	 }
+310	 uint8 public constant RESOLUTION = 112;
+311	 uint256 public constant Q112 = 0x10000000000000000000000000000;
+312	 uint256 private constant Q224 = 0x100000000000000000000000000000000000000000000000000000000;
+313	 uint256 private constant LOWER_MASK = 0xffffffffffffffffffffffffffff;
+314	 function encode(uint112 x) internal pure returns (uq112x112 memory) {
+315	 return uq112x112(uint224(x) << RESOLUTION);
+316	 }
+317	 function encode144(uint144 x) internal pure returns (uq144x112 memory) {
+318	 return uq144x112(uint256(x) << RESOLUTION);
+319	 }
+320	 function decode(uq112x112 memory self) internal pure returns (uint112) {
+321	 return uint112(self._x >> RESOLUTION);
+322	 }
+323	 function decode144(uq144x112 memory self) internal pure returns (uint144) {
+324	 return uint144(self._x >> RESOLUTION);
+325	 }
+326	 function mul(uq112x112 memory self, uint256 y) internal pure returns (uq144x112 memory) {
+327	 uint256 z = 0;
+328	 require(y == 0 || (z = self._x * y) / y == self._x, 'FixedPoint::mul: overflow');
+329	 return uq144x112(z);
+330	 }
+331	 function muli(uq112x112 memory self, int256 y) internal pure returns (int256) {
+332	 uint256 z = FullMath.mulDiv(self._x, uint256(y < 0 ? -y : y), Q112);
+333	 require(z < 2**255, 'FixedPoint::muli: overflow');
+334	 return y < 0 ? -int256(z) : int256(z);
+335	 }
+336	 function muluq(uq112x112 memory self, uq112x112 memory other) internal pure returns (uq112x112 memory) {
+337	 if (self._x == 0 || other._x == 0) {
+338	 return uq112x112(0);
+339	 }
+340	 uint112 upper_self = uint112(self._x >> RESOLUTION);
+341	 uint112 lower_self = uint112(self._x & LOWER_MASK);
+342	 uint112 upper_other = uint112(other._x >> RESOLUTION);
+343	 uint112 lower_other = uint112(other._x & LOWER_MASK);
+344	 uint224 upper = uint224(upper_self) * upper_other;
+345	 uint224 lower = uint224(lower_self) * lower_other;
+346	 uint224 uppers_lowero = uint224(upper_self) * lower_other;
+347	 uint224 uppero_lowers = uint224(upper_other) * lower_self;
+348	 require(upper <= uint112(-1), 'FixedPoint::muluq: upper overflow');
+349	 uint256 sum = uint256(upper << RESOLUTION) + uppers_lowero + uppero_lowers + (lower >> RESOLUTION);
+350	 require(sum <= uint224(-1), 'FixedPoint::muluq: sum overflow');
+351	 return uq112x112(uint224(sum));
+352	 }
+353	 function divuq(uq112x112 memory self, uq112x112 memory other) internal pure returns (uq112x112 memory) {
+354	 require(other._x > 0, 'FixedPoint::divuq: division by zero');
+355	 if (self._x == other._x) {
+356	 return uq112x112(uint224(Q112));
+357	 }
+358	 if (self._x <= uint144(-1)) {
+359	 uint256 value = (uint256(self._x) << RESOLUTION) / other._x;
+360	 require(value <= uint224(-1), 'FixedPoint::divuq: overflow');
+361	 return uq112x112(uint224(value));
+362	 }
+363	 uint256 result = FullMath.mulDiv(Q112, self._x, other._x);
+364	 require(result <= uint224(-1), 'FixedPoint::divuq: overflow');
+365	 return uq112x112(uint224(result));
+366	 }
+367	 function fraction(uint256 numerator, uint256 denominator) internal pure returns (uq112x112 memory) {
+368	 require(denominator > 0, 'FixedPoint::fraction: division by zero');
+369	 if (numerator == 0) return FixedPoint.uq112x112(0);
+370	 if (numerator <= uint144(-1)) {
+371	 uint256 result = (numerator << RESOLUTION) / denominator;
+372	 require(result <= uint224(-1), 'FixedPoint::fraction: overflow');
+373	 return uq112x112(uint224(result));
+374	 }
+375	 else {
+376	 uint256 result = FullMath.mulDiv(numerator, Q112, denominator);
+377	 require(result <= uint224(-1), 'FixedPoint::fraction: overflow');
+378	 return uq112x112(uint224(result));
+379	 }
+380	 }
+381	 function reciprocal(uq112x112 memory self) internal pure returns (uq112x112 memory) {
+382	 require(self._x != 0, 'FixedPoint::reciprocal: reciprocal of zero');
+383	 require(self._x != 1, 'FixedPoint::reciprocal: overflow');
+384	 return uq112x112(uint224(Q224 / self._x));
+385	 }
+386	 function sqrt(uq112x112 memory self) internal pure returns (uq112x112 memory) {
+387	 if (self._x <= uint144(-1)) {
+388	 return uq112x112(uint224(Babylonian.sqrt(uint256(self._x) << 112)));
+389	 }
+390	 uint8 safeShiftBits = 255 - BitMath.mostSignificantBit(self._x);
+391	 safeShiftBits -= safeShiftBits % 2;
+392	 return uq112x112(uint224(Babylonian.sqrt(uint256(self._x) << safeShiftBits) << ((112 - safeShiftBits) / 2)));
+393	 }
+394	 }
+395	 pragma solidity >=0.5.0;
+396	 interface IUniswapV2Pair {
+397	 event Approval(address indexed owner, address indexed spender, uint value);
+398	 event Transfer(address indexed from, address indexed to, uint value);
+399	 function name() external pure returns (string memory);
+400	 function symbol() external pure returns (string memory);
+401	 function decimals() external pure returns (uint8);
+402	 function totalSupply() external view returns (uint);
+403	 function balanceOf(address owner) external view returns (uint);
+404	 function allowance(address owner, address spender) external view returns (uint);
+405	 function approve(address spender, uint value) external returns (bool);
+406	 function transfer(address to, uint value) external returns (bool);
+407	 function transferFrom(address from, address to, uint value) external returns (bool);
+408	 function DOMAIN_SEPARATOR() external view returns (bytes32);
+409	 function PERMIT_TYPEHASH() external pure returns (bytes32);
+410	 function nonces(address owner) external view returns (uint);
+411	 function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+412	 event Mint(address indexed sender, uint amount0, uint amount1);
+413	 event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+414	 event Swap( address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to );
+415	 event Sync(uint112 reserve0, uint112 reserve1);
+416	 function MINIMUM_LIQUIDITY() external pure returns (uint);
+417	 function factory() external view returns (address);
+418	 function token0() external view returns (address);
+419	 function token1() external view returns (address);
+420	 function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+421	 function price0CumulativeLast() external view returns (uint);
+422	 function price1CumulativeLast() external view returns (uint);
+423	 function kLast() external view returns (uint);
+424	 function mint(address to) external returns (uint liquidity);
+425	 function burn(address to) external returns (uint amount0, uint amount1);
+426	 function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+427	 function skim(address to) external;
+428	 function sync() external;
+429	 function initialize(address, address) external;
+430	 }
+431	 pragma solidity 0.7.6;
+432	 library MathUtil {
+433	 function sqrt(uint256 x) internal pure returns (uint256) {
+434	 if (x == 0) return 0;
+435	 uint256 xx = x;
+436	 uint256 r = 1;
+437	 if (xx >= 0x100000000000000000000000000000000) {
+438	 xx >>= 128;
+439	 r <<= 64;
+440	 }
+441	 if (xx >= 0x10000000000000000) {
+442	 xx >>= 64;
+443	 r <<= 32;
+444	 }
+445	 if (xx >= 0x100000000) {
+446	 xx >>= 32;
+447	 r <<= 16;
+448	 }
+449	 if (xx >= 0x10000) {
+450	 xx >>= 16;
+451	 r <<= 8;
+452	 }
+453	 if (xx >= 0x100) {
+454	 xx >>= 8;
+455	 r <<= 4;
+456	 }
+457	 if (xx >= 0x10) {
+458	 xx >>= 4;
+459	 r <<= 2;
+460	 }
+461	 if (xx >= 0x8) {
+462	 r <<= 1;
+463	 }
+464	 r = (r + x / r) >> 1;
+465	 r = (r + x / r) >> 1;
+466	 r = (r + x / r) >> 1;
+467	 r = (r + x / r) >> 1;
+468	 r = (r + x / r) >> 1;
+469	 r = (r + x / r) >> 1;
+470	 r = (r + x / r) >> 1;
+471	 uint256 r1 = x / r;
+472	 return (r < r1 ? r : r1);
+473	 }
+474	 }
+475	 pragma solidity 0.7.6;
+476	 library UniswapV2OracleLibrary {
+477	 using FixedPoint for *;
+478	 function currentBlockTimestamp() internal view returns (uint32) {
+479	 return uint32(uint256(block.timestamp) % (2 ** 32));
+480	 }
+481	 function currentCumulativePrices( address pair ) internal view returns (uint price0Cumulative, uint price1Cumulative, uint32 blockTimestamp) {
+482	 blockTimestamp = currentBlockTimestamp();
+483	 price0Cumulative = IUniswapV2Pair(pair).price0CumulativeLast();
+484	 price1Cumulative = IUniswapV2Pair(pair).price1CumulativeLast();
+485	 (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast) = IUniswapV2Pair(pair).getReserves();
+486	 if (blockTimestampLast != blockTimestamp) {
+487	 uint32 timeElapsed = blockTimestamp - blockTimestampLast;
+488	 price0Cumulative += uint(FixedPoint.fraction(reserve1, reserve0)._x) * timeElapsed;
+489	 price1Cumulative += uint(FixedPoint.fraction(reserve0, reserve1)._x) * timeElapsed;
+490	 }
+491	 }
+492	 }
+493	 pragma solidity >=0.4.0;
+494	 library FullMath {
+495	 function fullMul(uint256 x, uint256 y) internal pure returns (uint256 l, uint256 h) {
+496	 uint256 mm = mulmod(x, y, uint256(-1));
+497	 l = x * y;
+498	 h = mm - l;
+499	 if (mm < l) h -= 1;
+500	 }
+501	 function fullDiv( uint256 l, uint256 h, uint256 d ) private pure returns (uint256) {
+502	 uint256 pow2 = d & -d;
+503	 d /= pow2;
+504	 l /= pow2;
+505	 l += h * ((-pow2) / pow2 + 1);
+506	 uint256 r = 1;
+507	 r *= 2 - d * r;
+508	 r *= 2 - d * r;
+509	 r *= 2 - d * r;
+510	 r *= 2 - d * r;
+511	 r *= 2 - d * r;
+512	 r *= 2 - d * r;
+513	 r *= 2 - d * r;
+514	 r *= 2 - d * r;
+515	 return l * r;
+516	 }
+517	 function mulDiv( uint256 x, uint256 y, uint256 d ) internal pure returns (uint256) {
+518	 (uint256 l, uint256 h) = fullMul(x, y);
+519	 uint256 mm = mulmod(x, y, d);
+520	 if (mm > l) h -= 1;
+521	 l -= mm;
+522	 if (h == 0) return l / d;
+523	 require(h < d, 'FullMath: FULLDIV_OVERFLOW');
+524	 return fullDiv(l, h, d);
+525	 }
+526	 }
+527	 pragma solidity >=0.4.0;
+528	 library Babylonian {
+529	 function sqrt(uint256 x) internal pure returns (uint256) {
+530	 if (x == 0) return 0;
+531	 uint256 xx = x;
+532	 uint256 r = 1;
+533	 if (xx >= 0x100000000000000000000000000000000) {
+534	 xx >>= 128;
+535	 r <<= 64;
+536	 }
+537	 if (xx >= 0x10000000000000000) {
+538	 xx >>= 64;
+539	 r <<= 32;
+540	 }
+541	 if (xx >= 0x100000000) {
+542	 xx >>= 32;
+543	 r <<= 16;
+544	 }
+545	 if (xx >= 0x10000) {
+546	 xx >>= 16;
+547	 r <<= 8;
+548	 }
+549	 if (xx >= 0x100) {
+550	 xx >>= 8;
+551	 r <<= 4;
+552	 }
+553	 if (xx >= 0x10) {
+554	 xx >>= 4;
+555	 r <<= 2;
+556	 }
+557	 if (xx >= 0x8) {
+558	 r <<= 1;
+559	 }
+560	 r = (r + x / r) >> 1;
+561	 r = (r + x / r) >> 1;
+562	 r = (r + x / r) >> 1;
+563	 r = (r + x / r) >> 1;
+564	 r = (r + x / r) >> 1;
+565	 r = (r + x / r) >> 1;
+566	 r = (r + x / r) >> 1;
+567	 uint256 r1 = x / r;
+568	 return (r < r1 ? r : r1);
+569	 }
+570	 }
+571	 pragma solidity >=0.5.0;
+572	 library BitMath {
+573	 function mostSignificantBit(uint256 x) internal pure returns (uint8 r) {
+574	 require(x > 0, 'BitMath::mostSignificantBit: zero');
+575	 if (x >= 0x100000000000000000000000000000000) {
+576	 x >>= 128;
+577	 r += 128;
+578	 }
+579	 if (x >= 0x10000000000000000) {
+580	 x >>= 64;
+581	 r += 64;
+582	 }
+583	 if (x >= 0x100000000) {
+584	 x >>= 32;
+585	 r += 32;
+586	 }
+587	 if (x >= 0x10000) {
+588	 x >>= 16;
+589	 r += 16;
+590	 }
+591	 if (x >= 0x100) {
+592	 x >>= 8;
+593	 r += 8;
+594	 }
+595	 if (x >= 0x10) {
+596	 x >>= 4;
+597	 r += 4;
+598	 }
+599	 if (x >= 0x4) {
+600	 x >>= 2;
+601	 r += 2;
+602	 }
+603	 if (x >= 0x2) r += 1;
+604	 }
+605	 function leastSignificantBit(uint256 x) internal pure returns (uint8 r) {
+606	 require(x > 0, 'BitMath::leastSignificantBit: zero');
+607	 r = 255;
+608	 if (x & uint128(-1) > 0) {
+609	 r -= 128;
+610	 }
+611	 else {
+612	 x >>= 128;
+613	 }
+614	 if (x & uint64(-1) > 0) {
+615	 r -= 64;
+616	 }
+617	 else {
+618	 x >>= 64;
+619	 }
+620	 if (x & uint32(-1) > 0) {
+621	 r -= 32;
+622	 }
+623	 else {
+624	 x >>= 32;
+625	 }
+626	 if (x & uint16(-1) > 0) {
+627	 r -= 16;
+628	 }
+629	 else {
+630	 x >>= 16;
+631	 }
+632	 if (x & uint8(-1) > 0) {
+633	 r -= 8;
+634	 }
+635	 else {
+636	 x >>= 8;
+637	 }
+638	 if (x & 0xf > 0) {
+639	 r -= 4;
+640	 }
+641	 else {
+642	 x >>= 4;
+643	 }
+644	 if (x & 0x3 > 0) {
+645	 r -= 2;
+646	 }
+647	 else {
+648	 x >>= 2;
+649	 }
+650	 if (x & 0x1 > 0) r -= 1;
+651	 }
+652	 }
+653	 pragma solidity >=0.6.2 <0.8.0;
+654	 library AddressUpgradeable {
+655	 function isContract(address account) internal view returns (bool) {
+656	 uint256 size;
+657	 assembly {
+658	 size := extcodesize(account) }
+659	 return size > 0;
+660	 }
+661	 function sendValue(address payable recipient, uint256 amount) internal {
+662	 require(address(this).balance >= amount, "Address: insufficient balance");
+663	 (bool success, ) = recipient.call{
+664	 value: amount }
+665	 ("");
+666	 require(success, "Address: unable to send value, recipient may have reverted");
+667	 }
+668	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+669	 return functionCall(target, data, "Address: low-level call failed");
+670	 }
+671	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+672	 return functionCallWithValue(target, data, 0, errorMessage);
+673	 }
+674	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+675	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+676	 }
+677	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+678	 require(address(this).balance >= value, "Address: insufficient balance for call");
+679	 require(isContract(target), "Address: call to non-contract");
+680	 (bool success, bytes memory returndata) = target.call{
+681	 value: value }
+682	 (data);
+683	 return _verifyCallResult(success, returndata, errorMessage);
+684	 }
+685	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+686	 return functionStaticCall(target, data, "Address: low-level static call failed");
+687	 }
+688	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+689	 require(isContract(target), "Address: static call to non-contract");
+690	 (bool success, bytes memory returndata) = target.staticcall(data);
+691	 return _verifyCallResult(success, returndata, errorMessage);
+692	 }
+693	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+694	 if (success) {
+695	 return returndata;
+696	 }
+697	 else {
+698	 if (returndata.length > 0) {
+699	 assembly {
+700	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+701	 }
+702	 else {
+703	 revert(errorMessage);
+704	 }
+705	 }
+706	 }
+707	 }

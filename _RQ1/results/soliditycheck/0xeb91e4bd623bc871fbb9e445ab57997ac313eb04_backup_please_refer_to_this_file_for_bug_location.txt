@@ -1,0 +1,122 @@
+row number 
+1	 pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.5.16;
+3	 library SafeMath {
+4	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+5	 uint256 c = a + b;
+6	 require(c >= a, "SafeMath: addition overflow");
+7	 return c;
+8	 }
+9	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+10	 return sub(a, b, "SafeMath: subtraction overflow");
+11	 }
+12	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+13	 require(b <= a, errorMessage);
+14	 uint256 c = a - b;
+15	 return c;
+16	 }
+17	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+18	 if (a == 0) {
+19	 return 0;
+20	 }
+21	 uint256 c = a * b;
+22	 require(c / a == b, "SafeMath: multiplication overflow");
+23	 return c;
+24	 }
+25	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+26	 return div(a, b, "SafeMath: division by zero");
+27	 }
+28	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+29	 require(b > 0, errorMessage);
+30	 uint256 c = a / b;
+31	 return c;
+32	 }
+33	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+34	 return mod(a, b, "SafeMath: modulo by zero");
+35	 }
+36	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+37	 require(b != 0, errorMessage);
+38	 return a % b;
+39	 }
+40	 }
+41	 contract Timelock {
+42	 using SafeMath for uint;
+43	 event NewAdmin(address indexed newAdmin);
+44	 event NewPendingAdmin(address indexed newPendingAdmin);
+45	 event NewDelay(uint indexed newDelay);
+46	 event CancelTransaction(bytes32 indexed txHash, address indexed target, uint value, string signature, bytes data, uint eta);
+47	 event ExecuteTransaction(bytes32 indexed txHash, address indexed target, uint value, string signature, bytes data, uint eta);
+48	 event QueueTransaction(bytes32 indexed txHash, address indexed target, uint value, string signature, bytes data, uint eta);
+49	 uint public constant GRACE_PERIOD = 14 days;
+50	 uint public constant MINIMUM_DELAY = 2 days;
+51	 uint public constant MAXIMUM_DELAY = 30 days;
+52	 address public admin;
+53	 address public pendingAdmin;
+54	 uint public delay;
+55	 bool private initialized;
+56	 mapping (bytes32 => bool) public queuedTransactions;
+57	 function init(address _admin, uint _delay) external {
+58	 require(!initialized, "initialized");
+59	 require(_delay >= MINIMUM_DELAY, "Timelock::constructor: Delay must exceed minimum delay.");
+60	 require(_delay <= MAXIMUM_DELAY, "Timelock::setDelay: Delay must not exceed maximum delay.");
+61	 admin = _admin;
+62	 delay = _delay;
+63	 initialized = true;
+64	 }
+65	 function() external payable {
+66	 }
+67	 function setDelay(uint delay_) public {
+68	 require(msg.sender == address(this), "Timelock::setDelay: Call must come from Timelock.");
+69	 require(delay_ >= MINIMUM_DELAY, "Timelock::setDelay: Delay must exceed minimum delay.");
+70	 require(delay_ <= MAXIMUM_DELAY, "Timelock::setDelay: Delay must not exceed maximum delay.");
+71	 delay = delay_;
+72	 emit NewDelay(delay);
+73	 }
+74	 function acceptAdmin() public {
+75	 require(msg.sender == pendingAdmin, "Timelock::acceptAdmin: Call must come from pendingAdmin.");
+76	 admin = msg.sender;
+77	 pendingAdmin = address(0);
+78	 emit NewAdmin(admin);
+79	 }
+80	 function setPendingAdmin(address pendingAdmin_) public {
+81	 require(msg.sender == address(this), "Timelock::setPendingAdmin: Call must come from Timelock.");
+82	 pendingAdmin = pendingAdmin_;
+83	 emit NewPendingAdmin(pendingAdmin);
+84	 }
+85	 function queueTransaction(address target, uint value, string memory signature, bytes memory data, uint eta) public returns (bytes32) {
+86	 require(msg.sender == admin, "Timelock::queueTransaction: Call must come from admin.");
+87	 require(eta >= getBlockTimestamp().add(delay), "Timelock::queueTransaction: Estimated execution block must satisfy delay.");
+88	 bytes32 txHash = keccak256(abi.encode(target, value, signature, data, eta));
+89	 queuedTransactions[txHash] = true;
+90	 emit QueueTransaction(txHash, target, value, signature, data, eta);
+91	 return txHash;
+92	 }
+93	 function cancelTransaction(address target, uint value, string memory signature, bytes memory data, uint eta) public {
+94	 require(msg.sender == admin, "Timelock::cancelTransaction: Call must come from admin.");
+95	 bytes32 txHash = keccak256(abi.encode(target, value, signature, data, eta));
+96	 queuedTransactions[txHash] = false;
+97	 emit CancelTransaction(txHash, target, value, signature, data, eta);
+98	 }
+99	 function executeTransaction(address target, uint value, string memory signature, bytes memory data, uint eta) public payable returns (bytes memory) {
+100	 require(msg.sender == admin, "Timelock::executeTransaction: Call must come from admin.");
+101	 bytes32 txHash = keccak256(abi.encode(target, value, signature, data, eta));
+102	 require(queuedTransactions[txHash], "Timelock::executeTransaction: Transaction hasn't been queued.");
+103	 require(getBlockTimestamp() >= eta, "Timelock::executeTransaction: Transaction hasn't surpassed time lock.");
+104	 require(getBlockTimestamp() <= eta.add(GRACE_PERIOD), "Timelock::executeTransaction: Transaction is stale.");
+105	 queuedTransactions[txHash] = false;
+106	 bytes memory callData;
+107	 if (bytes(signature).length == 0) {
+108	 callData = data;
+109	 }
+110	 else {
+111	 callData = abi.encodePacked(bytes4(keccak256(bytes(signature))), data);
+112	 }
+113	 (bool success, bytes memory returnData) = target.call.value(value)(callData);
+114	 require(success, "Timelock::executeTransaction: Transaction execution reverted.");
+115	 emit ExecuteTransaction(txHash, target, value, signature, data, eta);
+116	 return returnData;
+117	 }
+118	 function getBlockTimestamp() internal view returns (uint) {
+119	 return block.timestamp;
+120	 }
+121	 }

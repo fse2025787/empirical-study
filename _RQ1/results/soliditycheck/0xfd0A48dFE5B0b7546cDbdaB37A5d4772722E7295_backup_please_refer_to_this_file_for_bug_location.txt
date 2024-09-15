@@ -1,0 +1,460 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.6.0 <0.8.0;
+3	 abstract contract Context {
+4	 function _msgSender() internal view virtual returns (address payable) {
+5	 return msg.sender;
+6	 }
+7	 function _msgData() internal view virtual returns (bytes memory) {
+8	 this;
+9	 return msg.data;
+10	 }
+11	 }
+12	 pragma solidity >=0.6.0 <0.8.0;
+13	 abstract contract Ownable is Context {
+14	 address private _owner;
+15	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+16	 constructor () internal {
+17	 address msgSender = _msgSender();
+18	 _owner = msgSender;
+19	 emit OwnershipTransferred(address(0), msgSender);
+20	 }
+21	 function owner() public view virtual returns (address) {
+22	 return _owner;
+23	 }
+24	 modifier onlyOwner() {
+25	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+26	 _;
+27	 }
+28	 function renounceOwnership() public virtual onlyOwner {
+29	 emit OwnershipTransferred(_owner, address(0));
+30	 _owner = address(0);
+31	 }
+32	 function transferOwnership(address newOwner) public virtual onlyOwner {
+33	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+34	 emit OwnershipTransferred(_owner, newOwner);
+35	 _owner = newOwner;
+36	 }
+37	 }
+38	 pragma solidity 0.7.6;
+39	 contract Readable {
+40	 function since(uint _timestamp) internal view returns(uint) {
+41	 if (not(passed(_timestamp))) {
+42	 return 0;
+43	 }
+44	 return block.timestamp - _timestamp;
+45	 }
+46	 function till(uint _timestamp) internal view returns(uint) {
+47	 if (passed(_timestamp)) {
+48	 return 0;
+49	 }
+50	 return _timestamp - block.timestamp;
+51	 }
+52	 function passed(uint _timestamp) internal view returns(bool) {
+53	 return _timestamp < block.timestamp;
+54	 }
+55	 function reached(uint _timestamp) internal view returns(bool) {
+56	 return _timestamp <= block.timestamp;
+57	 }
+58	 function not(bool _condition) internal pure returns(bool) {
+59	 return !_condition;
+60	 }
+61	 }
+62	 pragma solidity 0.7.6;
+63	 contract BulkStaking is Ownable, Readable {
+64	 using SafeMath for *;
+65	 using ExtraMath for *;
+66	 using SafeERC20 for IERC20;
+67	 IERC20 immutable public BULK;
+68	 uint public constant RELEASE_DATE = 1628164800;
+69	 uint public constant STRATEGIC = RELEASE_DATE - 75 days;
+70	 uint public constant STRATEGIC_PERIOD = 375 days;
+71	 uint public constant PRIVATE = RELEASE_DATE - 100 days;
+72	 uint public constant PRIVATE_PERIOD = 400 days;
+73	 uint public constant INSTITUTIONAL = RELEASE_DATE - 30 days;
+74	 uint public constant INSTITUTIONAL_PERIOD = 600 days;
+75	 uint public constant WITHDRAW_TIMEOUT = 30 days;
+76	 struct Lock {
+77	 uint128 strategicSale;
+78	 uint128 privateSale;
+79	 uint128 institutionalSale;
+80	 uint128 claimed;
+81	 uint88 secondary;
+82	 uint88 requested;
+83	 uint32 readyAt;
+84	 }
+85	 struct DB {
+86	 mapping(address => Lock) locked;
+87	 uint totalBalance;
+88	 }
+89	 DB internal db;
+90	 constructor(IERC20 bulk, address newOwner) {
+91	 BULK = bulk;
+92	 transferOwnership(newOwner);
+93	 }
+94	 function getUserInfo(address who) external view returns(Lock memory) {
+95	 return db.locked[who];
+96	 }
+97	 function getTotalBalance() external view returns(uint) {
+98	 return db.totalBalance;
+99	 }
+100	 function calcualteReleased(uint amount, uint releaseStart, uint releasePeriod) private view returns(uint) {
+101	 uint released = amount.mul(since(releaseStart)) / releasePeriod;
+102	 return Math.min(amount, released);
+103	 }
+104	 function availableToClaim(address who) public view returns(uint) {
+105	 if (not(reached(RELEASE_DATE))) {
+106	 return 0;
+107	 }
+108	 Lock memory user = db.locked[who];
+109	 uint releasedStrategic = calcualteReleased( user.strategicSale, STRATEGIC, STRATEGIC_PERIOD);
+110	 uint releasedPrivate = calcualteReleased( user.privateSale, PRIVATE, PRIVATE_PERIOD);
+111	 uint releasedInstitutional = calcualteReleased( user.institutionalSale, INSTITUTIONAL, INSTITUTIONAL_PERIOD);
+112	 uint released = releasedStrategic.add(releasedPrivate).add(releasedInstitutional);
+113	 if (user.claimed >= released) {
+114	 return 0;
+115	 }
+116	 return released.sub(user.claimed);
+117	 }
+118	 function availableToWithdraw(address who) public view returns(uint) {
+119	 Lock storage user = db.locked[who];
+120	 uint readyAt = user.readyAt;
+121	 uint requested = user.requested;
+122	 if (readyAt > 0 && passed(readyAt)) {
+123	 return requested;
+124	 }
+125	 return 0;
+126	 }
+127	 function balanceOf(address who) external view returns(uint) {
+128	 Lock memory user = db.locked[who];
+129	 return user.strategicSale.add(user.privateSale).add(user.institutionalSale) .add(user.secondary).sub(user.claimed).sub(availableToWithdraw(who));
+130	 }
+131	 function assignStrategic(address[] calldata tos, uint[] calldata amounts) external onlyOwner {
+132	 uint len = tos.length;
+133	 require(len == amounts.length, 'Invalid input');
+134	 uint total = 0;
+135	 for (uint i = 0; i < len; i++) {
+136	 address to = tos[i];
+137	 uint amount = amounts[i];
+138	 db.locked[to].strategicSale = db.locked[to].strategicSale.add(amount).toUInt128();
+139	 total = total.add(amount);
+140	 emit StrategicAssigned(to, amount);
+141	 }
+142	 db.totalBalance = db.totalBalance.add(total);
+143	 BULK.safeTransferFrom(msg.sender, address(this), total);
+144	 }
+145	 function assignPrivate(address[] calldata tos, uint[] calldata amounts) external onlyOwner {
+146	 uint len = tos.length;
+147	 require(len == amounts.length, 'Invalid input');
+148	 uint total = 0;
+149	 for (uint i = 0; i < len; i++) {
+150	 address to = tos[i];
+151	 uint amount = amounts[i];
+152	 db.locked[to].privateSale = db.locked[to].privateSale.add(amount).toUInt128();
+153	 total = total.add(amount);
+154	 emit PrivateAssigned(to, amount);
+155	 }
+156	 db.totalBalance = db.totalBalance.add(total);
+157	 BULK.safeTransferFrom(msg.sender, address(this), total);
+158	 }
+159	 function assignInstitutional(address[] calldata tos, uint[] calldata amounts) external onlyOwner {
+160	 uint len = tos.length;
+161	 require(len == amounts.length, 'Invalid input');
+162	 uint total = 0;
+163	 for (uint i = 0; i < len; i++) {
+164	 address to = tos[i];
+165	 uint amount = amounts[i];
+166	 db.locked[to].institutionalSale = db.locked[to].institutionalSale.add(amount).toUInt128();
+167	 total = total.add(amount);
+168	 emit InstitutionalAssigned(to, amount);
+169	 }
+170	 db.totalBalance = db.totalBalance.add(total);
+171	 BULK.safeTransferFrom(msg.sender, address(this), total);
+172	 }
+173	 function claim() public {
+174	 uint claimable = availableToClaim(msg.sender);
+175	 require(claimable > 0, 'Nothing to claim');
+176	 Lock storage user = db.locked[msg.sender];
+177	 user.claimed = user.claimed.add(claimable).toUInt128();
+178	 db.totalBalance = db.totalBalance.sub(claimable);
+179	 BULK.safeTransfer(msg.sender, claimable);
+180	 emit Claimed(msg.sender, claimable);
+181	 }
+182	 function stake(uint amount) external {
+183	 Lock storage user = db.locked[msg.sender];
+184	 user.secondary = user.secondary.add(amount).toUInt88();
+185	 user.readyAt = 0;
+186	 user.requested = 0;
+187	 db.totalBalance = db.totalBalance.add(amount);
+188	 BULK.safeTransferFrom(msg.sender, address(this), amount);
+189	 emit Staked(msg.sender, amount);
+190	 }
+191	 function restake() external {
+192	 Lock storage user = db.locked[msg.sender];
+193	 uint requested = user.requested;
+194	 user.readyAt = 0;
+195	 user.requested = 0;
+196	 emit Restaked(msg.sender, requested);
+197	 }
+198	 function requestWithdrawal(uint amount) external {
+199	 require(amount > 0, 'Amount must be positive');
+200	 if(availableToWithdraw(msg.sender) > 0) {
+201	 withdraw();
+202	 }
+203	 Lock storage user = db.locked[msg.sender];
+204	 uint readyAt = user.readyAt;
+205	 uint requested = user.requested;
+206	 uint newRequested = requested.add(amount);
+207	 require(user.secondary >= newRequested, 'Insufficient balance to withdraw');
+208	 uint timeLeft = till(readyAt).mul(requested).add( amount.mul(WITHDRAW_TIMEOUT)).div(newRequested);
+209	 uint newReadyAt = block.timestamp.add(timeLeft);
+210	 user.readyAt = newReadyAt.toUInt32();
+211	 user.requested = newRequested.toUInt88();
+212	 emit WithdrawRequested(msg.sender, amount, newReadyAt);
+213	 }
+214	 function withdraw() public {
+215	 uint withdrawable = availableToWithdraw(msg.sender);
+216	 require(withdrawable > 0, 'Nothing to withdraw');
+217	 Lock storage user = db.locked[msg.sender];
+218	 user.secondary = user.secondary.sub(withdrawable).toUInt88();
+219	 user.readyAt = 0;
+220	 user.requested = 0;
+221	 db.totalBalance = db.totalBalance.sub(withdrawable);
+222	 BULK.safeTransfer(msg.sender, withdrawable);
+223	 emit Withdrawn(msg.sender, withdrawable);
+224	 }
+225	 function withdrawEarly(address who, uint amount) external onlyOwner {
+226	 Lock storage user = db.locked[who];
+227	 user.secondary = user.secondary.sub(amount).toUInt88();
+228	 user.readyAt = 0;
+229	 user.requested = 0;
+230	 db.totalBalance = db.totalBalance.sub(amount);
+231	 BULK.safeTransfer(msg.sender, amount);
+232	 emit WithdrawnEarly(who, amount);
+233	 }
+234	 function claimEarly(address who, uint amount) external onlyOwner {
+235	 Lock storage user = db.locked[who];
+236	 Lock memory userData = user;
+237	 uint unclaimed = userData.strategicSale.add(userData.privateSale) .add(userData.institutionalSale).sub(userData.claimed);
+238	 require(amount <= unclaimed, 'Insufficient unclaimed');
+239	 user.claimed = user.claimed.add(amount).toUInt128();
+240	 db.totalBalance = db.totalBalance.sub(amount);
+241	 BULK.safeTransfer(msg.sender, amount);
+242	 emit ClaimedEarly(who, amount);
+243	 }
+244	 function claimAndWithdraw() external {
+245	 claim();
+246	 if (availableToWithdraw(msg.sender) == 0) {
+247	 return;
+248	 }
+249	 withdraw();
+250	 }
+251	 function recover(IERC20 token, address to, uint amount) external onlyOwner {
+252	 if (token == BULK) {
+253	 require(BULK.balanceOf(address(this)).sub(db.totalBalance) >= amount, 'Not enough to recover');
+254	 }
+255	 token.safeTransfer(to, amount);
+256	 emit Recovered(token, to, amount);
+257	 }
+258	 event StrategicAssigned(address user, uint amount);
+259	 event PrivateAssigned(address user, uint amount);
+260	 event InstitutionalAssigned(address user, uint amount);
+261	 event Claimed(address user, uint amount);
+262	 event Staked(address user, uint amount);
+263	 event Restaked(address user, uint amount);
+264	 event WithdrawRequested(address user, uint amount, uint readyAt);
+265	 event Withdrawn(address user, uint amount);
+266	 event WithdrawnEarly(address user, uint amount);
+267	 event ClaimedEarly(address user, uint amount);
+268	 event Recovered(IERC20 token, address to, uint amount);
+269	 }
+270	 pragma solidity >=0.6.0 <0.8.0;
+271	 library SafeERC20 {
+272	 using SafeMath for uint256;
+273	 using Address for address;
+274	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+275	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+276	 }
+277	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+278	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+279	 }
+280	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+281	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+282	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+283	 }
+284	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+285	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+286	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+287	 }
+288	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+289	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+290	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+291	 }
+292	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+293	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+294	 if (returndata.length > 0) {
+295	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+296	 }
+297	 }
+298	 }
+299	 pragma solidity >=0.6.0 <0.8.0;
+300	 library Math {
+301	 function max(uint256 a, uint256 b) internal pure returns (uint256) {
+302	 return a >= b ? a : b;
+303	 }
+304	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+305	 return a < b ? a : b;
+306	 }
+307	 function average(uint256 a, uint256 b) internal pure returns (uint256) {
+308	 return (a / 2) + (b / 2) + ((a % 2 + b % 2) / 2);
+309	 }
+310	 }
+311	 pragma solidity >=0.6.0 <0.8.0;
+312	 library SafeMath {
+313	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+314	 uint256 c = a + b;
+315	 if (c < a) return (false, 0);
+316	 return (true, c);
+317	 }
+318	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+319	 if (b > a) return (false, 0);
+320	 return (true, a - b);
+321	 }
+322	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+323	 if (a == 0) return (true, 0);
+324	 uint256 c = a * b;
+325	 if (c / a != b) return (false, 0);
+326	 return (true, c);
+327	 }
+328	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+329	 if (b == 0) return (false, 0);
+330	 return (true, a / b);
+331	 }
+332	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+333	 if (b == 0) return (false, 0);
+334	 return (true, a % b);
+335	 }
+336	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+337	 uint256 c = a + b;
+338	 require(c >= a, "SafeMath: addition overflow");
+339	 return c;
+340	 }
+341	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+342	 require(b <= a, "SafeMath: subtraction overflow");
+343	 return a - b;
+344	 }
+345	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+346	 if (a == 0) return 0;
+347	 uint256 c = a * b;
+348	 require(c / a == b, "SafeMath: multiplication overflow");
+349	 return c;
+350	 }
+351	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+352	 require(b > 0, "SafeMath: division by zero");
+353	 return a / b;
+354	 }
+355	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+356	 require(b > 0, "SafeMath: modulo by zero");
+357	 return a % b;
+358	 }
+359	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+360	 require(b <= a, errorMessage);
+361	 return a - b;
+362	 }
+363	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+364	 require(b > 0, errorMessage);
+365	 return a / b;
+366	 }
+367	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+368	 require(b > 0, errorMessage);
+369	 return a % b;
+370	 }
+371	 }
+372	 library ExtraMath {
+373	 function toUInt32(uint _a) internal pure returns(uint32) {
+374	 require(_a <= type(uint32).max, 'uint32 overflow');
+375	 return uint32(_a);
+376	 }
+377	 function toUInt88(uint _a) internal pure returns(uint88) {
+378	 require(_a <= type(uint88).max, 'uint88 overflow');
+379	 return uint88(_a);
+380	 }
+381	 function toUInt128(uint _a) internal pure returns(uint128) {
+382	 require(_a <= type(uint128).max, 'uint128 overflow');
+383	 return uint128(_a);
+384	 }
+385	 }
+386	 pragma solidity >=0.6.0 <0.8.0;
+387	 interface IERC20 {
+388	 function totalSupply() external view returns (uint256);
+389	 function balanceOf(address account) external view returns (uint256);
+390	 function transfer(address recipient, uint256 amount) external returns (bool);
+391	 function allowance(address owner, address spender) external view returns (uint256);
+392	 function approve(address spender, uint256 amount) external returns (bool);
+393	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+394	 event Transfer(address indexed from, address indexed to, uint256 value);
+395	 event Approval(address indexed owner, address indexed spender, uint256 value);
+396	 }
+397	 pragma solidity >=0.6.2 <0.8.0;
+398	 library Address {
+399	 function isContract(address account) internal view returns (bool) {
+400	 uint256 size;
+401	 assembly {
+402	 size := extcodesize(account) }
+403	 return size > 0;
+404	 }
+405	 function sendValue(address payable recipient, uint256 amount) internal {
+406	 require(address(this).balance >= amount, "Address: insufficient balance");
+407	 (bool success, ) = recipient.call{
+408	 value: amount }
+409	 ("");
+410	 require(success, "Address: unable to send value, recipient may have reverted");
+411	 }
+412	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+413	 return functionCall(target, data, "Address: low-level call failed");
+414	 }
+415	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+416	 return functionCallWithValue(target, data, 0, errorMessage);
+417	 }
+418	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+419	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+420	 }
+421	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+422	 require(address(this).balance >= value, "Address: insufficient balance for call");
+423	 require(isContract(target), "Address: call to non-contract");
+424	 (bool success, bytes memory returndata) = target.call{
+425	 value: value }
+426	 (data);
+427	 return _verifyCallResult(success, returndata, errorMessage);
+428	 }
+429	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+430	 return functionStaticCall(target, data, "Address: low-level static call failed");
+431	 }
+432	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+433	 require(isContract(target), "Address: static call to non-contract");
+434	 (bool success, bytes memory returndata) = target.staticcall(data);
+435	 return _verifyCallResult(success, returndata, errorMessage);
+436	 }
+437	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+438	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+439	 }
+440	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+441	 require(isContract(target), "Address: delegate call to non-contract");
+442	 (bool success, bytes memory returndata) = target.delegatecall(data);
+443	 return _verifyCallResult(success, returndata, errorMessage);
+444	 }
+445	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+446	 if (success) {
+447	 return returndata;
+448	 }
+449	 else {
+450	 if (returndata.length > 0) {
+451	 assembly {
+452	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+453	 }
+454	 else {
+455	 revert(errorMessage);
+456	 }
+457	 }
+458	 }
+459	 }

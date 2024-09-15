@@ -1,0 +1,610 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.7.0;
+3	 interface IValidationLibraryHelper {
+4	 struct ULNLog{
+5	 bytes32 contractAddress;
+6	 bytes32 topicZeroSig;
+7	 bytes data;
+8	 }
+9	 function getVerifyLog(bytes32 hashRoot, uint[] memory receiptSlotIndex, uint logIndex, bytes[] memory proof) external pure returns(ULNLog memory);
+10	 function getPacket(bytes memory data, uint16 srcChain, uint sizeOfSrcAddress, bytes32 ulnAddress) external pure returns(LayerZeroPacket.Packet memory);
+11	 function getUtilsVersion() external view returns(uint8);
+12	 }
+13	 pragma solidity >=0.7.0;
+14	 interface ILayerZeroValidationLibrary {
+15	 function validateProof(bytes32 blockData, bytes calldata _data, uint _remoteAddressSize) external returns (LayerZeroPacket.Packet memory packet);
+16	 }
+17	 pragma solidity 0.7.6;
+18	 interface IUltraLightNode {
+19	 struct BlockData {
+20	 uint confirmations;
+21	 bytes32 data;
+22	 }
+23	 struct ApplicationConfiguration {
+24	 uint16 inboundProofLibraryVersion;
+25	 uint64 inboundBlockConfirmations;
+26	 address relayer;
+27	 uint16 outboundProofType;
+28	 uint64 outboundBlockConfirmations;
+29	 address oracle;
+30	 }
+31	 function getAppConfig(uint16 _chainId, address userApplicationAddress) external view returns (ApplicationConfiguration memory);
+32	 function getBlockHeaderData(address _oracle, uint16 _remoteChainId, bytes32 _lookupHash) external view returns (BlockData memory blockData);
+33	 }
+34	 interface IStargate {
+35	 struct SwapObj {
+36	 uint256 amount;
+37	 uint256 eqFee;
+38	 uint256 eqReward;
+39	 uint256 lpFee;
+40	 uint256 protocolFee;
+41	 uint256 lkbRemove;
+42	 }
+43	 struct CreditObj {
+44	 uint256 credits;
+45	 uint256 idealBalance;
+46	 }
+47	 }
+48	 contract MPTValidatorV4 is ILayerZeroValidationLibrary, IValidationLibraryHelper {
+49	 using RLPDecode for RLPDecode.RLPItem;
+50	 using RLPDecode for RLPDecode.Iterator;
+51	 using PacketDecoder for bytes;
+52	 uint8 public utilsVersion = 3;
+53	 bytes32 public constant PACKET_SIGNATURE = 0xe8d23d927749ec8e512eb885679c2977d57068839d8cca1a85685dbbea0648f6;
+54	 address immutable public stargateBridgeAddress;
+55	 address immutable public stgTokenAddress;
+56	 uint16 immutable public localChainId;
+57	 IUltraLightNode immutable public uln;
+58	 constructor (address _stargateBridgeAddress, address _stgTokenAddress, uint16 _localChainId, address _ulnAddress) {
+59	 stargateBridgeAddress = _stargateBridgeAddress;
+60	 stgTokenAddress = _stgTokenAddress;
+61	 localChainId = _localChainId;
+62	 uln = IUltraLightNode(_ulnAddress);
+63	 }
+64	 function validateProof(bytes32 _receiptsRoot, bytes calldata _transactionProof, uint _remoteAddressSize) external view override returns (LayerZeroPacket.Packet memory) {
+65	 require(_remoteAddressSize > 0, "ProofLib: invalid address size");
+66	 (uint16 remoteChainId, bytes32 blockHash, bytes[] memory proof, uint[] memory receiptSlotIndex, uint logIndex) = abi.decode(_transactionProof, (uint16, bytes32, bytes[], uint[], uint));
+67	 ULNLog memory log = _getVerifiedLog(_receiptsRoot, receiptSlotIndex, logIndex, proof);
+68	 require(log.topicZeroSig == PACKET_SIGNATURE, "ProofLib: packet not recognized");
+69	 LayerZeroPacket.Packet memory packet = log.data.getPacket(remoteChainId, _remoteAddressSize, log.contractAddress);
+70	 _assertMessagePath(packet, blockHash, _receiptsRoot);
+71	 if (packet.dstAddress == stargateBridgeAddress) packet.payload = _secureStgPayload(packet.payload);
+72	 if (packet.dstAddress == stgTokenAddress) packet.payload = _secureStgTokenPayload(packet.payload);
+73	 return packet;
+74	 }
+75	 function _assertMessagePath(LayerZeroPacket.Packet memory packet, bytes32 blockHash, bytes32 receiptsRoot) internal view {
+76	 require(packet.dstChainId == localChainId, "ProofLib: invalid destination chain ID");
+77	 IUltraLightNode.ApplicationConfiguration memory appConfig = uln.getAppConfig(packet.srcChainId, packet.dstAddress);
+78	 IUltraLightNode.BlockData memory blockData = uln.getBlockHeaderData(appConfig.oracle, packet.srcChainId, blockHash);
+79	 require(blockData.data == receiptsRoot, "ProofLib: invalid receipt root");
+80	 require(blockData.confirmations >= appConfig.inboundBlockConfirmations, "ProofLib: not enough block confirmations");
+81	 }
+82	 function _secureStgTokenPayload(bytes memory _payload) internal pure returns (bytes memory) {
+83	 (bytes memory toAddressBytes, uint256 qty) = abi.decode(_payload, (bytes, uint256));
+84	 address toAddress = address(0);
+85	 if (toAddressBytes.length > 0) {
+86	 assembly {
+87	 toAddress := mload(add(toAddressBytes, 20))}
+88	 }
+89	 if (toAddress == address(0)) {
+90	 address deadAddress = address(0x000000000000000000000000000000000000dEaD);
+91	 bytes memory newToAddressBytes = abi.encodePacked(deadAddress);
+92	 return abi.encode(newToAddressBytes, qty);
+93	 }
+94	 return _payload;
+95	 }
+96	 function _secureStgPayload(bytes memory _payload) internal view returns (bytes memory) {
+97	 uint8 functionType;
+98	 assembly {
+99	 functionType := mload(add(_payload, 32)) }
+100	 if (functionType == 1) {
+101	 ( , uint256 srcPoolId, uint256 dstPoolId, uint256 dstGasForCall, IStargate.CreditObj memory c, IStargate.SwapObj memory s, bytes memory toAddressBytes, bytes memory contractCallPayload ) = abi.decode(_payload, (uint8, uint256, uint256, uint256, IStargate.CreditObj, IStargate.SwapObj, bytes, bytes));
+102	 if (contractCallPayload.length > 0) {
+103	 address toAddress = address(0);
+104	 if (toAddressBytes.length > 0) {
+105	 assembly {
+106	 toAddress := mload(add(toAddressBytes, 20)) }
+107	 }
+108	 uint size;
+109	 assembly {
+110	 size := extcodesize(toAddress) }
+111	 if (size == 0) {
+112	 bytes memory newToAddressBytes = abi.encodePacked(toAddress);
+113	 bytes memory securePayload = abi.encode(functionType, srcPoolId, dstPoolId, dstGasForCall, c, s, newToAddressBytes, bytes(""));
+114	 return securePayload;
+115	 }
+116	 }
+117	 }
+118	 return _payload;
+119	 }
+120	 function secureStgTokenPayload(bytes memory _payload) external pure returns(bytes memory) {
+121	 return _secureStgTokenPayload(_payload);
+122	 }
+123	 function secureStgPayload(bytes memory _payload) external view returns(bytes memory) {
+124	 return _secureStgPayload(_payload);
+125	 }
+126	 function _getVerifiedLog(bytes32 hashRoot, uint[] memory paths, uint logIndex, bytes[] memory proof) internal pure returns(ULNLog memory) {
+127	 require(paths.length == proof.length, "ProofLib: invalid proof size");
+128	 require(proof.length >0, "ProofLib: proof size must > 0");
+129	 RLPDecode.RLPItem memory item;
+130	 bytes memory proofBytes;
+131	 for (uint i = 0; i < proof.length; i++) {
+132	 proofBytes = proof[i];
+133	 require(hashRoot == keccak256(proofBytes), "ProofLib: invalid hashlink");
+134	 item = RLPDecode.toRlpItem(proofBytes).safeGetItemByIndex(paths[i]);
+135	 if (i < proof.length - 1) hashRoot = bytes32(item.toUint());
+136	 }
+137	 RLPDecode.RLPItem memory logItem = item.typeOffset().safeGetItemByIndex(3);
+138	 RLPDecode.Iterator memory it = logItem.safeGetItemByIndex(logIndex).iterator();
+139	 ULNLog memory log;
+140	 log.contractAddress = bytes32(it.next().toUint());
+141	 log.topicZeroSig = bytes32(it.next().safeGetItemByIndex(0).toUint());
+142	 log.data = it.next().toBytes();
+143	 return log;
+144	 }
+145	 function getUtilsVersion() external override view returns(uint8) {
+146	 return utilsVersion;
+147	 }
+148	 function getVerifyLog(bytes32 hashRoot, uint[] memory receiptSlotIndex, uint logIndex, bytes[] memory proof) external override pure returns(ULNLog memory){
+149	 return _getVerifiedLog(hashRoot, receiptSlotIndex, logIndex, proof);
+150	 }
+151	 function getPacket(bytes memory data, uint16 srcChain, uint sizeOfSrcAddress, bytes32 ulnAddress) external override pure returns(LayerZeroPacket.Packet memory){
+152	 return data.getPacket(srcChain, sizeOfSrcAddress, ulnAddress);
+153	 }
+154	 function assertMessagePath(LayerZeroPacket.Packet memory packet, bytes32 blockHash, bytes32 receiptsRoot) external view {
+155	 _assertMessagePath(packet, blockHash, receiptsRoot);
+156	 }
+157	 }
+158	 pragma solidity 0.7.6;
+159	 library LayerZeroPacket {
+160	 using Buffer for Buffer.buffer;
+161	 using SafeMath for uint;
+162	 struct Packet {
+163	 uint16 srcChainId;
+164	 uint16 dstChainId;
+165	 uint64 nonce;
+166	 address dstAddress;
+167	 bytes srcAddress;
+168	 bytes32 ulnAddress;
+169	 bytes payload;
+170	 }
+171	 function getPacket( bytes memory data, uint16 srcChain, uint sizeOfSrcAddress, bytes32 ulnAddress ) internal pure returns (LayerZeroPacket.Packet memory) {
+172	 uint16 dstChainId;
+173	 address dstAddress;
+174	 uint size;
+175	 uint64 nonce;
+176	 assembly {
+177	 dstChainId := mload(add(data, 32)) size := mload(add(data, 96)) nonce := mload(add(data, 104)) dstAddress := mload(add(data, sub(add(128, sizeOfSrcAddress), 4))) }
+178	 Buffer.buffer memory srcAddressBuffer;
+179	 srcAddressBuffer.init(sizeOfSrcAddress);
+180	 srcAddressBuffer.writeRawBytes(0, data, 136, sizeOfSrcAddress);
+181	 uint payloadSize = size.sub(28).sub(sizeOfSrcAddress);
+182	 Buffer.buffer memory payloadBuffer;
+183	 payloadBuffer.init(payloadSize);
+184	 payloadBuffer.writeRawBytes(0, data, sizeOfSrcAddress.add(156), payloadSize);
+185	 return LayerZeroPacket.Packet(srcChain, dstChainId, nonce, dstAddress, srcAddressBuffer.buf, ulnAddress, payloadBuffer.buf);
+186	 }
+187	 }
+188	 pragma solidity 0.7.6;
+189	 library PacketDecoder {
+190	 using Buffer for Buffer.buffer;
+191	 using SafeMath for uint;
+192	 function getPacket( bytes memory data, uint16 srcChain, uint sizeOfSrcAddress, bytes32 ulnAddress ) internal pure returns (LayerZeroPacket.Packet memory) {
+193	 uint16 dstChainId;
+194	 address dstAddress;
+195	 uint size;
+196	 uint64 nonce;
+197	 assembly {
+198	 dstChainId := mload(add(data, 32)) size := mload(add(data, 96)) nonce := mload(add(data, 104)) dstAddress := mload(add(data, sub(add(128, sizeOfSrcAddress), 4))) }
+199	 Buffer.buffer memory srcAddressBuffer;
+200	 srcAddressBuffer.init(sizeOfSrcAddress);
+201	 srcAddressBuffer.writeRawBytes(0, data, 136, sizeOfSrcAddress);
+202	 uint payloadSize = size.sub(28).sub(sizeOfSrcAddress);
+203	 Buffer.buffer memory payloadBuffer;
+204	 payloadBuffer.init(payloadSize);
+205	 payloadBuffer.writeRawBytes(0, data, sizeOfSrcAddress.add(156), payloadSize);
+206	 return LayerZeroPacket.Packet(srcChain, dstChainId, nonce, dstAddress, srcAddressBuffer.buf, ulnAddress, payloadBuffer.buf);
+207	 }
+208	 }
+209	 pragma solidity ^0.7.0;
+210	 library UltraLightNodeEVMDecoder {
+211	 using RLPDecode for RLPDecode.RLPItem;
+212	 using RLPDecode for RLPDecode.Iterator;
+213	 struct Log {
+214	 address contractAddress;
+215	 bytes32 topicZero;
+216	 bytes data;
+217	 }
+218	 function getReceiptLog(bytes memory data, uint logIndex) internal pure returns (Log memory) {
+219	 RLPDecode.Iterator memory it = RLPDecode.toRlpItem(data).iterator();
+220	 uint idx;
+221	 while (it.hasNext()) {
+222	 if (idx == 3) {
+223	 return toReceiptLog(it.next().getItemByIndex(logIndex).toRlpBytes());
+224	 }
+225	 else it.next();
+226	 idx++;
+227	 }
+228	 revert("no log index in receipt");
+229	 }
+230	 function toReceiptLog(bytes memory data) internal pure returns (Log memory) {
+231	 RLPDecode.Iterator memory it = RLPDecode.toRlpItem(data).iterator();
+232	 Log memory log;
+233	 uint idx;
+234	 while (it.hasNext()) {
+235	 if (idx == 0) {
+236	 log.contractAddress = it.next().toAddress();
+237	 }
+238	 else if (idx == 1) {
+239	 RLPDecode.RLPItem memory item = it.next().getItemByIndex(0);
+240	 log.topicZero = bytes32(item.toUint());
+241	 }
+242	 else if (idx == 2) log.data = it.next().toBytes();
+243	 else it.next();
+244	 idx++;
+245	 }
+246	 return log;
+247	 }
+248	 }
+249	 pragma solidity ^0.7.0;
+250	 library Buffer {
+251	 struct buffer {
+252	 bytes buf;
+253	 uint capacity;
+254	 }
+255	 function init(buffer memory buf, uint capacity) internal pure returns (buffer memory) {
+256	 if (capacity % 32 != 0) {
+257	 capacity += 32 - (capacity % 32);
+258	 }
+259	 buf.capacity = capacity;
+260	 assembly {
+261	 let ptr := mload(0x40) mstore(buf, ptr) mstore(ptr, 0) mstore(0x40, add(32, add(ptr, capacity))) }
+262	 return buf;
+263	 }
+264	 function writeRawBytes( buffer memory buf, uint off, bytes memory rawData, uint offData, uint len ) internal pure returns (buffer memory) {
+265	 if (off + len > buf.capacity) {
+266	 resize(buf, max(buf.capacity, len + off) * 2);
+267	 }
+268	 uint dest;
+269	 uint src;
+270	 assembly {
+271	 let bufptr := mload(buf) let buflen := mload(bufptr) dest := add(add(bufptr, 32), off) if gt(add(len, off), buflen) {
+272	 mstore(bufptr, add(len, off)) }
+273	 src := add(rawData, offData) }
+274	 for (; len >= 32; len -= 32) {
+275	 assembly {
+276	 mstore(dest, mload(src)) }
+277	 dest += 32;
+278	 src += 32;
+279	 }
+280	 uint mask = 256**(32 - len) - 1;
+281	 assembly {
+282	 let srcpart := and(mload(src), not(mask)) let destpart := and(mload(dest), mask) mstore(dest, or(destpart, srcpart)) }
+283	 return buf;
+284	 }
+285	 function write(buffer memory buf, uint off, bytes memory data, uint len) internal pure returns (buffer memory) {
+286	 require(len <= data.length);
+287	 if (off + len > buf.capacity) {
+288	 resize(buf, max(buf.capacity, len + off) * 2);
+289	 }
+290	 uint dest;
+291	 uint src;
+292	 assembly {
+293	 let bufptr := mload(buf) let buflen := mload(bufptr) dest := add(add(bufptr, 32), off) if gt(add(len, off), buflen) {
+294	 mstore(bufptr, add(len, off)) }
+295	 src := add(data, 32) }
+296	 for (; len >= 32; len -= 32) {
+297	 assembly {
+298	 mstore(dest, mload(src)) }
+299	 dest += 32;
+300	 src += 32;
+301	 }
+302	 uint mask = 256**(32 - len) - 1;
+303	 assembly {
+304	 let srcpart := and(mload(src), not(mask)) let destpart := and(mload(dest), mask) mstore(dest, or(destpart, srcpart)) }
+305	 return buf;
+306	 }
+307	 function append(buffer memory buf, bytes memory data) internal pure returns (buffer memory) {
+308	 return write(buf, buf.buf.length, data, data.length);
+309	 }
+310	 function resize(buffer memory buf, uint capacity) private pure {
+311	 bytes memory oldbuf = buf.buf;
+312	 init(buf, capacity);
+313	 append(buf, oldbuf);
+314	 }
+315	 function max(uint a, uint b) private pure returns (uint) {
+316	 if (a > b) {
+317	 return a;
+318	 }
+319	 return b;
+320	 }
+321	 }
+322	 pragma solidity ^0.7.0;
+323	 library SafeMath {
+324	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+325	 uint256 c = a + b;
+326	 if (c < a) return (false, 0);
+327	 return (true, c);
+328	 }
+329	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+330	 if (b > a) return (false, 0);
+331	 return (true, a - b);
+332	 }
+333	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+334	 if (a == 0) return (true, 0);
+335	 uint256 c = a * b;
+336	 if (c / a != b) return (false, 0);
+337	 return (true, c);
+338	 }
+339	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+340	 if (b == 0) return (false, 0);
+341	 return (true, a / b);
+342	 }
+343	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+344	 if (b == 0) return (false, 0);
+345	 return (true, a % b);
+346	 }
+347	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+348	 uint256 c = a + b;
+349	 require(c >= a, "SafeMath: addition overflow");
+350	 return c;
+351	 }
+352	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+353	 require(b <= a, "SafeMath: subtraction overflow");
+354	 return a - b;
+355	 }
+356	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+357	 if (a == 0) return 0;
+358	 uint256 c = a * b;
+359	 require(c / a == b, "SafeMath: multiplication overflow");
+360	 return c;
+361	 }
+362	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+363	 require(b > 0, "SafeMath: division by zero");
+364	 return a / b;
+365	 }
+366	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+367	 require(b > 0, "SafeMath: modulo by zero");
+368	 return a % b;
+369	 }
+370	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+371	 require(b <= a, errorMessage);
+372	 return a - b;
+373	 }
+374	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+375	 require(b > 0, errorMessage);
+376	 return a / b;
+377	 }
+378	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+379	 require(b > 0, errorMessage);
+380	 return a % b;
+381	 }
+382	 }
+383	 pragma solidity ^0.7.0;
+384	 library RLPDecode {
+385	 uint8 constant STRING_SHORT_START = 0x80;
+386	 uint8 constant STRING_LONG_START = 0xb8;
+387	 uint8 constant LIST_SHORT_START = 0xc0;
+388	 uint8 constant LIST_LONG_START = 0xf8;
+389	 uint8 constant WORD_SIZE = 32;
+390	 struct RLPItem {
+391	 uint len;
+392	 uint memPtr;
+393	 }
+394	 struct Iterator {
+395	 RLPItem item;
+396	 uint nextPtr;
+397	 }
+398	 function next(Iterator memory self) internal pure returns (RLPItem memory) {
+399	 require(hasNext(self), "RLPDecoder iterator has no next");
+400	 uint ptr = self.nextPtr;
+401	 uint itemLength = _itemLength(ptr);
+402	 self.nextPtr = ptr + itemLength;
+403	 return RLPItem(itemLength, ptr);
+404	 }
+405	 function hasNext(Iterator memory self) internal pure returns (bool) {
+406	 RLPItem memory item = self.item;
+407	 return self.nextPtr < item.memPtr + item.len;
+408	 }
+409	 function toRlpItem(bytes memory item) internal pure returns (RLPItem memory) {
+410	 uint memPtr;
+411	 assembly {
+412	 memPtr := add(item, 0x20) }
+413	 uint8 byte0;
+414	 assembly {
+415	 byte0 := byte(0, mload(memPtr)) }
+416	 uint len = item.length;
+417	 if (len > 0 && byte0 < LIST_SHORT_START) {
+418	 assembly {
+419	 memPtr := add(memPtr, 0x01) }
+420	 len -= 1;
+421	 }
+422	 return RLPItem(len, memPtr);
+423	 }
+424	 function iterator(RLPItem memory self) internal pure returns (Iterator memory) {
+425	 require(isList(self), "RLPDecoder iterator is not list");
+426	 uint ptr = self.memPtr + _payloadOffset(self.memPtr);
+427	 return Iterator(self, ptr);
+428	 }
+429	 function rlpLen(RLPItem memory item) internal pure returns (uint) {
+430	 return item.len;
+431	 }
+432	 function payloadLen(RLPItem memory item) internal pure returns (uint) {
+433	 uint offset = _payloadOffset(item.memPtr);
+434	 require(item.len >= offset, "RLPDecoder: invalid uint RLP item offset size");
+435	 return item.len - offset;
+436	 }
+437	 function toList(RLPItem memory item) internal pure returns (RLPItem[] memory) {
+438	 require(isList(item), "RLPDecoder iterator is not a list");
+439	 uint items = numItems(item);
+440	 RLPItem[] memory result = new RLPItem[](items);
+441	 uint memPtr = item.memPtr + _payloadOffset(item.memPtr);
+442	 uint dataLen;
+443	 for (uint i = 0; i < items; i++) {
+444	 dataLen = _itemLength(memPtr);
+445	 result[i] = RLPItem(dataLen, memPtr);
+446	 memPtr = memPtr + dataLen;
+447	 }
+448	 return result;
+449	 }
+450	 function getItemByIndex(RLPItem memory item, uint idx) internal pure returns (RLPItem memory) {
+451	 require(isList(item), "RLPDecoder iterator is not a list");
+452	 uint memPtr = item.memPtr + _payloadOffset(item.memPtr);
+453	 uint dataLen;
+454	 for (uint i = 0; i < idx; i++) {
+455	 dataLen = _itemLength(memPtr);
+456	 memPtr = memPtr + dataLen;
+457	 }
+458	 dataLen = _itemLength(memPtr);
+459	 return RLPItem(dataLen, memPtr);
+460	 }
+461	 function safeGetItemByIndex(RLPItem memory item, uint idx) internal pure returns (RLPItem memory) {
+462	 require(isList(item), "RLPDecoder iterator is not a list");
+463	 require(idx < numItems(item), "RLP item out of bounds");
+464	 uint endPtr = item.memPtr + item.len;
+465	 uint memPtr = item.memPtr + _payloadOffset(item.memPtr);
+466	 uint dataLen;
+467	 for (uint i = 0; i < idx; i++) {
+468	 dataLen = _itemLength(memPtr);
+469	 memPtr = memPtr + dataLen;
+470	 }
+471	 dataLen = _itemLength(memPtr);
+472	 require(memPtr + dataLen <= endPtr, "RLP item overflow");
+473	 return RLPItem(dataLen, memPtr);
+474	 }
+475	 function typeOffset(RLPItem memory item) internal pure returns (RLPItem memory) {
+476	 uint offset = _payloadOffset(item.memPtr);
+477	 uint8 byte0;
+478	 uint memPtr = item.memPtr;
+479	 uint len = item.len;
+480	 assembly {
+481	 memPtr := add(memPtr, offset) byte0 := byte(0, mload(memPtr)) }
+482	 if (len >0 && byte0 < LIST_SHORT_START) {
+483	 assembly {
+484	 memPtr := add(memPtr, 0x01) }
+485	 len -= 1;
+486	 }
+487	 return RLPItem(len, memPtr);
+488	 }
+489	 function isList(RLPItem memory item) internal pure returns (bool) {
+490	 if (item.len == 0) return false;
+491	 uint8 byte0;
+492	 uint memPtr = item.memPtr;
+493	 assembly {
+494	 byte0 := byte(0, mload(memPtr)) }
+495	 if (byte0 < LIST_SHORT_START) return false;
+496	 return true;
+497	 }
+498	 function toRlpBytes(RLPItem memory item) internal pure returns (bytes memory) {
+499	 bytes memory result = new bytes(item.len);
+500	 if (result.length == 0) return result;
+501	 uint ptr;
+502	 assembly {
+503	 ptr := add(0x20, result) }
+504	 copy(item.memPtr, ptr, item.len);
+505	 return result;
+506	 }
+507	 function toBoolean(RLPItem memory item) internal pure returns (bool) {
+508	 require(item.len == 1, "RLPDecoder toBoolean invalid length");
+509	 uint result;
+510	 uint memPtr = item.memPtr;
+511	 assembly {
+512	 result := byte(0, mload(memPtr)) }
+513	 if (result == 0 || result == STRING_SHORT_START) {
+514	 return false;
+515	 }
+516	 else {
+517	 return true;
+518	 }
+519	 }
+520	 function toAddress(RLPItem memory item) internal pure returns (address) {
+521	 require(item.len == 21, "RLPDecoder toAddress invalid length");
+522	 return address(toUint(item));
+523	 }
+524	 function toUint(RLPItem memory item) internal pure returns (uint) {
+525	 require(item.len > 0 && item.len <= 33, "RLPDecoder toUint invalid length");
+526	 uint offset = _payloadOffset(item.memPtr);
+527	 require(item.len >= offset, "RLPDecoder: invalid RLP item offset size");
+528	 uint len = item.len - offset;
+529	 uint result;
+530	 uint memPtr = item.memPtr + offset;
+531	 assembly {
+532	 result := mload(memPtr) if lt(len, 32) {
+533	 result := div(result, exp(256, sub(32, len))) }
+534	 }
+535	 return result;
+536	 }
+537	 function toUintStrict(RLPItem memory item) internal pure returns (uint) {
+538	 require(item.len == 33, "RLPDecoder toUintStrict invalid length");
+539	 uint result;
+540	 uint memPtr = item.memPtr + 1;
+541	 assembly {
+542	 result := mload(memPtr) }
+543	 return result;
+544	 }
+545	 function toBytes(RLPItem memory item) internal pure returns (bytes memory) {
+546	 require(item.len > 0, "RLPDecoder toBytes invalid length");
+547	 uint offset = _payloadOffset(item.memPtr);
+548	 require(item.len >= offset, "RLPDecoder: invalid RLP item offset size");
+549	 uint len = item.len - offset;
+550	 bytes memory result = new bytes(len);
+551	 uint destPtr;
+552	 assembly {
+553	 destPtr := add(0x20, result) }
+554	 copy(item.memPtr + offset, destPtr, len);
+555	 return result;
+556	 }
+557	 function numItems(RLPItem memory item) internal pure returns (uint) {
+558	 if (item.len == 0) return 0;
+559	 uint count = 0;
+560	 uint currPtr = item.memPtr + _payloadOffset(item.memPtr);
+561	 uint endPtr = item.memPtr + item.len;
+562	 while (currPtr < endPtr) {
+563	 currPtr = currPtr + _itemLength(currPtr);
+564	 count++;
+565	 }
+566	 return count;
+567	 }
+568	 function _itemLength(uint memPtr) private pure returns (uint) {
+569	 uint itemLen;
+570	 uint byte0;
+571	 assembly {
+572	 byte0 := byte(0, mload(memPtr)) }
+573	 if (byte0 < STRING_SHORT_START) itemLen = 1;
+574	 else if (byte0 < STRING_LONG_START) itemLen = byte0 - STRING_SHORT_START + 1;
+575	 else if (byte0 < LIST_SHORT_START) {
+576	 assembly {
+577	 let byteLen := sub(byte0, 0xb7) memPtr := add(memPtr, 1) let dataLen := div(mload(memPtr), exp(256, sub(32, byteLen))) itemLen := add(dataLen, add(byteLen, 1)) }
+578	 }
+579	 else if (byte0 < LIST_LONG_START) {
+580	 itemLen = byte0 - LIST_SHORT_START + 1;
+581	 }
+582	 else {
+583	 assembly {
+584	 let byteLen := sub(byte0, 0xf7) memPtr := add(memPtr, 1) let dataLen := div(mload(memPtr), exp(256, sub(32, byteLen))) itemLen := add(dataLen, add(byteLen, 1)) }
+585	 }
+586	 return itemLen;
+587	 }
+588	 function _payloadOffset(uint memPtr) private pure returns (uint) {
+589	 uint byte0;
+590	 assembly {
+591	 byte0 := byte(0, mload(memPtr)) }
+592	 if (byte0 < STRING_SHORT_START) return 0;
+593	 else if (byte0 < STRING_LONG_START || (byte0 >= LIST_SHORT_START && byte0 < LIST_LONG_START)) return 1;
+594	 else if (byte0 < LIST_SHORT_START) return byte0 - (STRING_LONG_START - 1) + 1;
+595	 else return byte0 - (LIST_LONG_START - 1) + 1;
+596	 }
+597	 function copy( uint src, uint dest, uint len ) private pure {
+598	 if (len == 0) return;
+599	 for (; len >= WORD_SIZE; len -= WORD_SIZE) {
+600	 assembly {
+601	 mstore(dest, mload(src)) }
+602	 src += WORD_SIZE;
+603	 dest += WORD_SIZE;
+604	 }
+605	 uint mask = 256**(WORD_SIZE - len) - 1;
+606	 assembly {
+607	 let srcpart := and(mload(src), not(mask)) let destpart := and(mload(dest), mask) mstore(dest, or(destpart, srcpart)) }
+608	 }
+609	 }

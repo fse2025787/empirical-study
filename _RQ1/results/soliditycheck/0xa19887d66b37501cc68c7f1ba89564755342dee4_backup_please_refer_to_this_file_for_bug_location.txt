@@ -1,0 +1,111 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity ^0.7.6;
+3	 struct FixedInflationEntryConfiguration {
+4	 bool add;
+5	 bool remove;
+6	 FixedInflationEntry data;
+7	 }
+8	 struct FixedInflationEntry {
+9	 uint256 lastBlock;
+10	 bytes32 id;
+11	 string name;
+12	 uint256 blockInterval;
+13	 uint256 callerRewardPercentage;
+14	 }
+15	 struct FixedInflationOperation {
+16	 address inputTokenAddress;
+17	 uint256 inputTokenAmount;
+18	 bool inputTokenAmountIsPercentage;
+19	 bool inputTokenAmountIsByMint;
+20	 address ammPlugin;
+21	 address[] liquidityPoolAddresses;
+22	 address[] swapPath;
+23	 bool enterInETH;
+24	 bool exitInETH;
+25	 address[] receivers;
+26	 uint256[] receiversPercentages;
+27	 }
+28	 pragma solidity ^0.7.6;
+29	 interface IFixedInflationExtension {
+30	 function init(address host) external;
+31	 function setHost(address host) external;
+32	 function data() external view returns(address fixedInflationContract, address host);
+33	 function receiveTokens(address[] memory tokenAddresses, uint256[] memory transferAmounts, uint256[] memory amountsToMint) external;
+34	 function setEntries(FixedInflationEntryConfiguration[] memory newEntries, FixedInflationOperation[][] memory operationSets) external;
+35	 }
+36	 pragma solidity ^0.7.6;
+37	 interface IERC20 {
+38	 function totalSupply() external view returns(uint256);
+39	 function balanceOf(address account) external view returns (uint256);
+40	 function allowance(address owner, address spender) external view returns (uint256);
+41	 function approve(address spender, uint256 amount) external returns (bool);
+42	 function transfer(address recipient, uint256 amount) external returns (bool);
+43	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+44	 function decimals() external view returns (uint8);
+45	 }
+46	 pragma solidity ^0.7.6;
+47	 interface IERC20Mintable {
+48	 function mint(address wallet, uint256 amount) external returns (bool);
+49	 function burn(address wallet, uint256 amount) external returns (bool);
+50	 }
+51	 pragma solidity ^0.7.6;
+52	 interface IFixedInflation {
+53	 function setEntries(FixedInflationEntryConfiguration[] memory newEntries, FixedInflationOperation[][] memory operationSets) external;
+54	 }
+55	 pragma solidity ^0.7.6;
+56	 contract FixedInflationExtension is IFixedInflationExtension {
+57	 address private _host;
+58	 address private _fixedInflationContract;
+59	 modifier fixedInflationOnly() {
+60	 require(_fixedInflationContract == msg.sender, "Unauthorized");
+61	 _;
+62	 }
+63	 modifier hostOnly() {
+64	 require(_host == msg.sender, "Unauthorized");
+65	 _;
+66	 }
+67	 receive() external payable {
+68	 }
+69	 function init(address host) override public {
+70	 require(_host == address(0), "Already init");
+71	 _host = host;
+72	 _fixedInflationContract = msg.sender;
+73	 }
+74	 function setHost(address host) public virtual override hostOnly {
+75	 _host = host;
+76	 }
+77	 function data() view public override returns(address fixedInflationContract, address host) {
+78	 return(_fixedInflationContract, _host);
+79	 }
+80	 function receiveTokens(address[] memory tokenAddresses, uint256[] memory transferAmounts, uint256[] memory amountsToMint) public override fixedInflationOnly {
+81	 for(uint256 i = 0; i < tokenAddresses.length; i++) {
+82	 if(transferAmounts[i] > 0) {
+83	 if(tokenAddresses[i] == address(0)) {
+84	 payable(msg.sender).transfer(transferAmounts[i]);
+85	 continue;
+86	 }
+87	 _safeTransfer(tokenAddresses[i], msg.sender, transferAmounts[i]);
+88	 }
+89	 if(amountsToMint[i] > 0) {
+90	 _mintAndTransfer(tokenAddresses[i], msg.sender, amountsToMint[i]);
+91	 }
+92	 }
+93	 }
+94	 function setEntries(FixedInflationEntryConfiguration[] memory newEntries, FixedInflationOperation[][] memory operationSets) public override hostOnly {
+95	 IFixedInflation(_fixedInflationContract).setEntries(newEntries, operationSets);
+96	 }
+97	 function _mintAndTransfer(address erc20TokenAddress, address recipient, uint256 value) internal virtual {
+98	 IERC20Mintable(erc20TokenAddress).mint(recipient, value);
+99	 }
+100	 function _safeTransfer(address erc20TokenAddress, address to, uint256 value) internal virtual {
+101	 bytes memory returnData = _call(erc20TokenAddress, abi.encodeWithSelector(IERC20(erc20TokenAddress).transfer.selector, to, value));
+102	 require(returnData.length == 0 || abi.decode(returnData, (bool)), 'TRANSFER_FAILED');
+103	 }
+104	 function _call(address location, bytes memory payload) private returns(bytes memory returnData) {
+105	 assembly {
+106	 let result := call(gas(), location, 0, add(payload, 0x20), mload(payload), 0, 0) let size := returndatasize() returnData := mload(0x40) mstore(returnData, size) let returnDataPayloadStart := add(returnData, 0x20) returndatacopy(returnDataPayloadStart, 0, size) mstore(0x40, add(returnDataPayloadStart, size)) switch result case 0 {
+107	 revert(returnDataPayloadStart, size)}
+108	 }
+109	 }
+110	 }

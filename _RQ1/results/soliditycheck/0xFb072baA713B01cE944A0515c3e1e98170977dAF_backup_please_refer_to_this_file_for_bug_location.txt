@@ -1,0 +1,788 @@
+row number 
+1	        pragma solidity ^0.5.17;
+2	 library Uint256Helpers {
+3	 uint256 private constant MAX_UINT8 = uint8(-1);
+4	 uint256 private constant MAX_UINT64 = uint64(-1);
+5	 string private constant ERROR_UINT8_NUMBER_TOO_BIG = "UINT8_NUMBER_TOO_BIG";
+6	 string private constant ERROR_UINT64_NUMBER_TOO_BIG = "UINT64_NUMBER_TOO_BIG";
+7	 function toUint8(uint256 a) internal pure returns (uint8) {
+8	 require(a <= MAX_UINT8, ERROR_UINT8_NUMBER_TOO_BIG);
+9	 return uint8(a);
+10	 }
+11	 function toUint64(uint256 a) internal pure returns (uint64) {
+12	 require(a <= MAX_UINT64, ERROR_UINT64_NUMBER_TOO_BIG);
+13	 return uint64(a);
+14	 }
+15	 }
+16	 contract IERC20 {
+17	 event Transfer(address indexed from, address indexed to, uint256 value);
+18	 event Approval(address indexed owner, address indexed spender, uint256 value);
+19	 function totalSupply() external view returns (uint256);
+20	 function balanceOf(address _who) external view returns (uint256);
+21	 function allowance(address _owner, address _spender) external view returns (uint256);
+22	 function transfer(address _to, uint256 _value) external returns (bool);
+23	 function approve(address _spender, uint256 _value) external returns (bool);
+24	 function transferFrom(address _from, address _to, uint256 _value) external returns (bool);
+25	 }
+26	 interface IArbitrator {
+27	 function createDispute(uint256 _possibleRulings, bytes calldata _metadata) external returns (uint256);
+28	 function submitEvidence(uint256 _disputeId, address _submitter, bytes calldata _evidence) external;
+29	 function closeEvidencePeriod(uint256 _disputeId) external;
+30	 function rule(uint256 _disputeId) external returns (address subject, uint256 ruling);
+31	 function getDisputeFees() external view returns (address recipient, IERC20 feeToken, uint256 feeAmount);
+32	 function getPaymentsRecipient() external view returns (address);
+33	 }
+34	 contract IArbitrable {
+35	 event Ruled(IArbitrator indexed arbitrator, uint256 indexed disputeId, uint256 ruling);
+36	 }
+37	 contract IsContract {
+38	 function isContract(address _target) internal view returns (bool) {
+39	 if (_target == address(0)) {
+40	 return false;
+41	 }
+42	 uint256 size;
+43	 assembly {
+44	 size := extcodesize(_target) }
+45	 return size > 0;
+46	 }
+47	 }
+48	 contract ACL {
+49	 string private constant ERROR_BAD_FREEZE = "ACL_BAD_FREEZE";
+50	 string private constant ERROR_ROLE_ALREADY_FROZEN = "ACL_ROLE_ALREADY_FROZEN";
+51	 string private constant ERROR_INVALID_BULK_INPUT = "ACL_INVALID_BULK_INPUT";
+52	 enum BulkOp {
+53	 Grant, Revoke, Freeze }
+54	 address internal constant FREEZE_FLAG = address(1);
+55	 address internal constant ANY_ADDR = address(-1);
+56	 mapping (bytes32 => mapping (address => bool)) public roles;
+57	 event Granted(bytes32 indexed id, address indexed who);
+58	 event Revoked(bytes32 indexed id, address indexed who);
+59	 event Frozen(bytes32 indexed id);
+60	 function hasRole(address _who, bytes32 _id) public view returns (bool) {
+61	 return roles[_id][_who] || roles[_id][ANY_ADDR];
+62	 }
+63	 function isRoleFrozen(bytes32 _id) public view returns (bool) {
+64	 return roles[_id][FREEZE_FLAG];
+65	 }
+66	 function _grant(bytes32 _id, address _who) internal {
+67	 require(!isRoleFrozen(_id), ERROR_ROLE_ALREADY_FROZEN);
+68	 require(_who != FREEZE_FLAG, ERROR_BAD_FREEZE);
+69	 if (!hasRole(_who, _id)) {
+70	 roles[_id][_who] = true;
+71	 emit Granted(_id, _who);
+72	 }
+73	 }
+74	 function _revoke(bytes32 _id, address _who) internal {
+75	 require(!isRoleFrozen(_id), ERROR_ROLE_ALREADY_FROZEN);
+76	 if (hasRole(_who, _id)) {
+77	 roles[_id][_who] = false;
+78	 emit Revoked(_id, _who);
+79	 }
+80	 }
+81	 function _freeze(bytes32 _id) internal {
+82	 require(!isRoleFrozen(_id), ERROR_ROLE_ALREADY_FROZEN);
+83	 roles[_id][FREEZE_FLAG] = true;
+84	 emit Frozen(_id);
+85	 }
+86	 function _bulk(BulkOp[] memory _op, bytes32[] memory _id, address[] memory _who) internal {
+87	 require(_op.length == _id.length && _op.length == _who.length, ERROR_INVALID_BULK_INPUT);
+88	 for (uint256 i = 0; i < _op.length; i++) {
+89	 BulkOp op = _op[i];
+90	 if (op == BulkOp.Grant) {
+91	 _grant(_id[i], _who[i]);
+92	 }
+93	 else if (op == BulkOp.Revoke) {
+94	 _revoke(_id[i], _who[i]);
+95	 }
+96	 else if (op == BulkOp.Freeze) {
+97	 _freeze(_id[i]);
+98	 }
+99	 }
+100	 }
+101	 }
+102	 contract ModuleIds {
+103	 bytes32 internal constant MODULE_ID_DISPUTE_MANAGER = 0x14a6c70f0f6d449c014c7bbc9e68e31e79e8474fb03b7194df83109a2d888ae6;
+104	 bytes32 internal constant MODULE_ID_GUARDIANS_REGISTRY = 0x8af7b7118de65da3b974a3fd4b0c702b66442f74b9dff6eaed1037254c0b79fe;
+105	 bytes32 internal constant MODULE_ID_VOTING = 0x7cbb12e82a6d63ff16fe43977f43e3e2b247ecd4e62c0e340da8800a48c67346;
+106	 bytes32 internal constant MODULE_ID_PAYMENTS_BOOK = 0xfa275b1417437a2a2ea8e91e9fe73c28eaf0a28532a250541da5ac0d1892b418;
+107	 bytes32 internal constant MODULE_ID_TREASURY = 0x06aa03964db1f7257357ef09714a5f0ca3633723df419e97015e0c7a3e83edb7;
+108	 }
+109	 interface IModulesLinker {
+110	 function linkModules(bytes32[] calldata _ids, address[] calldata _addresses) external;
+111	 }
+112	 library SafeMath64 {
+113	 string private constant ERROR_ADD_OVERFLOW = "MATH64_ADD_OVERFLOW";
+114	 string private constant ERROR_SUB_UNDERFLOW = "MATH64_SUB_UNDERFLOW";
+115	 string private constant ERROR_MUL_OVERFLOW = "MATH64_MUL_OVERFLOW";
+116	 string private constant ERROR_DIV_ZERO = "MATH64_DIV_ZERO";
+117	 function mul(uint64 _a, uint64 _b) internal pure returns (uint64) {
+118	 uint256 c = uint256(_a) * uint256(_b);
+119	 require(c < 0x010000000000000000, ERROR_MUL_OVERFLOW);
+120	 return uint64(c);
+121	 }
+122	 function div(uint64 _a, uint64 _b) internal pure returns (uint64) {
+123	 require(_b > 0, ERROR_DIV_ZERO);
+124	 uint64 c = _a / _b;
+125	 return c;
+126	 }
+127	 function sub(uint64 _a, uint64 _b) internal pure returns (uint64) {
+128	 require(_b <= _a, ERROR_SUB_UNDERFLOW);
+129	 uint64 c = _a - _b;
+130	 return c;
+131	 }
+132	 function add(uint64 _a, uint64 _b) internal pure returns (uint64) {
+133	 uint64 c = _a + _b;
+134	 require(c >= _a, ERROR_ADD_OVERFLOW);
+135	 return c;
+136	 }
+137	 function mod(uint64 a, uint64 b) internal pure returns (uint64) {
+138	 require(b != 0, ERROR_DIV_ZERO);
+139	 return a % b;
+140	 }
+141	 }
+142	 contract TimeHelpers {
+143	 using Uint256Helpers for uint256;
+144	 function getBlockNumber() internal view returns (uint256) {
+145	 return block.number;
+146	 }
+147	 function getBlockNumber64() internal view returns (uint64) {
+148	 return getBlockNumber().toUint64();
+149	 }
+150	 function getTimestamp() internal view returns (uint256) {
+151	 return block.timestamp;
+152	 }
+153	 function getTimestamp64() internal view returns (uint64) {
+154	 return getTimestamp().toUint64();
+155	 }
+156	 }
+157	 interface IClock {
+158	 function ensureCurrentTerm() external returns (uint64);
+159	 function heartbeat(uint64 _maxRequestedTransitions) external returns (uint64);
+160	 function ensureCurrentTermRandomness() external returns (bytes32);
+161	 function getLastEnsuredTermId() external view returns (uint64);
+162	 function getCurrentTermId() external view returns (uint64);
+163	 function getNeededTermTransitions() external view returns (uint64);
+164	 function getTerm(uint64 _termId) external view returns (uint64 startTime, uint64 randomnessBN, bytes32 randomness);
+165	 function getTermRandomness(uint64 _termId) external view returns (bytes32);
+166	 }
+167	 contract CourtClock is IClock, TimeHelpers {
+168	 using SafeMath64 for uint64;
+169	 string private constant ERROR_TERM_DOES_NOT_EXIST = "CLK_TERM_DOES_NOT_EXIST";
+170	 string private constant ERROR_TERM_DURATION_TOO_LONG = "CLK_TERM_DURATION_TOO_LONG";
+171	 string private constant ERROR_TERM_RANDOMNESS_NOT_YET = "CLK_TERM_RANDOMNESS_NOT_YET";
+172	 string private constant ERROR_TERM_RANDOMNESS_UNAVAILABLE = "CLK_TERM_RANDOMNESS_UNAVAILABLE";
+173	 string private constant ERROR_BAD_FIRST_TERM_START_TIME = "CLK_BAD_FIRST_TERM_START_TIME";
+174	 string private constant ERROR_TOO_MANY_TRANSITIONS = "CLK_TOO_MANY_TRANSITIONS";
+175	 string private constant ERROR_INVALID_TRANSITION_TERMS = "CLK_INVALID_TRANSITION_TERMS";
+176	 string private constant ERROR_CANNOT_DELAY_STARTED_COURT = "CLK_CANNOT_DELAY_STARTED_PROT";
+177	 string private constant ERROR_CANNOT_DELAY_PAST_START_TIME = "CLK_CANNOT_DELAY_PAST_START_TIME";
+178	 uint64 internal constant MAX_AUTO_TERM_TRANSITIONS_ALLOWED = 1;
+179	 uint64 internal constant MAX_TERM_DURATION = 365 days;
+180	 uint64 internal constant MAX_FIRST_TERM_DELAY_PERIOD = 2 * MAX_TERM_DURATION;
+181	 struct Term {
+182	 uint64 startTime;
+183	 uint64 randomnessBN;
+184	 bytes32 randomness;
+185	 }
+186	 uint64 private termDuration;
+187	 uint64 private termId;
+188	 mapping (uint64 => Term) private terms;
+189	 event Heartbeat(uint64 previousTermId, uint64 currentTermId);
+190	 event StartTimeDelayed(uint64 previousStartTime, uint64 currentStartTime);
+191	 modifier termExists(uint64 _termId) {
+192	 require(_termId <= termId, ERROR_TERM_DOES_NOT_EXIST);
+193	 _;
+194	 }
+195	 constructor(uint64[2] memory _termParams) public {
+196	 uint64 _termDuration = _termParams[0];
+197	 uint64 _firstTermStartTime = _termParams[1];
+198	 require(_termDuration < MAX_TERM_DURATION, ERROR_TERM_DURATION_TOO_LONG);
+199	 require(_firstTermStartTime >= getTimestamp64() + _termDuration, ERROR_BAD_FIRST_TERM_START_TIME);
+200	 require(_firstTermStartTime <= getTimestamp64() + MAX_FIRST_TERM_DELAY_PERIOD, ERROR_BAD_FIRST_TERM_START_TIME);
+201	 termDuration = _termDuration;
+202	 terms[0].startTime = _firstTermStartTime - _termDuration;
+203	 }
+204	 function ensureCurrentTerm() external returns (uint64) {
+205	 return _ensureCurrentTerm();
+206	 }
+207	 function heartbeat(uint64 _maxRequestedTransitions) external returns (uint64) {
+208	 return _heartbeat(_maxRequestedTransitions);
+209	 }
+210	 function ensureCurrentTermRandomness() external returns (bytes32) {
+211	 uint64 currentTermId = termId;
+212	 Term storage term = terms[currentTermId];
+213	 bytes32 termRandomness = term.randomness;
+214	 if (termRandomness != bytes32(0)) {
+215	 return termRandomness;
+216	 }
+217	 bytes32 newRandomness = _computeTermRandomness(currentTermId);
+218	 require(newRandomness != bytes32(0), ERROR_TERM_RANDOMNESS_UNAVAILABLE);
+219	 term.randomness = newRandomness;
+220	 return newRandomness;
+221	 }
+222	 function getTermDuration() external view returns (uint64) {
+223	 return termDuration;
+224	 }
+225	 function getLastEnsuredTermId() external view returns (uint64) {
+226	 return _lastEnsuredTermId();
+227	 }
+228	 function getCurrentTermId() external view returns (uint64) {
+229	 return _currentTermId();
+230	 }
+231	 function getNeededTermTransitions() external view returns (uint64) {
+232	 return _neededTermTransitions();
+233	 }
+234	 function getTerm(uint64 _termId) external view returns (uint64 startTime, uint64 randomnessBN, bytes32 randomness) {
+235	 Term storage term = terms[_termId];
+236	 return (term.startTime, term.randomnessBN, term.randomness);
+237	 }
+238	 function getTermRandomness(uint64 _termId) external view termExists(_termId) returns (bytes32) {
+239	 return _computeTermRandomness(_termId);
+240	 }
+241	 function _ensureCurrentTerm() internal returns (uint64) {
+242	 uint64 requiredTransitions = _neededTermTransitions();
+243	 require(requiredTransitions <= MAX_AUTO_TERM_TRANSITIONS_ALLOWED, ERROR_TOO_MANY_TRANSITIONS);
+244	 if (uint256(requiredTransitions) == 0) {
+245	 return termId;
+246	 }
+247	 return _heartbeat(requiredTransitions);
+248	 }
+249	 function _heartbeat(uint64 _maxRequestedTransitions) internal returns (uint64) {
+250	 uint64 neededTransitions = _neededTermTransitions();
+251	 uint256 transitions = uint256(_maxRequestedTransitions < neededTransitions ? _maxRequestedTransitions : neededTransitions);
+252	 require(transitions > 0, ERROR_INVALID_TRANSITION_TERMS);
+253	 uint64 blockNumber = getBlockNumber64();
+254	 uint64 previousTermId = termId;
+255	 uint64 currentTermId = previousTermId;
+256	 for (uint256 transition = 1; transition <= transitions; transition++) {
+257	 Term storage previousTerm = terms[currentTermId++];
+258	 Term storage currentTerm = terms[currentTermId];
+259	 _onTermTransitioned(currentTermId);
+260	 currentTerm.startTime = previousTerm.startTime.add(termDuration);
+261	 currentTerm.randomnessBN = blockNumber + 1;
+262	 }
+263	 termId = currentTermId;
+264	 emit Heartbeat(previousTermId, currentTermId);
+265	 return currentTermId;
+266	 }
+267	 function _delayStartTime(uint64 _newFirstTermStartTime) internal {
+268	 require(_currentTermId() == 0, ERROR_CANNOT_DELAY_STARTED_COURT);
+269	 Term storage term = terms[0];
+270	 uint64 currentFirstTermStartTime = term.startTime.add(termDuration);
+271	 require(_newFirstTermStartTime > currentFirstTermStartTime, ERROR_CANNOT_DELAY_PAST_START_TIME);
+272	 term.startTime = _newFirstTermStartTime - termDuration;
+273	 emit StartTimeDelayed(currentFirstTermStartTime, _newFirstTermStartTime);
+274	 }
+275	 function _onTermTransitioned(uint64 _termId) internal;
+276	 function _lastEnsuredTermId() internal view returns (uint64) {
+277	 return termId;
+278	 }
+279	 function _currentTermId() internal view returns (uint64) {
+280	 return termId.add(_neededTermTransitions());
+281	 }
+282	 function _neededTermTransitions() internal view returns (uint64) {
+283	 uint64 currentTermStartTime = terms[termId].startTime;
+284	 if (getTimestamp64() < currentTermStartTime) {
+285	 return uint64(0);
+286	 }
+287	 return (getTimestamp64() - currentTermStartTime) / termDuration;
+288	 }
+289	 function _computeTermRandomness(uint64 _termId) internal view returns (bytes32) {
+290	 Term storage term = terms[_termId];
+291	 require(getBlockNumber64() > term.randomnessBN, ERROR_TERM_RANDOMNESS_NOT_YET);
+292	 return blockhash(term.randomnessBN);
+293	 }
+294	 }
+295	 library SafeMath {
+296	 string private constant ERROR_ADD_OVERFLOW = "MATH_ADD_OVERFLOW";
+297	 string private constant ERROR_SUB_UNDERFLOW = "MATH_SUB_UNDERFLOW";
+298	 string private constant ERROR_MUL_OVERFLOW = "MATH_MUL_OVERFLOW";
+299	 string private constant ERROR_DIV_ZERO = "MATH_DIV_ZERO";
+300	 function mul(uint256 _a, uint256 _b) internal pure returns (uint256) {
+301	 if (_a == 0) {
+302	 return 0;
+303	 }
+304	 uint256 c = _a * _b;
+305	 require(c / _a == _b, ERROR_MUL_OVERFLOW);
+306	 return c;
+307	 }
+308	 function div(uint256 _a, uint256 _b) internal pure returns (uint256) {
+309	 require(_b > 0, ERROR_DIV_ZERO);
+310	 uint256 c = _a / _b;
+311	 return c;
+312	 }
+313	 function sub(uint256 _a, uint256 _b) internal pure returns (uint256) {
+314	 require(_b <= _a, ERROR_SUB_UNDERFLOW);
+315	 uint256 c = _a - _b;
+316	 return c;
+317	 }
+318	 function add(uint256 _a, uint256 _b) internal pure returns (uint256) {
+319	 uint256 c = _a + _b;
+320	 require(c >= _a, ERROR_ADD_OVERFLOW);
+321	 return c;
+322	 }
+323	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+324	 require(b != 0, ERROR_DIV_ZERO);
+325	 return a % b;
+326	 }
+327	 }
+328	 library PctHelpers {
+329	 using SafeMath for uint256;
+330	 uint256 internal constant PCT_BASE = 10000;
+331	 function isValid(uint16 _pct) internal pure returns (bool) {
+332	 return _pct <= PCT_BASE;
+333	 }
+334	 function pct(uint256 self, uint16 _pct) internal pure returns (uint256) {
+335	 return self.mul(uint256(_pct)) / PCT_BASE;
+336	 }
+337	 function pct256(uint256 self, uint256 _pct) internal pure returns (uint256) {
+338	 return self.mul(_pct) / PCT_BASE;
+339	 }
+340	 function pctIncrease(uint256 self, uint16 _pct) internal pure returns (uint256) {
+341	 return self.mul(PCT_BASE + uint256(_pct)) / PCT_BASE;
+342	 }
+343	 }
+344	 interface IConfig {
+345	 function getConfig(uint64 _termId) external view returns ( IERC20 feeToken, uint256[3] memory fees, uint64[5] memory roundStateDurations, uint16[2] memory pcts, uint64[4] memory roundParams, uint256[2] memory appealCollateralParams, uint256 minActiveBalance );
+346	 function getDraftConfig(uint64 _termId) external view returns (IERC20 feeToken, uint256 draftFee, uint16 penaltyPct);
+347	 function getMinActiveBalance(uint64 _termId) external view returns (uint256);
+348	 }
+349	 contract CourtConfigData {
+350	 struct Config {
+351	 FeesConfig fees;
+352	 DisputesConfig disputes;
+353	 uint256 minActiveBalance;
+354	 }
+355	 struct FeesConfig {
+356	 IERC20 token;
+357	 uint16 finalRoundReduction;
+358	 uint256 guardianFee;
+359	 uint256 draftFee;
+360	 uint256 settleFee;
+361	 }
+362	 struct DisputesConfig {
+363	 uint64 evidenceTerms;
+364	 uint64 commitTerms;
+365	 uint64 revealTerms;
+366	 uint64 appealTerms;
+367	 uint64 appealConfirmTerms;
+368	 uint16 penaltyPct;
+369	 uint64 firstRoundGuardiansNumber;
+370	 uint64 appealStepFactor;
+371	 uint64 finalRoundLockTerms;
+372	 uint256 maxRegularAppealRounds;
+373	 uint256 appealCollateralFactor;
+374	 uint256 appealConfirmCollateralFactor;
+375	 }
+376	 struct DraftConfig {
+377	 IERC20 feeToken;
+378	 uint16 penaltyPct;
+379	 uint256 draftFee;
+380	 }
+381	 }
+382	 contract CourtConfig is IConfig, CourtConfigData {
+383	 using SafeMath64 for uint64;
+384	 using PctHelpers for uint256;
+385	 string private constant ERROR_TOO_OLD_TERM = "CONF_TOO_OLD_TERM";
+386	 string private constant ERROR_INVALID_PENALTY_PCT = "CONF_INVALID_PENALTY_PCT";
+387	 string private constant ERROR_INVALID_FINAL_ROUND_REDUCTION_PCT = "CONF_INVALID_FINAL_ROUND_RED_PCT";
+388	 string private constant ERROR_INVALID_MAX_APPEAL_ROUNDS = "CONF_INVALID_MAX_APPEAL_ROUNDS";
+389	 string private constant ERROR_LARGE_ROUND_PHASE_DURATION = "CONF_LARGE_ROUND_PHASE_DURATION";
+390	 string private constant ERROR_BAD_INITIAL_GUARDIANS_NUMBER = "CONF_BAD_INITIAL_GUARDIAN_NUMBER";
+391	 string private constant ERROR_BAD_APPEAL_STEP_FACTOR = "CONF_BAD_APPEAL_STEP_FACTOR";
+392	 string private constant ERROR_ZERO_COLLATERAL_FACTOR = "CONF_ZERO_COLLATERAL_FACTOR";
+393	 string private constant ERROR_ZERO_MIN_ACTIVE_BALANCE = "CONF_ZERO_MIN_ACTIVE_BALANCE";
+394	 uint64 internal constant MAX_ADJ_STATE_DURATION = 8670;
+395	 uint256 internal constant MAX_REGULAR_APPEAL_ROUNDS_LIMIT = 10;
+396	 uint64 private configChangeTermId;
+397	 Config[] private configs;
+398	 mapping (uint64 => uint256) private configIdByTerm;
+399	 event NewConfig(uint64 fromTermId, uint64 courtConfigId);
+400	 constructor( IERC20 _feeToken, uint256[3] memory _fees, uint64[5] memory _roundStateDurations, uint16[2] memory _pcts, uint64[4] memory _roundParams, uint256[2] memory _appealCollateralParams, uint256 _minActiveBalance ) public {
+401	 configs.length = 1;
+402	 _setConfig( 0, 0, _feeToken, _fees, _roundStateDurations, _pcts, _roundParams, _appealCollateralParams, _minActiveBalance );
+403	 }
+404	 function getConfig(uint64 _termId) external view returns ( IERC20 feeToken, uint256[3] memory fees, uint64[5] memory roundStateDurations, uint16[2] memory pcts, uint64[4] memory roundParams, uint256[2] memory appealCollateralParams, uint256 minActiveBalance );
+405	 function getDraftConfig(uint64 _termId) external view returns (IERC20 feeToken, uint256 draftFee, uint16 penaltyPct);
+406	 function getMinActiveBalance(uint64 _termId) external view returns (uint256);
+407	 function getConfigChangeTermId() external view returns (uint64) {
+408	 return configChangeTermId;
+409	 }
+410	 function _ensureTermConfig(uint64 _termId) internal {
+411	 uint256 currentConfigId = configIdByTerm[_termId];
+412	 if (currentConfigId == 0) {
+413	 uint256 previousConfigId = configIdByTerm[_termId.sub(1)];
+414	 configIdByTerm[_termId] = previousConfigId;
+415	 }
+416	 }
+417	 function _setConfig( uint64 _termId, uint64 _fromTermId, IERC20 _feeToken, uint256[3] memory _fees, uint64[5] memory _roundStateDurations, uint16[2] memory _pcts, uint64[4] memory _roundParams, uint256[2] memory _appealCollateralParams, uint256 _minActiveBalance ) internal {
+418	 require(_termId == 0 || _fromTermId > _termId, ERROR_TOO_OLD_TERM);
+419	 require(_appealCollateralParams[0] > 0 && _appealCollateralParams[1] > 0, ERROR_ZERO_COLLATERAL_FACTOR);
+420	 require(PctHelpers.isValid(_pcts[0]), ERROR_INVALID_PENALTY_PCT);
+421	 require(PctHelpers.isValid(_pcts[1]), ERROR_INVALID_FINAL_ROUND_REDUCTION_PCT);
+422	 require(_roundParams[0] > 0, ERROR_BAD_INITIAL_GUARDIANS_NUMBER);
+423	 require(_roundParams[1] > 0, ERROR_BAD_APPEAL_STEP_FACTOR);
+424	 uint256 _maxRegularAppealRounds = _roundParams[2];
+425	 bool isMaxAppealRoundsValid = _maxRegularAppealRounds > 0 && _maxRegularAppealRounds <= MAX_REGULAR_APPEAL_ROUNDS_LIMIT;
+426	 require(isMaxAppealRoundsValid, ERROR_INVALID_MAX_APPEAL_ROUNDS);
+427	 for (uint i = 0; i < _roundStateDurations.length; i++) {
+428	 require(_roundStateDurations[i] > 0 && _roundStateDurations[i] < MAX_ADJ_STATE_DURATION, ERROR_LARGE_ROUND_PHASE_DURATION);
+429	 }
+430	 require(_minActiveBalance > 0, ERROR_ZERO_MIN_ACTIVE_BALANCE);
+431	 if (configChangeTermId > _termId) {
+432	 configIdByTerm[configChangeTermId] = 0;
+433	 }
+434	 else {
+435	 configs.length++;
+436	 }
+437	 uint64 courtConfigId = uint64(configs.length - 1);
+438	 Config storage config = configs[courtConfigId];
+439	 config.fees = FeesConfig({
+440	 token: _feeToken, guardianFee: _fees[0], draftFee: _fees[1], settleFee: _fees[2], finalRoundReduction: _pcts[1] }
+441	 );
+442	 config.disputes = DisputesConfig({
+443	 evidenceTerms: _roundStateDurations[0], commitTerms: _roundStateDurations[1], revealTerms: _roundStateDurations[2], appealTerms: _roundStateDurations[3], appealConfirmTerms: _roundStateDurations[4], penaltyPct: _pcts[0], firstRoundGuardiansNumber: _roundParams[0], appealStepFactor: _roundParams[1], maxRegularAppealRounds: _maxRegularAppealRounds, finalRoundLockTerms: _roundParams[3], appealCollateralFactor: _appealCollateralParams[0], appealConfirmCollateralFactor: _appealCollateralParams[1] }
+444	 );
+445	 config.minActiveBalance = _minActiveBalance;
+446	 configIdByTerm[_fromTermId] = courtConfigId;
+447	 configChangeTermId = _fromTermId;
+448	 emit NewConfig(_fromTermId, courtConfigId);
+449	 }
+450	 function _getConfigAt(uint64 _termId, uint64 _lastEnsuredTermId) internal view returns ( IERC20 feeToken, uint256[3] memory fees, uint64[5] memory roundStateDurations, uint16[2] memory pcts, uint64[4] memory roundParams, uint256[2] memory appealCollateralParams, uint256 minActiveBalance ) {
+451	 Config storage config = _getConfigFor(_termId, _lastEnsuredTermId);
+452	 FeesConfig storage feesConfig = config.fees;
+453	 feeToken = feesConfig.token;
+454	 fees = [feesConfig.guardianFee, feesConfig.draftFee, feesConfig.settleFee];
+455	 DisputesConfig storage disputesConfig = config.disputes;
+456	 roundStateDurations = [ disputesConfig.evidenceTerms, disputesConfig.commitTerms, disputesConfig.revealTerms, disputesConfig.appealTerms, disputesConfig.appealConfirmTerms ];
+457	 pcts = [disputesConfig.penaltyPct, feesConfig.finalRoundReduction];
+458	 roundParams = [ disputesConfig.firstRoundGuardiansNumber, disputesConfig.appealStepFactor, uint64(disputesConfig.maxRegularAppealRounds), disputesConfig.finalRoundLockTerms ];
+459	 appealCollateralParams = [disputesConfig.appealCollateralFactor, disputesConfig.appealConfirmCollateralFactor];
+460	 minActiveBalance = config.minActiveBalance;
+461	 }
+462	 function _getDraftConfig(uint64 _termId, uint64 _lastEnsuredTermId) internal view returns (IERC20 feeToken, uint256 draftFee, uint16 penaltyPct) {
+463	 Config storage config = _getConfigFor(_termId, _lastEnsuredTermId);
+464	 return (config.fees.token, config.fees.draftFee, config.disputes.penaltyPct);
+465	 }
+466	 function _getMinActiveBalance(uint64 _termId, uint64 _lastEnsuredTermId) internal view returns (uint256) {
+467	 Config storage config = _getConfigFor(_termId, _lastEnsuredTermId);
+468	 return config.minActiveBalance;
+469	 }
+470	 function _getConfigFor(uint64 _termId, uint64 _lastEnsuredTermId) internal view returns (Config storage) {
+471	 uint256 id = _getConfigIdFor(_termId, _lastEnsuredTermId);
+472	 return configs[id];
+473	 }
+474	 function _getConfigIdFor(uint64 _termId, uint64 _lastEnsuredTermId) internal view returns (uint256) {
+475	 if (_termId <= _lastEnsuredTermId) {
+476	 return configIdByTerm[_termId];
+477	 }
+478	 uint64 scheduledChangeTermId = configChangeTermId;
+479	 if (scheduledChangeTermId <= _termId) {
+480	 return configIdByTerm[scheduledChangeTermId];
+481	 }
+482	 return configIdByTerm[_lastEnsuredTermId];
+483	 }
+484	 }
+485	 interface IDisputeManager {
+486	 enum DisputeState {
+487	 PreDraft, Adjudicating, Ruled }
+488	 enum AdjudicationState {
+489	 Invalid, Committing, Revealing, Appealing, ConfirmingAppeal, Ended }
+490	 function createDispute(IArbitrable _subject, uint8 _possibleRulings, bytes calldata _metadata) external returns (uint256);
+491	 function submitEvidence(IArbitrable _subject, uint256 _disputeId, address _submitter, bytes calldata _evidence) external;
+492	 function closeEvidencePeriod(IArbitrable _subject, uint256 _disputeId) external;
+493	 function draft(uint256 _disputeId) external;
+494	 function createAppeal(uint256 _disputeId, uint256 _roundId, uint8 _ruling) external;
+495	 function confirmAppeal(uint256 _disputeId, uint256 _roundId, uint8 _ruling) external;
+496	 function computeRuling(uint256 _disputeId) external returns (IArbitrable subject, uint8 finalRuling);
+497	 function settlePenalties(uint256 _disputeId, uint256 _roundId, uint256 _guardiansToSettle) external;
+498	 function settleReward(uint256 _disputeId, uint256 _roundId, address _guardian) external;
+499	 function settleAppealDeposit(uint256 _disputeId, uint256 _roundId) external;
+500	 function getDisputeFees() external view returns (IERC20 feeToken, uint256 feeAmount);
+501	 function getDispute(uint256 _disputeId) external view returns (IArbitrable subject, uint8 possibleRulings, DisputeState state, uint8 finalRuling, uint256 lastRoundId, uint64 createTermId);
+502	 function getRound(uint256 _disputeId, uint256 _roundId) external view returns ( uint64 draftTerm, uint64 delayedTerms, uint64 guardiansNumber, uint64 selectedGuardians, uint256 guardianFees, bool settledPenalties, uint256 collectedTokens, uint64 coherentGuardians, AdjudicationState state );
+503	 function getAppeal(uint256 _disputeId, uint256 _roundId) external view returns (address maker, uint64 appealedRuling, address taker, uint64 opposedRuling);
+504	 function getNextRoundDetails(uint256 _disputeId, uint256 _roundId) external view returns ( uint64 nextRoundStartTerm, uint64 nextRoundGuardiansNumber, DisputeState newDisputeState, IERC20 feeToken, uint256 totalFees, uint256 guardianFees, uint256 appealDeposit, uint256 confirmAppealDeposit );
+505	 function getGuardian(uint256 _disputeId, uint256 _roundId, address _guardian) external view returns (uint64 weight, bool rewarded);
+506	 }
+507	 contract Controller is IsContract, ModuleIds, CourtClock, CourtConfig, ACL {
+508	 string private constant ERROR_SENDER_NOT_GOVERNOR = "CTR_SENDER_NOT_GOVERNOR";
+509	 string private constant ERROR_INVALID_GOVERNOR_ADDRESS = "CTR_INVALID_GOVERNOR_ADDRESS";
+510	 string private constant ERROR_MODULE_NOT_SET = "CTR_MODULE_NOT_SET";
+511	 string private constant ERROR_MODULE_ALREADY_ENABLED = "CTR_MODULE_ALREADY_ENABLED";
+512	 string private constant ERROR_MODULE_ALREADY_DISABLED = "CTR_MODULE_ALREADY_DISABLED";
+513	 string private constant ERROR_DISPUTE_MANAGER_NOT_ACTIVE = "CTR_DISPUTE_MANAGER_NOT_ACTIVE";
+514	 string private constant ERROR_CUSTOM_FUNCTION_NOT_SET = "CTR_CUSTOM_FUNCTION_NOT_SET";
+515	 string private constant ERROR_IMPLEMENTATION_NOT_CONTRACT = "CTR_IMPLEMENTATION_NOT_CONTRACT";
+516	 string private constant ERROR_INVALID_IMPLS_INPUT_LENGTH = "CTR_INVALID_IMPLS_INPUT_LENGTH";
+517	 address private constant ZERO_ADDRESS = address(0);
+518	 struct Governor {
+519	 address funds;
+520	 address config;
+521	 address modules;
+522	 }
+523	 struct Module {
+524	 bytes32 id;
+525	 bool disabled;
+526	 }
+527	 Governor private governor;
+528	 mapping (bytes32 => address) internal currentModules;
+529	 mapping (address => Module) internal allModules;
+530	 mapping (bytes4 => address) internal customFunctions;
+531	 event ModuleSet(bytes32 id, address addr);
+532	 event ModuleEnabled(bytes32 id, address addr);
+533	 event ModuleDisabled(bytes32 id, address addr);
+534	 event CustomFunctionSet(bytes4 signature, address target);
+535	 event FundsGovernorChanged(address previousGovernor, address currentGovernor);
+536	 event ConfigGovernorChanged(address previousGovernor, address currentGovernor);
+537	 event ModulesGovernorChanged(address previousGovernor, address currentGovernor);
+538	 modifier onlyFundsGovernor {
+539	 require(msg.sender == governor.funds, ERROR_SENDER_NOT_GOVERNOR);
+540	 _;
+541	 }
+542	 modifier onlyConfigGovernor {
+543	 require(msg.sender == governor.config, ERROR_SENDER_NOT_GOVERNOR);
+544	 _;
+545	 }
+546	 modifier onlyModulesGovernor {
+547	 require(msg.sender == governor.modules, ERROR_SENDER_NOT_GOVERNOR);
+548	 _;
+549	 }
+550	 modifier onlyActiveDisputeManager(IDisputeManager _disputeManager) {
+551	 require(!_isModuleDisabled(address(_disputeManager)), ERROR_DISPUTE_MANAGER_NOT_ACTIVE);
+552	 _;
+553	 }
+554	 constructor( uint64[2] memory _termParams, address[3] memory _governors, IERC20 _feeToken, uint256[3] memory _fees, uint64[5] memory _roundStateDurations, uint16[2] memory _pcts, uint64[4] memory _roundParams, uint256[2] memory _appealCollateralParams, uint256 _minActiveBalance ) public CourtClock(_termParams) CourtConfig(_feeToken, _fees, _roundStateDurations, _pcts, _roundParams, _appealCollateralParams, _minActiveBalance) {
+555	 _setFundsGovernor(_governors[0]);
+556	 _setConfigGovernor(_governors[1]);
+557	 _setModulesGovernor(_governors[2]);
+558	 }
+559	 function () external payable {
+560	 address target = customFunctions[msg.sig];
+561	 require(target != address(0), ERROR_CUSTOM_FUNCTION_NOT_SET);
+562	 (bool success,) = address(target).call.value(msg.value)(msg.data);
+563	 assembly {
+564	 let size := returndatasize let ptr := mload(0x40) returndatacopy(ptr, 0, size) let result := success switch result case 0 {
+565	 revert(ptr, size) }
+566	 default {
+567	 return(ptr, size) }
+568	 }
+569	 }
+570	 function setConfig( uint64 _fromTermId, IERC20 _feeToken, uint256[3] calldata _fees, uint64[5] calldata _roundStateDurations, uint16[2] calldata _pcts, uint64[4] calldata _roundParams, uint256[2] calldata _appealCollateralParams, uint256 _minActiveBalance ) external onlyConfigGovernor {
+571	 uint64 currentTermId = _ensureCurrentTerm();
+572	 _setConfig( currentTermId, _fromTermId, _feeToken, _fees, _roundStateDurations, _pcts, _roundParams, _appealCollateralParams, _minActiveBalance );
+573	 }
+574	 function delayStartTime(uint64 _newFirstTermStartTime) external onlyConfigGovernor {
+575	 _delayStartTime(_newFirstTermStartTime);
+576	 }
+577	 function changeFundsGovernor(address _newFundsGovernor) external onlyFundsGovernor {
+578	 require(_newFundsGovernor != ZERO_ADDRESS, ERROR_INVALID_GOVERNOR_ADDRESS);
+579	 _setFundsGovernor(_newFundsGovernor);
+580	 }
+581	 function changeConfigGovernor(address _newConfigGovernor) external onlyConfigGovernor {
+582	 require(_newConfigGovernor != ZERO_ADDRESS, ERROR_INVALID_GOVERNOR_ADDRESS);
+583	 _setConfigGovernor(_newConfigGovernor);
+584	 }
+585	 function changeModulesGovernor(address _newModulesGovernor) external onlyModulesGovernor {
+586	 require(_newModulesGovernor != ZERO_ADDRESS, ERROR_INVALID_GOVERNOR_ADDRESS);
+587	 _setModulesGovernor(_newModulesGovernor);
+588	 }
+589	 function ejectFundsGovernor() external onlyFundsGovernor {
+590	 _setFundsGovernor(ZERO_ADDRESS);
+591	 }
+592	 function ejectModulesGovernor() external onlyModulesGovernor {
+593	 _setModulesGovernor(ZERO_ADDRESS);
+594	 }
+595	 function grant(bytes32 _id, address _who) external onlyConfigGovernor {
+596	 _grant(_id, _who);
+597	 }
+598	 function revoke(bytes32 _id, address _who) external onlyConfigGovernor {
+599	 _revoke(_id, _who);
+600	 }
+601	 function freeze(bytes32 _id) external onlyConfigGovernor {
+602	 _freeze(_id);
+603	 }
+604	 function bulk(BulkOp[] calldata _op, bytes32[] calldata _id, address[] calldata _who) external onlyConfigGovernor {
+605	 _bulk(_op, _id, _who);
+606	 }
+607	 function setModule(bytes32 _id, address _addr) external onlyModulesGovernor {
+608	 _setModule(_id, _addr);
+609	 }
+610	 function setModules( bytes32[] calldata _newModuleIds, address[] calldata _newModuleAddresses, bytes32[] calldata _newModuleLinks, address[] calldata _currentModulesToBeSynced ) external onlyModulesGovernor {
+611	 require(_newModuleIds.length == _newModuleAddresses.length, ERROR_INVALID_IMPLS_INPUT_LENGTH);
+612	 for (uint256 i = 0; i < _newModuleIds.length; i++) {
+613	 _setModule(_newModuleIds[i], _newModuleAddresses[i]);
+614	 }
+615	 _syncModuleLinks(_newModuleAddresses, _newModuleLinks);
+616	 _syncModuleLinks(_currentModulesToBeSynced, _newModuleIds);
+617	 }
+618	 function syncModuleLinks(address[] calldata _modulesToBeSynced, bytes32[] calldata _idsToBeSet) external onlyModulesGovernor {
+619	 require(_idsToBeSet.length > 0 && _modulesToBeSynced.length > 0, ERROR_INVALID_IMPLS_INPUT_LENGTH);
+620	 _syncModuleLinks(_modulesToBeSynced, _idsToBeSet);
+621	 }
+622	 function disableModule(address _addr) external onlyModulesGovernor {
+623	 Module storage module = allModules[_addr];
+624	 _ensureModuleExists(module);
+625	 require(!module.disabled, ERROR_MODULE_ALREADY_DISABLED);
+626	 module.disabled = true;
+627	 emit ModuleDisabled(module.id, _addr);
+628	 }
+629	 function enableModule(address _addr) external onlyModulesGovernor {
+630	 Module storage module = allModules[_addr];
+631	 _ensureModuleExists(module);
+632	 require(module.disabled, ERROR_MODULE_ALREADY_ENABLED);
+633	 module.disabled = false;
+634	 emit ModuleEnabled(module.id, _addr);
+635	 }
+636	 function setCustomFunction(bytes4 _sig, address _target) external onlyModulesGovernor {
+637	 customFunctions[_sig] = _target;
+638	 emit CustomFunctionSet(_sig, _target);
+639	 }
+640	 function getConfig(uint64 _termId) external view returns ( IERC20 feeToken, uint256[3] memory fees, uint64[5] memory roundStateDurations, uint16[2] memory pcts, uint64[4] memory roundParams, uint256[2] memory appealCollateralParams, uint256 minActiveBalance ) {
+641	 uint64 lastEnsuredTermId = _lastEnsuredTermId();
+642	 return _getConfigAt(_termId, lastEnsuredTermId);
+643	 }
+644	 function getDraftConfig(uint64 _termId) external view returns (IERC20 feeToken, uint256 draftFee, uint16 penaltyPct) {
+645	 uint64 lastEnsuredTermId = _lastEnsuredTermId();
+646	 return _getDraftConfig(_termId, lastEnsuredTermId);
+647	 }
+648	 function getMinActiveBalance(uint64 _termId) external view returns (uint256) {
+649	 uint64 lastEnsuredTermId = _lastEnsuredTermId();
+650	 return _getMinActiveBalance(_termId, lastEnsuredTermId);
+651	 }
+652	 function getFundsGovernor() external view returns (address) {
+653	 return governor.funds;
+654	 }
+655	 function getConfigGovernor() external view returns (address) {
+656	 return governor.config;
+657	 }
+658	 function getModulesGovernor() external view returns (address) {
+659	 return governor.modules;
+660	 }
+661	 function isActive(bytes32 _id, address _addr) external view returns (bool) {
+662	 Module storage module = allModules[_addr];
+663	 return module.id == _id && !module.disabled;
+664	 }
+665	 function getModuleByAddress(address _addr) external view returns (bytes32 id, bool disabled) {
+666	 Module storage module = allModules[_addr];
+667	 id = module.id;
+668	 disabled = module.disabled;
+669	 }
+670	 function getModule(bytes32 _id) external view returns (address addr, bool disabled) {
+671	 return _getModule(_id);
+672	 }
+673	 function getDisputeManager() external view returns (address addr, bool disabled) {
+674	 return _getModule(MODULE_ID_DISPUTE_MANAGER);
+675	 }
+676	 function getGuardiansRegistry() external view returns (address addr, bool disabled) {
+677	 return _getModule(MODULE_ID_GUARDIANS_REGISTRY);
+678	 }
+679	 function getVoting() external view returns (address addr, bool disabled) {
+680	 return _getModule(MODULE_ID_VOTING);
+681	 }
+682	 function getPaymentsBook() external view returns (address addr, bool disabled) {
+683	 return _getModule(MODULE_ID_PAYMENTS_BOOK);
+684	 }
+685	 function getTreasury() external view returns (address addr, bool disabled) {
+686	 return _getModule(MODULE_ID_TREASURY);
+687	 }
+688	 function getCustomFunction(bytes4 _sig) external view returns (address) {
+689	 return customFunctions[_sig];
+690	 }
+691	 function _setFundsGovernor(address _newFundsGovernor) internal {
+692	 emit FundsGovernorChanged(governor.funds, _newFundsGovernor);
+693	 governor.funds = _newFundsGovernor;
+694	 }
+695	 function _setConfigGovernor(address _newConfigGovernor) internal {
+696	 emit ConfigGovernorChanged(governor.config, _newConfigGovernor);
+697	 governor.config = _newConfigGovernor;
+698	 }
+699	 function _setModulesGovernor(address _newModulesGovernor) internal {
+700	 emit ModulesGovernorChanged(governor.modules, _newModulesGovernor);
+701	 governor.modules = _newModulesGovernor;
+702	 }
+703	 function _setModule(bytes32 _id, address _addr) internal {
+704	 require(isContract(_addr), ERROR_IMPLEMENTATION_NOT_CONTRACT);
+705	 currentModules[_id] = _addr;
+706	 allModules[_addr].id = _id;
+707	 emit ModuleSet(_id, _addr);
+708	 }
+709	 function _syncModuleLinks(address[] memory _modulesToBeSynced, bytes32[] memory _idsToBeSet) internal {
+710	 address[] memory addressesToBeSet = new address[](_idsToBeSet.length);
+711	 for (uint256 i = 0; i < _idsToBeSet.length; i++) {
+712	 address moduleAddress = _getModuleAddress(_idsToBeSet[i]);
+713	 Module storage module = allModules[moduleAddress];
+714	 _ensureModuleExists(module);
+715	 addressesToBeSet[i] = moduleAddress;
+716	 }
+717	 for (uint256 j = 0; j < _modulesToBeSynced.length; j++) {
+718	 IModulesLinker(_modulesToBeSynced[j]).linkModules(_idsToBeSet, addressesToBeSet);
+719	 }
+720	 }
+721	 function _onTermTransitioned(uint64 _termId) internal {
+722	 _ensureTermConfig(_termId);
+723	 }
+724	 function _ensureModuleExists(Module storage _module) internal view {
+725	 require(_module.id != bytes32(0), ERROR_MODULE_NOT_SET);
+726	 }
+727	 function _getModule(bytes32 _id) internal view returns (address addr, bool disabled) {
+728	 addr = _getModuleAddress(_id);
+729	 disabled = _isModuleDisabled(addr);
+730	 }
+731	 function _getModuleAddress(bytes32 _id) internal view returns (address) {
+732	 return currentModules[_id];
+733	 }
+734	 function _isModuleDisabled(address _addr) internal view returns (bool) {
+735	 return allModules[_addr].disabled;
+736	 }
+737	 }
+738	 contract AragonCourt is IArbitrator, Controller {
+739	 using Uint256Helpers for uint256;
+740	 constructor( uint64[2] memory _termParams, address[3] memory _governors, IERC20 _feeToken, uint256[3] memory _fees, uint64[5] memory _roundStateDurations, uint16[2] memory _pcts, uint64[4] memory _roundParams, uint256[2] memory _appealCollateralParams, uint256 _minActiveBalance ) public Controller( _termParams, _governors, _feeToken, _fees, _roundStateDurations, _pcts, _roundParams, _appealCollateralParams, _minActiveBalance ) {
+741	 }
+742	 function createDispute(uint256 _possibleRulings, bytes calldata _metadata) external returns (uint256) {
+743	 IArbitrable subject = IArbitrable(msg.sender);
+744	 return _disputeManager().createDispute(subject, _possibleRulings.toUint8(), _metadata);
+745	 }
+746	 function submitEvidence(uint256 _disputeId, address _submitter, bytes calldata _evidence) external {
+747	 _submitEvidence(_disputeManager(), _disputeId, _submitter, _evidence);
+748	 }
+749	 function submitEvidenceForModule(IDisputeManager _disputeManager, uint256 _disputeId, address _submitter, bytes calldata _evidence) external onlyActiveDisputeManager(_disputeManager) {
+750	 _submitEvidence(_disputeManager, _disputeId, _submitter, _evidence);
+751	 }
+752	 function closeEvidencePeriod(uint256 _disputeId) external {
+753	 _closeEvidencePeriod(_disputeManager(), _disputeId);
+754	 }
+755	 function closeEvidencePeriodForModule(IDisputeManager _disputeManager, uint256 _disputeId) external onlyActiveDisputeManager(_disputeManager) {
+756	 _closeEvidencePeriod(_disputeManager, _disputeId);
+757	 }
+758	 function rule(uint256 _disputeId) external returns (address subject, uint256 ruling) {
+759	 return _rule(_disputeManager(), _disputeId);
+760	 }
+761	 function ruleForModule(IDisputeManager _disputeManager, uint256 _disputeId) external onlyActiveDisputeManager(_disputeManager) returns (address subject, uint256 ruling) {
+762	 return _rule(_disputeManager, _disputeId);
+763	 }
+764	 function getDisputeFees() external view returns (address recipient, IERC20 feeToken, uint256 feeAmount) {
+765	 IDisputeManager disputeManager = _disputeManager();
+766	 recipient = address(disputeManager);
+767	 (feeToken, feeAmount) = disputeManager.getDisputeFees();
+768	 }
+769	 function getPaymentsRecipient() external view returns (address) {
+770	 return currentModules[MODULE_ID_PAYMENTS_BOOK];
+771	 }
+772	 function _submitEvidence(IDisputeManager _disputeManager, uint256 _disputeId, address _submitter, bytes memory _evidence) internal {
+773	 IArbitrable subject = IArbitrable(msg.sender);
+774	 _disputeManager.submitEvidence(subject, _disputeId, _submitter, _evidence);
+775	 }
+776	 function _closeEvidencePeriod(IDisputeManager _disputeManager, uint256 _disputeId) internal {
+777	 IArbitrable subject = IArbitrable(msg.sender);
+778	 _disputeManager.closeEvidencePeriod(subject, _disputeId);
+779	 }
+780	 function _rule(IDisputeManager _disputeManager, uint256 _disputeId) internal returns (address subject, uint256 ruling) {
+781	 (IArbitrable _subject, uint8 _ruling) = _disputeManager.computeRuling(_disputeId);
+782	 return (address(_subject), uint256(_ruling));
+783	 }
+784	 function _disputeManager() internal view returns (IDisputeManager) {
+785	 return IDisputeManager(_getModuleAddress(MODULE_ID_DISPUTE_MANAGER));
+786	 }
+787	 }

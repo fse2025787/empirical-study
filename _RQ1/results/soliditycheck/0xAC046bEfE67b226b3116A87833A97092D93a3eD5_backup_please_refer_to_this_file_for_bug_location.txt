@@ -1,0 +1,428 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity >=0.6.0 <0.8.0;
+12	 abstract contract Ownable is Context {
+13	 address private _owner;
+14	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+15	 constructor () internal {
+16	 address msgSender = _msgSender();
+17	 _owner = msgSender;
+18	 emit OwnershipTransferred(address(0), msgSender);
+19	 }
+20	 function owner() public view virtual returns (address) {
+21	 return _owner;
+22	 }
+23	 modifier onlyOwner() {
+24	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+25	 _;
+26	 }
+27	 function renounceOwnership() public virtual onlyOwner {
+28	 emit OwnershipTransferred(_owner, address(0));
+29	 _owner = address(0);
+30	 }
+31	 function transferOwnership(address newOwner) public virtual onlyOwner {
+32	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+33	 emit OwnershipTransferred(_owner, newOwner);
+34	 _owner = newOwner;
+35	 }
+36	 }
+37	 pragma solidity >=0.6.0 <0.8.0;
+38	 interface IERC20 {
+39	 function totalSupply() external view returns (uint256);
+40	 function balanceOf(address account) external view returns (uint256);
+41	 function transfer(address recipient, uint256 amount) external returns (bool);
+42	 function allowance(address owner, address spender) external view returns (uint256);
+43	 function approve(address spender, uint256 amount) external returns (bool);
+44	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+45	 event Transfer(address indexed from, address indexed to, uint256 value);
+46	 event Approval(address indexed owner, address indexed spender, uint256 value);
+47	 }
+48	 pragma solidity >=0.6.0 <0.8.0;
+49	 abstract contract Pausable is Context {
+50	 event Paused(address account);
+51	 event Unpaused(address account);
+52	 bool private _paused;
+53	 constructor () internal {
+54	 _paused = false;
+55	 }
+56	 function paused() public view virtual returns (bool) {
+57	 return _paused;
+58	 }
+59	 modifier whenNotPaused() {
+60	 require(!paused(), "Pausable: paused");
+61	 _;
+62	 }
+63	 modifier whenPaused() {
+64	 require(paused(), "Pausable: not paused");
+65	 _;
+66	 }
+67	 function _pause() internal virtual whenNotPaused {
+68	 _paused = true;
+69	 emit Paused(_msgSender());
+70	 }
+71	 function _unpause() internal virtual whenPaused {
+72	 _paused = false;
+73	 emit Unpaused(_msgSender());
+74	 }
+75	 }
+76	 pragma solidity ^0.7.6;
+77	 contract Whitelist is Ownable {
+78	 mapping(address => bool) public whitelist;
+79	 address[] public whitelistedAddresses;
+80	 bool public hasWhitelisting = false;
+81	 event AddedToWhitelist(address[] accounts);
+82	 event RemovedFromWhitelist(address indexed account);
+83	 modifier onlyWhitelisted() {
+84	 if (hasWhitelisting) {
+85	 require(isWhitelisted(msg.sender), "Must be in the whitelist");
+86	 }
+87	 _;
+88	 }
+89	 constructor(bool _hasWhitelisting) {
+90	 hasWhitelisting = _hasWhitelisting;
+91	 }
+92	 function add(address[] memory _addresses) public onlyOwner {
+93	 for (uint i = 0; i < _addresses.length; i++) {
+94	 require(whitelist[_addresses[i]] != true);
+95	 whitelist[_addresses[i]] = true;
+96	 whitelistedAddresses.push(_addresses[i]);
+97	 }
+98	 emit AddedToWhitelist(_addresses);
+99	 }
+100	 function remove(address _address, uint256 _index) public onlyOwner {
+101	 require(_address == whitelistedAddresses[_index]);
+102	 whitelist[_address] = false;
+103	 delete whitelistedAddresses[_index];
+104	 emit RemovedFromWhitelist(_address);
+105	 }
+106	 function getWhitelistedAddresses() public view returns (address[] memory) {
+107	 return whitelistedAddresses;
+108	 }
+109	 function isWhitelisted(address _address) public view returns (bool) {
+110	 return whitelist[_address];
+111	 }
+112	 }
+113	 pragma solidity ^0.7.6;
+114	 contract FixedSwap is Pausable, Whitelist {
+115	 using SafeMath for uint256;
+116	 uint256 increment = 0;
+117	 mapping(uint256 => Purchase) public purchases;
+118	 address[] public buyers;
+119	 uint256[] public purchaseIds;
+120	 mapping(address => uint256[]) public myPurchases;
+121	 IERC20 public erc20;
+122	 bool public isSaleFunded = false;
+123	 uint public decimals = 0;
+124	 bool public unsoldTokensRedeemed = false;
+125	 uint256 public tradeValue;
+126	 uint256 public startDate;
+127	 uint256 public endDate;
+128	 uint256 public individualMinimumAmount = 0;
+129	 uint256 public individualMaximumAmount = 0;
+130	 uint256 public minimumRaise = 0;
+131	 uint256 public tokensAllocated = 0;
+132	 uint256 public tokensForSale = 0;
+133	 bool public isTokenSwapAtomic;
+134	 address payable public feeAddress;
+135	 uint256 public feePercentage = 1;
+136	 bool private locked;
+137	 struct Purchase {
+138	 uint256 amount;
+139	 address purchaser;
+140	 uint256 ethAmount;
+141	 uint256 timestamp;
+142	 bool wasFinalized;
+143	 bool reverted;
+144	 }
+145	 event PurchaseEvent( uint256 indexed purchaseId, uint256 amount, address indexed purchaser, uint256 ethAmount, uint256 timestamp, bool wasFinalized );
+146	 event FundEvent(address indexed funder, uint256 amount, address indexed contractAddress, uint256 timestamp);
+147	 event RedeemTokenEvent( uint256 indexed purchaseId, uint256 amount, address indexed purchaser, uint256 ethAmount, bool wasFinalized, bool reverted );
+148	 constructor( address _tokenAddress, address payable _feeAddress, uint256 _tradeValue, uint256 _tokensForSale, uint256 _startDate, uint256 _endDate, uint256 _individualMinimumAmount, uint256 _individualMaximumAmount, bool _isTokenSwapAtomic, uint256 _minimumRaise, uint256 _feeAmount, bool _hasWhitelisting ) Whitelist(_hasWhitelisting) {
+149	 require(block.timestamp < _endDate, "End Date should be further than current date");
+150	 require(block.timestamp < _startDate, "Start Date should be further than current date");
+151	 require(_startDate < _endDate, "End Date higher than Start Date");
+152	 require(_tokensForSale > 0, "Tokens for Sale should be > 0");
+153	 require(_tokensForSale > _individualMinimumAmount, "Tokens for Sale should be > Individual Minimum Amount");
+154	 require(_individualMaximumAmount >= _individualMinimumAmount, "Individual Maximum Amount should be > Individual Minimum Amount");
+155	 require(_minimumRaise <= _tokensForSale, "Minimum Raise should be < Tokens For Sale");
+156	 require(_feeAmount >= feePercentage, "Fee Percentage has to be >= 1");
+157	 require(_feeAmount <= 99, "Fee Percentage has to be < 100");
+158	 require(_feeAddress != address(0), "Fee Address has to be not ZERO");
+159	 require(_tokenAddress != address(0), "Token Address has to be not ZERO");
+160	 startDate = _startDate;
+161	 endDate = _endDate;
+162	 tokensForSale = _tokensForSale;
+163	 tradeValue = _tradeValue;
+164	 individualMinimumAmount = _individualMinimumAmount;
+165	 individualMaximumAmount = _individualMaximumAmount;
+166	 isTokenSwapAtomic = _isTokenSwapAtomic;
+167	 if (!_isTokenSwapAtomic) {
+168	 minimumRaise = _minimumRaise;
+169	 }
+170	 erc20 = IERC20(_tokenAddress);
+171	 decimals = IERC20Detailed(_tokenAddress).decimals();
+172	 feePercentage = _feeAmount;
+173	 feeAddress = _feeAddress;
+174	 }
+175	 modifier isNotAtomicSwap() {
+176	 require(!isTokenSwapAtomic, "Has to be non Atomic swap");
+177	 _;
+178	 }
+179	 modifier isSaleFinalized() {
+180	 require(hasFinalized(), "Has to be finalized");
+181	 _;
+182	 }
+183	 modifier isSaleOpen() {
+184	 require(isOpen(), "Has to be open");
+185	 _;
+186	 }
+187	 modifier isSalePreStarted() {
+188	 require(isPreStart(), "Has to be pre-started");
+189	 _;
+190	 }
+191	 modifier isFunded() {
+192	 require(isSaleFunded, "Has to be funded");
+193	 _;
+194	 }
+195	 modifier blockReentrancy {
+196	 require(!locked, "Reentrancy is blocked");
+197	 locked = true;
+198	 _;
+199	 locked = false;
+200	 }
+201	 function isBuyer(uint256 purchase_id) public view returns (bool) {
+202	 return (msg.sender == purchases[purchase_id].purchaser);
+203	 }
+204	 function totalRaiseCost() public view returns (uint256) {
+205	 return (cost(tokensForSale));
+206	 }
+207	 function availableTokens() public view returns (uint256) {
+208	 return erc20.balanceOf(address(this));
+209	 }
+210	 function tokensLeft() public view returns (uint256) {
+211	 return tokensForSale - tokensAllocated;
+212	 }
+213	 function hasMinimumRaise() public view returns (bool) {
+214	 return (minimumRaise != 0);
+215	 }
+216	 function minimumRaiseNotAchieved() public view returns (bool) {
+217	 require(cost(tokensAllocated) < cost(minimumRaise), "TotalRaise is bigger than minimum raise amount");
+218	 return true;
+219	 }
+220	 function minimumRaiseAchieved() public view returns (bool) {
+221	 if (hasMinimumRaise()) {
+222	 require(cost(tokensAllocated) >= cost(minimumRaise), "TotalRaise is less than minimum raise amount");
+223	 }
+224	 return true;
+225	 }
+226	 function hasFinalized() public view returns (bool) {
+227	 return block.timestamp > endDate;
+228	 }
+229	 function hasStarted() public view returns (bool) {
+230	 return block.timestamp >= startDate;
+231	 }
+232	 function isPreStart() public view returns (bool) {
+233	 return block.timestamp < startDate;
+234	 }
+235	 function isOpen() public view returns (bool) {
+236	 return hasStarted() && !hasFinalized();
+237	 }
+238	 function hasMinimumAmount() public view returns (bool) {
+239	 return (individualMinimumAmount != 0);
+240	 }
+241	 function cost(uint256 _amount) public view returns (uint256) {
+242	 return _amount.mul(tradeValue).div(10**decimals);
+243	 }
+244	 function getPurchase(uint256 _purchase_id) external view returns ( uint256, address, uint256, uint256, bool, bool ) {
+245	 Purchase memory purchase = purchases[_purchase_id];
+246	 return (purchase.amount, purchase.purchaser, purchase.ethAmount, purchase.timestamp, purchase.wasFinalized, purchase.reverted);
+247	 }
+248	 function getPurchaseIds() public view returns (uint256[] memory) {
+249	 return purchaseIds;
+250	 }
+251	 function getBuyers() public view returns (address[] memory) {
+252	 return buyers;
+253	 }
+254	 function getMyPurchases(address _address) public view returns (uint256[] memory) {
+255	 return myPurchases[_address];
+256	 }
+257	 function fund(uint256 _amount) public isSalePreStarted {
+258	 require(availableTokens().add(_amount) <= tokensForSale, "Transferred tokens have to be equal or less than proposed");
+259	 TransferHelper.safeTransferFrom(address(erc20), msg.sender, address(this), _amount);
+260	 if (availableTokens() == tokensForSale) {
+261	 isSaleFunded = true;
+262	 }
+263	 emit FundEvent(msg.sender, _amount, address(this), block.timestamp);
+264	 }
+265	 function swap(uint256 _amount) external payable whenNotPaused isFunded isSaleOpen onlyWhitelisted blockReentrancy {
+266	 require(_amount > 0, "Amount has to be positive");
+267	 require(_amount <= tokensLeft(), "Amount is less than tokens available");
+268	 require(msg.value == cost(_amount), "User swap amount has to equal to cost of token in ETH");
+269	 require(_amount >= individualMinimumAmount, "Amount is bigger than minimum amount");
+270	 require(_amount <= individualMaximumAmount, "Amount is smaller than maximum amount");
+271	 uint256[] memory _purchases = getMyPurchases(msg.sender);
+272	 uint256 purchaserTotalAmountPurchased = 0;
+273	 for (uint i = 0; i < _purchases.length; i++) {
+274	 Purchase memory _purchase = purchases[_purchases[i]];
+275	 purchaserTotalAmountPurchased = purchaserTotalAmountPurchased.add(_purchase.amount);
+276	 }
+277	 require(purchaserTotalAmountPurchased.add(_amount) <= individualMaximumAmount, "Address has already passed the max amount of swap");
+278	 if (isTokenSwapAtomic) {
+279	 TransferHelper.safeTransfer(address(erc20), msg.sender, _amount);
+280	 }
+281	 uint256 purchase_id = increment;
+282	 increment = increment.add(1);
+283	 Purchase memory purchase = Purchase( _amount, msg.sender, msg.value, block.timestamp, isTokenSwapAtomic, false );
+284	 purchases[purchase_id] = purchase;
+285	 purchaseIds.push(purchase_id);
+286	 myPurchases[msg.sender].push(purchase_id);
+287	 buyers.push(msg.sender);
+288	 tokensAllocated = tokensAllocated.add(_amount);
+289	 emit PurchaseEvent(purchase_id, _amount, msg.sender, msg.value, block.timestamp, isTokenSwapAtomic);
+290	 }
+291	 function redeemTokens(uint256 purchase_id) external isNotAtomicSwap isSaleFinalized whenNotPaused blockReentrancy {
+292	 require((purchases[purchase_id].amount != 0) && !purchases[purchase_id].wasFinalized, "Purchase is either 0 or finalized");
+293	 require(isBuyer(purchase_id), "Address is not buyer");
+294	 purchases[purchase_id].wasFinalized = true;
+295	 TransferHelper.safeTransfer(address(erc20), msg.sender, purchases[purchase_id].amount);
+296	 emit RedeemTokenEvent(purchase_id, purchases[purchase_id].amount, msg.sender, 0, purchases[purchase_id].wasFinalized, false);
+297	 }
+298	 function redeemGivenMinimumGoalNotAchieved(uint256 purchase_id) external isSaleFinalized isNotAtomicSwap whenNotPaused blockReentrancy {
+299	 require(hasMinimumRaise(), "Minimum raise has to exist");
+300	 require(minimumRaiseNotAchieved(), "Minimum raise has to be reached");
+301	 require((purchases[purchase_id].amount != 0) && !purchases[purchase_id].wasFinalized, "Purchase is either 0 or finalized");
+302	 require(isBuyer(purchase_id), "Address is not buyer");
+303	 purchases[purchase_id].wasFinalized = true;
+304	 purchases[purchase_id].reverted = true;
+305	 msg.sender.transfer(purchases[purchase_id].ethAmount);
+306	 emit RedeemTokenEvent( purchase_id, 0, msg.sender, purchases[purchase_id].ethAmount, purchases[purchase_id].wasFinalized, purchases[purchase_id].reverted );
+307	 }
+308	 function withdrawFunds() external onlyOwner whenNotPaused isSaleFinalized {
+309	 require(minimumRaiseAchieved(), "Minimum raise has to be reached");
+310	 uint256 fee = address(this).balance.mul(feePercentage).div(100);
+311	 feeAddress.transfer(fee);
+312	 uint256 funds = address(this).balance;
+313	 msg.sender.transfer(funds);
+314	 }
+315	 function withdrawUnsoldTokens() external onlyOwner isSaleFinalized {
+316	 require(!unsoldTokensRedeemed);
+317	 uint256 unsoldTokens;
+318	 if (hasMinimumRaise() && (cost(tokensAllocated) < cost(minimumRaise))) {
+319	 unsoldTokens = tokensForSale;
+320	 }
+321	 else {
+322	 unsoldTokens = tokensForSale.sub(tokensAllocated);
+323	 }
+324	 if (unsoldTokens > 0) {
+325	 unsoldTokensRedeemed = true;
+326	 TransferHelper.safeTransfer(address(erc20), msg.sender, unsoldTokens);
+327	 }
+328	 }
+329	 function removeOtherERC20Tokens(address _tokenAddress, address _to) external onlyOwner isSaleFinalized {
+330	 require(_tokenAddress != address(erc20), "Token Address has to be diff than the erc20 subject to sale");
+331	 IERC20Detailed erc20Token = IERC20Detailed(_tokenAddress);
+332	 TransferHelper.safeTransfer(address(erc20Token), _to, erc20Token.balanceOf(address(this)));
+333	 }
+334	 function pause() external onlyOwner {
+335	 _pause();
+336	 }
+337	 function safePull() external payable onlyOwner whenPaused {
+338	 msg.sender.transfer(address(this).balance);
+339	 TransferHelper.safeTransfer(address(erc20), msg.sender, erc20.balanceOf(address(this)));
+340	 }
+341	 }
+342	 pragma solidity ^0.7.6;
+343	 interface IERC20Detailed is IERC20 {
+344	 function decimals() external view returns (uint8);
+345	 }
+346	 pragma solidity >=0.6.0 <0.8.0;
+347	 library SafeMath {
+348	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+349	 uint256 c = a + b;
+350	 if (c < a) return (false, 0);
+351	 return (true, c);
+352	 }
+353	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+354	 if (b > a) return (false, 0);
+355	 return (true, a - b);
+356	 }
+357	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+358	 if (a == 0) return (true, 0);
+359	 uint256 c = a * b;
+360	 if (c / a != b) return (false, 0);
+361	 return (true, c);
+362	 }
+363	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+364	 if (b == 0) return (false, 0);
+365	 return (true, a / b);
+366	 }
+367	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+368	 if (b == 0) return (false, 0);
+369	 return (true, a % b);
+370	 }
+371	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+372	 uint256 c = a + b;
+373	 require(c >= a, "SafeMath: addition overflow");
+374	 return c;
+375	 }
+376	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+377	 require(b <= a, "SafeMath: subtraction overflow");
+378	 return a - b;
+379	 }
+380	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+381	 if (a == 0) return 0;
+382	 uint256 c = a * b;
+383	 require(c / a == b, "SafeMath: multiplication overflow");
+384	 return c;
+385	 }
+386	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+387	 require(b > 0, "SafeMath: division by zero");
+388	 return a / b;
+389	 }
+390	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+391	 require(b > 0, "SafeMath: modulo by zero");
+392	 return a % b;
+393	 }
+394	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+395	 require(b <= a, errorMessage);
+396	 return a - b;
+397	 }
+398	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+399	 require(b > 0, errorMessage);
+400	 return a / b;
+401	 }
+402	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+403	 require(b > 0, errorMessage);
+404	 return a % b;
+405	 }
+406	 }
+407	 pragma solidity ^0.7.6;
+408	 library TransferHelper {
+409	 function safeApprove(address token, address to, uint value) internal {
+410	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+411	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');
+412	 }
+413	 function safeTransfer(address token, address to, uint value) internal {
+414	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+415	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FAILED');
+416	 }
+417	 function safeTransferFrom(address token, address from, address to, uint value) internal {
+418	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+419	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');
+420	 }
+421	 function safeTransferETH(address to, uint value) internal {
+422	 (bool success,) = to.call{
+423	 value:value}
+424	 (new bytes(0));
+425	 require(success, 'TransferHelper: ETH_TRANSFER_FAILED');
+426	 }
+427	 }

@@ -1,0 +1,296 @@
+row number 
+1	           pragma solidity ^0.5.17;
+2	 interface IERC20 {
+3	 function totalSupply() external view returns (uint256);
+4	 function balanceOf(address account) external view returns (uint256);
+5	 function transfer(address recipient, uint256 amount) external returns (bool);
+6	 function allowance(address owner, address spender) external view returns (uint256);
+7	 function decimals() external view returns (uint);
+8	 function name() external view returns (string memory);
+9	 function approve(address spender, uint256 amount) external returns (bool);
+10	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+11	 event Transfer(address indexed from, address indexed to, uint256 value);
+12	 event Approval(address indexed owner, address indexed spender, uint256 value);
+13	 }
+14	 library SafeMath {
+15	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+16	 uint256 c = a + b;
+17	 require(c >= a, "SafeMath: addition overflow");
+18	 return c;
+19	 }
+20	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+21	 return sub(a, b, "SafeMath: subtraction overflow");
+22	 }
+23	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+24	 require(b <= a, errorMessage);
+25	 uint256 c = a - b;
+26	 return c;
+27	 }
+28	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+29	 if (a == 0) {
+30	 return 0;
+31	 }
+32	 uint256 c = a * b;
+33	 require(c / a == b, "SafeMath: multiplication overflow");
+34	 return c;
+35	 }
+36	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+37	 return div(a, b, "SafeMath: division by zero");
+38	 }
+39	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+40	 require(b > 0, errorMessage);
+41	 uint256 c = a / b;
+42	 return c;
+43	 }
+44	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+45	 return mod(a, b, "SafeMath: modulo by zero");
+46	 }
+47	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+48	 require(b != 0, errorMessage);
+49	 return a % b;
+50	 }
+51	 }
+52	 library Address {
+53	 function isContract(address account) internal view returns (bool) {
+54	 bytes32 codehash;
+55	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+56	 assembly {
+57	 codehash := extcodehash(account) }
+58	 return (codehash != 0x0 && codehash != accountHash);
+59	 }
+60	 function toPayable(address account) internal pure returns (address payable) {
+61	 return address(uint160(account));
+62	 }
+63	 function sendValue(address payable recipient, uint256 amount) internal {
+64	 require(address(this).balance >= amount, "Address: insufficient balance");
+65	 (bool success, ) = recipient.call.value(amount)("");
+66	 require(success, "Address: unable to send value, recipient may have reverted");
+67	 }
+68	 }
+69	 library SafeERC20 {
+70	 using SafeMath for uint256;
+71	 using Address for address;
+72	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+73	 callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+74	 }
+75	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+76	 callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+77	 }
+78	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+79	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+80	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+81	 }
+82	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+83	 require(address(token).isContract(), "SafeERC20: call to non-contract");
+84	 (bool success, bytes memory returndata) = address(token).call(data);
+85	 require(success, "SafeERC20: low-level call failed");
+86	 if (returndata.length > 0) {
+87	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+88	 }
+89	 }
+90	 }
+91	 interface Controller {
+92	 function vaults(address) external view returns (address);
+93	 function rewards() external view returns (address);
+94	 }
+95	 interface UniswapRouter {
+96	 function swapExactTokensForTokens(uint, uint, address[] calldata, address, uint) external;
+97	 }
+98	 interface WETH {
+99	 function deposit() external payable;
+100	 function withdraw(uint wad) external;
+101	 event Deposit(address indexed dst, uint wad);
+102	 event Withdrawal(address indexed src, uint wad);
+103	 }
+104	 interface ICurveFi {
+105	 function add_liquidity( uint256[2] calldata amounts, uint256 min_mint_amount ) external payable;
+106	 function remove_liquidity_one_coin( uint256 _token_amount, int128 i, uint256 min_amount ) external;
+107	 function get_virtual_price() external view returns (uint256);
+108	 }
+109	 interface Booster {
+110	 function depositAll(uint256 _pid, bool _stake) external returns(bool);
+111	 function withdraw(uint256 _pid, uint256 _amount) external returns(bool);
+112	 }
+113	 interface BaseRewardPool {
+114	 function getReward(address _account, bool _claimExtras) external returns(bool);
+115	 function earned(address account) external view returns (uint256);
+116	 function balanceOf(address account) external view returns (uint256);
+117	 function withdrawAndUnwrap(uint256 amount, bool claim) external returns(bool);
+118	 }
+119	 contract StrategyETHConvex {
+120	 using SafeERC20 for IERC20;
+121	 using Address for address;
+122	 using SafeMath for uint256;
+123	 uint256 public pid = 23;
+124	 address constant public unirouter = address(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
+125	 address constant public sushirouter = address(0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F);
+126	 address constant public weth = address(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+127	 address constant public bt = address(0x76c5449F4950f6338A393F53CdA8b53B0cd3Ca3a);
+128	 address constant public want = address(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+129	 address constant public eCRVPool = address(0xc5424B857f758E906013F3555Dad202e4bdB4567);
+130	 address constant public eCRVToken = address(0xA3D87FffcE63B53E0d54fAa1cc983B7eB0b74A9c);
+131	 address constant public booster = address(0xF403C135812408BFbE8713b5A23a04b3D48AAE31);
+132	 address constant public baserewardpool = address(0x192469CadE297D6B21F418cFA8c366b63FFC9f9b);
+133	 address constant public CVX = address(0x4e3FBD56CD56c3e72c1403e103b45Db9da5B9D2B);
+134	 address constant public CRV = address(0xD533a949740bb3306d119CC777fa900bA034cd52);
+135	 address public governance;
+136	 address public controller;
+137	 uint256 public redeliverynum = 100 * 1e18;
+138	 uint256 public constant DENOMINATOR = 10000;
+139	 uint256 public slip = 60;
+140	 uint256 public depositLastPrice;
+141	 bool public withdrawSlipCheck = true;
+142	 address[] public swapCVX2ETHRouting;
+143	 address[] public swapCRV2ETHRouting;
+144	 address[] public swap2BTRouting;
+145	 modifier onlyController {
+146	 require(msg.sender == controller, "!controller");
+147	 _;
+148	 }
+149	 modifier isAuthorized() {
+150	 require(msg.sender == governance || msg.sender == controller || msg.sender == address(this), "!authorized");
+151	 _;
+152	 }
+153	 constructor() public {
+154	 governance = tx.origin;
+155	 controller = 0x5C6d3Cb5612b551452B3E9b48c920559634510D4;
+156	 swapCVX2ETHRouting = [CVX,weth];
+157	 swapCRV2ETHRouting = [CRV,weth];
+158	 swap2BTRouting = [weth,bt];
+159	 IERC20(CRV).approve(sushirouter, uint(-1));
+160	 IERC20(CVX).approve(sushirouter, uint(-1));
+161	 IERC20(weth).approve(sushirouter, uint(-1));
+162	 IERC20(weth).approve(unirouter, uint(-1));
+163	 }
+164	 function () external payable {
+165	 }
+166	 function deposit() public isAuthorized{
+167	 uint _want = IERC20(want).balanceOf(address(this));
+168	 require(_want > 0,"WETH is 0");
+169	 WETH(address(weth)).withdraw(_want);
+170	 uint256[2] memory amounts = [_want,0];
+171	 uint256 v = _want.mul(1e18).div(ICurveFi(eCRVPool).get_virtual_price());
+172	 uint256 beforeCRV = IERC20(eCRVToken).balanceOf(address(this));
+173	 ICurveFi(eCRVPool).add_liquidity.value(_want)(amounts,v.mul(DENOMINATOR.sub(slip)).div(DENOMINATOR));
+174	 uint256 _eCRV = IERC20(eCRVToken).balanceOf(address(this));
+175	 depositLastPrice = _want.mul(1e18).div(_eCRV.sub(beforeCRV));
+176	 if(_eCRV>0){
+177	 IERC20(eCRVToken).safeApprove(booster, 0);
+178	 IERC20(eCRVToken).safeApprove(booster, _eCRV);
+179	 Booster(booster).depositAll(pid,true);
+180	 }
+181	 }
+182	 function withdraw(uint _amount) external onlyController {
+183	 uint amount = _withdraw(_amount);
+184	 address _vault = Controller(controller).vaults(address(want));
+185	 require(_vault != address(0), "!vault");
+186	 IERC20(want).safeTransfer(_vault, amount);
+187	 }
+188	 function _withdraw(uint _amount) internal returns(uint) {
+189	 uint amount = IERC20(want).balanceOf(address(this));
+190	 if (amount < _amount) {
+191	 uint256 _eCRV = _withdrawSome(_amount.sub(amount));
+192	 uint256 afterAmount = IERC20(want).balanceOf(address(this));
+193	 if(withdrawSlipCheck){
+194	 uint256 withdrawPrice = afterAmount.sub(amount).mul(1e18).div(_eCRV);
+195	 if(withdrawPrice < depositLastPrice){
+196	 require(depositLastPrice.sub(withdrawPrice).mul(DENOMINATOR) < slip.mul(depositLastPrice),"slippage");
+197	 }
+198	 }
+199	 amount = afterAmount;
+200	 }
+201	 if (amount < _amount){
+202	 return amount;
+203	 }
+204	 return _amount;
+205	 }
+206	 function _withdrawSome(uint _amount) internal returns(uint256 _eCRV) {
+207	 _eCRV = _amount.mul(1e18).div(ICurveFi(eCRVPool).get_virtual_price());
+208	 uint256 _eCRVBefore = IERC20(eCRVToken).balanceOf(address(this));
+209	 if(_eCRV>_eCRVBefore){
+210	 _eCRV = _eCRV.sub(_eCRVBefore);
+211	 uint256 alleCRV = BaseRewardPool(baserewardpool).balanceOf(address(this));
+212	 if(_eCRV>alleCRV){
+213	 _eCRV = alleCRV;
+214	 }
+215	 BaseRewardPool(baserewardpool).withdrawAndUnwrap(_eCRV,false);
+216	 _eCRV = IERC20(eCRVToken).balanceOf(address(this));
+217	 }
+218	 ICurveFi(eCRVPool).remove_liquidity_one_coin(_eCRV,0,_amount.mul(DENOMINATOR.sub(slip)).div(DENOMINATOR));
+219	 WETH(weth).deposit.value(address(this).balance)();
+220	 }
+221	 function withdrawAll() external onlyController returns (uint balance) {
+222	 _withdraw(balanceOf());
+223	 balance = IERC20(want).balanceOf(address(this));
+224	 address _vault = Controller(controller).vaults(address(want));
+225	 require(_vault != address(0), "!vault");
+226	 IERC20(want).safeTransfer(_vault, balance);
+227	 }
+228	 function withdrawAsset(address _asset,address _to) external returns(uint256 balance){
+229	 require(msg.sender == governance, "!governance");
+230	 require(_to != address(0x0) && _asset != address(0x0) ,"Invalid address");
+231	 require(want != _asset , "want");
+232	 balance = IERC20(_asset).balanceOf(address(this));
+233	 IERC20(_asset).safeTransfer(_to, balance);
+234	 }
+235	 function balanceOfwant() public view returns (uint256) {
+236	 return IERC20(want).balanceOf(address(this));
+237	 }
+238	 function balanceOfeCRV() public view returns (uint256) {
+239	 return BaseRewardPool(baserewardpool).balanceOf(address(this)).add(IERC20(eCRVToken).balanceOf(address(this)));
+240	 }
+241	 function balanceOfeCRV2ETH() public view returns(uint256) {
+242	 return balanceOfeCRV().mul(ICurveFi(eCRVPool).get_virtual_price()).div(1e18);
+243	 }
+244	 function balanceOf() public view returns (uint256) {
+245	 return balanceOfwant().add(balanceOfeCRV2ETH());
+246	 }
+247	 function getPending() public view returns (uint256) {
+248	 return BaseRewardPool(baserewardpool).earned(address(this));
+249	 }
+250	 function getCRV() public view returns(uint256) {
+251	 return IERC20(CRV).balanceOf(address(this));
+252	 }
+253	 function harvest() public {
+254	 BaseRewardPool(baserewardpool).getReward(address(this),true);
+255	 redelivery();
+256	 }
+257	 function redelivery() internal {
+258	 uint256 reward = IERC20(CRV).balanceOf(address(this));
+259	 if (reward > redeliverynum) {
+260	 uint256 _crvAmount = IERC20(CRV).balanceOf(address(this));
+261	 if(_crvAmount > 0){
+262	 UniswapRouter(sushirouter).swapExactTokensForTokens(_crvAmount,0,swapCRV2ETHRouting,address(this),now.add(1800));
+263	 }
+264	 uint256 _cvxAmount = IERC20(CVX).balanceOf(address(this));
+265	 if(_cvxAmount > 0){
+266	 UniswapRouter(sushirouter).swapExactTokensForTokens(_cvxAmount,0,swapCVX2ETHRouting,address(this),now.add(1800));
+267	 }
+268	 uint256 wethAmount = IERC20(weth).balanceOf(address(this));
+269	 uint256 _2bt = wethAmount.mul(20).div(100);
+270	 UniswapRouter(unirouter).swapExactTokensForTokens(_2bt, 0, swap2BTRouting, Controller(controller).rewards(), now.add(1800));
+271	 deposit();
+272	 }
+273	 }
+274	 function setredeliverynum(uint256 value) public {
+275	 require(msg.sender == governance, "!governance");
+276	 redeliverynum = value;
+277	 }
+278	 function setGovernance(address _governance) public {
+279	 require(msg.sender == governance, "!governance");
+280	 governance = _governance;
+281	 }
+282	 function setController(address _controller) external {
+283	 require(msg.sender == governance, "!governance");
+284	 controller = _controller;
+285	 }
+286	 function setSlip(uint256 _slip) external {
+287	 require(msg.sender == governance, "!governance");
+288	 require(_slip <= DENOMINATOR,"slip error");
+289	 slip = _slip;
+290	 }
+291	 function setWithdrawSlipCheck(bool _check) external {
+292	 require(msg.sender == governance, "!governance");
+293	 withdrawSlipCheck = _check;
+294	 }
+295	 }

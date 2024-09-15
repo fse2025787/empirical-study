@@ -1,0 +1,143 @@
+row number 
+1	                pragma solidity ^0.7.1;
+2	 contract Auth {
+3	 VaultParameters public vaultParameters;
+4	 constructor(address _parameters) public {
+5	 vaultParameters = VaultParameters(_parameters);
+6	 }
+7	 modifier onlyManager() {
+8	 require(vaultParameters.isManager(msg.sender), "Unit Protocol: AUTH_FAILED");
+9	 _;
+10	 }
+11	 modifier hasVaultAccess() {
+12	 require(vaultParameters.canModifyVault(msg.sender), "Unit Protocol: AUTH_FAILED");
+13	 _;
+14	 }
+15	 modifier onlyVault() {
+16	 require(msg.sender == vaultParameters.vault(), "Unit Protocol: AUTH_FAILED");
+17	 _;
+18	 }
+19	 }
+20	 contract VaultParameters is Auth {
+21	 mapping(address => uint) public stabilityFee;
+22	 mapping(address => uint) public liquidationFee;
+23	 mapping(address => uint) public tokenDebtLimit;
+24	 mapping(address => bool) public canModifyVault;
+25	 mapping(address => bool) public isManager;
+26	 mapping(uint => mapping (address => bool)) public isOracleTypeEnabled;
+27	 address payable public vault;
+28	 address public foundation;
+29	 constructor(address payable _vault, address _foundation) public Auth(address(this)) {
+30	 require(_vault != address(0), "Unit Protocol: ZERO_ADDRESS");
+31	 require(_foundation != address(0), "Unit Protocol: ZERO_ADDRESS");
+32	 isManager[msg.sender] = true;
+33	 vault = _vault;
+34	 foundation = _foundation;
+35	 }
+36	 function setManager(address who, bool permit) external onlyManager {
+37	 isManager[who] = permit;
+38	 }
+39	 function setFoundation(address newFoundation) external onlyManager {
+40	 require(newFoundation != address(0), "Unit Protocol: ZERO_ADDRESS");
+41	 foundation = newFoundation;
+42	 }
+43	 function setCollateral( address asset, uint stabilityFeeValue, uint liquidationFeeValue, uint usdpLimit, uint[] calldata oracles ) external onlyManager {
+44	 setStabilityFee(asset, stabilityFeeValue);
+45	 setLiquidationFee(asset, liquidationFeeValue);
+46	 setTokenDebtLimit(asset, usdpLimit);
+47	 for (uint i=0; i < oracles.length; i++) {
+48	 setOracleType(oracles[i], asset, true);
+49	 }
+50	 }
+51	 function setVaultAccess(address who, bool permit) external onlyManager {
+52	 canModifyVault[who] = permit;
+53	 }
+54	 function setStabilityFee(address asset, uint newValue) public onlyManager {
+55	 stabilityFee[asset] = newValue;
+56	 }
+57	 function setLiquidationFee(address asset, uint newValue) public onlyManager {
+58	 require(newValue <= 100, "Unit Protocol: VALUE_OUT_OF_RANGE");
+59	 liquidationFee[asset] = newValue;
+60	 }
+61	 function setOracleType(uint _type, address asset, bool enabled) public onlyManager {
+62	 isOracleTypeEnabled[_type][asset] = enabled;
+63	 }
+64	 function setTokenDebtLimit(address asset, uint limit) public onlyManager {
+65	 tokenDebtLimit[asset] = limit;
+66	 }
+67	 }
+68	 pragma solidity ^0.7.1;
+69	 contract OracleRegistry is Auth {
+70	 mapping(address => address) public oracleByAsset;
+71	 mapping(uint => address) public oracleByType;
+72	 constructor(address vaultParameters) Auth(vaultParameters) {
+73	 require(vaultParameters != address(0), "Unit Protocol: ZERO_ADDRESS");
+74	 }
+75	 function setOracle(address asset, address oracle, uint oracleType) public onlyManager {
+76	 require(asset != address(0) && oracleType != 0, "Unit Protocol: INVALID_ARGS");
+77	 oracleByAsset[asset] = oracle;
+78	 oracleByType[oracleType] = oracle;
+79	 }
+80	 }
+81	 pragma solidity ^0.7.1;
+82	 interface ERC20Like {
+83	 function balanceOf(address) external view returns (uint);
+84	 function decimals() external view returns (uint8);
+85	 function transfer(address, uint256) external returns (bool);
+86	 function transferFrom(address, address, uint256) external returns (bool);
+87	 function totalSupply() external view returns (uint256);
+88	 }
+89	 pragma solidity ^0.7.1;
+90	 abstract contract OracleSimple {
+91	 function assetToUsd(address asset, uint amount) public virtual view returns (uint);
+92	 }
+93	 abstract contract OracleSimplePoolToken is OracleSimple {
+94	 ChainlinkedOracleSimple public oracleMainAsset;
+95	 }
+96	 abstract contract ChainlinkedOracleSimple is OracleSimple {
+97	 address public WETH;
+98	 function ethToUsd(uint ethAmount) public virtual view returns (uint);
+99	 function assetToEth(address asset, uint amount) public virtual view returns (uint);
+100	 }
+101	 pragma solidity ^0.7.1;
+102	 interface CurveProvider {
+103	 function get_registry() external view returns (address);
+104	 }
+105	 interface CurveRegistry {
+106	 function get_pool_from_lp_token(address) external view returns (address);
+107	 function get_n_coins(address) external view returns (uint[2] memory);
+108	 }
+109	 interface CurvePool {
+110	 function get_virtual_price() external view returns (uint);
+111	 function coins(uint) external view returns (address);
+112	 }
+113	 contract CurveLPOracle is OracleSimple {
+114	 uint public constant Q112 = 2 ** 112;
+115	 uint public constant PRECISION = 1e18;
+116	 CurveProvider public immutable curveProvider;
+117	 ChainlinkedOracleSimple public immutable chainlinkedOracle;
+118	 constructor(address _curveProvider, address _chainlinkedOracle) {
+119	 require(_curveProvider != address(0) && _chainlinkedOracle != address(0), "Unit Protocol: ZERO_ADDRESS");
+120	 curveProvider = CurveProvider(_curveProvider);
+121	 chainlinkedOracle = ChainlinkedOracleSimple(_chainlinkedOracle);
+122	 }
+123	 function assetToUsd(address asset, uint amount) public override view returns (uint) {
+124	 if (amount == 0) return 0;
+125	 CurveRegistry cR = CurveRegistry(curveProvider.get_registry());
+126	 CurvePool cP = CurvePool(cR.get_pool_from_lp_token(asset));
+127	 require(address(cP) != address(0), "Unit Protocol: NOT_A_CURVE_LP");
+128	 require(ERC20Like(asset).decimals() == uint8(18), "Unit Protocol: INCORRECT_DECIMALS");
+129	 uint coinsCount = cR.get_n_coins(address(cP))[0];
+130	 require(coinsCount != 0, "Unit Protocol: CURVE_INCORRECT_COINS_COUNT");
+131	 uint minEthCoinPrice_q112;
+132	 for (uint i = 0; i < coinsCount; i++) {
+133	 uint ethCoinPrice_q112 = chainlinkedOracle.assetToEth(cP.coins(i), 1 ether);
+134	 if (i == 0 || ethCoinPrice_q112 < minEthCoinPrice_q112) {
+135	 minEthCoinPrice_q112 = ethCoinPrice_q112;
+136	 }
+137	 }
+138	 uint minUsdCoinPrice_q112 = chainlinkedOracle.ethToUsd(minEthCoinPrice_q112) / 1 ether;
+139	 uint price_q112 = cP.get_virtual_price() * minUsdCoinPrice_q112 / PRECISION;
+140	 return amount * price_q112;
+141	 }
+142	 }

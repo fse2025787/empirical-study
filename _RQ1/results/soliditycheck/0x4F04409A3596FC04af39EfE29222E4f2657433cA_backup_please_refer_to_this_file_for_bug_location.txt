@@ -1,0 +1,961 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.5.0;
+3	 contract Context {
+4	 constructor () internal {
+5	 }
+6	 function _msgSender() internal view returns (address payable) {
+7	 return msg.sender;
+8	 }
+9	 function _msgData() internal view returns (bytes memory) {
+10	 this;
+11	 return msg.data;
+12	 }
+13	 }
+14	 pragma solidity ^0.5.0;
+15	 contract Ownable is Context {
+16	 address private _owner;
+17	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+18	 constructor () internal {
+19	 address msgSender = _msgSender();
+20	 _owner = msgSender;
+21	 emit OwnershipTransferred(address(0), msgSender);
+22	 }
+23	 function owner() public view returns (address) {
+24	 return _owner;
+25	 }
+26	 modifier onlyOwner() {
+27	 require(isOwner(), "Ownable: caller is not the owner");
+28	 _;
+29	 }
+30	 function isOwner() public view returns (bool) {
+31	 return _msgSender() == _owner;
+32	 }
+33	 function renounceOwnership() public onlyOwner {
+34	 emit OwnershipTransferred(_owner, address(0));
+35	 _owner = address(0);
+36	 }
+37	 function transferOwnership(address newOwner) public onlyOwner {
+38	 _transferOwnership(newOwner);
+39	 }
+40	 function _transferOwnership(address newOwner) internal {
+41	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+42	 emit OwnershipTransferred(_owner, newOwner);
+43	 _owner = newOwner;
+44	 }
+45	 }
+46	 pragma solidity 0.5.17;
+47	 contract StakingUpgradeable is Ownable {
+48	 address public implementation;
+49	 }
+50	 pragma solidity 0.5.17;
+51	 contract StakingState is StakingUpgradeable {
+52	 using SafeMath for uint256;
+53	 using SafeERC20 for IERC20;
+54	 using EnumerableBytes32Set for EnumerableBytes32Set.Bytes32Set;
+55	 uint256 public constant initialCirculatingSupply = 1030000000e18 - 889389933e18;
+56	 address internal constant ZERO_ADDRESS = address(0);
+57	 bool public isPaused;
+58	 address public fundsWallet;
+59	 mapping(address => uint256) internal _totalSupplyPerToken;
+60	 mapping(address => mapping(address => uint256)) internal _balancesPerToken;
+61	 mapping(address => address) internal delegate;
+62	 mapping(address => mapping(address => uint256)) internal delegatedPerToken;
+63	 uint256 public bzrxPerTokenStored;
+64	 mapping(address => uint256) public bzrxRewardsPerTokenPaid;
+65	 mapping(address => uint256) public bzrxRewards;
+66	 mapping(address => uint256) public bzrxVesting;
+67	 uint256 public stableCoinPerTokenStored;
+68	 mapping(address => uint256) public stableCoinRewardsPerTokenPaid;
+69	 mapping(address => uint256) public stableCoinRewards;
+70	 mapping(address => uint256) public stableCoinVesting;
+71	 uint256 public vBZRXWeightStored;
+72	 uint256 public iBZRXWeightStored;
+73	 uint256 public LPTokenWeightStored;
+74	 EnumerableBytes32Set.Bytes32Set internal _delegatedSet;
+75	 uint256 public lastRewardsAddTime;
+76	 mapping(address => uint256) public vestingLastSync;
+77	 mapping(address => address[]) public swapPaths;
+78	 mapping(address => uint256) public stakingRewards;
+79	 uint256 public rewardPercent = 50e18;
+80	 uint256 public maxUniswapDisagreement = 3e18;
+81	 uint256 public maxCurveDisagreement = 3e18;
+82	 uint256 public callerRewardDivisor = 100;
+83	 address[] public currentFeeTokens;
+84	 struct ProposalState {
+85	 uint256 proposalTime;
+86	 uint256 iBZRXWeight;
+87	 uint256 lpBZRXBalance;
+88	 uint256 lpTotalSupply;
+89	 }
+90	 address public governor;
+91	 mapping(uint256 => ProposalState) internal _proposalState;
+92	 mapping(address => uint256[]) public altRewardsRounds;
+93	 mapping(address => uint256) public altRewardsPerShare;
+94	 mapping(address => mapping(address => IStaking.AltRewardsUserInfo)) public userAltRewardsPerShare;
+95	 address public voteDelegator;
+96	 }
+97	 pragma solidity ^0.5.0;
+98	 interface IERC20 {
+99	 function totalSupply() external view returns (uint256);
+100	 function balanceOf(address account) external view returns (uint256);
+101	 function transfer(address recipient, uint256 amount) external returns (bool);
+102	 function allowance(address owner, address spender) external view returns (uint256);
+103	 function approve(address spender, uint256 amount) external returns (bool);
+104	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+105	 event Transfer(address indexed from, address indexed to, uint256 value);
+106	 event Approval(address indexed owner, address indexed spender, uint256 value);
+107	 }
+108	 pragma solidity 0.5.17;
+109	 contract StakingConstants {
+110	 address public constant BZRX = 0x56d811088235F11C8920698a204A5010a788f4b3;
+111	 address public constant vBZRX = 0xB72B31907C1C95F3650b64b2469e08EdACeE5e8F;
+112	 address public constant iBZRX = 0x18240BD9C07fA6156Ce3F3f61921cC82b2619157;
+113	 address public constant LPToken = 0xa30911e072A0C88D55B5D0A0984B66b0D04569d0;
+114	 address public constant LPTokenOld = 0xe26A220a341EAca116bDa64cF9D5638A935ae629;
+115	 IERC20 public constant curve3Crv = IERC20(0x6c3F90f043a72FA612cbac8115EE7e52BDe6E490);
+116	 address public constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+117	 address public constant DAI = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
+118	 address public constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+119	 address public constant USDT = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
+120	 address public constant SUSHI = 0x6B3595068778DD592e39A122f4f5a5cF09C90fE2;
+121	 IUniswapV2Router public constant uniswapRouter = IUniswapV2Router(0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F);
+122	 ICurve3Pool public constant curve3pool = ICurve3Pool(0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7);
+123	 IBZx public constant bZx = IBZx(0xD8Ee69652E4e4838f2531732a46d1f7F584F0b7f);
+124	 uint256 public constant cliffDuration = 15768000;
+125	 uint256 public constant vestingDuration = 126144000;
+126	 uint256 internal constant vestingDurationAfterCliff = 110376000;
+127	 uint256 internal constant vestingStartTimestamp = 1594648800;
+128	 uint256 internal constant vestingCliffTimestamp = vestingStartTimestamp + cliffDuration;
+129	 uint256 internal constant vestingEndTimestamp = vestingStartTimestamp + vestingDuration;
+130	 uint256 internal constant _startingVBZRXBalance = 889389933e18;
+131	 address internal constant SUSHI_MASTERCHEF = 0xc2EdaD668740f1aA35E4D8f227fB8E17dcA888Cd;
+132	 uint256 internal constant BZRX_ETH_SUSHI_MASTERCHEF_PID = 188;
+133	 uint256 public constant BZRXWeightStored = 1e18;
+134	 ICurveMinter public constant curveMinter = ICurveMinter(0xd061D61a4d941c39E5453435B6345Dc261C2fcE0);
+135	 ICurve3PoolGauge public constant curve3PoolGauge = ICurve3PoolGauge(0xbFcF63294aD7105dEa65aA58F8AE5BE2D9d0952A);
+136	 address public constant CRV = 0xD533a949740bb3306d119CC777fa900bA034cd52;
+137	 struct DelegatedTokens {
+138	 address user;
+139	 uint256 BZRX;
+140	 uint256 vBZRX;
+141	 uint256 iBZRX;
+142	 uint256 LPToken;
+143	 uint256 totalVotes;
+144	 }
+145	 event Stake( address indexed user, address indexed token, address indexed delegate, uint256 amount );
+146	 event Unstake( address indexed user, address indexed token, address indexed delegate, uint256 amount );
+147	 event AddRewards( address indexed sender, uint256 bzrxAmount, uint256 stableCoinAmount );
+148	 event Claim( address indexed user, uint256 bzrxAmount, uint256 stableCoinAmount );
+149	 event ChangeDelegate( address indexed user, address indexed oldDelegate, address indexed newDelegate );
+150	 event WithdrawFees( address indexed sender );
+151	 event ConvertFees( address indexed sender, uint256 bzrxOutput, uint256 stableCoinOutput );
+152	 event DistributeFees( address indexed sender, uint256 bzrxRewards, uint256 stableCoinRewards );
+153	 event AddAltRewards( address indexed sender, address indexed token, uint256 amount );
+154	 event ClaimAltRewards( address indexed user, address indexed token, uint256 amount );
+155	 }
+156	 pragma solidity 0.5.17;
+157	 contract PausableGuardian is Ownable {
+158	 bytes32 internal constant Pausable_FunctionPause = 0xa7143c84d793a15503da6f19bf9119a2dac94448ca45d77c8bf08f57b2e91047;
+159	 bytes32 internal constant Pausable_GuardianAddress = 0x80e6706973d0c59541550537fd6a33b971efad732635e6c3b99fb01006803cdf;
+160	 modifier pausable {
+161	 require(!_isPaused(msg.sig), "paused");
+162	 _;
+163	 }
+164	 modifier onlyGuardian {
+165	 require(msg.sender == getGuardian() || msg.sender == owner(), "unauthorized");
+166	 _;
+167	 }
+168	 function _isPaused(bytes4 sig) public view returns (bool isPaused) {
+169	 bytes32 slot = keccak256(abi.encodePacked(sig, Pausable_FunctionPause));
+170	 assembly {
+171	 isPaused := sload(slot) }
+172	 }
+173	 function toggleFunctionPause(bytes4 sig) public onlyGuardian {
+174	 bytes32 slot = keccak256(abi.encodePacked(sig, Pausable_FunctionPause));
+175	 assembly {
+176	 sstore(slot, 1) }
+177	 }
+178	 function toggleFunctionUnPause(bytes4 sig) public onlyGuardian {
+179	 bytes32 slot = keccak256(abi.encodePacked(sig, Pausable_FunctionPause));
+180	 assembly {
+181	 sstore(slot, 0) }
+182	 }
+183	 function changeGuardian(address newGuardian) public onlyGuardian {
+184	 assembly {
+185	 sstore(Pausable_GuardianAddress, newGuardian) }
+186	 }
+187	 function getGuardian() public view returns (address guardian) {
+188	 assembly {
+189	 guardian := sload(Pausable_GuardianAddress) }
+190	 }
+191	 }
+192	 pragma solidity 0.5.17;
+193	 contract StakingV1_1 is StakingState, StakingConstants, PausableGuardian {
+194	 using MathUtil for uint256;
+195	 modifier onlyEOA() {
+196	 require(msg.sender == tx.origin, "unauthorized");
+197	 _;
+198	 }
+199	 function _pendingSushiRewards(address _user) internal view returns (uint256) {
+200	 uint256 pendingSushi = IMasterChefSushi(SUSHI_MASTERCHEF) .pendingSushi(BZRX_ETH_SUSHI_MASTERCHEF_PID, address(this));
+201	 uint256 totalSupply = _totalSupplyPerToken[LPToken];
+202	 return _pendingAltRewards( SUSHI, _user, balanceOfByAsset(LPToken, _user), totalSupply != 0 ? pendingSushi.mul(1e12).div(totalSupply) : 0 );
+203	 }
+204	 function _pendingAltRewards(address token, address _user, uint256 userSupply, uint256 extraRewardsPerShare) internal view returns (uint256) {
+205	 uint256 _altRewardsPerShare = altRewardsPerShare[token].add(extraRewardsPerShare);
+206	 if (_altRewardsPerShare == 0) return 0;
+207	 IStaking.AltRewardsUserInfo memory altRewardsUserInfo = userAltRewardsPerShare[_user][token];
+208	 return altRewardsUserInfo.pendingRewards.add( (_altRewardsPerShare.sub(altRewardsUserInfo.rewardsPerShare)).mul(userSupply).div(1e12) );
+209	 }
+210	 function _depositToSushiMasterchef(uint256 amount) internal {
+211	 uint256 sushiBalanceBefore = IERC20(SUSHI).balanceOf(address(this));
+212	 IMasterChefSushi(SUSHI_MASTERCHEF).deposit( BZRX_ETH_SUSHI_MASTERCHEF_PID, amount );
+213	 uint256 sushiRewards = IERC20(SUSHI).balanceOf(address(this)) - sushiBalanceBefore;
+214	 if (sushiRewards != 0) {
+215	 _addAltRewards(SUSHI, sushiRewards);
+216	 }
+217	 }
+218	 function _withdrawFromSushiMasterchef(uint256 amount) internal {
+219	 uint256 sushiBalanceBefore = IERC20(SUSHI).balanceOf(address(this));
+220	 IMasterChefSushi(SUSHI_MASTERCHEF).withdraw( BZRX_ETH_SUSHI_MASTERCHEF_PID, amount );
+221	 uint256 sushiRewards = IERC20(SUSHI).balanceOf(address(this)) - sushiBalanceBefore;
+222	 if (sushiRewards != 0) {
+223	 _addAltRewards(SUSHI, sushiRewards);
+224	 }
+225	 }
+226	 function withdrawFrom3Pool(uint256 amount) public onlyGuardian {
+227	 _withdrawFrom3Pool(amount);
+228	 }
+229	 function _withdrawFrom3Pool(uint256 amount) internal {
+230	 if(amount != 0) curve3PoolGauge.withdraw(amount);
+231	 curveMinter.mint(address(curve3PoolGauge));
+232	 }
+233	 function unstake( address[] memory tokens, uint256[] memory values ) public pausable updateRewards(msg.sender) {
+234	 require(tokens.length == values.length, "count mismatch");
+235	 for (uint256 i = 0; i < tokens.length; i++) {
+236	 address token = tokens[i];
+237	 require(token == BZRX || token == vBZRX || token == iBZRX || token == LPToken || token == LPTokenOld, "invalid token");
+238	 uint256 unstakeAmount = values[i];
+239	 uint256 stakedAmount = _balancesPerToken[token][msg.sender];
+240	 if (unstakeAmount == 0 || stakedAmount == 0) {
+241	 continue;
+242	 }
+243	 if (unstakeAmount > stakedAmount) {
+244	 unstakeAmount = stakedAmount;
+245	 }
+246	 uint256 pendingBefore = (token == LPToken) ? _pendingSushiRewards(msg.sender) : 0;
+247	 _balancesPerToken[token][msg.sender] = stakedAmount - unstakeAmount;
+248	 _totalSupplyPerToken[token] = _totalSupplyPerToken[token] - unstakeAmount;
+249	 if (token == BZRX && IERC20(BZRX).balanceOf(address(this)) < unstakeAmount) {
+250	 IVestingToken(vBZRX).claim();
+251	 }
+252	 if (token == LPToken) {
+253	 _withdrawFromSushiMasterchef(unstakeAmount);
+254	 userAltRewardsPerShare[msg.sender][SUSHI] = IStaking.AltRewardsUserInfo({
+255	 rewardsPerShare: altRewardsPerShare[SUSHI], pendingRewards: pendingBefore }
+256	 );
+257	 }
+258	 IERC20(token).safeTransfer(msg.sender, unstakeAmount);
+259	 emit Unstake( msg.sender, token, address(0), unstakeAmount );
+260	 }
+261	 }
+262	 function claim( bool restake) external pausable updateRewards(msg.sender) returns (uint256 bzrxRewardsEarned, uint256 stableCoinRewardsEarned) {
+263	 return _claim(restake);
+264	 }
+265	 function claimAltRewards() public pausable returns (uint256 sushiRewardsEarned) {
+266	 sushiRewardsEarned = _claimSushi();
+267	 if(sushiRewardsEarned != 0){
+268	 emit ClaimAltRewards(msg.sender, SUSHI, sushiRewardsEarned);
+269	 }
+270	 }
+271	 function claimBzrx() external pausable updateRewards(msg.sender) returns (uint256 bzrxRewardsEarned) {
+272	 bzrxRewardsEarned = _claimBzrx(false);
+273	 emit Claim( msg.sender, bzrxRewardsEarned, 0 );
+274	 }
+275	 function claim3Crv() external pausable updateRewards(msg.sender) returns (uint256 stableCoinRewardsEarned) {
+276	 stableCoinRewardsEarned = _claim3Crv();
+277	 emit Claim( msg.sender, 0, stableCoinRewardsEarned );
+278	 }
+279	 function claimSushi() external pausable returns (uint256 sushiRewardsEarned) {
+280	 sushiRewardsEarned = _claimSushi();
+281	 if(sushiRewardsEarned != 0){
+282	 emit ClaimAltRewards(msg.sender, SUSHI, sushiRewardsEarned);
+283	 }
+284	 }
+285	 function _claim( bool restake) internal returns (uint256 bzrxRewardsEarned, uint256 stableCoinRewardsEarned) {
+286	 bzrxRewardsEarned = _claimBzrx(false);
+287	 stableCoinRewardsEarned = _claim3Crv();
+288	 emit Claim( msg.sender, bzrxRewardsEarned, stableCoinRewardsEarned );
+289	 }
+290	 function _claimBzrx( bool restake) internal returns (uint256 bzrxRewardsEarned) {
+291	 bzrxRewardsEarned = bzrxRewards[msg.sender];
+292	 if (bzrxRewardsEarned != 0) {
+293	 bzrxRewards[msg.sender] = 0;
+294	 uint256 vestingAmount = bzrxVesting[msg.sender];
+295	 if (vestingAmount != 0) {
+296	 (vestingAmount,) = _discountVesting(vestingAmount, 0);
+297	 bzrxRewardsEarned += vestingAmount;
+298	 bzrxVesting[msg.sender] = 0;
+299	 }
+300	 if (IERC20(BZRX).balanceOf(address(this)) < bzrxRewardsEarned) {
+301	 IVestingToken(vBZRX).claim();
+302	 }
+303	 IERC20(BZRX).transfer(msg.sender, bzrxRewardsEarned);
+304	 }
+305	 }
+306	 function _claim3Crv() internal returns (uint256 stableCoinRewardsEarned) {
+307	 stableCoinRewardsEarned = stableCoinRewards[msg.sender];
+308	 if (stableCoinRewardsEarned != 0) {
+309	 stableCoinRewards[msg.sender] = 0;
+310	 uint256 vestingAmount = stableCoinVesting[msg.sender];
+311	 if (vestingAmount != 0) {
+312	 (,vestingAmount) = _discountVesting(0, vestingAmount);
+313	 stableCoinRewardsEarned += vestingAmount;
+314	 stableCoinVesting[msg.sender] = 0;
+315	 }
+316	 curve3Crv.transfer(msg.sender, stableCoinRewardsEarned);
+317	 }
+318	 }
+319	 function _claimSushi() internal returns (uint256) {
+320	 address _user = msg.sender;
+321	 uint256 lptUserSupply = balanceOfByAsset(LPToken, _user);
+322	 _depositToSushiMasterchef( IERC20(LPToken).balanceOf(address(this)) );
+323	 uint256 pendingSushi = _pendingAltRewards(SUSHI, _user, lptUserSupply, 0);
+324	 userAltRewardsPerShare[_user][SUSHI] = IStaking.AltRewardsUserInfo({
+325	 rewardsPerShare: altRewardsPerShare[SUSHI], pendingRewards: 0 }
+326	 );
+327	 if (pendingSushi != 0) {
+328	 IERC20(SUSHI).safeTransfer(_user, pendingSushi);
+329	 }
+330	 return pendingSushi;
+331	 }
+332	 function exit() public {
+333	 address[] memory tokens = new address[](4);
+334	 uint256[] memory values = new uint256[](4);
+335	 tokens[0] = iBZRX;
+336	 tokens[1] = LPToken;
+337	 tokens[2] = vBZRX;
+338	 tokens[3] = BZRX;
+339	 values[0] = uint256(-1);
+340	 values[1] = uint256(-1);
+341	 values[2] = uint256(-1);
+342	 values[3] = uint256(-1);
+343	 unstake(tokens, values);
+344	 _claim(false);
+345	 claimAltRewards();
+346	 }
+347	 modifier updateRewards(address account) {
+348	 uint256 _bzrxPerTokenStored = bzrxPerTokenStored;
+349	 uint256 _stableCoinPerTokenStored = stableCoinPerTokenStored;
+350	 (uint256 bzrxRewardsEarned, uint256 stableCoinRewardsEarned, uint256 bzrxRewardsVesting, uint256 stableCoinRewardsVesting) = _earned( account, _bzrxPerTokenStored, _stableCoinPerTokenStored );
+351	 bzrxRewardsPerTokenPaid[account] = _bzrxPerTokenStored;
+352	 stableCoinRewardsPerTokenPaid[account] = _stableCoinPerTokenStored;
+353	 bzrxVesting[account] = bzrxRewardsVesting;
+354	 stableCoinVesting[account] = stableCoinRewardsVesting;
+355	 (bzrxRewards[account], stableCoinRewards[account]) = _syncVesting( account, bzrxRewardsEarned, stableCoinRewardsEarned, bzrxRewardsVesting, stableCoinRewardsVesting );
+356	 vestingLastSync[account] = block.timestamp;
+357	 _;
+358	 }
+359	 function _discountVesting( uint256 bzrxRewardsVesting, uint256 stableCoinRewardsVesting) internal view returns (uint256, uint256) {
+360	 uint256 multiplier = vestedBalanceForAmount( 1e36, 0, block.timestamp );
+361	 if (bzrxRewardsVesting != 0) {
+362	 bzrxRewardsVesting = bzrxRewardsVesting .sub(bzrxRewardsVesting .mul(multiplier) .div(1e36) );
+363	 }
+364	 if (stableCoinRewardsVesting != 0) {
+365	 stableCoinRewardsVesting = stableCoinRewardsVesting .sub(stableCoinRewardsVesting .mul(multiplier) .div(1e36) );
+366	 }
+367	 return (bzrxRewardsVesting, stableCoinRewardsVesting);
+368	 }
+369	 function earned( address account) external view returns (uint256 bzrxRewardsEarned, uint256 stableCoinRewardsEarned, uint256 bzrxRewardsVesting, uint256 stableCoinRewardsVesting, uint256 sushiRewardsEarned) {
+370	 (bzrxRewardsEarned, stableCoinRewardsEarned, bzrxRewardsVesting, stableCoinRewardsVesting) = _earned( account, bzrxPerTokenStored, stableCoinPerTokenStored );
+371	 (bzrxRewardsEarned, stableCoinRewardsEarned) = _syncVesting( account, bzrxRewardsEarned, stableCoinRewardsEarned, bzrxRewardsVesting, stableCoinRewardsVesting );
+372	 (bzrxRewardsVesting, stableCoinRewardsVesting) = _discountVesting(bzrxRewardsVesting, stableCoinRewardsVesting);
+373	 bzrxRewardsEarned += bzrxRewardsVesting;
+374	 bzrxRewardsVesting = 0;
+375	 stableCoinRewardsEarned += stableCoinRewardsVesting;
+376	 stableCoinRewardsVesting = 0;
+377	 uint256 pendingSushi = IMasterChefSushi(SUSHI_MASTERCHEF) .pendingSushi(BZRX_ETH_SUSHI_MASTERCHEF_PID, address(this));
+378	 sushiRewardsEarned = _pendingAltRewards( SUSHI, account, balanceOfByAsset(LPToken, account), (_totalSupplyPerToken[LPToken] != 0) ? pendingSushi.mul(1e12).div(_totalSupplyPerToken[LPToken]) : 0 );
+379	 }
+380	 function _earned( address account, uint256 _bzrxPerToken, uint256 _stableCoinPerToken) internal view returns (uint256 bzrxRewardsEarned, uint256 stableCoinRewardsEarned, uint256 bzrxRewardsVesting, uint256 stableCoinRewardsVesting) {
+381	 uint256 bzrxPerTokenUnpaid = _bzrxPerToken.sub(bzrxRewardsPerTokenPaid[account]);
+382	 uint256 stableCoinPerTokenUnpaid = _stableCoinPerToken.sub(stableCoinRewardsPerTokenPaid[account]);
+383	 bzrxRewardsEarned = bzrxRewards[account];
+384	 stableCoinRewardsEarned = stableCoinRewards[account];
+385	 bzrxRewardsVesting = bzrxVesting[account];
+386	 stableCoinRewardsVesting = stableCoinVesting[account];
+387	 if (bzrxPerTokenUnpaid != 0 || stableCoinPerTokenUnpaid != 0) {
+388	 uint256 value;
+389	 uint256 multiplier;
+390	 uint256 lastSync;
+391	 (uint256 vestedBalance, uint256 vestingBalance) = balanceOfStored(account);
+392	 value = vestedBalance .mul(bzrxPerTokenUnpaid);
+393	 value /= 1e36;
+394	 bzrxRewardsEarned = value .add(bzrxRewardsEarned);
+395	 value = vestedBalance .mul(stableCoinPerTokenUnpaid);
+396	 value /= 1e36;
+397	 stableCoinRewardsEarned = value .add(stableCoinRewardsEarned);
+398	 if (vestingBalance != 0 && bzrxPerTokenUnpaid != 0) {
+399	 value = vestingBalance .mul(bzrxPerTokenUnpaid);
+400	 value /= 1e36;
+401	 bzrxRewardsVesting = bzrxRewardsVesting .add(value);
+402	 lastSync = vestingLastSync[account];
+403	 multiplier = vestedBalanceForAmount( 1e36, 0, lastSync );
+404	 value = value .mul(multiplier);
+405	 value /= 1e36;
+406	 bzrxRewardsEarned = bzrxRewardsEarned .add(value);
+407	 }
+408	 if (vestingBalance != 0 && stableCoinPerTokenUnpaid != 0) {
+409	 value = vestingBalance .mul(stableCoinPerTokenUnpaid);
+410	 value /= 1e36;
+411	 stableCoinRewardsVesting = stableCoinRewardsVesting .add(value);
+412	 if (lastSync == 0) {
+413	 lastSync = vestingLastSync[account];
+414	 multiplier = vestedBalanceForAmount( 1e36, 0, lastSync );
+415	 }
+416	 value = value .mul(multiplier);
+417	 value /= 1e36;
+418	 stableCoinRewardsEarned = stableCoinRewardsEarned .add(value);
+419	 }
+420	 }
+421	 }
+422	 function _syncVesting( address account, uint256 bzrxRewardsEarned, uint256 stableCoinRewardsEarned, uint256 bzrxRewardsVesting, uint256 stableCoinRewardsVesting) internal view returns (uint256, uint256) {
+423	 uint256 lastVestingSync = vestingLastSync[account];
+424	 if (lastVestingSync != block.timestamp) {
+425	 uint256 rewardsVested;
+426	 uint256 multiplier = vestedBalanceForAmount( 1e36, lastVestingSync, block.timestamp );
+427	 if (bzrxRewardsVesting != 0) {
+428	 rewardsVested = bzrxRewardsVesting .mul(multiplier) .div(1e36);
+429	 bzrxRewardsEarned += rewardsVested;
+430	 }
+431	 if (stableCoinRewardsVesting != 0) {
+432	 rewardsVested = stableCoinRewardsVesting .mul(multiplier) .div(1e36);
+433	 stableCoinRewardsEarned += rewardsVested;
+434	 }
+435	 uint256 vBZRXBalance = _balancesPerToken[vBZRX][account];
+436	 if (vBZRXBalance != 0) {
+437	 rewardsVested = vBZRXBalance .mul(multiplier) .div(1e36);
+438	 bzrxRewardsEarned += rewardsVested;
+439	 }
+440	 }
+441	 return (bzrxRewardsEarned, stableCoinRewardsEarned);
+442	 }
+443	 function _addAltRewards(address token, uint256 amount) internal {
+444	 address poolAddress = token == SUSHI ? LPToken : token;
+445	 uint256 totalSupply = _totalSupplyPerToken[poolAddress];
+446	 require(totalSupply != 0, "no deposits");
+447	 altRewardsPerShare[token] = altRewardsPerShare[token] .add(amount.mul(1e12).div(totalSupply));
+448	 emit AddAltRewards(msg.sender, token, amount);
+449	 }
+450	 function getVariableWeights() public view returns (uint256 vBZRXWeight, uint256 iBZRXWeight, uint256 LPTokenWeight) {
+451	 uint256 totalVested = vestedBalanceForAmount( _startingVBZRXBalance, 0, block.timestamp );
+452	 vBZRXWeight = SafeMath.mul(_startingVBZRXBalance - totalVested, 1e18) .div(_startingVBZRXBalance);
+453	 iBZRXWeight = _calcIBZRXWeight();
+454	 uint256 lpTokenSupply = _totalSupplyPerToken[LPToken];
+455	 if (lpTokenSupply != 0) {
+456	 uint256 normalizedLPTokenSupply = initialCirculatingSupply + totalVested - _totalSupplyPerToken[BZRX];
+457	 LPTokenWeight = normalizedLPTokenSupply .mul(1e18) .div(lpTokenSupply);
+458	 }
+459	 }
+460	 function _calcIBZRXWeight() internal view returns (uint256) {
+461	 return IERC20(BZRX).balanceOf(iBZRX) .mul(1e50) .div(IERC20(iBZRX).totalSupply());
+462	 }
+463	 function balanceOfByAsset( address token, address account) public view returns (uint256 balance) {
+464	 balance = _balancesPerToken[token][account];
+465	 }
+466	 function balanceOfByAssets( address account) external view returns ( uint256 bzrxBalance, uint256 iBZRXBalance, uint256 vBZRXBalance, uint256 LPTokenBalance, uint256 LPTokenBalanceOld ) {
+467	 return ( balanceOfByAsset(BZRX, account), balanceOfByAsset(iBZRX, account), balanceOfByAsset(vBZRX, account), balanceOfByAsset(LPToken, account), balanceOfByAsset(LPTokenOld, account) );
+468	 }
+469	 function balanceOfStored( address account) public view returns (uint256 vestedBalance, uint256 vestingBalance) {
+470	 uint256 balance = _balancesPerToken[vBZRX][account];
+471	 if (balance != 0) {
+472	 vestingBalance = balance .mul(vBZRXWeightStored) .div(1e18);
+473	 }
+474	 vestedBalance = _balancesPerToken[BZRX][account];
+475	 balance = _balancesPerToken[iBZRX][account];
+476	 if (balance != 0) {
+477	 vestedBalance = balance .mul(iBZRXWeightStored) .div(1e50) .add(vestedBalance);
+478	 }
+479	 balance = _balancesPerToken[LPToken][account];
+480	 if (balance != 0) {
+481	 vestedBalance = balance .mul(LPTokenWeightStored) .div(1e18) .add(vestedBalance);
+482	 }
+483	 }
+484	 function totalSupplyByAsset( address token) external view returns (uint256) {
+485	 return _totalSupplyPerToken[token];
+486	 }
+487	 function vestedBalanceForAmount( uint256 tokenBalance, uint256 lastUpdate, uint256 vestingEndTime) public view returns (uint256 vested) {
+488	 vestingEndTime = vestingEndTime.min256(block.timestamp);
+489	 if (vestingEndTime > lastUpdate) {
+490	 if (vestingEndTime <= vestingCliffTimestamp || lastUpdate >= vestingEndTimestamp) {
+491	 return 0;
+492	 }
+493	 if (lastUpdate < vestingCliffTimestamp) {
+494	 lastUpdate = vestingCliffTimestamp;
+495	 }
+496	 if (vestingEndTime > vestingEndTimestamp) {
+497	 vestingEndTime = vestingEndTimestamp;
+498	 }
+499	 uint256 timeSinceClaim = vestingEndTime.sub(lastUpdate);
+500	 vested = tokenBalance.mul(timeSinceClaim) / vestingDurationAfterCliff;
+501	 }
+502	 }
+503	 function updateSettings( address settingsTarget, bytes memory callData) public onlyOwner returns(bytes memory) {
+504	 (bool result,) = settingsTarget.delegatecall(callData);
+505	 assembly {
+506	 let size := returndatasize let ptr := mload(0x40) returndatacopy(ptr, 0, size) if eq(result, 0) {
+507	 revert(ptr, size) }
+508	 return(ptr, size) }
+509	 }
+510	 function rescue(IERC20 _token, uint256 amount, address receiver) public onlyGuardian {
+511	 require(address(_token) == CRV || _token == curve3Crv, "Invalid token");
+512	 SafeERC20.safeTransfer(_token, receiver, amount);
+513	 }
+514	 }
+515	 pragma solidity ^0.5.0;
+516	 library SafeMath {
+517	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+518	 uint256 c = a + b;
+519	 require(c >= a, "SafeMath: addition overflow");
+520	 return c;
+521	 }
+522	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+523	 return sub(a, b, "SafeMath: subtraction overflow");
+524	 }
+525	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+526	 require(b <= a, errorMessage);
+527	 uint256 c = a - b;
+528	 return c;
+529	 }
+530	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+531	 if (a == 0) {
+532	 return 0;
+533	 }
+534	 uint256 c = a * b;
+535	 require(c / a == b, "SafeMath: multiplication overflow");
+536	 return c;
+537	 }
+538	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+539	 return div(a, b, "SafeMath: division by zero");
+540	 }
+541	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+542	 require(b > 0, errorMessage);
+543	 uint256 c = a / b;
+544	 return c;
+545	 }
+546	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+547	 return mod(a, b, "SafeMath: modulo by zero");
+548	 }
+549	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+550	 require(b != 0, errorMessage);
+551	 return a % b;
+552	 }
+553	 }
+554	 pragma solidity ^0.5.0;
+555	 library SafeERC20 {
+556	 using SafeMath for uint256;
+557	 using Address for address;
+558	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+559	 callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+560	 }
+561	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+562	 callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+563	 }
+564	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+565	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+566	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+567	 }
+568	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+569	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+570	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+571	 }
+572	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+573	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+574	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+575	 }
+576	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+577	 require(address(token).isContract(), "SafeERC20: call to non-contract");
+578	 (bool success, bytes memory returndata) = address(token).call(data);
+579	 require(success, "SafeERC20: low-level call failed");
+580	 if (returndata.length > 0) {
+581	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+582	 }
+583	 }
+584	 }
+585	 pragma solidity ^0.5.5;
+586	 library Address {
+587	 function isContract(address account) internal view returns (bool) {
+588	 bytes32 codehash;
+589	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+590	 assembly {
+591	 codehash := extcodehash(account) }
+592	 return (codehash != accountHash && codehash != 0x0);
+593	 }
+594	 function toPayable(address account) internal pure returns (address payable) {
+595	 return address(uint160(account));
+596	 }
+597	 function sendValue(address payable recipient, uint256 amount) internal {
+598	 require(address(this).balance >= amount, "Address: insufficient balance");
+599	 (bool success, ) = recipient.call.value(amount)("");
+600	 require(success, "Address: unable to send value, recipient may have reverted");
+601	 }
+602	 }
+603	 pragma solidity 0.5.17;
+604	 library EnumerableBytes32Set {
+605	 struct Bytes32Set {
+606	 mapping (bytes32 => uint256) index;
+607	 bytes32[] values;
+608	 }
+609	 function addAddress(Bytes32Set storage set, address addrvalue) internal returns (bool) {
+610	 bytes32 value;
+611	 assembly {
+612	 value := addrvalue }
+613	 return addBytes32(set, value);
+614	 }
+615	 function addBytes32(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+616	 if (!contains(set, value)){
+617	 set.index[value] = set.values.push(value);
+618	 return true;
+619	 }
+620	 else {
+621	 return false;
+622	 }
+623	 }
+624	 function removeAddress(Bytes32Set storage set, address addrvalue) internal returns (bool) {
+625	 bytes32 value;
+626	 assembly {
+627	 value := addrvalue }
+628	 return removeBytes32(set, value);
+629	 }
+630	 function removeBytes32(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+631	 if (contains(set, value)){
+632	 uint256 toDeleteIndex = set.index[value] - 1;
+633	 uint256 lastIndex = set.values.length - 1;
+634	 if (lastIndex != toDeleteIndex) {
+635	 bytes32 lastValue = set.values[lastIndex];
+636	 set.values[toDeleteIndex] = lastValue;
+637	 set.index[lastValue] = toDeleteIndex + 1;
+638	 }
+639	 delete set.index[value];
+640	 set.values.pop();
+641	 return true;
+642	 }
+643	 else {
+644	 return false;
+645	 }
+646	 }
+647	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+648	 return set.index[value] != 0;
+649	 }
+650	 function containsAddress(Bytes32Set storage set, address addrvalue) internal view returns (bool) {
+651	 bytes32 value;
+652	 assembly {
+653	 value := addrvalue }
+654	 return set.index[value] != 0;
+655	 }
+656	 function enumerate(Bytes32Set storage set, uint256 start, uint256 count) internal view returns (bytes32[] memory output) {
+657	 uint256 end = start + count;
+658	 require(end >= start, "addition overflow");
+659	 end = set.values.length < end ? set.values.length : end;
+660	 if (end == 0 || start >= end) {
+661	 return output;
+662	 }
+663	 output = new bytes32[](end-start);
+664	 for (uint256 i = start; i < end; i++) {
+665	 output[i-start] = set.values[i];
+666	 }
+667	 return output;
+668	 }
+669	 function length(Bytes32Set storage set) internal view returns (uint256) {
+670	 return set.values.length;
+671	 }
+672	 function get(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+673	 return set.values[index];
+674	 }
+675	 function getAddress(Bytes32Set storage set, uint256 index) internal view returns (address) {
+676	 bytes32 value = set.values[index];
+677	 address addrvalue;
+678	 assembly {
+679	 addrvalue := value }
+680	 return addrvalue;
+681	 }
+682	 }
+683	 pragma solidity >=0.5.0 <0.9.0;
+684	 interface IStaking {
+685	 struct ProposalState {
+686	 uint256 proposalTime;
+687	 uint256 iBZRXWeight;
+688	 uint256 lpBZRXBalance;
+689	 uint256 lpTotalSupply;
+690	 }
+691	 struct AltRewardsUserInfo {
+692	 uint256 rewardsPerShare;
+693	 uint256 pendingRewards;
+694	 }
+695	 function getCurrentFeeTokens() external view returns (address[] memory);
+696	 function maxUniswapDisagreement() external view returns (uint256);
+697	 function isPaused() external view returns (bool);
+698	 function fundsWallet() external view returns (address);
+699	 function callerRewardDivisor() external view returns (uint256);
+700	 function maxCurveDisagreement() external view returns (uint256);
+701	 function rewardPercent() external view returns (uint256);
+702	 function addRewards(uint256 newBZRX, uint256 newStableCoin) external;
+703	 function stake( address[] calldata tokens, uint256[] calldata values ) external;
+704	 function unstake( address[] calldata tokens, uint256[] calldata values ) external;
+705	 function earned(address account) external view returns ( uint256 bzrxRewardsEarned, uint256 stableCoinRewardsEarned, uint256 bzrxRewardsVesting, uint256 stableCoinRewardsVesting, uint256 sushiRewardsEarned );
+706	 function pendingCrvRewards(address account) external view returns ( uint256 bzrxRewardsEarned, uint256 stableCoinRewardsEarned, uint256 bzrxRewardsVesting, uint256 stableCoinRewardsVesting, uint256 sushiRewardsEarned );
+707	 function getVariableWeights() external view returns (uint256 vBZRXWeight, uint256 iBZRXWeight, uint256 LPTokenWeight);
+708	 function balanceOfByAsset( address token, address account) external view returns (uint256 balance);
+709	 function balanceOfByAssets( address account) external view returns ( uint256 bzrxBalance, uint256 iBZRXBalance, uint256 vBZRXBalance, uint256 LPTokenBalance, uint256 LPTokenBalanceOld );
+710	 function balanceOfStored( address account) external view returns (uint256 vestedBalance, uint256 vestingBalance);
+711	 function totalSupplyStored() external view returns (uint256 supply);
+712	 function vestedBalanceForAmount( uint256 tokenBalance, uint256 lastUpdate, uint256 vestingEndTime) external view returns (uint256 vested);
+713	 function votingBalanceOf( address account, uint256 proposalId) external view returns (uint256 totalVotes);
+714	 function votingBalanceOfNow( address account) external view returns (uint256 totalVotes);
+715	 function votingFromStakedBalanceOf( address account) external view returns (uint256 totalVotes);
+716	 function _setProposalVals( address account, uint256 proposalId) external returns (uint256);
+717	 function exit() external;
+718	 function addAltRewards(address token, uint256 amount) external;
+719	 function governor() external view returns(address);
+720	 }
+721	 pragma solidity 0.5.17;
+722	 interface IUniswapV2Router {
+723	 function swapExactTokensForTokens( uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts);
+724	 function swapTokensForExactTokens( uint256 amountOut, uint256 amountInMax, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts);
+725	 function getAmountsIn( uint256 amountOut, address[] calldata path) external view returns (uint256[] memory amounts);
+726	 function getAmountsOut( uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts);
+727	 }
+728	 pragma solidity >=0.5.0 <0.9.0;
+729	 interface ICurve3Pool {
+730	 function add_liquidity(uint256[3] calldata amounts, uint256 min_mint_amount) external;
+731	 function remove_liquidity_one_coin( uint256 token_amount, int128 i, uint256 min_amount ) external;
+732	 function get_virtual_price() external view returns (uint256);
+733	 }
+734	 pragma solidity >=0.5.0 <=0.8.4;
+735	 interface ICurveMinter {
+736	 function mint( address _addr ) external;
+737	 }
+738	 pragma solidity >=0.5.0 <=0.8.4;
+739	 interface ICurve3PoolGauge {
+740	 function balanceOf( address _addr ) external view returns (uint256);
+741	 function working_balances(address) external view returns (uint256);
+742	 function claimable_tokens(address) external returns (uint256);
+743	 function deposit( uint256 _amount ) external;
+744	 function deposit( uint256 _amount, address _addr ) external;
+745	 function withdraw( uint256 _amount ) external;
+746	 function set_approve_deposit( address _addr, bool can_deposit ) external;
+747	 }
+748	 pragma solidity >=0.5.0 <0.9.0;
+749	 interface IBZx {
+750	 function replaceContract(address target) external;
+751	 function setTargets( string[] calldata sigsArr, address[] calldata targetsArr ) external;
+752	 function getTarget(string calldata sig) external view returns (address);
+753	 function setPriceFeedContract(address newContract) external;
+754	 function setSwapsImplContract(address newContract) external;
+755	 function setLoanPool(address[] calldata pools, address[] calldata assets) external;
+756	 function setSupportedTokens( address[] calldata addrs, bool[] calldata toggles, bool withApprovals ) external;
+757	 function setLendingFeePercent(uint256 newValue) external;
+758	 function setTradingFeePercent(uint256 newValue) external;
+759	 function setBorrowingFeePercent(uint256 newValue) external;
+760	 function setAffiliateFeePercent(uint256 newValue) external;
+761	 function setLiquidationIncentivePercent( address[] calldata loanTokens, address[] calldata collateralTokens, uint256[] calldata amounts ) external;
+762	 function setMaxDisagreement(uint256 newAmount) external;
+763	 function setSourceBufferPercent(uint256 newAmount) external;
+764	 function setMaxSwapSize(uint256 newAmount) external;
+765	 function setFeesController(address newController) external;
+766	 function withdrawFees( address[] calldata tokens, address receiver, FeeClaimType feeType ) external returns (uint256[] memory amounts);
+767	 function withdrawProtocolToken(address receiver, uint256 amount) external returns (address rewardToken, uint256 withdrawAmount);
+768	 function depositProtocolToken(uint256 amount) external;
+769	 function grantRewards(address[] calldata users, uint256[] calldata amounts) external returns (uint256 totalAmount);
+770	 function queryFees(address[] calldata tokens, FeeClaimType feeType) external view returns (uint256[] memory amountsHeld, uint256[] memory amountsPaid);
+771	 function priceFeeds() external view returns (address);
+772	 function swapsImpl() external view returns (address);
+773	 function logicTargets(bytes4) external view returns (address);
+774	 function loans(bytes32) external view returns (Loan memory);
+775	 function loanParams(bytes32) external view returns (LoanParams memory);
+776	 function delegatedManagers(bytes32, address) external view returns (bool);
+777	 function lenderInterest(address, address) external view returns (LenderInterest memory);
+778	 function loanInterest(bytes32) external view returns (LoanInterest memory);
+779	 function feesController() external view returns (address);
+780	 function lendingFeePercent() external view returns (uint256);
+781	 function lendingFeeTokensHeld(address) external view returns (uint256);
+782	 function lendingFeeTokensPaid(address) external view returns (uint256);
+783	 function borrowingFeePercent() external view returns (uint256);
+784	 function borrowingFeeTokensHeld(address) external view returns (uint256);
+785	 function borrowingFeeTokensPaid(address) external view returns (uint256);
+786	 function protocolTokenHeld() external view returns (uint256);
+787	 function protocolTokenPaid() external view returns (uint256);
+788	 function affiliateFeePercent() external view returns (uint256);
+789	 function liquidationIncentivePercent(address, address) external view returns (uint256);
+790	 function loanPoolToUnderlying(address) external view returns (address);
+791	 function underlyingToLoanPool(address) external view returns (address);
+792	 function supportedTokens(address) external view returns (bool);
+793	 function maxDisagreement() external view returns (uint256);
+794	 function sourceBufferPercent() external view returns (uint256);
+795	 function maxSwapSize() external view returns (uint256);
+796	 function getLoanPoolsList(uint256 start, uint256 count) external view returns (address[] memory loanPoolsList);
+797	 function isLoanPool(address loanPool) external view returns (bool);
+798	 function setupLoanParams(LoanParams[] calldata loanParamsList) external returns (bytes32[] memory loanParamsIdList);
+799	 function disableLoanParams(bytes32[] calldata loanParamsIdList) external;
+800	 function getLoanParams(bytes32[] calldata loanParamsIdList) external view returns (LoanParams[] memory loanParamsList);
+801	 function getLoanParamsList( address owner, uint256 start, uint256 count ) external view returns (bytes32[] memory loanParamsList);
+802	 function getTotalPrincipal(address lender, address loanToken) external view returns (uint256);
+803	 function borrowOrTradeFromPool( bytes32 loanParamsId, bytes32 loanId, bool isTorqueLoan, uint256 initialMargin, address[4] calldata sentAddresses, uint256[5] calldata sentValues, bytes calldata loanDataBytes ) external payable returns (LoanOpenData memory);
+804	 function setDelegatedManager( bytes32 loanId, address delegated, bool toggle ) external;
+805	 function getEstimatedMarginExposure( address loanToken, address collateralToken, uint256 loanTokenSent, uint256 collateralTokenSent, uint256 interestRate, uint256 newPrincipal ) external view returns (uint256);
+806	 function getRequiredCollateral( address loanToken, address collateralToken, uint256 newPrincipal, uint256 marginAmount, bool isTorqueLoan ) external view returns (uint256 collateralAmountRequired);
+807	 function getRequiredCollateralByParams( bytes32 loanParamsId, uint256 newPrincipal ) external view returns (uint256 collateralAmountRequired);
+808	 function getBorrowAmount( address loanToken, address collateralToken, uint256 collateralTokenAmount, uint256 marginAmount, bool isTorqueLoan ) external view returns (uint256 borrowAmount);
+809	 function getBorrowAmountByParams( bytes32 loanParamsId, uint256 collateralTokenAmount ) external view returns (uint256 borrowAmount);
+810	 function liquidate( bytes32 loanId, address receiver, uint256 closeAmount ) external payable returns ( uint256 loanCloseAmount, uint256 seizedAmount, address seizedToken );
+811	 function rollover(bytes32 loanId, bytes calldata loanDataBytes) external returns (address rebateToken, uint256 gasRebate);
+812	 function closeWithDeposit( bytes32 loanId, address receiver, uint256 depositAmount ) external payable returns ( uint256 loanCloseAmount, uint256 withdrawAmount, address withdrawToken );
+813	 function closeWithSwap( bytes32 loanId, address receiver, uint256 swapAmount, bool returnTokenIsCollateral, bytes calldata loanDataBytes ) external returns ( uint256 loanCloseAmount, uint256 withdrawAmount, address withdrawToken );
+814	 function liquidateWithGasToken( bytes32 loanId, address receiver, address gasTokenUser, uint256 closeAmount ) external payable returns ( uint256 loanCloseAmount, uint256 seizedAmount, address seizedToken );
+815	 function rolloverWithGasToken( bytes32 loanId, address gasTokenUser, bytes calldata ) external returns (address rebateToken, uint256 gasRebate);
+816	 function closeWithDepositWithGasToken( bytes32 loanId, address receiver, address gasTokenUser, uint256 depositAmount ) external payable returns ( uint256 loanCloseAmount, uint256 withdrawAmount, address withdrawToken );
+817	 function closeWithSwapWithGasToken( bytes32 loanId, address receiver, address gasTokenUser, uint256 swapAmount, bool returnTokenIsCollateral, bytes calldata loanDataBytes ) external returns ( uint256 loanCloseAmount, uint256 withdrawAmount, address withdrawToken );
+818	 function depositCollateral(bytes32 loanId, uint256 depositAmount) external payable;
+819	 function withdrawCollateral( bytes32 loanId, address receiver, uint256 withdrawAmount ) external returns (uint256 actualWithdrawAmount);
+820	 function withdrawAccruedInterest(address loanToken) external;
+821	 function extendLoanDuration( bytes32 loanId, uint256 depositAmount, bool useCollateral, bytes calldata ) external payable returns (uint256 secondsExtended);
+822	 function reduceLoanDuration( bytes32 loanId, address receiver, uint256 withdrawAmount ) external returns (uint256 secondsReduced);
+823	 function setDepositAmount( bytes32 loanId, uint256 depositValueAsLoanToken, uint256 depositValueAsCollateralToken ) external;
+824	 function claimRewards(address receiver) external returns (uint256 claimAmount);
+825	 function transferLoan(bytes32 loanId, address newOwner) external;
+826	 function rewardsBalanceOf(address user) external view returns (uint256 rewardsBalance);
+827	 function getLenderInterestData(address lender, address loanToken) external view returns ( uint256 interestPaid, uint256 interestPaidDate, uint256 interestOwedPerDay, uint256 interestUnPaid, uint256 interestFeePercent, uint256 principalTotal );
+828	 function getLoanInterestData(bytes32 loanId) external view returns ( address loanToken, uint256 interestOwedPerDay, uint256 interestDepositTotal, uint256 interestDepositRemaining );
+829	 function getUserLoans( address user, uint256 start, uint256 count, LoanType loanType, bool isLender, bool unsafeOnly ) external view returns (LoanReturnData[] memory loansData);
+830	 function getUserLoansCount(address user, bool isLender) external view returns (uint256);
+831	 function getLoan(bytes32 loanId) external view returns (LoanReturnData memory loanData);
+832	 function getActiveLoans( uint256 start, uint256 count, bool unsafeOnly ) external view returns (LoanReturnData[] memory loansData);
+833	 function getActiveLoansAdvanced( uint256 start, uint256 count, bool unsafeOnly, bool isLiquidatable ) external view returns (LoanReturnData[] memory loansData);
+834	 function getActiveLoansCount() external view returns (uint256);
+835	 function swapExternal( address sourceToken, address destToken, address receiver, address returnToSender, uint256 sourceTokenAmount, uint256 requiredDestTokenAmount, bytes calldata swapData ) external payable returns ( uint256 destTokenAmountReceived, uint256 sourceTokenAmountUsed );
+836	 function swapExternalWithGasToken( address sourceToken, address destToken, address receiver, address returnToSender, address gasTokenUser, uint256 sourceTokenAmount, uint256 requiredDestTokenAmount, bytes calldata swapData ) external payable returns ( uint256 destTokenAmountReceived, uint256 sourceTokenAmountUsed );
+837	 function getSwapExpectedReturn( address sourceToken, address destToken, uint256 sourceTokenAmount ) external view returns (uint256);
+838	 function owner() external view returns (address);
+839	 function transferOwnership(address newOwner) external;
+840	 function _isPaused(bytes4 sig) external view returns (bool isPaused);
+841	 function toggleFunctionPause(bytes4 sig) external;
+842	 function toggleFunctionUnPause(bytes4 sig) external;
+843	 function changeGuardian(address newGuardian) external;
+844	 function getGuardian() external view returns (address guardian);
+845	 function cleanupLoans( address loanToken, bytes32[] calldata loanIds) external payable returns (uint256 totalPrincipalIn);
+846	 struct LoanParams {
+847	 bytes32 id;
+848	 bool active;
+849	 address owner;
+850	 address loanToken;
+851	 address collateralToken;
+852	 uint256 minInitialMargin;
+853	 uint256 maintenanceMargin;
+854	 uint256 maxLoanTerm;
+855	 }
+856	 struct LoanOpenData {
+857	 bytes32 loanId;
+858	 uint256 principal;
+859	 uint256 collateral;
+860	 }
+861	 enum LoanType {
+862	 All, Margin, NonMargin }
+863	 struct LoanReturnData {
+864	 bytes32 loanId;
+865	 uint96 endTimestamp;
+866	 address loanToken;
+867	 address collateralToken;
+868	 uint256 principal;
+869	 uint256 collateral;
+870	 uint256 interestOwedPerDay;
+871	 uint256 interestDepositRemaining;
+872	 uint256 startRate;
+873	 uint256 startMargin;
+874	 uint256 maintenanceMargin;
+875	 uint256 currentMargin;
+876	 uint256 maxLoanTerm;
+877	 uint256 maxLiquidatable;
+878	 uint256 maxSeizable;
+879	 uint256 depositValueAsLoanToken;
+880	 uint256 depositValueAsCollateralToken;
+881	 }
+882	 enum FeeClaimType {
+883	 All, Lending, Trading, Borrowing }
+884	 struct Loan {
+885	 bytes32 id;
+886	 bytes32 loanParamsId;
+887	 bytes32 pendingTradesId;
+888	 uint256 principal;
+889	 uint256 collateral;
+890	 uint256 startTimestamp;
+891	 uint256 endTimestamp;
+892	 uint256 startMargin;
+893	 uint256 startRate;
+894	 address borrower;
+895	 address lender;
+896	 bool active;
+897	 }
+898	 struct LenderInterest {
+899	 uint256 principalTotal;
+900	 uint256 owedPerDay;
+901	 uint256 owedTotal;
+902	 uint256 paidTotal;
+903	 uint256 updatedTimestamp;
+904	 }
+905	 struct LoanInterest {
+906	 uint256 owedPerDay;
+907	 uint256 depositTotal;
+908	 uint256 updatedTimestamp;
+909	 }
+910	 }
+911	 pragma solidity >=0.5.0 <0.6.0;
+912	 contract IVestingToken is IERC20 {
+913	 function claim() external;
+914	 function vestedBalanceOf( address _owner) external view returns (uint256);
+915	 function claimedBalanceOf( address _owner) external view returns (uint256);
+916	 }
+917	 pragma solidity >=0.5.0 <0.9.0;
+918	 interface IPriceFeeds {
+919	 function queryRate( address sourceToken, address destToken) external view returns (uint256 rate, uint256 precision);
+920	 function queryPrecision( address sourceToken, address destToken) external view returns (uint256 precision);
+921	 function queryReturn( address sourceToken, address destToken, uint256 sourceAmount) external view returns (uint256 destAmount);
+922	 function checkPriceDisagreement( address sourceToken, address destToken, uint256 sourceAmount, uint256 destAmount, uint256 maxSlippage) external view returns (uint256 sourceToDestSwapRate);
+923	 function amountInEth( address Token, uint256 amount) external view returns (uint256 ethAmount);
+924	 function getMaxDrawdown( address loanToken, address collateralToken, uint256 loanAmount, uint256 collateralAmount, uint256 maintenanceMargin) external view returns (uint256);
+925	 function getCurrentMarginAndCollateralSize( address loanToken, address collateralToken, uint256 loanAmount, uint256 collateralAmount) external view returns (uint256 currentMargin, uint256 collateralInEthAmount);
+926	 function getCurrentMargin( address loanToken, address collateralToken, uint256 loanAmount, uint256 collateralAmount) external view returns (uint256 currentMargin, uint256 collateralToLoanRate);
+927	 function shouldLiquidate( address loanToken, address collateralToken, uint256 loanAmount, uint256 collateralAmount, uint256 maintenanceMargin) external view returns (bool);
+928	 function getFastGasPrice( address payToken) external view returns (uint256);
+929	 }
+930	 pragma solidity >=0.5.0 <0.8.0;
+931	 library MathUtil {
+932	 function divCeil(uint256 a, uint256 b) internal pure returns (uint256) {
+933	 return divCeil(a, b, "SafeMath: division by zero");
+934	 }
+935	 function divCeil(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+936	 require(b != 0, errorMessage);
+937	 if (a == 0) {
+938	 return 0;
+939	 }
+940	 uint256 c = ((a - 1) / b) + 1;
+941	 return c;
+942	 }
+943	 function min256(uint256 _a, uint256 _b) internal pure returns (uint256) {
+944	 return _a < _b ? _a : _b;
+945	 }
+946	 }
+947	 pragma solidity >=0.5.0 <=0.8.4;
+948	 interface IMasterChefSushi {
+949	 struct UserInfo {
+950	 uint256 amount;
+951	 uint256 rewardDebt;
+952	 }
+953	 function deposit(uint256 _pid, uint256 _amount) external;
+954	 function withdraw(uint256 _pid, uint256 _amount) external;
+955	 function userInfo(uint256, address) external view returns (UserInfo memory);
+956	 function pendingSushi(uint256 _pid, address _user) external view returns (uint256);
+957	 function set(uint256 _pid, uint256 _allocPoint, bool _withUpdate) external;
+958	 function updatePool(uint256 _pid) external;
+959	 function owner() external view returns (address);
+960	 }

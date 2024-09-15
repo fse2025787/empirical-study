@@ -1,0 +1,271 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity >=0.6.0 <0.8.0;
+12	 abstract contract ReentrancyGuard {
+13	 uint256 private constant _NOT_ENTERED = 1;
+14	 uint256 private constant _ENTERED = 2;
+15	 uint256 private _status;
+16	 constructor () internal {
+17	 _status = _NOT_ENTERED;
+18	 }
+19	 modifier nonReentrant() {
+20	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+21	 _status = _ENTERED;
+22	 _;
+23	 _status = _NOT_ENTERED;
+24	 }
+25	 }
+26	 pragma solidity 0.7.6;
+27	 abstract contract Ownable is Context {
+28	 address public owner;
+29	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+30	 constructor () internal {
+31	 address msgSender = _msgSender();
+32	 owner = msgSender;
+33	 emit OwnershipTransferred(address(0), msgSender);
+34	 }
+35	 modifier onlyOwner() {
+36	 require(owner == _msgSender(), "Ownable: caller is not the owner");
+37	 _;
+38	 }
+39	 function renounceOwnership() public virtual onlyOwner {
+40	 emit OwnershipTransferred(owner, address(0));
+41	 owner = address(0);
+42	 }
+43	 function transferOwnership(address newOwner) public virtual onlyOwner {
+44	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+45	 emit OwnershipTransferred(owner, newOwner);
+46	 owner = newOwner;
+47	 }
+48	 }
+49	 pragma solidity 0.7.6;
+50	 contract Metadata {
+51	 struct TokenMetadata {
+52	 address routerAddress;
+53	 string imageUrl;
+54	 bool isAdded;
+55	 }
+56	 mapping(address => TokenMetadata) public tokenMeta;
+57	 function updateMeta( address _tokenAddress, address _routerAddress, string memory _imageUrl ) internal {
+58	 if (_tokenAddress != address(0)) {
+59	 tokenMeta[_tokenAddress] = TokenMetadata({
+60	 routerAddress: _routerAddress, imageUrl: _imageUrl, isAdded: true }
+61	 );
+62	 }
+63	 }
+64	 function updateMetaURL(address _tokenAddress, string memory _imageUrl) internal {
+65	 TokenMetadata storage meta = tokenMeta[_tokenAddress];
+66	 require(meta.isAdded, "Invalid token address");
+67	 meta.imageUrl = _imageUrl;
+68	 }
+69	 }
+70	 pragma solidity 0.7.6;
+71	 contract LiquidityLocker is ReentrancyGuard, Ownable, Metadata {
+72	 using SafeMath for uint256;
+73	 event ScheduleCreated( address indexed _beneficiary, uint256 indexed _amount );
+74	 event DrawDown(address indexed _beneficiary, uint256 indexed _amount);
+75	 event URLUpdated(address _tokenAddress, string _tokenUrl);
+76	 uint256 public start;
+77	 uint256 public end;
+78	 uint256 public cliffDuration;
+79	 mapping(address => uint256) public vestedAmount;
+80	 mapping(address => uint256) public totalDrawn;
+81	 mapping(address => uint256) public lastDrawnAt;
+82	 IERC20 public token;
+83	 uint256 public exchangeIdentifier;
+84	 bool public initialized;
+85	 constructor() {
+86	 initialized = true;
+87	 }
+88	 function init(bytes memory _encodedData) external {
+89	 require(initialized == false, "Contract already initialized");
+90	 (token, , start, end, cliffDuration, exchangeIdentifier, owner) = abi .decode( _encodedData, (IERC20, address, uint256, uint256, uint256, uint256, address) );
+91	 address token0;
+92	 address token1;
+93	 string memory token0URL;
+94	 string memory token1URL;
+95	 string memory inputTokenUrl;
+96	 address routerAddress;
+97	 ( , , , , , , , token0URL, token1URL, inputTokenUrl, routerAddress, token0, token1 ) = abi.decode( _encodedData, ( IERC20, address, uint256, uint256, uint256, uint256, address, string, string, string, address, address, address ) );
+98	 require( address(token) != address(0), "VestingContract::constructor: Invalid token" );
+99	 updateMeta(address(token), routerAddress, inputTokenUrl);
+100	 updateMeta(token0, address(0), token0URL);
+101	 updateMeta(token1, address(0), token1URL);
+102	 require( end >= start.add(cliffDuration), "VestingContract::constructor: Start must be before end" );
+103	 initialized = true;
+104	 }
+105	 function updateTokenURL(address _tokenAddress, string memory _tokenURL) external onlyOwner {
+106	 updateMetaURL(_tokenAddress, _tokenURL);
+107	 emit URLUpdated(_tokenAddress, _tokenURL);
+108	 }
+109	 function rescueFunds(IERC20 _token, address _recipient) external onlyOwner {
+110	 TransferHelper.safeTransfer( address(_token), _recipient, _token.balanceOf(address(this)) );
+111	 }
+112	 function createVestingSchedules( address[] calldata _beneficiaries, uint256[] calldata _amounts ) external onlyOwner returns (bool) {
+113	 require( _beneficiaries.length > 0, "VestingContract::createVestingSchedules: Empty Data" );
+114	 require( _beneficiaries.length == _amounts.length, "VestingContract::createVestingSchedules: Array lengths do not match" );
+115	 bool result = true;
+116	 for (uint256 i = 0; i < _beneficiaries.length; i++) {
+117	 address beneficiary = _beneficiaries[i];
+118	 uint256 amount = _amounts[i];
+119	 _createVestingSchedule(beneficiary, amount);
+120	 }
+121	 return result;
+122	 }
+123	 function createVestingSchedule(address _beneficiary, uint256 _amount) external onlyOwner returns (bool) {
+124	 return _createVestingSchedule(_beneficiary, _amount);
+125	 }
+126	 function drawDown() external nonReentrant returns (bool) {
+127	 return _drawDown(msg.sender);
+128	 }
+129	 function tokenBalance() external view returns (uint256) {
+130	 return token.balanceOf(address(this));
+131	 }
+132	 function vestingScheduleForBeneficiary(address _beneficiary) external view returns ( uint256 _amount, uint256 _totalDrawn, uint256 _lastDrawnAt, uint256 _remainingBalance ) {
+133	 return ( vestedAmount[_beneficiary], totalDrawn[_beneficiary], lastDrawnAt[_beneficiary], vestedAmount[_beneficiary].sub(totalDrawn[_beneficiary]) );
+134	 }
+135	 function availableDrawDownAmount(address _beneficiary) external view returns (uint256 _amount) {
+136	 return _availableDrawDownAmount(_beneficiary);
+137	 }
+138	 function remainingBalance(address _beneficiary) external view returns (uint256) {
+139	 return vestedAmount[_beneficiary].sub(totalDrawn[_beneficiary]);
+140	 }
+141	 function _createVestingSchedule(address _beneficiary, uint256 _amount) internal returns (bool) {
+142	 require( _beneficiary != address(0), "VestingContract::createVestingSchedule: Beneficiary cannot be empty" );
+143	 require( _amount > 0, "VestingContract::createVestingSchedule: Amount cannot be empty" );
+144	 require( vestedAmount[_beneficiary] == 0, "VestingContract::createVestingSchedule: Schedule already in flight" );
+145	 vestedAmount[_beneficiary] = _amount;
+146	 TransferHelper.safeTransferFrom( address(token), msg.sender, address(this), _amount );
+147	 emit ScheduleCreated(_beneficiary, _amount);
+148	 return true;
+149	 }
+150	 function _drawDown(address _beneficiary) internal returns (bool) {
+151	 require( vestedAmount[_beneficiary] > 0, "VestingContract::_drawDown: There is no schedule currently in flight" );
+152	 uint256 amount = _availableDrawDownAmount(_beneficiary);
+153	 require( amount > 0, "VestingContract::_drawDown: No allowance left to withdraw" );
+154	 lastDrawnAt[_beneficiary] = _getNow();
+155	 totalDrawn[_beneficiary] = totalDrawn[_beneficiary].add(amount);
+156	 require( totalDrawn[_beneficiary] <= vestedAmount[_beneficiary], "VestingContract::_drawDown: Safety Mechanism - Drawn exceeded Amount Vested" );
+157	 TransferHelper.safeTransfer(address(token), _beneficiary, amount);
+158	 emit DrawDown(_beneficiary, amount);
+159	 return true;
+160	 }
+161	 function _getNow() internal view returns (uint256) {
+162	 return block.timestamp;
+163	 }
+164	 function _availableDrawDownAmount(address _beneficiary) internal view returns (uint256 _amount) {
+165	 if (_getNow() <= start.add(cliffDuration)) {
+166	 return 0;
+167	 }
+168	 if (_getNow() > end) {
+169	 return vestedAmount[_beneficiary].sub(totalDrawn[_beneficiary]);
+170	 }
+171	 uint256 timeLastDrawnOrStart = lastDrawnAt[_beneficiary] == 0 ? start : lastDrawnAt[_beneficiary];
+172	 uint256 timePassedSinceLastInvocation = _getNow().sub( timeLastDrawnOrStart );
+173	 uint256 drawDownRate = (vestedAmount[_beneficiary].mul(1e18)).div( end.sub(start) );
+174	 uint256 amount = (timePassedSinceLastInvocation.mul(drawDownRate)).div( 1e18 );
+175	 return amount;
+176	 }
+177	 }
+178	 pragma solidity >=0.6.0 <0.8.0;
+179	 library SafeMath {
+180	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+181	 uint256 c = a + b;
+182	 if (c < a) return (false, 0);
+183	 return (true, c);
+184	 }
+185	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+186	 if (b > a) return (false, 0);
+187	 return (true, a - b);
+188	 }
+189	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+190	 if (a == 0) return (true, 0);
+191	 uint256 c = a * b;
+192	 if (c / a != b) return (false, 0);
+193	 return (true, c);
+194	 }
+195	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+196	 if (b == 0) return (false, 0);
+197	 return (true, a / b);
+198	 }
+199	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+200	 if (b == 0) return (false, 0);
+201	 return (true, a % b);
+202	 }
+203	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+204	 uint256 c = a + b;
+205	 require(c >= a, "SafeMath: addition overflow");
+206	 return c;
+207	 }
+208	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+209	 require(b <= a, "SafeMath: subtraction overflow");
+210	 return a - b;
+211	 }
+212	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+213	 if (a == 0) return 0;
+214	 uint256 c = a * b;
+215	 require(c / a == b, "SafeMath: multiplication overflow");
+216	 return c;
+217	 }
+218	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+219	 require(b > 0, "SafeMath: division by zero");
+220	 return a / b;
+221	 }
+222	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+223	 require(b > 0, "SafeMath: modulo by zero");
+224	 return a % b;
+225	 }
+226	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+227	 require(b <= a, errorMessage);
+228	 return a - b;
+229	 }
+230	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+231	 require(b > 0, errorMessage);
+232	 return a / b;
+233	 }
+234	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+235	 require(b > 0, errorMessage);
+236	 return a % b;
+237	 }
+238	 }
+239	 pragma solidity >=0.6.0 <0.8.0;
+240	 interface IERC20 {
+241	 function totalSupply() external view returns (uint256);
+242	 function balanceOf(address account) external view returns (uint256);
+243	 function transfer(address recipient, uint256 amount) external returns (bool);
+244	 function allowance(address owner, address spender) external view returns (uint256);
+245	 function approve(address spender, uint256 amount) external returns (bool);
+246	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+247	 event Transfer(address indexed from, address indexed to, uint256 value);
+248	 event Approval(address indexed owner, address indexed spender, uint256 value);
+249	 }
+250	 pragma solidity 0.7.6;
+251	 library TransferHelper {
+252	 function safeApprove(address token, address to, uint value) internal {
+253	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+254	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');
+255	 }
+256	 function safeTransfer(address token, address to, uint value) internal {
+257	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+258	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FAILED');
+259	 }
+260	 function safeTransferFrom(address token, address from, address to, uint value) internal {
+261	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+262	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');
+263	 }
+264	 function safeTransferETH(address to, uint256 value) internal {
+265	 (bool success, ) = to.call{
+266	 value: value}
+267	 (new bytes(0));
+268	 require(success, 'TransferHelper: ETH transfer failed');
+269	 }
+270	 }

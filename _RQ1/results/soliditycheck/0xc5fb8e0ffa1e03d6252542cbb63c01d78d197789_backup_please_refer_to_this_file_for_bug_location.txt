@@ -1,0 +1,353 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract OneEther {
+3	 event onOpenNewBet( uint256 indexed bID, address owner, uint256 check, uint256 unit, uint256 recordTime );
+4	 event onEditBet( uint256 indexed bID, address owner, uint256 check, uint256 unit, uint256 recordTime );
+5	 event onOpenNewRound( uint256 indexed bID, uint256 indexed rID, uint256 total, uint256 current, uint256 ethAmount, uint256 recordTime );
+6	 event RoundMask( uint256 rID, bytes32 hashmask );
+7	 event onReveal( uint256 indexed rID, address winner, uint256 reward, uint256 teamFee, uint256 scretNumber, uint256 randomNumber, uint256 recordTime );
+8	 event onBuyBet( uint256 indexed bID, uint256 indexed rID, address playerAddress, uint256 amount, uint256 key, uint256 playerCode, uint256 invator, uint256 recordTime );
+9	 event onRoundUpdate( uint256 indexed bID, uint256 indexed rID, uint256 totalKey, uint256 currentKey, uint256 lastUpdate );
+10	 event onRoundEnd( uint256 indexed bID, uint256 indexed rID, uint256 lastUpdate );
+11	 event onWithdraw ( uint256 indexed playerID, address indexed playerAddress, uint256 ethOut, uint256 recordTime );
+12	 event onRegistLink ( uint256 indexed playerID, address indexed playerAddress, uint256 recordTime );
+13	 event onBuyFailed ( uint256 indexed playerID, uint256 indexed rID, uint256 ethIn, uint256 recordTime );
+14	 using SafeMath for *;
+15	 address private owner = msg.sender;
+16	 address private admin = msg.sender;
+17	 bytes32 constant public name = "OneEther";
+18	 bytes32 constant public symbol = "OneEther";
+19	 uint256 constant MIN_BUY = 0.001 ether;
+20	 uint256 constant MAX_BUY = 30000 ether;
+21	 uint256 public linkPrice_ = 0.01 ether;
+22	 bool public activated_ = false;
+23	 uint256 private teamFee_ = 0;
+24	 uint256 public bID = 10;
+25	 uint256 public pID = 100;
+26	 uint256 public rID = 1000;
+27	 mapping (address => uint256) public pIDAddr_;
+28	 mapping(uint256 => OneEtherDatasets.BetInfo) public bIDBet_;
+29	 mapping(uint256 => OneEtherDatasets.stake[]) public betList_;
+30	 mapping(uint256 => OneEtherDatasets.BetState) public rIDBet_;
+31	 mapping(uint256 => OneEtherDatasets.Player) public pIDPlayer_;
+32	 mapping (uint256 => uint256) public bIDrID_;
+33	 uint256[] public bIDList_;
+34	 constructor()payable public{
+35	 }
+36	 modifier isbetActivated(uint256 _bID){
+37	 require(bIDBet_[_bID].bID != 0 && bIDBet_[_bID].isActivated == true,"cant find this bet");
+38	 _;
+39	 }
+40	 modifier isActivated() {
+41	 require(activated_ == true,"its not ready yet. ");
+42	 _;
+43	 }
+44	 modifier isAdmin(){
+45	 require(msg.sender == admin,"its can only be call by admin");
+46	 _;
+47	 }
+48	 modifier isWithinLimits(uint256 _eth){
+49	 require(_eth >= MIN_BUY,"too small");
+50	 require(_eth <= MAX_BUY,"too big");
+51	 _;
+52	 }
+53	 function activate()isAdmin()public{
+54	 require(activated_ == false,"the game is running");
+55	 activated_ = true;
+56	 }
+57	 function close() isAdmin() isActivated() public{
+58	 activated_ = false;
+59	 }
+60	 function setNewAdmin(address _addr) public {
+61	 require(msg.sender == owner);
+62	 admin = _addr;
+63	 }
+64	 function openNewBet(address _owner,uint256 _check,uint256 _unit) isAdmin() isActivated() public {
+65	 require((_check >= MIN_BUY) && (_check <= MAX_BUY),"out of range");
+66	 require((_unit * 2) <= _check,"unit of payment dennied");
+67	 bID++;
+68	 bIDBet_[bID].bID = bID;
+69	 uint256 _now = now;
+70	 if(_owner == address(0)) {
+71	 bIDBet_[bID].owner = admin;
+72	 }
+73	 else {
+74	 bIDBet_[bID].owner = _owner;
+75	 }
+76	 bIDBet_[bID].check = _check;
+77	 bIDBet_[bID].unit = _unit;
+78	 bIDBet_[bID].isActivated = true;
+79	 bIDList_.push(bID);
+80	 emit onOpenNewBet(bID,bIDBet_[bID].owner,_check,_unit,_now);
+81	 }
+82	 function openFirstRound(uint256 _bID,bytes32 _maskHash) public isbetActivated(_bID) {
+83	 address addr = msg.sender;
+84	 require(bIDBet_[bID].bID != 0,"cant find this bet");
+85	 require(bIDBet_[bID].owner == addr || bIDBet_[bID].owner == admin,"Permission denied");
+86	 require(bIDrID_[_bID] == 0,"One Bet can only open one round");
+87	 newRound(_bID,_maskHash);
+88	 }
+89	 function closeBet(uint256 _bID) public {
+90	 address addr = msg.sender;
+91	 require(bIDBet_[bID].bID != 0,"cant find this bet");
+92	 require(bIDBet_[bID].owner == addr || bIDBet_[bID].owner == admin,"Permission denied");
+93	 bIDBet_[_bID].isActivated = false;
+94	 }
+95	 function openBet(uint256 _bID) public {
+96	 address addr = msg.sender;
+97	 require(bIDBet_[bID].bID != 0,"cant find this bet");
+98	 require(bIDBet_[bID].owner == addr || bIDBet_[bID].owner == admin,"Permission denied");
+99	 require(bIDBet_[_bID].isActivated = false,"This bet is opening");
+100	 bIDBet_[_bID].isActivated = true;
+101	 }
+102	 function editBet(uint256 _bID,uint256 _check,uint256 _unit) public {
+103	 require((_check >= MIN_BUY) && (_check <= MAX_BUY),"out of range");
+104	 address addr = msg.sender;
+105	 require(bIDBet_[_bID].bID != 0,"cant find this bet");
+106	 require(bIDBet_[bID].owner == addr || bIDBet_[bID].owner == admin,"Permission denied");
+107	 bIDBet_[_bID].check = _check;
+108	 bIDBet_[_bID].unit = _unit;
+109	 emit onEditBet(bID,bIDBet_[bID].owner,_check,_unit,now);
+110	 }
+111	 function withdrawFee() isAdmin() public {
+112	 uint256 temp = teamFee_;
+113	 teamFee_ = 0;
+114	 msg.sender.transfer(temp);
+115	 }
+116	 function buySome(uint256 _rID,uint256 _key,uint256 _playerCode,uint256 _linkPID) public payable {
+117	 require(rIDBet_[_rID].rID != 0,"cant find this round");
+118	 uint256 _bID = rIDBet_[_rID].bID;
+119	 require(bIDBet_[_bID].bID != 0,"cant find this bet");
+120	 require(_key <= rIDBet_[_rID].total,"key must not beyond limit");
+121	 require(msg.value >= bIDBet_[_bID].unit,"too small for this bet");
+122	 require(bIDBet_[_bID].unit * _key == msg.value,"not enough payment");
+123	 require(_playerCode < 100000000000000,"your random number is too big");
+124	 uint256 _pID = managePID(_linkPID);
+125	 if(rIDBet_[_rID].current + _key <= rIDBet_[_rID].total) {
+126	 uint256 _value = manageLink(_pID,msg.value);
+127	 manageKey(_pID,_rID,_key);
+128	 rIDBet_[_rID].current = rIDBet_[_rID].current.add(_key);
+129	 rIDBet_[_rID].ethAmount = rIDBet_[_rID].ethAmount.add(_value);
+130	 rIDBet_[_rID].playerCode = rIDBet_[_rID].playerCode.add(_playerCode);
+131	 emit onBuyBet(_bID,_rID,pIDPlayer_[_pID].addr,_value,_key,_playerCode,pIDPlayer_[_pID].invator,now);
+132	 if(rIDBet_[_rID].current >= rIDBet_[_rID].total) {
+133	 emit onRoundEnd(_bID,_rID,now);
+134	 }
+135	 }
+136	 else{
+137	 pIDPlayer_[_pID].balance = pIDPlayer_[_pID].balance.add(msg.value);
+138	 emit onBuyFailed(_pID,_rID,msg.value,now);
+139	 }
+140	 }
+141	 function buyWithBalance(uint256 _rID,uint256 _key,uint256 _playerCode) public payable {
+142	 uint256 _pID = pIDAddr_[msg.sender];
+143	 require(_pID != 0,"player not founded in contract ");
+144	 require(rIDBet_[_rID].rID != 0,"cant find this round");
+145	 uint256 _bID = rIDBet_[_rID].bID;
+146	 require(bIDBet_[_bID].bID != 0,"cant find this bet");
+147	 uint256 _balance = pIDPlayer_[_pID].balance;
+148	 require(_key <= rIDBet_[_rID].total,"key must not beyond limit");
+149	 require(_balance >= bIDBet_[_bID].unit,"too small for this bet");
+150	 require(bIDBet_[_bID].unit * _key <= _balance,"not enough balance");
+151	 require(_playerCode < 100000000000000,"your random number is too big");
+152	 require(rIDBet_[_rID].current + _key <= rIDBet_[_rID].total,"you beyond key");
+153	 pIDPlayer_[_pID].balance = pIDPlayer_[_pID].balance.sub(bIDBet_[_bID].unit * _key);
+154	 uint256 _value = manageLink(_pID,bIDBet_[_bID].unit * _key);
+155	 manageKey(_pID,_rID,_key);
+156	 rIDBet_[_rID].current = rIDBet_[_rID].current.add(_key);
+157	 rIDBet_[_rID].ethAmount = rIDBet_[_rID].ethAmount.add(_value);
+158	 rIDBet_[_rID].playerCode = rIDBet_[_rID].playerCode.add(_playerCode);
+159	 emit onBuyBet(_bID,_rID,pIDPlayer_[_pID].addr,_value,_key,_playerCode,pIDPlayer_[_pID].invator,now);
+160	 if(rIDBet_[_rID].current == rIDBet_[_rID].total) {
+161	 emit onRoundEnd(_bID,_rID,now);
+162	 }
+163	 }
+164	 function buyLink() public payable {
+165	 require(msg.value >= linkPrice_,"not enough payment to buy link");
+166	 uint256 _pID = managePID(0);
+167	 pIDPlayer_[_pID].VIP = true;
+168	 teamFee_ = teamFee_.add(msg.value);
+169	 emit onRegistLink(_pID,pIDPlayer_[_pID].addr,now);
+170	 }
+171	 function reveal(uint256 _rID,uint256 _scretKey,bytes32 _maskHash) public {
+172	 require(rIDBet_[_rID].rID != 0,"cant find this round");
+173	 uint256 _bID = rIDBet_[_rID].bID;
+174	 require(bIDBet_[_bID].bID != 0,"cant find this bet");
+175	 require((bIDBet_[_bID].owner == msg.sender) || admin == msg.sender,"can only be revealed by admin or owner");
+176	 bytes32 check = keccak256(abi.encodePacked(_scretKey));
+177	 require(check == rIDBet_[_rID].maskHash,"scretKey is not match maskHash");
+178	 uint256 modulo = rIDBet_[_rID].total;
+179	 bytes32 random = keccak256(abi.encodePacked(check,rIDBet_[_rID].playerCode,(block.number + now)));
+180	 uint result = (uint(random) % modulo) + 1;
+181	 uint256 _winPID = 0;
+182	 for(uint i = 0; i < betList_[_rID].length; i++) {
+183	 if(result >= betList_[_rID][i].start && result <= betList_[_rID][i].end) {
+184	 _winPID = betList_[_rID][i].pID;
+185	 break;
+186	 }
+187	 }
+188	 uint256 reward = rIDBet_[_rID].ethAmount;
+189	 uint256 teamFee = (bIDBet_[_bID].check.mul(3))/100;
+190	 pIDPlayer_[_winPID].balance = pIDPlayer_[_winPID].balance.add(reward);
+191	 emit onReveal(_rID,pIDPlayer_[_winPID].addr,reward,teamFee,_scretKey,result,now);
+192	 delete rIDBet_[_rID];
+193	 delete betList_[_rID];
+194	 bIDrID_[_bID] = 0;
+195	 newRound(_bID,_maskHash);
+196	 }
+197	 function getPlayerByAddr(address _addr) public view returns(uint256,uint256,bool) {
+198	 uint256 _pID = pIDAddr_[_addr];
+199	 return (_pID,pIDPlayer_[_pID].balance,pIDPlayer_[_pID].VIP);
+200	 }
+201	 function getRoundInfoByID(uint256 _rID) public view returns(uint256,uint256,uint256,uint256,uint256,bytes32,uint256) {
+202	 return ( rIDBet_[_rID].rID, rIDBet_[_rID].bID, rIDBet_[_rID].total, rIDBet_[_rID].current, rIDBet_[_rID].ethAmount, rIDBet_[_rID].maskHash, rIDBet_[_rID].playerCode );
+203	 }
+204	 function getBetInfoByID(uint256 _bID) public view returns(uint256,uint256,address,uint256,uint256,bool) {
+205	 return ( bIDrID_[_bID], bIDBet_[_bID].bID, bIDBet_[_bID].owner, bIDBet_[_bID].check, bIDBet_[_bID].unit, bIDBet_[_bID].isActivated );
+206	 }
+207	 function getBIDList() public view returns(uint256[]) {
+208	 return(bIDList_);
+209	 }
+210	 function withdraw() isActivated() public {
+211	 uint256 _now = now;
+212	 uint256 _pID = pIDAddr_[msg.sender];
+213	 uint256 _eth;
+214	 if(_pID != 0) {
+215	 _eth = withdrawEarnings(_pID);
+216	 require(_eth > 0,"no any balance left");
+217	 pIDPlayer_[_pID].addr.transfer(_eth);
+218	 emit onWithdraw(_pID,msg.sender,_eth,_now);
+219	 }
+220	 }
+221	 function manageKey(uint256 _pID,uint256 _rID,uint256 _key) private {
+222	 uint256 _current = rIDBet_[_rID].current;
+223	 OneEtherDatasets.stake memory _playerstake = OneEtherDatasets.stake(0,0,0);
+224	 _playerstake.start = _current + 1;
+225	 _playerstake.end = _current + _key;
+226	 _playerstake.pID = _pID;
+227	 betList_[_rID].push(_playerstake);
+228	 }
+229	 function manageLink(uint256 _pID,uint256 _value) private returns(uint256) {
+230	 uint256 cut = (_value.mul(3))/100;
+231	 uint256 _value2 = _value.sub(cut);
+232	 uint256 _invator = pIDPlayer_[_pID].invator;
+233	 if(_invator != 0) {
+234	 uint256 cut2 = (cut.mul(60))/100;
+235	 cut = cut.sub(cut2);
+236	 pIDPlayer_[_invator].balance = pIDPlayer_[_invator].balance.add(cut2);
+237	 }
+238	 teamFee_ = teamFee_.add(cut);
+239	 return _value2;
+240	 }
+241	 function managePID(uint256 _linkPID) private returns (uint256) {
+242	 uint256 _pID = pIDAddr_[msg.sender];
+243	 if(_pID == 0) {
+244	 pID++;
+245	 pIDAddr_[msg.sender] = pID;
+246	 pIDPlayer_[pID].addr = msg.sender;
+247	 pIDPlayer_[pID].balance = 0;
+248	 pIDPlayer_[pID].VIP = false;
+249	 if(pIDPlayer_[_linkPID].addr != address(0) && pIDPlayer_[_linkPID].VIP == true) {
+250	 pIDPlayer_[pID].invator = _linkPID;
+251	 }
+252	 return (pID);
+253	 }
+254	 else{
+255	 return (_pID);
+256	 }
+257	 }
+258	 function newRound(uint256 _bID,bytes32 _maskHash) private {
+259	 uint256 _total = bIDBet_[_bID].check / bIDBet_[_bID].unit;
+260	 if(bIDBet_[_bID].isActivated == true) {
+261	 rID++;
+262	 rIDBet_[rID].rID = rID;
+263	 rIDBet_[rID].bID = _bID;
+264	 rIDBet_[rID].total = _total;
+265	 rIDBet_[rID].current = 0;
+266	 rIDBet_[rID].ethAmount = 0;
+267	 rIDBet_[rID].maskHash = _maskHash;
+268	 rIDBet_[rID].playerCode = 0;
+269	 bIDrID_[_bID] = rID;
+270	 emit onOpenNewRound(_bID,rID,rIDBet_[rID].total,rIDBet_[rID].current,rIDBet_[rID].ethAmount,now);
+271	 emit RoundMask(rID,_maskHash);
+272	 }
+273	 else {
+274	 bIDrID_[_bID] = 0;
+275	 }
+276	 }
+277	 function withdrawEarnings(uint256 _pID) private returns(uint256) {
+278	 uint256 _earnings = pIDPlayer_[_pID].balance;
+279	 if (_earnings > 0) {
+280	 pIDPlayer_[_pID].balance = 0;
+281	 }
+282	 return(_earnings);
+283	 }
+284	 }
+285	 library OneEtherDatasets {
+286	 struct BetInfo {
+287	 uint256 bID;
+288	 address owner;
+289	 uint256 check;
+290	 uint256 unit;
+291	 bool isActivated;
+292	 }
+293	 struct BetState{
+294	 uint256 rID;
+295	 uint256 bID;
+296	 uint256 total;
+297	 uint256 current;
+298	 uint256 ethAmount;
+299	 bytes32 maskHash;
+300	 uint256 playerCode;
+301	 }
+302	 struct Player{
+303	 address addr;
+304	 uint256 balance;
+305	 uint256 invator;
+306	 bool VIP;
+307	 }
+308	 struct stake{
+309	 uint256 start;
+310	 uint256 end;
+311	 uint256 pID;
+312	 }
+313	 }
+314	 library SafeMath {
+315	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+316	 if (a == 0) {
+317	 return 0;
+318	 }
+319	 c = a * b;
+320	 require(c / a == b, "SafeMath mul failed");
+321	 return c;
+322	 }
+323	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+324	 require(b <= a, "SafeMath sub failed");
+325	 return a - b;
+326	 }
+327	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+328	 c = a + b;
+329	 require(c >= a, "SafeMath add failed");
+330	 return c;
+331	 }
+332	 function sqrt(uint256 x) internal pure returns (uint256 y) {
+333	 uint256 z = ((add(x,1)) / 2);
+334	 y = x;
+335	 while (z < y) {
+336	 y = z;
+337	 z = ((add((x / z),z)) / 2);
+338	 }
+339	 }
+340	 function sq(uint256 x) internal pure returns (uint256) {
+341	 return (mul(x,x));
+342	 }
+343	 function pwr(uint256 x, uint256 y) internal pure returns (uint256) {
+344	 if (x==0) return (0);
+345	 else if (y==0) return (1);
+346	 else {
+347	 uint256 z = x;
+348	 for (uint256 i = 1; i < y; i++) z = mul(z,x);
+349	 return (z);
+350	 }
+351	 }
+352	 }

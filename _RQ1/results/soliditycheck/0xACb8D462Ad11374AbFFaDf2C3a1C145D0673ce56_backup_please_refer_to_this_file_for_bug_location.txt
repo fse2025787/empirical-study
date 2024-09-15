@@ -1,0 +1,919 @@
+row number 
+1	         pragma solidity ^0.6.0;
+2	 interface IERC165 {
+3	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+4	 }
+5	 pragma solidity 0.6.12;
+6	 contract OwnableData {
+7	 address public owner;
+8	 address public pendingOwner;
+9	 }
+10	 pragma solidity ^0.6.2;
+11	 interface IERC721 is IERC165 {
+12	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+13	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+14	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+15	 function balanceOf(address owner) external view returns (uint256 balance);
+16	 function ownerOf(uint256 tokenId) external view returns (address owner);
+17	 function safeTransferFrom(address from, address to, uint256 tokenId) external;
+18	 function transferFrom(address from, address to, uint256 tokenId) external;
+19	 function approve(address to, uint256 tokenId) external;
+20	 function getApproved(uint256 tokenId) external view returns (address operator);
+21	 function setApprovalForAll(address operator, bool _approved) external;
+22	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+23	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;
+24	 }
+25	 pragma solidity ^0.6.0;
+26	 interface IStrikeBoostFarm {
+27	 function move(uint256 pid, address sender, address recipient, uint256 amount) external;
+28	 }
+29	 contract Ownable is OwnableData {
+30	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+31	 constructor () internal {
+32	 owner = msg.sender;
+33	 emit OwnershipTransferred(address(0), msg.sender);
+34	 }
+35	 function transferOwnership(address newOwner, bool direct, bool renounce) public onlyOwner {
+36	 if (direct) {
+37	 require(newOwner != address(0) || renounce, "Ownable: zero address");
+38	 emit OwnershipTransferred(owner, newOwner);
+39	 owner = newOwner;
+40	 }
+41	 else {
+42	 pendingOwner = newOwner;
+43	 }
+44	 }
+45	 function claimOwnership() public {
+46	 address _pendingOwner = pendingOwner;
+47	 require(msg.sender == _pendingOwner, "Ownable: caller != pending owner");
+48	 emit OwnershipTransferred(owner, _pendingOwner);
+49	 owner = _pendingOwner;
+50	 pendingOwner = address(0);
+51	 }
+52	 modifier onlyOwner() {
+53	 require(msg.sender == owner, "Ownable: caller is not the owner");
+54	 _;
+55	 }
+56	 }
+57	 pragma solidity >=0.6.0 <0.8.0;
+58	 abstract contract ReentrancyGuard {
+59	 uint256 private constant _NOT_ENTERED = 1;
+60	 uint256 private constant _ENTERED = 2;
+61	 uint256 private _status;
+62	 constructor () internal {
+63	 _status = _NOT_ENTERED;
+64	 }
+65	 modifier nonReentrant() {
+66	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+67	 _status = _ENTERED;
+68	 _;
+69	 _status = _NOT_ENTERED;
+70	 }
+71	 }
+72	 pragma solidity ^0.6.2;
+73	 interface IERC721Enumerable is IERC721 {
+74	 function totalSupply() external view returns (uint256);
+75	 function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256 tokenId);
+76	 function tokenByIndex(uint256 index) external view returns (uint256);
+77	 }
+78	 pragma solidity 0.6.12;
+79	 contract StrikeBoostFarm is IStrikeBoostFarm, Ownable, ReentrancyGuard {
+80	 using SafeMath for uint256;
+81	 using SafeERC20 for IERC20;
+82	 struct UserInfo {
+83	 uint256 amount;
+84	 uint256 pendingAmount;
+85	 uint256 rewardDebt;
+86	 uint256 depositedDate;
+87	 uint256[] boostFactors;
+88	 uint256 boostRewardDebt;
+89	 uint256 boostedDate;
+90	 uint256 accBoostReward;
+91	 uint256 accBaseReward;
+92	 }
+93	 struct PoolInfo {
+94	 IERC20 lpToken;
+95	 uint256 allocPoint;
+96	 uint256 lastRewardBlock;
+97	 uint256 accRewardPerShare;
+98	 uint256 totalBoostCount;
+99	 uint256 rewardEligibleSupply;
+100	 }
+101	 address public strk;
+102	 address public vStrk;
+103	 address public rewardToken;
+104	 uint256 public bonusEndBlock;
+105	 uint256 public rewardPerBlock;
+106	 uint256 public constant BONUS_MULTIPLIER = 10;
+107	 uint256 public constant VSTRK_RATE = 10;
+108	 PoolInfo[] private poolInfo;
+109	 uint256 private lpSupplyOfStrikePool;
+110	 mapping(uint256 => mapping(address => UserInfo)) public userInfo;
+111	 uint256 public claimBaseRewardTime = 1 days;
+112	 uint256 public unstakableTime = 2 days;
+113	 uint256 public initialBoostMultiplier = 20;
+114	 uint256 public boostMultiplierFactor = 10;
+115	 uint16 public minimumValidBoostCount = 1;
+116	 uint16 public maximumBoostCount = 20;
+117	 IBoostToken public boostFactor;
+118	 mapping (uint256 => bool) public isBoosted;
+119	 uint256 public claimBoostRewardTime = 30 days;
+120	 mapping(uint256 => address[]) private boostedUsers;
+121	 uint256 public totalAllocPoint = 0;
+122	 uint256 public startBlock;
+123	 uint256 private accMulFactor = 1e12;
+124	 event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
+125	 event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
+126	 event EmergencyWithdraw( address indexed user, uint256 indexed pid, uint256 amount );
+127	 event ClaimBaseRewards( address indexed user, uint256 indexed pid, uint256 amount );
+128	 event ClaimBoostRewards( address indexed user, uint256 indexed pid, uint256 amount );
+129	 event Boost(address indexed user, uint256 indexed pid, uint256 tokenId);
+130	 event UnBoost(address indexed user, uint256 indexed pid, uint256 tokenId);
+131	 constructor( address _strk, address _rewardToken, address _vStrk, address _boost, uint256 _rewardPerBlock, uint256 _startBlock, uint256 _bonusEndBlock ) public {
+132	 strk = _strk;
+133	 rewardToken = _rewardToken;
+134	 vStrk = _vStrk;
+135	 boostFactor = IBoostToken(_boost);
+136	 rewardPerBlock = _rewardPerBlock;
+137	 bonusEndBlock = _bonusEndBlock;
+138	 startBlock = _startBlock;
+139	 }
+140	 function poolLength() external view returns (uint256) {
+141	 return poolInfo.length;
+142	 }
+143	 function getPoolInfo(uint _pid) external view returns ( IERC20 lpToken, uint256 lpSupply, uint256 allocPoint, uint256 lastRewardBlock, uint accRewardPerShare, uint totalBoostCount, uint256 rewardEligibleSupply ) {
+144	 PoolInfo storage pool = poolInfo[_pid];
+145	 uint256 amount;
+146	 if (strk == address(pool.lpToken)) {
+147	 amount = lpSupplyOfStrikePool;
+148	 }
+149	 else {
+150	 amount = pool.lpToken.balanceOf(address(this));
+151	 }
+152	 return ( pool.lpToken, amount, pool.allocPoint, pool.lastRewardBlock, pool.accRewardPerShare, pool.totalBoostCount, pool.rewardEligibleSupply );
+153	 }
+154	 function getUserInfo(uint256 _pid, address _user) external view returns( uint256 amount, uint256 pendingAmount, uint256 rewardDebt, uint256 depositedDate, uint256[] memory boostFactors, uint256 boostRewardDebt, uint256 boostedDate, uint256 accBoostReward, uint256 accBaseReward ) {
+155	 UserInfo storage user = userInfo[_pid][_user];
+156	 return ( user.amount, user.pendingAmount, user.rewardDebt, user.depositedDate, user.boostFactors, user.boostRewardDebt, user.boostedDate, user.accBoostReward, user.accBaseReward );
+157	 }
+158	 function add( uint256 _allocPoint, IERC20 _lpToken, bool _withUpdate ) public onlyOwner {
+159	 if (_withUpdate) {
+160	 massUpdatePools();
+161	 }
+162	 uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
+163	 totalAllocPoint = totalAllocPoint.add(_allocPoint);
+164	 poolInfo.push( PoolInfo({
+165	 lpToken: _lpToken, allocPoint: _allocPoint, lastRewardBlock: lastRewardBlock, accRewardPerShare: 0, totalBoostCount: 0, rewardEligibleSupply: 0 }
+166	 ) );
+167	 }
+168	 function set( uint256 _pid, uint256 _allocPoint, bool _withUpdate ) public onlyOwner {
+169	 if (_withUpdate) {
+170	 massUpdatePools();
+171	 }
+172	 totalAllocPoint = totalAllocPoint.sub(poolInfo[_pid].allocPoint).add( _allocPoint );
+173	 poolInfo[_pid].allocPoint = _allocPoint;
+174	 }
+175	 function setRewardPerBlock( uint256 speed ) public onlyOwner {
+176	 rewardPerBlock = speed;
+177	 }
+178	 function getMultiplier(uint256 _from, uint256 _to) public view returns (uint256) {
+179	 if (_to <= bonusEndBlock) {
+180	 return _to.sub(_from).mul(BONUS_MULTIPLIER);
+181	 }
+182	 else if (_from >= bonusEndBlock) {
+183	 return _to.sub(_from);
+184	 }
+185	 else {
+186	 return bonusEndBlock.sub(_from).mul(BONUS_MULTIPLIER).add( _to.sub(bonusEndBlock) );
+187	 }
+188	 }
+189	 function getValidBoostFactors(uint256 userBoostFactors) internal view returns (uint256) {
+190	 uint256 validBoostFactors = userBoostFactors > minimumValidBoostCount ? userBoostFactors - minimumValidBoostCount : 0;
+191	 return validBoostFactors;
+192	 }
+193	 function getBoostMultiplier(uint256 boostFactorCount) internal view returns (uint256) {
+194	 if (boostFactorCount <= minimumValidBoostCount) {
+195	 return 0;
+196	 }
+197	 uint256 initBoostCount = boostFactorCount.sub(minimumValidBoostCount + 1);
+198	 return initBoostCount.mul(boostMultiplierFactor).add(initialBoostMultiplier);
+199	 }
+200	 function pendingReward(uint256 _pid, address _user) external view returns (uint256) {
+201	 PoolInfo storage pool = poolInfo[_pid];
+202	 UserInfo storage user = userInfo[_pid][_user];
+203	 uint256 accRewardPerShare = pool.accRewardPerShare;
+204	 if (block.number > pool.lastRewardBlock && pool.rewardEligibleSupply > 0) {
+205	 uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
+206	 uint256 reward = multiplier.mul(rewardPerBlock).mul(pool.allocPoint).div( totalAllocPoint );
+207	 accRewardPerShare = accRewardPerShare.add( reward.mul(accMulFactor).div(pool.rewardEligibleSupply) );
+208	 }
+209	 uint256 boostMultiplier = getBoostMultiplier(user.boostFactors.length);
+210	 uint256 baseReward = user.amount.mul(accRewardPerShare).div(accMulFactor).sub(user.rewardDebt);
+211	 uint256 boostReward = boostMultiplier.mul(baseReward).div(100).add(user.accBoostReward).sub(user.boostRewardDebt);
+212	 return baseReward.add(boostReward).add(user.accBaseReward);
+213	 }
+214	 function pendingBaseReward(uint256 _pid, address _user) external view returns (uint256) {
+215	 PoolInfo storage pool = poolInfo[_pid];
+216	 UserInfo storage user = userInfo[_pid][_user];
+217	 uint256 accRewardPerShare = pool.accRewardPerShare;
+218	 if (block.number > pool.lastRewardBlock && pool.rewardEligibleSupply > 0) {
+219	 uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
+220	 uint256 reward = multiplier.mul(rewardPerBlock).mul(pool.allocPoint).div( totalAllocPoint );
+221	 accRewardPerShare = accRewardPerShare.add( reward.mul(accMulFactor).div(pool.rewardEligibleSupply) );
+222	 }
+223	 uint256 newReward = user.amount.mul(accRewardPerShare).div(accMulFactor).sub(user.rewardDebt);
+224	 return newReward.add(user.accBaseReward);
+225	 }
+226	 function massUpdatePools() public {
+227	 uint256 length = poolInfo.length;
+228	 for (uint256 pid = 0; pid < length; ++pid) {
+229	 updatePool(pid);
+230	 }
+231	 }
+232	 function updatePool(uint256 _pid) public {
+233	 PoolInfo storage pool = poolInfo[_pid];
+234	 if (block.number <= pool.lastRewardBlock) {
+235	 return;
+236	 }
+237	 if (pool.rewardEligibleSupply == 0) {
+238	 pool.lastRewardBlock = block.number;
+239	 return;
+240	 }
+241	 uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
+242	 uint256 reward = multiplier.mul(rewardPerBlock).mul(pool.allocPoint).div( totalAllocPoint );
+243	 pool.accRewardPerShare = pool.accRewardPerShare.add( reward.mul(accMulFactor).div(pool.rewardEligibleSupply) );
+244	 pool.lastRewardBlock = block.number;
+245	 }
+246	 function checkRewardEligible(uint boost) internal view returns(bool) {
+247	 if (boost >= minimumValidBoostCount) {
+248	 return true;
+249	 }
+250	 return false;
+251	 }
+252	 function checkRewardClaimEligible(uint depositedTime) internal view returns(bool) {
+253	 if (block.timestamp - depositedTime > claimBaseRewardTime) {
+254	 return true;
+255	 }
+256	 return false;
+257	 }
+258	 function _claimBaseRewards(uint256 _pid, address _user) internal {
+259	 PoolInfo storage pool = poolInfo[_pid];
+260	 UserInfo storage user = userInfo[_pid][_user];
+261	 bool claimEligible = checkRewardClaimEligible(user.depositedDate);
+262	 uint256 accRewardPerShare = pool.accRewardPerShare;
+263	 uint256 boostMultiplier = getBoostMultiplier(user.boostFactors.length);
+264	 uint256 baseReward = user.amount.mul(accRewardPerShare).div(accMulFactor).sub(user.rewardDebt);
+265	 uint256 boostReward = boostMultiplier.mul(baseReward).div(100);
+266	 user.accBoostReward = user.accBoostReward.add(boostReward);
+267	 uint256 rewards;
+268	 if (claimEligible && baseReward > 0) {
+269	 rewards = baseReward.add(user.accBaseReward);
+270	 safeRewardTransfer(_user, rewards);
+271	 user.accBaseReward = 0;
+272	 }
+273	 else {
+274	 rewards = 0;
+275	 user.accBaseReward = baseReward.add(user.accBaseReward);
+276	 }
+277	 emit ClaimBaseRewards(_user, _pid, rewards);
+278	 user.depositedDate = block.timestamp;
+279	 }
+280	 function claimBaseRewards(uint256 _pid) external {
+281	 PoolInfo storage pool = poolInfo[_pid];
+282	 UserInfo storage user = userInfo[_pid][msg.sender];
+283	 bool claimEligible = checkRewardClaimEligible(user.depositedDate);
+284	 require(claimEligible == true, "not claim eligible");
+285	 updatePool(_pid);
+286	 _claimBaseRewards(_pid, msg.sender);
+287	 user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+288	 }
+289	 function deposit(uint256 _pid, uint256 _amount) external {
+290	 PoolInfo storage pool = poolInfo[_pid];
+291	 UserInfo storage user = userInfo[_pid][msg.sender];
+292	 updatePool(_pid);
+293	 bool rewardEligible = checkRewardEligible(user.boostFactors.length);
+294	 _claimBaseRewards(_pid, msg.sender);
+295	 pool.lpToken.safeTransferFrom( address(msg.sender), address(this), _amount );
+296	 if (strk == address(pool.lpToken)) {
+297	 lpSupplyOfStrikePool = lpSupplyOfStrikePool.add(_amount);
+298	 }
+299	 if (rewardEligible) {
+300	 user.amount = user.amount.add(user.pendingAmount).add(_amount);
+301	 pool.rewardEligibleSupply = pool.rewardEligibleSupply.add(_amount);
+302	 user.pendingAmount = 0;
+303	 }
+304	 else {
+305	 user.pendingAmount = user.pendingAmount.add(_amount);
+306	 }
+307	 user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+308	 if (_amount > 0) {
+309	 IVStrike(vStrk).mint(msg.sender, _amount.mul(VSTRK_RATE));
+310	 }
+311	 user.boostedDate = block.timestamp;
+312	 emit Deposit(msg.sender, _pid, _amount);
+313	 }
+314	 function withdraw(uint256 _pid, uint256 _amount) external nonReentrant {
+315	 PoolInfo storage pool = poolInfo[_pid];
+316	 UserInfo storage user = userInfo[_pid][msg.sender];
+317	 require(user.amount + user.pendingAmount >= _amount, "withdraw: not good");
+318	 require(block.timestamp - user.depositedDate > unstakableTime, "not eligible to withdraw");
+319	 updatePool(_pid);
+320	 _claimBaseRewards(_pid, msg.sender);
+321	 if (user.amount > 0) {
+322	 user.amount = user.amount.sub(_amount);
+323	 pool.rewardEligibleSupply = pool.rewardEligibleSupply.sub(_amount);
+324	 }
+325	 else {
+326	 user.pendingAmount = user.pendingAmount.sub(_amount);
+327	 }
+328	 user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+329	 user.accBoostReward = 0;
+330	 user.boostRewardDebt = 0;
+331	 user.boostedDate = block.timestamp;
+332	 if (strk == address(pool.lpToken)) {
+333	 lpSupplyOfStrikePool = lpSupplyOfStrikePool.sub(_amount);
+334	 }
+335	 if (_amount > 0) {
+336	 IVStrike(vStrk).burnFrom(msg.sender, _amount.mul(VSTRK_RATE));
+337	 }
+338	 pool.lpToken.safeTransfer(address(msg.sender), _amount);
+339	 emit Withdraw(msg.sender, _pid, _amount);
+340	 }
+341	 function move(uint256 _pid, address _sender, address _recipient, uint256 _vstrikeAmount) override external nonReentrant {
+342	 require(vStrk == msg.sender);
+343	 PoolInfo storage pool = poolInfo[_pid];
+344	 UserInfo storage sender = userInfo[_pid][_sender];
+345	 UserInfo storage recipient = userInfo[_pid][_recipient];
+346	 uint256 amount = _vstrikeAmount.div(VSTRK_RATE);
+347	 require(sender.amount + sender.pendingAmount >= amount, "transfer exceeds amount");
+348	 require(block.timestamp - sender.depositedDate > unstakableTime, "not eligible to undtake");
+349	 updatePool(_pid);
+350	 _claimBaseRewards(_pid, _sender);
+351	 if (sender.amount > 0) {
+352	 sender.amount = sender.amount.sub(amount);
+353	 }
+354	 else {
+355	 sender.pendingAmount = sender.pendingAmount.sub(amount);
+356	 }
+357	 sender.rewardDebt = sender.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+358	 sender.boostedDate = block.timestamp;
+359	 sender.accBoostReward = 0;
+360	 sender.boostRewardDebt = 0;
+361	 bool claimEligible = checkRewardClaimEligible(recipient.depositedDate);
+362	 bool rewardEligible = checkRewardEligible(recipient.boostFactors.length);
+363	 if (claimEligible && rewardEligible) {
+364	 _claimBaseRewards(_pid, _recipient);
+365	 }
+366	 if (rewardEligible) {
+367	 recipient.amount = recipient.amount.add(recipient.pendingAmount).add(amount);
+368	 recipient.pendingAmount = 0;
+369	 }
+370	 else {
+371	 recipient.pendingAmount = recipient.pendingAmount.add(amount);
+372	 }
+373	 recipient.rewardDebt = recipient.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+374	 recipient.boostedDate = block.timestamp;
+375	 }
+376	 function emergencyWithdraw(uint256 _pid) external nonReentrant {
+377	 PoolInfo storage pool = poolInfo[_pid];
+378	 UserInfo storage user = userInfo[_pid][msg.sender];
+379	 pool.lpToken.safeTransfer(address(msg.sender), user.amount.add(user.pendingAmount));
+380	 emit EmergencyWithdraw(msg.sender, _pid, user.amount);
+381	 if (user.amount > 0) {
+382	 pool.rewardEligibleSupply = pool.rewardEligibleSupply.sub(user.amount);
+383	 }
+384	 user.amount = 0;
+385	 user.pendingAmount = 0;
+386	 user.rewardDebt = 0;
+387	 user.boostRewardDebt = 0;
+388	 user.accBoostReward = 0;
+389	 }
+390	 function safeRewardTransfer(address _to, uint256 _amount) internal {
+391	 uint256 availableBal = IERC20(rewardToken).balanceOf(address(this));
+392	 if (strk == rewardToken) {
+393	 if (availableBal > lpSupplyOfStrikePool) {
+394	 availableBal = availableBal - lpSupplyOfStrikePool;
+395	 }
+396	 else {
+397	 availableBal = 0;
+398	 }
+399	 }
+400	 if (_amount > availableBal) {
+401	 IERC20(rewardToken).transfer(_to, availableBal);
+402	 }
+403	 else {
+404	 IERC20(rewardToken).transfer(_to, _amount);
+405	 }
+406	 }
+407	 function setAccMulFactor(uint256 _factor) external onlyOwner {
+408	 accMulFactor = _factor;
+409	 }
+410	 function updateInitialBoostMultiplier(uint _initialBoostMultiplier) external onlyOwner {
+411	 initialBoostMultiplier = _initialBoostMultiplier;
+412	 }
+413	 function updatedBoostMultiplierFactor(uint _boostMultiplierFactor) external onlyOwner {
+414	 boostMultiplierFactor = _boostMultiplierFactor;
+415	 }
+416	 function updateRewardToken(address _reward) external onlyOwner {
+417	 rewardToken = _reward;
+418	 }
+419	 function updateClaimBaseRewardTime(uint256 _claimBaseRewardTime) external onlyOwner {
+420	 claimBaseRewardTime = _claimBaseRewardTime;
+421	 }
+422	 function updateUnstakableTime(uint256 _unstakableTime) external onlyOwner {
+423	 unstakableTime = _unstakableTime;
+424	 }
+425	 function getBoostedUserCount(uint256 _pid) external view returns(uint256) {
+426	 return boostedUsers[_pid].length;
+427	 }
+428	 function pendingBoostReward(uint256 _pid, address _user) external view returns (uint256) {
+429	 PoolInfo storage pool = poolInfo[_pid];
+430	 UserInfo storage user = userInfo[_pid][_user];
+431	 uint256 accRewardPerShare = pool.accRewardPerShare;
+432	 if (block.number > pool.lastRewardBlock && pool.rewardEligibleSupply > 0) {
+433	 uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
+434	 uint256 reward = multiplier.mul(rewardPerBlock).mul(pool.allocPoint).div( totalAllocPoint );
+435	 accRewardPerShare = accRewardPerShare.add( reward.mul(accMulFactor).div(pool.rewardEligibleSupply) );
+436	 }
+437	 uint256 boostMultiplier = getBoostMultiplier(user.boostFactors.length);
+438	 uint256 baseReward = user.amount.mul(accRewardPerShare).div(accMulFactor).sub(user.rewardDebt);
+439	 uint256 boostReward = boostMultiplier.mul(baseReward).div(100);
+440	 return user.accBoostReward.sub(user.boostRewardDebt).add(boostReward);
+441	 }
+442	 function getTotalPendingBoostRewards() external view returns (uint256) {
+443	 uint256 totalRewards;
+444	 for (uint i; i < poolInfo.length; i++) {
+445	 PoolInfo storage pool = poolInfo[i];
+446	 uint256 accRewardPerShare = pool.accRewardPerShare;
+447	 for (uint j; j < boostedUsers[i].length; j++) {
+448	 UserInfo storage user = userInfo[i][boostedUsers[i][j]];
+449	 if (block.number > pool.lastRewardBlock && pool.rewardEligibleSupply > 0) {
+450	 uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
+451	 uint256 reward = multiplier.mul(rewardPerBlock).mul(pool.allocPoint).div( totalAllocPoint );
+452	 accRewardPerShare = accRewardPerShare.add( reward.mul(accMulFactor).div(pool.rewardEligibleSupply) );
+453	 }
+454	 uint256 boostMultiplier = getBoostMultiplier(user.boostFactors.length);
+455	 uint256 baseReward = user.amount.mul(accRewardPerShare).div(accMulFactor).sub(user.rewardDebt);
+456	 uint256 initBoostReward = boostMultiplier.mul(baseReward).div(100);
+457	 uint256 boostReward = user.accBoostReward.sub(user.boostRewardDebt).add(initBoostReward);
+458	 totalRewards = totalRewards.add(boostReward);
+459	 }
+460	 }
+461	 return totalRewards;
+462	 }
+463	 function getClaimablePendingBoostRewards() external view returns (uint256) {
+464	 uint256 totalRewards;
+465	 for (uint i; i < poolInfo.length; i++) {
+466	 PoolInfo storage pool = poolInfo[i];
+467	 uint256 accRewardPerShare = pool.accRewardPerShare;
+468	 for (uint j; j < boostedUsers[i].length; j++) {
+469	 UserInfo storage user = userInfo[i][boostedUsers[i][j]];
+470	 if (block.timestamp - user.boostedDate >= claimBoostRewardTime) {
+471	 if (block.number > pool.lastRewardBlock && pool.rewardEligibleSupply > 0) {
+472	 uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
+473	 uint256 reward = multiplier.mul(rewardPerBlock).mul(pool.allocPoint).div( totalAllocPoint );
+474	 accRewardPerShare = accRewardPerShare.add( reward.mul(accMulFactor).div(pool.rewardEligibleSupply) );
+475	 }
+476	 uint256 boostMultiplier = getBoostMultiplier(user.boostFactors.length);
+477	 uint256 baseReward = user.amount.mul(accRewardPerShare).div(accMulFactor).sub(user.rewardDebt);
+478	 uint256 initBoostReward = boostMultiplier.mul(baseReward).div(100);
+479	 uint256 boostReward = user.accBoostReward.sub(user.boostRewardDebt).add(initBoostReward);
+480	 totalRewards = totalRewards.add(boostReward);
+481	 }
+482	 }
+483	 }
+484	 return totalRewards;
+485	 }
+486	 function claimBoostReward(uint256 _pid) external {
+487	 UserInfo storage user = userInfo[_pid][msg.sender];
+488	 require(block.timestamp - user.boostedDate > claimBoostRewardTime, "not eligible to claim");
+489	 PoolInfo storage pool = poolInfo[_pid];
+490	 updatePool(_pid);
+491	 _claimBaseRewards(_pid, msg.sender);
+492	 user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+493	 uint256 boostReward = user.accBoostReward.sub(user.boostRewardDebt);
+494	 safeRewardTransfer(msg.sender, boostReward);
+495	 emit ClaimBoostRewards(msg.sender, _pid, boostReward);
+496	 user.boostRewardDebt = user.boostRewardDebt.add(boostReward);
+497	 user.boostedDate = block.timestamp;
+498	 }
+499	 function _boost(uint256 _pid, uint _tokenId) internal {
+500	 require (isBoosted[_tokenId] == false, "already boosted");
+501	 boostFactor.transferFrom(msg.sender, address(this), _tokenId);
+502	 isBoosted[_tokenId] = true;
+503	 PoolInfo storage pool = poolInfo[_pid];
+504	 UserInfo storage user = userInfo[_pid][msg.sender];
+505	 if (user.pendingAmount > 0) {
+506	 user.amount = user.pendingAmount;
+507	 pool.rewardEligibleSupply = pool.rewardEligibleSupply.add(user.amount);
+508	 user.pendingAmount = 0;
+509	 }
+510	 user.boostFactors.push(_tokenId);
+511	 pool.totalBoostCount = pool.totalBoostCount + 1;
+512	 emit Boost(msg.sender, _pid, _tokenId);
+513	 }
+514	 function boost(uint256 _pid, uint _tokenId) external {
+515	 UserInfo storage user = userInfo[_pid][msg.sender];
+516	 require(user.amount + user.pendingAmount > 0, "no stake tokens");
+517	 require(user.boostFactors.length + 1 <= maximumBoostCount);
+518	 PoolInfo storage pool = poolInfo[_pid];
+519	 if (user.boostFactors.length == 0) {
+520	 boostedUsers[_pid].push(msg.sender);
+521	 }
+522	 updatePool(_pid);
+523	 _claimBaseRewards(_pid, msg.sender);
+524	 _boost(_pid, _tokenId);
+525	 user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+526	 user.boostedDate = block.timestamp;
+527	 }
+528	 function boostPartially(uint _pid, uint tokenAmount) external {
+529	 UserInfo storage user = userInfo[_pid][msg.sender];
+530	 require(user.amount + user.pendingAmount > 0, "no stake tokens");
+531	 require(user.boostFactors.length + tokenAmount <= maximumBoostCount);
+532	 PoolInfo storage pool = poolInfo[_pid];
+533	 if (user.boostFactors.length == 0) {
+534	 boostedUsers[_pid].push(msg.sender);
+535	 }
+536	 uint256 ownerTokenCount = boostFactor.balanceOf(msg.sender);
+537	 require(tokenAmount <= ownerTokenCount);
+538	 updatePool(_pid);
+539	 _claimBaseRewards(_pid, msg.sender);
+540	 for (uint i; i < tokenAmount; i++) {
+541	 uint _tokenId = boostFactor.tokenOfOwnerByIndex(msg.sender, 0);
+542	 _boost(_pid, _tokenId);
+543	 }
+544	 user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+545	 user.boostedDate = block.timestamp;
+546	 }
+547	 function boostAll(uint _pid, uint256[] memory _tokenIds) external {
+548	 uint256 tokenIdLength = _tokenIds.length;
+549	 require(tokenIdLength > 0, "");
+550	 UserInfo storage user = userInfo[_pid][msg.sender];
+551	 require(user.amount + user.pendingAmount > 0, "no stake tokens");
+552	 uint256 ownerTokenCount = boostFactor.balanceOf(msg.sender);
+553	 require(ownerTokenCount > 0, "");
+554	 PoolInfo storage pool = poolInfo[_pid];
+555	 if (user.boostFactors.length == 0) {
+556	 boostedUsers[_pid].push(msg.sender);
+557	 }
+558	 uint256 availableTokenAmount = maximumBoostCount - user.boostFactors.length;
+559	 require(availableTokenAmount > 0, "overflow maximum boosting");
+560	 if (tokenIdLength < availableTokenAmount) {
+561	 availableTokenAmount = tokenIdLength;
+562	 }
+563	 updatePool(_pid);
+564	 _claimBaseRewards(_pid, msg.sender);
+565	 for (uint256 i; i < availableTokenAmount; i++) {
+566	 _boost(_pid, _tokenIds[i]);
+567	 }
+568	 user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+569	 user.boostedDate = block.timestamp;
+570	 }
+571	 function _unBoost(uint _pid, uint _tokenId) internal {
+572	 require (isBoosted[_tokenId] == true);
+573	 boostFactor.transferFrom(address(this), msg.sender, _tokenId);
+574	 isBoosted[_tokenId] = false;
+575	 emit UnBoost(msg.sender, _pid, _tokenId);
+576	 }
+577	 function unBoost(uint _pid, uint _tokenId) external {
+578	 PoolInfo storage pool = poolInfo[_pid];
+579	 UserInfo storage user = userInfo[_pid][msg.sender];
+580	 require(user.boostFactors.length > 0, "");
+581	 uint factorLength = user.boostFactors.length;
+582	 updatePool(_pid);
+583	 _claimBaseRewards(_pid, msg.sender);
+584	 bool found = false;
+585	 uint dfId;
+586	 for (uint j; j < factorLength; j++) {
+587	 if (_tokenId == user.boostFactors[j]) {
+588	 dfId = j;
+589	 found = true;
+590	 break;
+591	 }
+592	 }
+593	 require(found, "not found boosted tokenId");
+594	 _unBoost(_pid, _tokenId);
+595	 user.boostFactors[dfId] = user.boostFactors[factorLength - 1];
+596	 user.boostFactors.pop();
+597	 pool.totalBoostCount = pool.totalBoostCount - 1;
+598	 user.boostedDate = block.timestamp;
+599	 user.accBoostReward = 0;
+600	 user.boostRewardDebt = 0;
+601	 uint boostedUserCount = boostedUsers[_pid].length;
+602	 if (user.boostFactors.length == 0) {
+603	 user.pendingAmount = user.amount;
+604	 user.amount = 0;
+605	 pool.rewardEligibleSupply = pool.rewardEligibleSupply.sub(user.pendingAmount);
+606	 uint index;
+607	 for (uint j; j < boostedUserCount; j++) {
+608	 if (address(msg.sender) == address(boostedUsers[_pid][j])) {
+609	 index = j;
+610	 break;
+611	 }
+612	 }
+613	 boostedUsers[_pid][index] = boostedUsers[_pid][boostedUserCount - 1];
+614	 boostedUsers[_pid].pop();
+615	 }
+616	 user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+617	 }
+618	 function unBoostPartially(uint _pid, uint tokenAmount) external {
+619	 PoolInfo storage pool = poolInfo[_pid];
+620	 UserInfo storage user = userInfo[_pid][msg.sender];
+621	 require(user.boostFactors.length > 0, "");
+622	 require(tokenAmount <= user.boostFactors.length, "");
+623	 uint factorLength = user.boostFactors.length;
+624	 updatePool(_pid);
+625	 _claimBaseRewards(_pid, msg.sender);
+626	 for (uint i = 1; i <= tokenAmount; i++) {
+627	 uint index = factorLength - i;
+628	 uint _tokenId = user.boostFactors[index];
+629	 _unBoost(_pid, _tokenId);
+630	 user.boostFactors.pop();
+631	 pool.totalBoostCount = pool.totalBoostCount - 1;
+632	 }
+633	 user.boostedDate = block.timestamp;
+634	 user.accBoostReward = 0;
+635	 user.boostRewardDebt = 0;
+636	 uint boostedUserCount = boostedUsers[_pid].length;
+637	 if (user.boostFactors.length == 0) {
+638	 user.pendingAmount = user.amount;
+639	 user.amount = 0;
+640	 pool.rewardEligibleSupply = pool.rewardEligibleSupply.sub(user.pendingAmount);
+641	 uint index;
+642	 for (uint j; j < boostedUserCount; j++) {
+643	 if (address(msg.sender) == address(boostedUsers[_pid][j])) {
+644	 index = j;
+645	 break;
+646	 }
+647	 }
+648	 boostedUsers[_pid][index] = boostedUsers[_pid][boostedUserCount - 1];
+649	 boostedUsers[_pid].pop();
+650	 }
+651	 user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+652	 }
+653	 function unBoostAll(uint _pid) external {
+654	 PoolInfo storage pool = poolInfo[_pid];
+655	 UserInfo storage user = userInfo[_pid][msg.sender];
+656	 uint factorLength = user.boostFactors.length;
+657	 require(factorLength > 0, "");
+658	 updatePool(_pid);
+659	 _claimBaseRewards(_pid, msg.sender);
+660	 for (uint i = 0; i < factorLength; i++) {
+661	 uint _tokenId = user.boostFactors[i];
+662	 _unBoost(_pid, _tokenId);
+663	 }
+664	 delete user.boostFactors;
+665	 pool.totalBoostCount = pool.totalBoostCount - factorLength;
+666	 user.boostedDate = block.timestamp;
+667	 user.accBoostReward = 0;
+668	 user.boostRewardDebt = 0;
+669	 uint boostedUserCount = boostedUsers[_pid].length;
+670	 if (user.boostFactors.length == 0) {
+671	 user.pendingAmount = user.amount;
+672	 user.amount = 0;
+673	 pool.rewardEligibleSupply = pool.rewardEligibleSupply.sub(user.pendingAmount);
+674	 uint index;
+675	 for (uint j; j < boostedUserCount; j++) {
+676	 if (address(msg.sender) == address(boostedUsers[_pid][j])) {
+677	 index = j;
+678	 break;
+679	 }
+680	 }
+681	 boostedUsers[_pid][index] = boostedUsers[_pid][boostedUserCount - 1];
+682	 boostedUsers[_pid].pop();
+683	 }
+684	 user.rewardDebt = user.amount.mul(pool.accRewardPerShare).div(accMulFactor);
+685	 }
+686	 function setBoostFactor( address _address ) external onlyOwner {
+687	 boostFactor = IBoostToken(_address);
+688	 }
+689	 function updateClaimBoostRewardTime(uint256 _claimBoostRewardTime) external onlyOwner {
+690	 claimBoostRewardTime = _claimBoostRewardTime;
+691	 }
+692	 function updateMinimumValidBoostCount(uint16 _count) external onlyOwner {
+693	 minimumValidBoostCount = _count;
+694	 }
+695	 function updateMaximumBoostCount(uint16 _count) external onlyOwner {
+696	 maximumBoostCount = _count;
+697	 }
+698	 }
+699	 pragma solidity ^0.6.2;
+700	 interface IBoostToken is IERC721Enumerable {
+701	 function updateStakeTime(uint tokenId, bool isStake) external;
+702	 function getTokenOwner(uint tokenId) external view returns(address);
+703	 }
+704	 pragma solidity ^0.6.0;
+705	 interface IERC721Receiver {
+706	 function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) external returns (bytes4);
+707	 }
+708	 pragma solidity ^0.6.0;
+709	 interface IERC20 {
+710	 function totalSupply() external view returns (uint256);
+711	 function balanceOf(address account) external view returns (uint256);
+712	 function transfer(address recipient, uint256 amount) external returns (bool);
+713	 function allowance(address owner, address spender) external view returns (uint256);
+714	 function approve(address spender, uint256 amount) external returns (bool);
+715	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+716	 event Transfer(address indexed from, address indexed to, uint256 value);
+717	 event Approval(address indexed owner, address indexed spender, uint256 value);
+718	 }
+719	 pragma solidity ^0.6.0;
+720	 interface IVStrike {
+721	 function mint(address recipient, uint256 amount) external returns (bool);
+722	 function burnFrom(address account, uint256 amount) external;
+723	 }
+724	 pragma solidity ^0.6.0;
+725	 library SafeERC20 {
+726	 using SafeMath for uint256;
+727	 using Address for address;
+728	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+729	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+730	 }
+731	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+732	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+733	 }
+734	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+735	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+736	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+737	 }
+738	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+739	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+740	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+741	 }
+742	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+743	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+744	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+745	 }
+746	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+747	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+748	 if (returndata.length > 0) {
+749	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+750	 }
+751	 }
+752	 }
+753	 pragma solidity ^0.6.0;
+754	 library EnumerableSet {
+755	 struct Set {
+756	 bytes32[] _values;
+757	 mapping (bytes32 => uint256) _indexes;
+758	 }
+759	 function _add(Set storage set, bytes32 value) private returns (bool) {
+760	 if (!_contains(set, value)) {
+761	 set._values.push(value);
+762	 set._indexes[value] = set._values.length;
+763	 return true;
+764	 }
+765	 else {
+766	 return false;
+767	 }
+768	 }
+769	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+770	 uint256 valueIndex = set._indexes[value];
+771	 if (valueIndex != 0) {
+772	 uint256 toDeleteIndex = valueIndex - 1;
+773	 uint256 lastIndex = set._values.length - 1;
+774	 bytes32 lastvalue = set._values[lastIndex];
+775	 set._values[toDeleteIndex] = lastvalue;
+776	 set._indexes[lastvalue] = toDeleteIndex + 1;
+777	 set._values.pop();
+778	 delete set._indexes[value];
+779	 return true;
+780	 }
+781	 else {
+782	 return false;
+783	 }
+784	 }
+785	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+786	 return set._indexes[value] != 0;
+787	 }
+788	 function _length(Set storage set) private view returns (uint256) {
+789	 return set._values.length;
+790	 }
+791	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+792	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+793	 return set._values[index];
+794	 }
+795	 struct AddressSet {
+796	 Set _inner;
+797	 }
+798	 function add(AddressSet storage set, address value) internal returns (bool) {
+799	 return _add(set._inner, bytes32(uint256(value)));
+800	 }
+801	 function remove(AddressSet storage set, address value) internal returns (bool) {
+802	 return _remove(set._inner, bytes32(uint256(value)));
+803	 }
+804	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+805	 return _contains(set._inner, bytes32(uint256(value)));
+806	 }
+807	 function length(AddressSet storage set) internal view returns (uint256) {
+808	 return _length(set._inner);
+809	 }
+810	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+811	 return address(uint256(_at(set._inner, index)));
+812	 }
+813	 struct UintSet {
+814	 Set _inner;
+815	 }
+816	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+817	 return _add(set._inner, bytes32(value));
+818	 }
+819	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+820	 return _remove(set._inner, bytes32(value));
+821	 }
+822	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+823	 return _contains(set._inner, bytes32(value));
+824	 }
+825	 function length(UintSet storage set) internal view returns (uint256) {
+826	 return _length(set._inner);
+827	 }
+828	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+829	 return uint256(_at(set._inner, index));
+830	 }
+831	 }
+832	 pragma solidity ^0.6.0;
+833	 library SafeMath {
+834	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+835	 uint256 c = a + b;
+836	 require(c >= a, "SafeMath: addition overflow");
+837	 return c;
+838	 }
+839	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+840	 return sub(a, b, "SafeMath: subtraction overflow");
+841	 }
+842	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+843	 require(b <= a, errorMessage);
+844	 uint256 c = a - b;
+845	 return c;
+846	 }
+847	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+848	 if (a == 0) {
+849	 return 0;
+850	 }
+851	 uint256 c = a * b;
+852	 require(c / a == b, "SafeMath: multiplication overflow");
+853	 return c;
+854	 }
+855	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+856	 return div(a, b, "SafeMath: division by zero");
+857	 }
+858	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+859	 require(b > 0, errorMessage);
+860	 uint256 c = a / b;
+861	 return c;
+862	 }
+863	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+864	 return mod(a, b, "SafeMath: modulo by zero");
+865	 }
+866	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+867	 require(b != 0, errorMessage);
+868	 return a % b;
+869	 }
+870	 }
+871	 pragma solidity ^0.6.2;
+872	 library Address {
+873	 function isContract(address account) internal view returns (bool) {
+874	 bytes32 codehash;
+875	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+876	 assembly {
+877	 codehash := extcodehash(account) }
+878	 return (codehash != accountHash && codehash != 0x0);
+879	 }
+880	 function sendValue(address payable recipient, uint256 amount) internal {
+881	 require(address(this).balance >= amount, "Address: insufficient balance");
+882	 (bool success, ) = recipient.call{
+883	 value: amount }
+884	 ("");
+885	 require(success, "Address: unable to send value, recipient may have reverted");
+886	 }
+887	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+888	 return functionCall(target, data, "Address: low-level call failed");
+889	 }
+890	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+891	 return _functionCallWithValue(target, data, 0, errorMessage);
+892	 }
+893	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+894	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+895	 }
+896	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+897	 require(address(this).balance >= value, "Address: insufficient balance for call");
+898	 return _functionCallWithValue(target, data, value, errorMessage);
+899	 }
+900	 function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+901	 require(isContract(target), "Address: call to non-contract");
+902	 (bool success, bytes memory returndata) = target.call{
+903	 value: weiValue }
+904	 (data);
+905	 if (success) {
+906	 return returndata;
+907	 }
+908	 else {
+909	 if (returndata.length > 0) {
+910	 assembly {
+911	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+912	 }
+913	 else {
+914	 revert(errorMessage);
+915	 }
+916	 }
+917	 }
+918	 }

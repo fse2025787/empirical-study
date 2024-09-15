@@ -1,0 +1,423 @@
+row number 
+1	   pragma solidity 0.4.24;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+4	 if (a == 0) {
+5	 return 0;
+6	 }
+7	 c = a * b;
+8	 assert(c / a == b);
+9	 return c;
+10	 }
+11	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+12	 return a / b;
+13	 }
+14	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+15	 assert(b <= a);
+16	 return a - b;
+17	 }
+18	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+19	 c = a + b;
+20	 assert(c >= a);
+21	 return c;
+22	 }
+23	 }
+24	 contract ERC20Basic {
+25	 uint256 public totalSupply;
+26	 function balanceOf(address who) public constant returns (uint256);
+27	 function transfer(address to, uint256 value) public returns (bool);
+28	 event Transfer(address indexed from, address indexed to, uint256 value);
+29	 }
+30	 contract ERC20 is ERC20Basic {
+31	 using SafeMath for uint256;
+32	 mapping(address => uint256) balances;
+33	 }
+34	 contract Ownable {
+35	 address public owner;
+36	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+37	 function Ownable() {
+38	 owner = msg.sender;
+39	 }
+40	 modifier onlyOwner() {
+41	 require(msg.sender == owner);
+42	 _;
+43	 }
+44	 function transferOwnership(address newOwner) onlyOwner public {
+45	 require(newOwner != address(0));
+46	 emit OwnershipTransferred(owner, newOwner);
+47	 owner = newOwner;
+48	 }
+49	 }
+50	 contract MintableToken is ERC20, Ownable {
+51	 event Mint(address indexed to, uint256 amount);
+52	 event MintFinished();
+53	 bool public mintingFinished = false;
+54	 modifier canMint() {
+55	 require(!mintingFinished);
+56	 _;
+57	 }
+58	 function mint(address _to, uint256 _amount) onlyOwner canMint public returns (bool) {
+59	 totalSupply = totalSupply.add(_amount);
+60	 balances[_to] = balances[_to].add(_amount);
+61	 emit Mint(_to, _amount);
+62	 emit Transfer(0x0, _to, _amount);
+63	 return true;
+64	 }
+65	 function finishMinting() onlyOwner public returns (bool) {
+66	 mintingFinished = true;
+67	 emit MintFinished();
+68	 return true;
+69	 }
+70	 }
+71	 contract Crowdsale {
+72	 using SafeMath for uint256;
+73	 ERC20 public token;
+74	 address public wallet;
+75	 uint256 public rate;
+76	 uint256 public weiRaised;
+77	 event TokenPurchase(address indexed purchaser, address indexed beneficiary, uint256 value, uint256 amount);
+78	 function Crowdsale(uint256 _rate, address _wallet, ERC20 _token) public {
+79	 require(_rate > 0);
+80	 require(_wallet != address(0));
+81	 require(_token != address(0));
+82	 rate = _rate;
+83	 wallet = _wallet;
+84	 token = _token;
+85	 }
+86	 function () external payable {
+87	 buyTokens(msg.sender);
+88	 }
+89	 function buyTokens(address _beneficiary) public payable {
+90	 uint256 weiAmount = msg.value;
+91	 _preValidatePurchase(_beneficiary, weiAmount);
+92	 uint256 tokens = _getTokenAmount(weiAmount);
+93	 weiRaised = weiRaised.add(weiAmount);
+94	 _processPurchase(_beneficiary, tokens);
+95	 emit TokenPurchase( msg.sender, _beneficiary, weiAmount, tokens );
+96	 _updatePurchasingState(_beneficiary, weiAmount);
+97	 _forwardFunds();
+98	 _postValidatePurchase(_beneficiary, weiAmount);
+99	 }
+100	 function _preValidatePurchase(address _beneficiary, uint256 _weiAmount) internal {
+101	 require(_beneficiary != address(0));
+102	 require(_weiAmount != 0);
+103	 }
+104	 function _postValidatePurchase(address _beneficiary, uint256 _weiAmount) internal {
+105	 }
+106	 function _deliverTokens(address _beneficiary, uint256 _tokenAmount) internal {
+107	 token.transfer(_beneficiary, _tokenAmount);
+108	 }
+109	 function _processPurchase(address _beneficiary, uint256 _tokenAmount) internal {
+110	 _deliverTokens(_beneficiary, _tokenAmount);
+111	 }
+112	 function _updatePurchasingState(address _beneficiary, uint256 _weiAmount) internal {
+113	 }
+114	 function _getTokenAmount(uint256 _weiAmount) internal view returns (uint256) {
+115	 return _weiAmount.mul(rate);
+116	 }
+117	 function _forwardFunds() internal {
+118	 wallet.transfer(msg.value);
+119	 }
+120	 }
+121	 contract TimedCrowdsale is Crowdsale {
+122	 using SafeMath for uint256;
+123	 uint256 public openingTime;
+124	 uint256 public closingTime;
+125	 modifier onlyWhileOpen {
+126	 require(block.timestamp >= openingTime && block.timestamp <= closingTime);
+127	 _;
+128	 }
+129	 function TimedCrowdsale(uint256 _openingTime, uint256 _closingTime) public {
+130	 require(_openingTime >= block.timestamp);
+131	 require(_closingTime >= _openingTime);
+132	 openingTime = _openingTime;
+133	 closingTime = _closingTime;
+134	 }
+135	 function hasClosed() public view returns (bool) {
+136	 return block.timestamp > closingTime;
+137	 }
+138	 function _preValidatePurchase(address _beneficiary, uint256 _weiAmount) internal onlyWhileOpen {
+139	 super._preValidatePurchase(_beneficiary, _weiAmount);
+140	 }
+141	 }
+142	 contract MintedCrowdsale is Crowdsale {
+143	 function _deliverTokens(address _beneficiary, uint256 _tokenAmount) internal {
+144	 require(MintableToken(token).mint(_beneficiary, _tokenAmount));
+145	 }
+146	 }
+147	 contract EscrowAccountCrowdsale is TimedCrowdsale, Ownable {
+148	 using SafeMath for uint256;
+149	 EscrowVault public vault;
+150	 function EscrowAccountCrowdsale() public {
+151	 vault = new EscrowVault(wallet);
+152	 }
+153	 function returnInvestoramount(address _beneficiary, uint256 _percentage) internal onlyOwner {
+154	 vault.refund(_beneficiary,_percentage);
+155	 }
+156	 function afterWhtelisted(address _beneficiary) internal onlyOwner{
+157	 vault.closeAfterWhitelisted(_beneficiary);
+158	 }
+159	 function _forwardFunds() internal {
+160	 vault.deposit.value(msg.value)(msg.sender);
+161	 }
+162	 }
+163	 contract EscrowVault is Ownable {
+164	 using SafeMath for uint256;
+165	 mapping (address => uint256) public deposited;
+166	 address public wallet;
+167	 event Closed();
+168	 event Refunded(address indexed beneficiary, uint256 weiAmount);
+169	 function EscrowVault(address _wallet) public {
+170	 require(_wallet != address(0));
+171	 wallet = _wallet;
+172	 }
+173	 function deposit(address investor) onlyOwner payable {
+174	 deposited[investor] = deposited[investor].add(msg.value);
+175	 }
+176	 function closeAfterWhitelisted(address _beneficiary) onlyOwner public {
+177	 uint256 depositedValue = deposited[_beneficiary];
+178	 deposited[_beneficiary] = 0;
+179	 wallet.transfer(depositedValue);
+180	 }
+181	 function refund(address investor, uint256 _percentage)onlyOwner {
+182	 uint256 depositedValue = deposited[investor];
+183	 depositedValue=depositedValue.sub(_percentage);
+184	 investor.transfer(depositedValue);
+185	 wallet.transfer(_percentage);
+186	 emit Refunded(investor, depositedValue);
+187	 deposited[investor] = 0;
+188	 }
+189	 }
+190	 contract PostDeliveryCrowdsale is TimedCrowdsale {
+191	 using SafeMath for uint256;
+192	 mapping(address => uint256) public balances;
+193	 function withdrawTokens() public {
+194	 require(hasClosed());
+195	 uint256 amount = balances[msg.sender];
+196	 require(amount > 0);
+197	 balances[msg.sender] = 0;
+198	 _deliverTokens(msg.sender, amount);
+199	 }
+200	 function failedWhitelist(address _beneficiary) internal {
+201	 require(_beneficiary != address(0));
+202	 uint256 amount = balances[_beneficiary];
+203	 balances[_beneficiary] = 0;
+204	 }
+205	 function getInvestorDepositAmount(address _investor) public constant returns(uint256 paid){
+206	 return balances[_investor];
+207	 }
+208	 function _processPurchase(address _beneficiary, uint256 _tokenAmount) internal {
+209	 balances[_beneficiary] = balances[_beneficiary].add(_tokenAmount);
+210	 }
+211	 }
+212	 contract CryptoAssetCrowdsale is TimedCrowdsale, MintedCrowdsale,EscrowAccountCrowdsale,PostDeliveryCrowdsale {
+213	 enum Stage {
+214	 PROCESS1_FAILED, PROCESS1_SUCCESS,PROCESS2_FAILED, PROCESS2_SUCCESS,PROCESS3_FAILED, PROCESS3_SUCCESS}
+215	 enum Phase {
+216	 PHASE1, PHASE2,PHASE3}
+217	 Phase public phase;
+218	 struct whitelisted{
+219	 Stage stage;
+220	 }
+221	 uint256 public adminCharge_p1=0.010 ether;
+222	 uint256 public adminCharge_p2=0.13 ether;
+223	 uint256 public adminCharge_p3=0.14 ether;
+224	 uint256 public cap=750 ether;
+225	 uint256 public goal=4500 ether;
+226	 uint256 public minContribAmount = 0.1 ether;
+227	 mapping(address => whitelisted) public whitelist;
+228	 mapping (address => uint256) public investedAmountOf;
+229	 uint256 public investorCount;
+230	 uint256 public constant DECIMALFACTOR = 10**uint256(18);
+231	 event updateRate(uint256 tokenRate, uint256 time);
+232	 function CryptoAssetCrowdsale(uint256 _starttime, uint256 _endTime, uint256 _rate, address _wallet,ERC20 _token) TimedCrowdsale(_starttime,_endTime)Crowdsale(_rate, _wallet,_token) {
+233	 phase = Phase.PHASE1;
+234	 }
+235	 function () external payable {
+236	 buyTokens(msg.sender);
+237	 }
+238	 function buyTokens(address _beneficiary) public payable onlyWhileOpen{
+239	 require(_beneficiary != address(0));
+240	 require(validPurchase());
+241	 uint256 weiAmount = msg.value;
+242	 uint256 tokens = weiAmount.mul(rate);
+243	 uint256 volumebasedBonus=0;
+244	 if(phase == Phase.PHASE1){
+245	 volumebasedBonus = tokens.mul(getTokenVolumebasedBonusRateForPhase1(tokens)).div(100);
+246	 }
+247	 else if(phase == Phase.PHASE2){
+248	 volumebasedBonus = tokens.mul(getTokenVolumebasedBonusRateForPhase2(tokens)).div(100);
+249	 }
+250	 else{
+251	 volumebasedBonus = tokens.mul(getTokenVolumebasedBonusRateForPhase3(tokens)).div(100);
+252	 }
+253	 tokens=tokens.add(volumebasedBonus);
+254	 _preValidatePurchase( _beneficiary, weiAmount);
+255	 weiRaised = weiRaised.add(weiAmount);
+256	 _processPurchase(_beneficiary, tokens);
+257	 emit TokenPurchase(msg.sender, _beneficiary, weiAmount, tokens);
+258	 _forwardFunds();
+259	 if(investedAmountOf[msg.sender] == 0) {
+260	 investorCount++;
+261	 }
+262	 investedAmountOf[msg.sender] = investedAmountOf[msg.sender].add(weiAmount);
+263	 }
+264	 function tokensaleToOtherCoinUser(address beneficiary, uint256 weiAmount) public onlyOwner onlyWhileOpen {
+265	 require(beneficiary != address(0) && weiAmount > 0);
+266	 uint256 tokens = weiAmount.mul(rate);
+267	 uint256 volumebasedBonus=0;
+268	 if(phase == Phase.PHASE1){
+269	 volumebasedBonus = tokens.mul(getTokenVolumebasedBonusRateForPhase1(tokens)).div(100);
+270	 }
+271	 else if(phase == Phase.PHASE2){
+272	 volumebasedBonus = tokens.mul(getTokenVolumebasedBonusRateForPhase2(tokens)).div(100);
+273	 }
+274	 else{
+275	 volumebasedBonus = tokens.mul(getTokenVolumebasedBonusRateForPhase3(tokens)).div(100);
+276	 }
+277	 tokens=tokens.add(volumebasedBonus);
+278	 weiRaised = weiRaised.add(weiAmount);
+279	 _processPurchase(beneficiary, tokens);
+280	 emit TokenPurchase(msg.sender, beneficiary, weiAmount, tokens);
+281	 }
+282	 function validPurchase() internal constant returns (bool) {
+283	 bool minContribution = minContribAmount <= msg.value;
+284	 return minContribution;
+285	 }
+286	 function getTokenVolumebasedBonusRateForPhase1(uint256 value) internal constant returns (uint256) {
+287	 uint256 bonusRate = 0;
+288	 uint256 valume = value.div(DECIMALFACTOR);
+289	 if (valume <= 50000 && valume >= 149999) {
+290	 bonusRate = 30;
+291	 }
+292	 else if (valume <= 150000 && valume >= 299999) {
+293	 bonusRate = 35;
+294	 }
+295	 else if (valume <= 300000 && valume >= 500000) {
+296	 bonusRate = 40;
+297	 }
+298	 else{
+299	 bonusRate = 25;
+300	 }
+301	 return bonusRate;
+302	 }
+303	 function getTokenVolumebasedBonusRateForPhase2(uint256 value) internal constant returns (uint256) {
+304	 uint256 bonusRate = 0;
+305	 uint valume = value.div(DECIMALFACTOR);
+306	 if (valume <= 50000 && valume >= 149999) {
+307	 bonusRate = 25;
+308	 }
+309	 else if (valume <= 150000 && valume >= 299999) {
+310	 bonusRate = 30;
+311	 }
+312	 else if (valume <= 300000 && valume >= 500000) {
+313	 bonusRate = 35;
+314	 }
+315	 else{
+316	 bonusRate = 20;
+317	 }
+318	 return bonusRate;
+319	 }
+320	 function getTokenVolumebasedBonusRateForPhase3(uint256 value) internal constant returns (uint256) {
+321	 uint256 bonusRate = 0;
+322	 uint valume = value.div(DECIMALFACTOR);
+323	 if (valume <= 50000 && valume >= 149999) {
+324	 bonusRate = 20;
+325	 }
+326	 else if (valume <= 150000 && valume >= 299999) {
+327	 bonusRate = 25;
+328	 }
+329	 else if (valume <= 300000 && valume >= 500000) {
+330	 bonusRate = 30;
+331	 }
+332	 else{
+333	 bonusRate = 15;
+334	 }
+335	 return bonusRate;
+336	 }
+337	 function startPhase2(uint256 _startTime) public onlyOwner {
+338	 require(_startTime>0);
+339	 phase = Phase.PHASE2;
+340	 openingTime=_startTime;
+341	 }
+342	 function startPhase3(uint256 _startTime) public onlyOwner {
+343	 require(0> _startTime);
+344	 phase = Phase.PHASE3;
+345	 openingTime=_startTime;
+346	 }
+347	 modifier isWhitelisted(address _beneficiary) {
+348	 require(whitelist[_beneficiary].stage==Stage.PROCESS3_SUCCESS);
+349	 _;
+350	 }
+351	 function addToWhitelist(address _beneficiary,uint256 _stage) external onlyOwner {
+352	 require(_beneficiary != address(0));
+353	 require(_stage>0);
+354	 if(_stage==1){
+355	 whitelist[_beneficiary].stage=Stage.PROCESS1_FAILED;
+356	 returnInvestoramount(_beneficiary,adminCharge_p1);
+357	 failedWhitelist(_beneficiary);
+358	 investedAmountOf[_beneficiary]=0;
+359	 }
+360	 else if(_stage==2){
+361	 whitelist[_beneficiary].stage=Stage.PROCESS1_SUCCESS;
+362	 }
+363	 else if(_stage==3){
+364	 whitelist[_beneficiary].stage=Stage.PROCESS2_FAILED;
+365	 returnInvestoramount(_beneficiary,adminCharge_p2);
+366	 failedWhitelist(_beneficiary);
+367	 investedAmountOf[_beneficiary]=0;
+368	 }
+369	 else if(_stage==4){
+370	 whitelist[_beneficiary].stage=Stage.PROCESS2_SUCCESS;
+371	 }
+372	 else if(_stage==5){
+373	 whitelist[_beneficiary].stage=Stage.PROCESS3_FAILED;
+374	 returnInvestoramount(_beneficiary,adminCharge_p3);
+375	 failedWhitelist(_beneficiary);
+376	 investedAmountOf[_beneficiary]=0;
+377	 }
+378	 else if(_stage==6){
+379	 whitelist[_beneficiary].stage=Stage.PROCESS3_SUCCESS;
+380	 afterWhtelisted( _beneficiary);
+381	 }
+382	 }
+383	 function withdrawTokens() public isWhitelisted(msg.sender) {
+384	 require(hasClosed());
+385	 uint256 amount = balances[msg.sender];
+386	 require(amount > 0);
+387	 balances[msg.sender] = 0;
+388	 _deliverTokens(msg.sender, amount);
+389	 }
+390	 function changeEndtime(uint256 _endTime) public onlyOwner {
+391	 require(_endTime > 0);
+392	 closingTime = _endTime;
+393	 }
+394	 function changeRate(uint256 _rate) public onlyOwner {
+395	 require(_rate > 0);
+396	 rate = _rate;
+397	 emit updateRate(_rate,block.timestamp);
+398	 }
+399	 function changeAdminCharges(uint256 _p1,uint256 _p2,uint256 _p3) public onlyOwner {
+400	 require(_p1 > 0);
+401	 require(_p2 > 0);
+402	 require(_p3 > 0);
+403	 adminCharge_p1=_p1;
+404	 adminCharge_p2=_p2;
+405	 adminCharge_p3=_p3;
+406	 }
+407	 function changeMinInvestment(uint256 _minInvestment) public onlyOwner {
+408	 require(_minInvestment > 0);
+409	 minContribAmount=_minInvestment;
+410	 }
+411	 function capReached() public view returns (bool) {
+412	 return weiRaised >= cap;
+413	 }
+414	 function goalReached() public view returns (bool) {
+415	 return weiRaised >= goal;
+416	 }
+417	 function tokenDistribution(address _to, uint256 _value)public onlyOwner {
+418	 require ( _to != 0x0 && _value > 0);
+419	 _processPurchase(_to, _value);
+420	 whitelist[_to].stage=Stage.PROCESS3_SUCCESS;
+421	 }
+422	 }

@@ -1,0 +1,368 @@
+row number 
+1	        pragma solidity ^0.8.0;
+2	 interface IERC20 {
+3	 function name() external view returns (string memory);
+4	 function symbol() external view returns (string memory);
+5	 function decimals() external view returns (uint8);
+6	 function totalSupply() external view returns (uint256);
+7	 function balanceOf(address account) external view returns (uint256);
+8	 function transfer(address recipient, uint256 amount) external returns (bool);
+9	 function allowance(address owner, address spender) external view returns (uint256);
+10	 function approve(address spender, uint256 amount) external returns (bool);
+11	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+12	 event Transfer(address indexed from, address indexed to, uint256 value);
+13	 event Approval(address indexed owner, address indexed spender, uint256 value);
+14	 }
+15	 pragma solidity ^0.8.0;
+16	 interface IRecoverable is IERC20{
+17	 function claimPeriod() external view returns (uint256);
+18	 function notifyClaimMade(address target) external;
+19	 function notifyClaimDeleted(address target) external;
+20	 function getCollateralRate(IERC20 collateral) external view returns(uint256);
+21	 function recover(address oldAddress, address newAddress) external;
+22	 }
+23	 pragma solidity ^0.8.0;
+24	 abstract contract ERC20Flaggable is IERC20 {
+25	 uint256 constant private INFINITE_ALLOWANCE = 2**255;
+26	 uint256 private constant FLAGGING_MASK = 0xFFFFFFFF00000000000000000000000000000000000000000000000000000000;
+27	 mapping (address => uint256) private _balances;
+28	 mapping (address => mapping (address => uint256)) private _allowances;
+29	 uint256 private _totalSupply;
+30	 uint8 public override decimals;
+31	 event NameChanged(string name, string symbol);
+32	 constructor(uint8 _decimals) {
+33	 decimals = _decimals;
+34	 }
+35	 function totalSupply() public view override returns (uint256) {
+36	 return _totalSupply;
+37	 }
+38	 function balanceOf(address account) public view override returns (uint256) {
+39	 return uint224 (_balances [account]);
+40	 }
+41	 function hasFlag(address account, uint8 number) external view returns (bool) {
+42	 return hasFlagInternal(account, number);
+43	 }
+44	 function setFlag(address account, uint8 index, bool value) internal {
+45	 uint256 flagMask = 1 << (index + 224);
+46	 uint256 balance = _balances [account];
+47	 if ((balance & flagMask == flagMask) != value) {
+48	 _balances [account] = balance ^ flagMask;
+49	 }
+50	 }
+51	 function hasFlagInternal(address account, uint8 number) internal view returns (bool) {
+52	 uint256 flag = 0x1 << (number + 224);
+53	 return _balances[account] & flag == flag;
+54	 }
+55	 function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+56	 _transfer(msg.sender, recipient, amount);
+57	 return true;
+58	 }
+59	 function allowance(address owner, address spender) external view override returns (uint256) {
+60	 return _allowances[owner][spender];
+61	 }
+62	 function approve(address spender, uint256 value) external override returns (bool) {
+63	 _approve(msg.sender, spender, value);
+64	 return true;
+65	 }
+66	 function transferFrom(address sender, address recipient, uint256 amount) external override returns (bool) {
+67	 _transfer(sender, recipient, amount);
+68	 uint256 currentAllowance = _allowances[sender][msg.sender];
+69	 if (currentAllowance < INFINITE_ALLOWANCE){
+70	 _allowances[sender][msg.sender] = currentAllowance - amount;
+71	 }
+72	 return true;
+73	 }
+74	 function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+75	 _beforeTokenTransfer(sender, recipient, amount);
+76	 decreaseBalance(sender, amount);
+77	 increaseBalance(recipient, amount);
+78	 emit Transfer(sender, recipient, amount);
+79	 }
+80	 function transferAndCall(address recipient, uint amount, bytes calldata data) external virtual returns (bool) {
+81	 return transfer (recipient, amount) && IERC677Receiver (recipient).onTokenTransfer (msg.sender, amount, data);
+82	 }
+83	 function _mint(address recipient, uint256 amount) internal virtual {
+84	 _beforeTokenTransfer(address(0), recipient, amount);
+85	 _totalSupply += amount;
+86	 increaseBalance(recipient, amount);
+87	 emit Transfer(address(0), recipient, amount);
+88	 }
+89	 function increaseBalance(address recipient, uint256 amount) private {
+90	 require(recipient != address(0x0), "0x0");
+91	 uint256 oldBalance = _balances[recipient];
+92	 uint256 newBalance = oldBalance + amount;
+93	 require(oldBalance & FLAGGING_MASK == newBalance & FLAGGING_MASK, "overflow");
+94	 _balances[recipient] = newBalance;
+95	 }
+96	 function _burn(address account, uint256 amount) internal virtual {
+97	 _beforeTokenTransfer(account, address(0), amount);
+98	 _totalSupply -= amount;
+99	 decreaseBalance(account, amount);
+100	 emit Transfer(account, address(0), amount);
+101	 }
+102	 function decreaseBalance(address sender, uint256 amount) private {
+103	 uint256 oldBalance = _balances[sender];
+104	 uint256 newBalance = oldBalance - amount;
+105	 require(oldBalance & FLAGGING_MASK == newBalance & FLAGGING_MASK, "underflow");
+106	 _balances[sender] = newBalance;
+107	 }
+108	 function _approve(address owner, address spender, uint256 value) internal {
+109	 _allowances[owner][spender] = value;
+110	 emit Approval(owner, spender, value);
+111	 }
+112	 function _beforeTokenTransfer(address from, address to, uint256 amount) virtual internal {
+113	 }
+114	 }
+115	 pragma solidity ^0.8.0;
+116	 contract Ownable {
+117	 address public owner;
+118	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+119	 constructor (address initialOwner) {
+120	 owner = initialOwner;
+121	 emit OwnershipTransferred(address(0), owner);
+122	 }
+123	 function transferOwnership(address newOwner) external onlyOwner {
+124	 emit OwnershipTransferred(owner, newOwner);
+125	 owner = newOwner;
+126	 }
+127	 modifier onlyOwner() {
+128	 require(owner == msg.sender, "not owner");
+129	 _;
+130	 }
+131	 }
+132	 pragma solidity ^0.8.0;
+133	 contract ERC20Named is ERC20Flaggable, Ownable {
+134	 string public override name;
+135	 string public override symbol;
+136	 constructor(string memory _symbol, string memory _name, uint8 _decimals, address _admin) ERC20Flaggable(_decimals) Ownable(_admin) {
+137	 setNameInternal(_symbol, _name);
+138	 }
+139	 function setName(string memory _symbol, string memory _name) external onlyOwner {
+140	 setNameInternal(_symbol, _name);
+141	 }
+142	 function setNameInternal(string memory _symbol, string memory _name) internal {
+143	 symbol = _symbol;
+144	 name = _name;
+145	 emit NameChanged(_name, _symbol);
+146	 }
+147	 }
+148	 pragma solidity ^0.8.0;
+149	 abstract contract ERC20Recoverable is ERC20Flaggable, IRecoverable {
+150	 uint8 private constant FLAG_CLAIM_PRESENT = 10;
+151	 IERC20 public customCollateralAddress;
+152	 uint256 public customCollateralRate;
+153	 uint256 constant CLAIM_PERIOD = 180 days;
+154	 IRecoveryHub public immutable recovery;
+155	 constructor(IRecoveryHub recoveryHub){
+156	 recovery = recoveryHub;
+157	 }
+158	 function getCollateralRate(IERC20 collateralType) public override virtual view returns (uint256) {
+159	 if (address(collateralType) == address(this)) {
+160	 return 1;
+161	 }
+162	 else if (collateralType == customCollateralAddress) {
+163	 return customCollateralRate;
+164	 }
+165	 else {
+166	 return 0;
+167	 }
+168	 }
+169	 function claimPeriod() external pure override returns (uint256){
+170	 return CLAIM_PERIOD;
+171	 }
+172	 function _setCustomClaimCollateral(IERC20 collateral, uint256 rate) internal {
+173	 customCollateralAddress = collateral;
+174	 if (address(customCollateralAddress) == address(0)) {
+175	 customCollateralRate = 0;
+176	 }
+177	 else {
+178	 require(rate > 0, "zero");
+179	 customCollateralRate = rate;
+180	 }
+181	 }
+182	 function getClaimDeleter() virtual public view returns (address);
+183	 function transfer(address recipient, uint256 amount) override(ERC20Flaggable, IERC20) virtual public returns (bool) {
+184	 require(super.transfer(recipient, amount), "transfer");
+185	 if (hasFlagInternal(msg.sender, FLAG_CLAIM_PRESENT)){
+186	 recovery.clearClaimFromToken(msg.sender);
+187	 }
+188	 return true;
+189	 }
+190	 function notifyClaimMade(address target) external override {
+191	 require(msg.sender == address(recovery), "not recovery");
+192	 setFlag(target, FLAG_CLAIM_PRESENT, true);
+193	 }
+194	 function notifyClaimDeleted(address target) external override {
+195	 require(msg.sender == address(recovery), "not recovery");
+196	 setFlag(target, FLAG_CLAIM_PRESENT, false);
+197	 }
+198	 function deleteClaim(address lostAddress) external {
+199	 require(msg.sender == getClaimDeleter(), "not claim deleter");
+200	 recovery.deleteClaim(lostAddress);
+201	 }
+202	 function recover(address oldAddress, address newAddress) external override {
+203	 require(msg.sender == address(recovery), "not recovery");
+204	 _transfer(oldAddress, newAddress, balanceOf(oldAddress));
+205	 }
+206	 }
+207	 pragma solidity ^0.8.0;
+208	 interface IShares {
+209	 function burn(uint256) external;
+210	 function totalShares() external view returns (uint256);
+211	 }
+212	 pragma solidity ^0.8.0;
+213	 abstract contract ERC20Allowlistable is ERC20Flaggable, Ownable {
+214	 uint8 private constant TYPE_DEFAULT = 0x0;
+215	 uint8 private constant TYPE_ALLOWLISTED = 0x1;
+216	 uint8 private constant TYPE_FORBIDDEN = 0x2;
+217	 uint8 private constant TYPE_POWERLISTED = 0x4;
+218	 uint8 private constant FLAG_INDEX_ALLOWLIST = 20;
+219	 uint8 private constant FLAG_INDEX_FORBIDDEN = 21;
+220	 uint8 private constant FLAG_INDEX_POWERLIST = 22;
+221	 event AddressTypeUpdate(address indexed account, uint8 addressType);
+222	 bool public restrictTransfers;
+223	 constructor(){
+224	 }
+225	 function setApplicable(bool transferRestrictionsApplicable) external onlyOwner {
+226	 setApplicableInternal(transferRestrictionsApplicable);
+227	 }
+228	 function setApplicableInternal(bool transferRestrictionsApplicable) internal {
+229	 restrictTransfers = transferRestrictionsApplicable;
+230	 if (transferRestrictionsApplicable){
+231	 setTypeInternal(address(0x0), TYPE_POWERLISTED);
+232	 }
+233	 else {
+234	 setTypeInternal(address(0x0), TYPE_DEFAULT);
+235	 }
+236	 }
+237	 function setType(address account, uint8 typeNumber) public onlyOwner {
+238	 setTypeInternal(account, typeNumber);
+239	 }
+240	 function setTypeInternal(address account, uint8 typeNumber) internal {
+241	 setFlag(account, FLAG_INDEX_ALLOWLIST, typeNumber == TYPE_ALLOWLISTED);
+242	 setFlag(account, FLAG_INDEX_FORBIDDEN, typeNumber == TYPE_FORBIDDEN);
+243	 setFlag(account, FLAG_INDEX_POWERLIST, typeNumber == TYPE_POWERLISTED);
+244	 emit AddressTypeUpdate(account, typeNumber);
+245	 }
+246	 function setType(address[] calldata addressesToAdd, uint8 value) public onlyOwner {
+247	 for (uint i=0; i<addressesToAdd.length; i++){
+248	 setType(addressesToAdd[i], value);
+249	 }
+250	 }
+251	 function canReceiveFromAnyone(address account) public view returns (bool) {
+252	 return hasFlagInternal(account, FLAG_INDEX_ALLOWLIST) || hasFlagInternal(account, FLAG_INDEX_POWERLIST);
+253	 }
+254	 function isForbidden(address account) public view returns (bool){
+255	 return hasFlagInternal(account, FLAG_INDEX_FORBIDDEN);
+256	 }
+257	 function isPowerlisted(address account) public view returns (bool) {
+258	 return hasFlagInternal(account, FLAG_INDEX_POWERLIST);
+259	 }
+260	 function _beforeTokenTransfer(address from, address to, uint256 amount) override virtual internal {
+261	 super._beforeTokenTransfer(from, to, amount);
+262	 if (canReceiveFromAnyone(to)){
+263	 }
+264	 else if (isForbidden(to)){
+265	 require(!restrictTransfers, "not allowed");
+266	 setFlag(to, FLAG_INDEX_FORBIDDEN, false);
+267	 }
+268	 else {
+269	 if (isPowerlisted(from)){
+270	 setFlag(to, FLAG_INDEX_ALLOWLIST, true);
+271	 }
+272	 else if (hasFlagInternal(from, FLAG_INDEX_ALLOWLIST)){
+273	 require(!restrictTransfers, "not allowed");
+274	 setFlag(from, FLAG_INDEX_ALLOWLIST, false);
+275	 }
+276	 else if (isForbidden(from)){
+277	 require(!restrictTransfers, "not allowed");
+278	 setFlag(from, FLAG_INDEX_FORBIDDEN, false);
+279	 }
+280	 }
+281	 }
+282	 }
+283	 pragma solidity ^0.8.0;
+284	 contract Shares is ERC20Recoverable, ERC20Named, IShares{
+285	 string public terms;
+286	 uint256 public override totalShares;
+287	 uint256 public invalidTokens;
+288	 event Announcement(string message);
+289	 event TokensDeclaredInvalid(address indexed holder, uint256 amount, string message);
+290	 event ChangeTerms(string terms);
+291	 event ChangeTotalShares(uint256 total);
+292	 constructor( string memory _symbol, string memory _name, string memory _terms, uint256 _totalShares, address _owner, IRecoveryHub _recoveryHub ) ERC20Named(_symbol, _name, 0, _owner) ERC20Recoverable(_recoveryHub) {
+293	 totalShares = _totalShares;
+294	 terms = _terms;
+295	 invalidTokens = 0;
+296	 _recoveryHub.setRecoverable(false);
+297	 }
+298	 function setTerms(string memory _terms) external onlyOwner {
+299	 terms = _terms;
+300	 emit ChangeTerms(_terms);
+301	 }
+302	 function setTotalShares(uint256 _newTotalShares) external onlyOwner() {
+303	 require(_newTotalShares >= totalValidSupply(), "below supply");
+304	 totalShares = _newTotalShares;
+305	 emit ChangeTotalShares(_newTotalShares);
+306	 }
+307	 function announcement(string calldata message) external onlyOwner() {
+308	 emit Announcement(message);
+309	 }
+310	 function setCustomClaimCollateral(IERC20 collateral, uint256 rate) external onlyOwner() {
+311	 super._setCustomClaimCollateral(collateral, rate);
+312	 }
+313	 function getClaimDeleter() public override view returns (address) {
+314	 return owner;
+315	 }
+316	 function declareInvalid(address holder, uint256 amount, string calldata message) external onlyOwner() {
+317	 uint256 holderBalance = balanceOf(holder);
+318	 require(amount <= holderBalance, "amount too high");
+319	 invalidTokens += amount;
+320	 emit TokensDeclaredInvalid(holder, amount, message);
+321	 }
+322	 function totalValidSupply() public view returns (uint256) {
+323	 return totalSupply() - invalidTokens;
+324	 }
+325	 function mintAndCall(address shareholder, address callee, uint256 amount, bytes calldata data) external {
+326	 mint(callee, amount);
+327	 require(IERC677Receiver(callee).onTokenTransfer(shareholder, amount, data));
+328	 }
+329	 function mint(address target, uint256 amount) public onlyOwner {
+330	 _mint(target, amount);
+331	 }
+332	 function _mint(address account, uint256 amount) internal virtual override {
+333	 require(totalValidSupply() + amount <= totalShares, "total");
+334	 super._mint(account, amount);
+335	 }
+336	 function transfer(address to, uint256 value) virtual override(ERC20Recoverable, ERC20Flaggable) public returns (bool) {
+337	 return super.transfer(to, value);
+338	 }
+339	 function burn(uint256 _amount) override external {
+340	 _transfer(msg.sender, address(this), _amount);
+341	 _burn(address(this), _amount);
+342	 }
+343	 }
+344	 pragma solidity ^0.8.0;
+345	 interface IERC677Receiver {
+346	 function onTokenTransfer(address from, uint256 amount, bytes calldata data) external returns (bool);
+347	 }
+348	 pragma solidity ^0.8.0;
+349	 interface IRecoveryHub {
+350	 function setRecoverable(bool flag) external;
+351	 function deleteClaim(address target) external;
+352	 function clearClaimFromToken(address holder) external;
+353	 }
+354	 pragma solidity ^0.8.0;
+355	 contract AllowlistShares is Shares, ERC20Allowlistable {
+356	 constructor( string memory _symbol, string memory _name, string memory _terms, uint256 _totalShares, IRecoveryHub _recoveryHub, address _owner ) Shares(_symbol, _name, _terms, _totalShares, _owner, _recoveryHub) ERC20Allowlistable() {
+357	 }
+358	 function transfer(address recipient, uint256 amount) override(ERC20Flaggable, Shares) virtual public returns (bool) {
+359	 return super.transfer(recipient, amount);
+360	 }
+361	 function _mint(address account, uint256 amount) internal override(ERC20Flaggable, Shares) {
+362	 super._mint(account, amount);
+363	 }
+364	 function _beforeTokenTransfer(address from, address to, uint256 amount) virtual override(ERC20Flaggable, ERC20Allowlistable) internal {
+365	 super._beforeTokenTransfer(from, to, amount);
+366	 }
+367	 }

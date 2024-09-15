@@ -1,0 +1,188 @@
+row number 
+1	           pragma solidity ^0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return payable(msg.sender);
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 interface IERC20 {
+12	 function totalSupply() external view returns (uint256);
+13	 function balanceOf(address account) external view returns (uint256);
+14	 function transfer(address recipient, uint256 amount) external returns (bool);
+15	 function allowance(address owner, address spender) external view returns (uint256);
+16	 function approve(address spender, uint256 amount) external returns (bool);
+17	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+18	 event Transfer(address indexed from, address indexed to, uint256 value);
+19	 event Approval(address indexed owner, address indexed spender, uint256 value);
+20	 }
+21	 contract Ownable is Context {
+22	 address private _owner;
+23	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+24	 constructor () {
+25	 address msgSender = _msgSender();
+26	 _owner = msgSender;
+27	 emit OwnershipTransferred(address(0), msgSender);
+28	 }
+29	 function owner() public view returns (address) {
+30	 return _owner;
+31	 }
+32	 modifier onlyOwner() {
+33	 require(_owner == _msgSender(), "Ownable: caller is not the owner");
+34	 _;
+35	 }
+36	 function isOwner() public view returns (bool) {
+37	 return msg.sender == _owner;
+38	 }
+39	 function renouncedOwnership() public virtual onlyOwner {
+40	 emit OwnershipTransferred(_owner, address(0x000000000000000000000000000000000000dEaD));
+41	 _owner = address(0x000000000000000000000000000000000000dEaD);
+42	 }
+43	 function transferOwnership(address newOwner) public virtual onlyOwner {
+44	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+45	 emit OwnershipTransferred(_owner, newOwner);
+46	 _owner = newOwner;
+47	 }
+48	 }
+49	 abstract contract ReentrancyGuard {
+50	 uint256 private constant _NOT_ENTERED = 1;
+51	 uint256 private constant _ENTERED = 2;
+52	 uint256 private _status;
+53	 constructor() {
+54	 _status = _NOT_ENTERED;
+55	 }
+56	 modifier nonReentrant() {
+57	 _nonReentrantBefore();
+58	 _;
+59	 _nonReentrantAfter();
+60	 }
+61	 function _nonReentrantBefore() private {
+62	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+63	 _status = _ENTERED;
+64	 }
+65	 function _nonReentrantAfter() private {
+66	 _status = _NOT_ENTERED;
+67	 }
+68	 function _reentrancyGuardEntered() internal view returns (bool) {
+69	 return _status == _ENTERED;
+70	 }
+71	 }
+72	 contract Payment is Ownable, ReentrancyGuard {
+73	 event PayeeAdded(address account, uint256 shares);
+74	 event PaymentReleased(address to, uint256 amount);
+75	 event ERC20PaymentReleased(IERC20 indexed token, address to, uint256 amount);
+76	 event PaymentReceived(address from, uint256 amount);
+77	 uint256 private _totalShares;
+78	 uint256 private _totalReleased;
+79	 mapping (address => uint256) private _shares;
+80	 mapping (address => uint256) private _released;
+81	 address[] private _payees;
+82	 mapping(IERC20 => uint256) private _erc20TotalReleased;
+83	 mapping(IERC20 => mapping(address => uint256)) private _erc20Released;
+84	 bool public paused;
+85	 function deposit() public payable {
+86	 }
+87	 function addWallets(address[] memory payees, uint256[] memory shares_) public payable onlyOwner {
+88	 require(payees.length == shares_.length, "PaymentSplitter: payees and shares length mismatch");
+89	 require(payees.length > 0, "PaymentSplitter: no payees");
+90	 for (uint256 i = 0; i < payees.length; i++) {
+91	 _addPayee(payees[i], shares_[i]);
+92	 }
+93	 }
+94	 function _addPayee(address account, uint256 shares_) private {
+95	 require(account != address(0), "PaymentSplitter: account is the zero address");
+96	 require(shares_ > 0, "PaymentSplitter: shares are 0");
+97	 require(_shares[account] == 0, "PaymentSplitter: account already has shares");
+98	 _payees.push(account);
+99	 _shares[account] = shares_;
+100	 _totalShares = _totalShares + shares_;
+101	 emit PayeeAdded(account, shares_);
+102	 }
+103	 function release(address account) public nonReentrant() {
+104	 require(!paused,"Contract is Paused!!");
+105	 require(_shares[account] > 0, "PaymentSplitter: account has no shares");
+106	 uint256 payment = releasable(account);
+107	 require(payment != 0, "PaymentSplitter: account is not due payment");
+108	 _totalReleased += payment;
+109	 unchecked {
+110	 _released[account] += payment;
+111	 }
+112	 (bool os,) = payable(account).call{
+113	 value: payment}
+114	 ("");
+115	 require(os);
+116	 emit PaymentReleased(account, payment);
+117	 }
+118	 function releaseErc20(IERC20 token, address account) public nonReentrant(){
+119	 require(!paused,"Contract is Paused!!");
+120	 require(_shares[account] > 0, "PaymentSplitter: account has no shares");
+121	 uint256 payment = releasableErc20(token, account);
+122	 require(payment != 0, "PaymentSplitter: account is not due payment");
+123	 _erc20TotalReleased[token] += payment;
+124	 unchecked {
+125	 _erc20Released[token][account] += payment;
+126	 }
+127	 token.transfer(account, payment);
+128	 emit ERC20PaymentReleased(token, account, payment);
+129	 }
+130	 function releasableErc20(IERC20 token, address account) public view returns (uint256) {
+131	 uint256 totalReceived = token.balanceOf(address(this)) + totalErc20Released(token);
+132	 return _pendingPayment(account, totalReceived, releasedErc20(token, account));
+133	 }
+134	 function totalErc20Released(IERC20 token) public view returns (uint256) {
+135	 return _erc20TotalReleased[token];
+136	 }
+137	 function releasedErc20(IERC20 token, address account) public view returns (uint256) {
+138	 return _erc20Released[token][account];
+139	 }
+140	 function releasable(address account) public view returns (uint256) {
+141	 uint256 totalReceived = address(this).balance + totalReleased();
+142	 return _pendingPayment(account, totalReceived, released(account));
+143	 }
+144	 function totalReleased() public view returns (uint256) {
+145	 return _totalReleased;
+146	 }
+147	 function released(address account) public view returns (uint256) {
+148	 return _released[account];
+149	 }
+150	 function payee(uint256 index) public view returns (address) {
+151	 return _payees[index];
+152	 }
+153	 function checkShare(address _wallet) public view returns (uint256) {
+154	 return _shares[_wallet];
+155	 }
+156	 function totalShares() public view returns (uint256) {
+157	 return _totalShares;
+158	 }
+159	 function totalPayee() public view returns (uint) {
+160	 return _payees.length;
+161	 }
+162	 receive() external payable {
+163	 emit PaymentReceived(_msgSender(), msg.value);
+164	 }
+165	 function _pendingPayment( address account, uint256 totalReceived, uint256 alreadyReleased ) private view returns (uint256) {
+166	 return (totalReceived * _shares[account]) / _totalShares - alreadyReleased;
+167	 }
+168	 function rescueFunds() public onlyOwner {
+169	 (bool os,) = payable(owner()).call{
+170	 value: address(this).balance}
+171	 ("");
+172	 require(os);
+173	 }
+174	 function rescueTokens(IERC20 _token) public onlyOwner {
+175	 uint balance = _token.balanceOf(address(this));
+176	 _token.transfer(owner(),balance);
+177	 }
+178	 function enablePauser(bool _status) public onlyOwner {
+179	 paused = _status;
+180	 }
+181	 function checkContractToken(IERC20 _token) public view returns (uint) {
+182	 return _token.balanceOf(address(this));
+183	 }
+184	 function checkBalance() public view returns (uint) {
+185	 return address(this).balance;
+186	 }
+187	 }

@@ -1,0 +1,189 @@
+row number 
+1	         contract Order {
+2	 address public constant ETH_ADDRESS = address(0x00eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee);
+3	 }
+4	 abstract contract PineCore is Order {
+5	 using SafeMath for uint256;
+6	 using Fabric for bytes32;
+7	 mapping(bytes32 => uint256) public ethDeposits;
+8	 event DepositETH( bytes32 indexed _key, address indexed _caller, uint256 _amount, bytes _data );
+9	 event OrderExecuted( bytes32 indexed _key, address _inputToken, address _owner, address _witness, bytes _data, bytes _auxData, uint256 _amount, uint256 _bought );
+10	 event OrderCancelled( bytes32 indexed _key, address _inputToken, address _owner, address _witness, bytes _data, uint256 _amount );
+11	 receive() external payable {
+12	 require( msg.sender != tx.origin, "PineCore#receive: NO_SEND_ETH_PLEASE" );
+13	 }
+14	 function depositEth(bytes calldata _data) external payable {
+15	 require(msg.value > 0, "PineCore#depositEth: VALUE_IS_0");
+16	 ( address module, address inputToken, address payable owner, address witness, bytes memory data, ) = decodeOrder(_data);
+17	 require( inputToken == ETH_ADDRESS, "PineCore#depositEth: WRONG_INPUT_TOKEN" );
+18	 bytes32 key = keyOf( IModule(uint160(module)), IERC20(inputToken), owner, witness, data );
+19	 ethDeposits[key] = ethDeposits[key].add(msg.value);
+20	 emit DepositETH(key, msg.sender, msg.value, _data);
+21	 }
+22	 function cancelOrder( IModule _module, IERC20 _inputToken, address payable _owner, address _witness, bytes calldata _data ) external {
+23	 require(msg.sender == _owner, "PineCore#cancelOrder: INVALID_OWNER");
+24	 bytes32 key = keyOf(_module, _inputToken, _owner, _witness, _data);
+25	 uint256 amount = _pullOrder(_inputToken, key, msg.sender);
+26	 emit OrderCancelled( key, address(_inputToken), _owner, _witness, _data, amount );
+27	 }
+28	 function encodeTokenOrder( IModule _module, IERC20 _inputToken, address payable _owner, address _witness, bytes calldata _data, bytes32 _secret, uint256 _amount ) external view returns (bytes memory) {
+29	 return abi.encodeWithSelector( _inputToken.transfer.selector, vaultOfOrder(_module, _inputToken, _owner, _witness, _data), _amount, abi.encode( _module, _inputToken, _owner, _witness, _data, _secret ) );
+30	 }
+31	 function encodeEthOrder( address _module, address _inputToken, address payable _owner, address _witness, bytes calldata _data, bytes32 _secret ) external pure returns (bytes memory) {
+32	 return abi.encode(_module, _inputToken, _owner, _witness, _data, _secret);
+33	 }
+34	 function decodeOrder(bytes memory _data) public pure returns ( address module, address inputToken, address payable owner, address witness, bytes memory data, bytes32 secret ) {
+35	 (module, inputToken, owner, witness, data, secret) = abi.decode( _data, (address, address, address, address, bytes, bytes32) );
+36	 }
+37	 function vaultOfOrder( IModule _module, IERC20 _inputToken, address payable _owner, address _witness, bytes memory _data ) public view returns (address) {
+38	 return keyOf(_module, _inputToken, _owner, _witness, _data).getVault();
+39	 }
+40	 function executeOrder( IModule _module, IERC20 _inputToken, address payable _owner, bytes calldata _data, bytes calldata _signature, bytes calldata _auxData ) public virtual {
+41	 address witness = ECDSA.recover(keccak256(abi.encodePacked(msg.sender)), _signature);
+42	 bytes32 key = keyOf(_module, _inputToken, _owner, witness, _data);
+43	 uint256 amount = _pullOrder(_inputToken, key, address(_module));
+44	 require(amount > 0, "PineCore#executeOrder: INVALID_ORDER");
+45	 uint256 bought = _module.execute(_inputToken, amount, _owner, _data, _auxData);
+46	 emit OrderExecuted( key, address(_inputToken), _owner, witness, _data, _auxData, amount, bought );
+47	 }
+48	 function existOrder( IModule _module, IERC20 _inputToken, address payable _owner, address _witness, bytes calldata _data ) external view returns (bool) {
+49	 bytes32 key = keyOf(_module, _inputToken, _owner, _witness, _data);
+50	 if (address(_inputToken) == ETH_ADDRESS) {
+51	 return ethDeposits[key] != 0;
+52	 }
+53	 else {
+54	 return _inputToken.balanceOf(key.getVault()) != 0;
+55	 }
+56	 }
+57	 function canExecuteOrder( IModule _module, IERC20 _inputToken, address payable _owner, address _witness, bytes calldata _data, bytes calldata _auxData ) external view returns (bool) {
+58	 bytes32 key = keyOf(_module, _inputToken, _owner, _witness, _data);
+59	 uint256 amount;
+60	 if (address(_inputToken) == ETH_ADDRESS) {
+61	 amount = ethDeposits[key];
+62	 }
+63	 else {
+64	 amount = _inputToken.balanceOf(key.getVault());
+65	 }
+66	 return _module.canExecute(_inputToken, amount, _data, _auxData);
+67	 }
+68	 function _pullOrder( IERC20 _inputToken, bytes32 _key, address payable _to ) private returns (uint256 amount) {
+69	 if (address(_inputToken) == ETH_ADDRESS) {
+70	 amount = ethDeposits[_key];
+71	 ethDeposits[_key] = 0;
+72	 (bool success, ) = _to.call{
+73	 value: amount}
+74	 ("");
+75	 require(success, "PineCore#_pullOrder: PULL_ETHER_FAILED");
+76	 }
+77	 else {
+78	 amount = _key.executeVault(_inputToken, _to);
+79	 }
+80	 }
+81	 function keyOf( IModule _module, IERC20 _inputToken, address payable _owner, address _witness, bytes memory _data ) public pure returns (bytes32) {
+82	 return keccak256( abi.encode(_module, _inputToken, _owner, _witness, _data) );
+83	 }
+84	 }
+85	 pragma solidity 0.6.12;
+86	 contract GelatoPineCore is PineCore {
+87	 modifier onlyGelato {
+88	 require( address(0x3CACa7b48D0573D793d3b0279b5F0029180E83b6) == msg.sender, "GelatoPineCore: onlyGelato" );
+89	 _;
+90	 }
+91	 function executeOrder( IModule _module, IERC20 _inputToken, address payable _owner, bytes calldata _data, bytes calldata _signature, bytes calldata _auxData ) public override onlyGelato {
+92	 super.executeOrder( _module, _inputToken, _owner, _data, _signature, _auxData );
+93	 }
+94	 }
+95	 pragma solidity 0.6.12;
+96	 library SafeMath {
+97	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+98	 uint256 c = a + b;
+99	 require(c >= a, "SafeMath: addition overflow");
+100	 return c;
+101	 }
+102	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+103	 return sub(a, b, "SafeMath: subtraction overflow");
+104	 }
+105	 function sub( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+106	 require(b <= a, errorMessage);
+107	 uint256 c = a - b;
+108	 return c;
+109	 }
+110	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+111	 if (a == 0) {
+112	 return 0;
+113	 }
+114	 uint256 c = a * b;
+115	 require(c / a == b, "SafeMath: multiplication overflow");
+116	 return c;
+117	 }
+118	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+119	 return div(a, b, "SafeMath: division by zero");
+120	 }
+121	 function div( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+122	 require(b > 0, errorMessage);
+123	 uint256 c = a / b;
+124	 return c;
+125	 }
+126	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+127	 return mod(a, b, "SafeMath: modulo by zero");
+128	 }
+129	 function mod( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+130	 require(b != 0, errorMessage);
+131	 return a % b;
+132	 }
+133	 }
+134	 library ECDSA {
+135	 function recover(bytes32 hash, bytes memory signature) internal pure returns (address) {
+136	 if (signature.length != 65) {
+137	 revert("ECDSA: invalid signature length");
+138	 }
+139	 bytes32 r;
+140	 bytes32 s;
+141	 uint8 v;
+142	 assembly {
+143	 r := mload(add(signature, 0x20)) s := mload(add(signature, 0x40)) v := byte(0, mload(add(signature, 0x60))) }
+144	 if ( uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0 ) {
+145	 revert("ECDSA: invalid signature 's' value");
+146	 }
+147	 if (v != 27 && v != 28) {
+148	 revert("ECDSA: invalid signature 'v' value");
+149	 }
+150	 address signer = ecrecover(hash, v, r, s);
+151	 require(signer != address(0), "ECDSA: invalid signature");
+152	 return signer;
+153	 }
+154	 function toEthSignedMessageHash(bytes32 hash) internal pure returns (bytes32) {
+155	 return keccak256( abi.encodePacked("\x19Ethereum Signed Message:\n32", hash) );
+156	 }
+157	 }
+158	 interface IERC20 {
+159	 function totalSupply() external view returns (uint256);
+160	 function balanceOf(address account) external view returns (uint256);
+161	 function transfer(address recipient, uint256 amount) external returns (bool);
+162	 function allowance(address owner, address spender) external view returns (uint256);
+163	 function approve(address spender, uint256 amount) external returns (bool);
+164	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+165	 event Transfer(address indexed from, address indexed to, uint256 value);
+166	 event Approval( address indexed owner, address indexed spender, uint256 value );
+167	 }
+168	 library Fabric {
+169	 bytes public constant code = hex"6012600081600A8239F360008060448082803781806038355AF132FF";
+170	 bytes32 public constant vaultCodeHash = bytes32( 0xfa3da1081bc86587310fce8f3a5309785fc567b9b20875900cb289302d6bfa97 );
+171	 function getVault(bytes32 _key) internal view returns (address) {
+172	 return address( uint256( keccak256( abi.encodePacked( bytes1(0xff), address(this), _key, vaultCodeHash ) ) ) );
+173	 }
+174	 function executeVault( bytes32 _key, IERC20 _token, address _to ) internal returns (uint256 value) {
+175	 address addr;
+176	 bytes memory slotcode = code;
+177	 assembly {
+178	 addr := create2(0, add(slotcode, 0x20), mload(slotcode), _key) }
+179	 value = _token.balanceOf(addr);
+180	 (bool success, ) = addr.call( abi.encodePacked( abi.encodeWithSelector( _token.transfer.selector, _to, value ), address(_token) ) );
+181	 require(success, "Error pulling tokens");
+182	 }
+183	 }
+184	 interface IModule {
+185	 receive() external payable;
+186	 function execute( IERC20 _inputToken, uint256 _inputAmount, address payable _owner, bytes calldata _data, bytes calldata _auxData ) external returns (uint256 bought);
+187	 function canExecute( IERC20 _inputToken, uint256 _inputAmount, bytes calldata _data, bytes calldata _auxData ) external view returns (bool);
+188	 }

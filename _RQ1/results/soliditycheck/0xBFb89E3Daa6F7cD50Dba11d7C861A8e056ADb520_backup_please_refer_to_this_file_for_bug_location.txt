@@ -1,0 +1,100 @@
+row number 
+1	              pragma solidity ^0.7.6;
+2	 interface IDoubleProxy {
+3	 function proxy() external view returns (address);
+4	 }
+5	 interface IMVDProxy {
+6	 function getMVDFunctionalitiesManagerAddress() external view returns(address);
+7	 function getMVDWalletAddress() external view returns (address);
+8	 function getStateHolderAddress() external view returns(address);
+9	 function submit(string calldata codeName, bytes calldata data) external payable returns(bytes memory returnData);
+10	 }
+11	 interface IMVDFunctionalitiesManager {
+12	 function getFunctionalityData(string calldata codeName) external view returns(address, uint256, string memory, address, uint256);
+13	 function isAuthorizedFunctionality(address functionality) external view returns(bool);
+14	 }
+15	 interface IStateHolder {
+16	 function getUint256(string calldata name) external view returns(uint256);
+17	 function getAddress(string calldata name) external view returns(address);
+18	 function clear(string calldata varName) external returns(string memory oldDataType, bytes memory oldVal);
+19	 }
+20	 pragma solidity ^0.7.6;
+21	 interface IFarmFactory {
+22	 event ExtensionCloned(address indexed);
+23	 function feePercentageInfo() external view returns (uint256, address);
+24	 function farmDefaultExtension() external view returns(address);
+25	 function cloneFarmDefaultExtension() external returns(address);
+26	 function getFarmTokenCollectionURI() external view returns (string memory);
+27	 function getFarmTokenURI() external view returns (string memory);
+28	 }
+29	 pragma solidity ^0.7.6;
+30	 contract FarmFactory is IFarmFactory {
+31	 address public farmMainImplAddress;
+32	 address public override farmDefaultExtension;
+33	 address public _doubleProxy;
+34	 uint256 private _feePercentage;
+35	 string public farmTokenCollectionURI;
+36	 string public farmTokenURI;
+37	 event FarmMainDeployed(address indexed farmMainAddress, address indexed sender, bytes initResultData);
+38	 event FarmMainLogicSet(address indexed newAddress);
+39	 event FarmDefaultExtensionSet(address indexed newAddress);
+40	 event FeePercentageSet(uint256 newFeePercentage);
+41	 constructor(address doubleProxy, address _farmMainImplAddress, address _farmDefaultExtension, uint256 feePercentage, string memory farmTokenCollectionUri, string memory farmTokenUri) {
+42	 _doubleProxy = doubleProxy;
+43	 farmTokenCollectionURI = farmTokenCollectionUri;
+44	 farmTokenURI = farmTokenUri;
+45	 emit FarmMainLogicSet(farmMainImplAddress = _farmMainImplAddress);
+46	 emit FarmDefaultExtensionSet(farmDefaultExtension = _farmDefaultExtension);
+47	 emit FeePercentageSet(_feePercentage = feePercentage);
+48	 }
+49	 function feePercentageInfo() public override view returns (uint256, address) {
+50	 return (_feePercentage, IMVDProxy(IDoubleProxy(_doubleProxy).proxy()).getMVDWalletAddress());
+51	 }
+52	 function setDoubleProxy(address newDoubleProxy) public onlyDFO {
+53	 _doubleProxy = newDoubleProxy;
+54	 }
+55	 function updateFeePercentage(uint256 feePercentage) public onlyDFO {
+56	 emit FeePercentageSet(_feePercentage = feePercentage);
+57	 }
+58	 function updateLogicAddress(address _implAddress) public {
+59	 emit FarmMainLogicSet(farmMainImplAddress = _implAddress);
+60	 }
+61	 function updateDefaultExtensionAddress(address _farmDefaultExtensionAddress) public {
+62	 emit FarmDefaultExtensionSet(farmDefaultExtension = _farmDefaultExtensionAddress);
+63	 }
+64	 function updateFarmTokenCollectionURI(string memory farmTokenCollectionUri) public onlyDFO {
+65	 farmTokenCollectionURI = farmTokenCollectionUri;
+66	 }
+67	 function updateFarmTokenURI(string memory farmTokenUri) public onlyDFO {
+68	 farmTokenURI = farmTokenUri;
+69	 }
+70	 function getFarmTokenCollectionURI() public override view returns (string memory) {
+71	 return farmTokenCollectionURI;
+72	 }
+73	 function getFarmTokenURI() public override view returns (string memory) {
+74	 return farmTokenURI;
+75	 }
+76	 function cloneFarmDefaultExtension() public override returns(address clonedExtension) {
+77	 emit ExtensionCloned(clonedExtension = _clone(farmDefaultExtension));
+78	 }
+79	 function deploy(bytes memory data) public returns (address contractAddress, bytes memory initResultData) {
+80	 initResultData = _call(contractAddress = _clone(farmMainImplAddress), data);
+81	 emit FarmMainDeployed(contractAddress, msg.sender, initResultData);
+82	 }
+83	 function _clone(address original) private returns (address copy) {
+84	 assembly {
+85	 mstore( 0, or( 0x5880730000000000000000000000000000000000000000803b80938091923cF3, mul(original, 0x1000000000000000000) ) ) copy := create(0, 0, 32) switch extcodesize(copy) case 0 {
+86	 invalid() }
+87	 }
+88	 }
+89	 function _call(address location, bytes memory payload) private returns(bytes memory returnData) {
+90	 assembly {
+91	 let result := call(gas(), location, 0, add(payload, 0x20), mload(payload), 0, 0) let size := returndatasize() returnData := mload(0x40) mstore(returnData, size) let returnDataPayloadStart := add(returnData, 0x20) returndatacopy(returnDataPayloadStart, 0, size) mstore(0x40, add(returnDataPayloadStart, size)) switch result case 0 {
+92	 revert(returnDataPayloadStart, size)}
+93	 }
+94	 }
+95	 modifier onlyDFO() {
+96	 require(IMVDFunctionalitiesManager(IMVDProxy(IDoubleProxy(_doubleProxy).proxy()).getMVDFunctionalitiesManagerAddress()).isAuthorizedFunctionality(msg.sender), "Unauthorized.");
+97	 _;
+98	 }
+99	 }

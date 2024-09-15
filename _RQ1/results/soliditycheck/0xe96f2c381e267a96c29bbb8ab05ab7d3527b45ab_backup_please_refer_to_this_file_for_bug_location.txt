@@ -1,0 +1,139 @@
+row number 
+1	   pragma solidity ^0.4.18;
+2	 contract SafeMath {
+3	 function safeAdd(uint256 a, uint256 b) public pure returns (uint256 c) {
+4	 c = a + b;
+5	 require(c >= a);
+6	 }
+7	 function safeSub(uint256 a, uint256 b) public pure returns (uint256 c) {
+8	 require(b <= a);
+9	 c = a - b;
+10	 }
+11	 function safeMul(uint256 a, uint256 b) public pure returns (uint256 c) {
+12	 c = a * b;
+13	 require(a == 0 || c / a == b);
+14	 }
+15	 function safeDiv(uint256 a, uint256 b) public pure returns (uint256 c) {
+16	 require(b > 0);
+17	 c = a / b;
+18	 }
+19	 }
+20	 contract ERC20Interface {
+21	 function totalSupply() public constant returns (uint256);
+22	 function balanceOf(address tokenOwner) public constant returns (uint256 balance);
+23	 function allowance(address tokenOwner, address spender) public constant returns (uint256 remaining);
+24	 function transfer(address to, uint256 tokens) public returns (bool success);
+25	 function approve(address spender, uint256 tokens) public returns (bool success);
+26	 function transferFrom(address from, address to, uint256 tokens) public returns (bool success);
+27	 event Transfer(address indexed from, address indexed to, uint256 tokens);
+28	 event Approval(address indexed tokenOwner, address indexed spender, uint256 tokens);
+29	 event Burn(address indexed from, uint256 value);
+30	 event Freeze(address indexed from, uint256 value);
+31	 event Unfreeze(address indexed from, uint256 value);
+32	 }
+33	 contract ApproveAndCallFallBack {
+34	 function receiveApproval(address from, uint256 tokens, address token, bytes data) public;
+35	 }
+36	 contract Owned {
+37	 address public owner;
+38	 function Owned() public {
+39	 owner = msg.sender;
+40	 }
+41	 modifier onlyOwner {
+42	 require(msg.sender == owner);
+43	 _;
+44	 }
+45	 }
+46	 contract SatoExchange is ERC20Interface, Owned, SafeMath {
+47	 string public symbol;
+48	 string public name;
+49	 uint8 public decimals;
+50	 uint256 public _totalSupply;
+51	 mapping(address => uint256) internal balances;
+52	 mapping (address => uint256) internal freezeOf;
+53	 mapping(address => mapping(address => uint256)) internal allowed;
+54	 function SatoExchange() public {
+55	 symbol = 'SATX';
+56	 name = 'SatoExchange';
+57	 decimals = 8;
+58	 _totalSupply = 30000000000000000;
+59	 balances[msg.sender] = _totalSupply;
+60	 Transfer(address(0), msg.sender, _totalSupply);
+61	 }
+62	 function totalSupply() public constant returns (uint256) {
+63	 return _totalSupply - balances[address(0)];
+64	 }
+65	 function balanceOf(address tokenOwner) public constant returns (uint256 balance) {
+66	 return balances[tokenOwner];
+67	 }
+68	 function transfer(address to, uint256 tokens) public returns (bool success) {
+69	 if (to == 0x0) revert();
+70	 if (tokens <= 0) revert();
+71	 require(msg.sender != address(0) && msg.sender != to);
+72	 require(to != address(0));
+73	 if (balances[msg.sender] < tokens) revert();
+74	 if (balances[to] + tokens < balances[to]) revert();
+75	 balances[msg.sender] = safeSub(balances[msg.sender], tokens);
+76	 balances[to] = safeAdd(balances[to], tokens);
+77	 Transfer(msg.sender, to, tokens);
+78	 return true;
+79	 }
+80	 function approve(address spender, uint256 tokens) public returns (bool success) {
+81	 require(tokens > 0);
+82	 allowed[msg.sender][spender] = tokens;
+83	 Approval(msg.sender, spender, tokens);
+84	 return true;
+85	 }
+86	 function burn(uint256 _value) public returns (bool success) {
+87	 if (balances[msg.sender] < _value) revert();
+88	 if (_value <= 0) revert();
+89	 balances[msg.sender] = SafeMath.safeSub(balances[msg.sender], _value);
+90	 _totalSupply = SafeMath.safeSub(_totalSupply,_value);
+91	 Burn(msg.sender, _value);
+92	 return true;
+93	 }
+94	 function freeze(uint256 _value) public returns (bool success) {
+95	 if (balances[msg.sender] < _value) revert();
+96	 if (_value <= 0) revert();
+97	 balances[msg.sender] = SafeMath.safeSub(balances[msg.sender], _value);
+98	 freezeOf[msg.sender] = SafeMath.safeAdd(freezeOf[msg.sender], _value);
+99	 Freeze(msg.sender, _value);
+100	 return true;
+101	 }
+102	 function unfreeze(uint256 _value) public returns (bool success) {
+103	 if (freezeOf[msg.sender] < _value) revert();
+104	 if (_value <= 0) revert();
+105	 freezeOf[msg.sender] = SafeMath.safeSub(freezeOf[msg.sender], _value);
+106	 balances[msg.sender] = SafeMath.safeAdd(balances[msg.sender], _value);
+107	 Unfreeze(msg.sender, _value);
+108	 return true;
+109	 }
+110	 function transferFrom(address from, address to, uint256 tokens) public returns (bool success) {
+111	 if (to == 0x0) revert();
+112	 if (tokens <= 0) revert();
+113	 if (balances[from] < tokens) revert();
+114	 if (balances[to] + tokens < balances[to]) revert();
+115	 if (tokens > allowed[from][msg.sender]) revert();
+116	 balances[from] = safeSub(balances[from], tokens);
+117	 allowed[from][msg.sender] = safeSub(allowed[from][msg.sender], tokens);
+118	 balances[to] = safeAdd(balances[to], tokens);
+119	 Transfer(from, to, tokens);
+120	 return true;
+121	 }
+122	 function allowance(address tokenOwner, address spender) public constant returns (uint256 remaining) {
+123	 return allowed[tokenOwner][spender];
+124	 }
+125	 function approveAndCall(address spender, uint256 tokens, bytes data) public returns (bool success) {
+126	 require(tokens > 0);
+127	 allowed[msg.sender][spender] = tokens;
+128	 Approval(msg.sender, spender, tokens);
+129	 ApproveAndCallFallBack(spender).receiveApproval(msg.sender, tokens, this, data);
+130	 return true;
+131	 }
+132	 function() public payable {
+133	 revert();
+134	 }
+135	 function transferAnyERC20Token(address tokenAddress, uint256 tokens) public onlyOwner returns (bool success) {
+136	 return ERC20Interface(tokenAddress).transfer(owner, tokens);
+137	 }
+138	 }

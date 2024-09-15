@@ -1,0 +1,455 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity 0.7.6;
+3	 abstract contract IModuleAuth {
+4	 function _subDigest( bytes32 _digest ) internal virtual view returns (bytes32);
+5	 function _signatureValidation( bytes32 _hash, bytes memory _signature ) internal virtual view returns (bool);
+6	 }
+7	 pragma solidity 0.7.6;
+8	 abstract contract ModuleERC165 {
+9	 function supportsInterface(bytes4 _interfaceID) virtual public pure returns (bool) {
+10	 return _interfaceID == this.supportsInterface.selector;
+11	 }
+12	 }
+13	 pragma solidity 0.7.6;
+14	 contract SignatureValidator {
+15	 using LibBytes for bytes;
+16	 bytes4 constant internal ERC1271_MAGICVALUE = 0x20c13b0b;
+17	 bytes4 constant internal ERC1271_MAGICVALUE_BYTES32 = 0x1626ba7e;
+18	 uint256 private constant SIG_TYPE_EIP712 = 1;
+19	 uint256 private constant SIG_TYPE_ETH_SIGN = 2;
+20	 uint256 private constant SIG_TYPE_WALLET_BYTES32 = 3;
+21	 function recoverSigner( bytes32 _hash, bytes memory _signature ) internal pure returns (address signer) {
+22	 uint256 signatureType = uint8(_signature[_signature.length - 1]);
+23	 uint8 v = uint8(_signature[64]);
+24	 bytes32 r = _signature.readBytes32(0);
+25	 bytes32 s = _signature.readBytes32(32);
+26	 if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+27	 revert("SignatureValidator#recoverSigner: invalid signature 's' value");
+28	 }
+29	 if (v != 27 && v != 28) {
+30	 revert("SignatureValidator#recoverSigner: invalid signature 'v' value");
+31	 }
+32	 if (signatureType == SIG_TYPE_EIP712) {
+33	 signer = ecrecover(_hash, v, r, s);
+34	 }
+35	 else if (signatureType == SIG_TYPE_ETH_SIGN) {
+36	 signer = ecrecover( keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", _hash)), v, r, s );
+37	 }
+38	 else {
+39	 revert("SignatureValidator#recoverSigner: UNSUPPORTED_SIGNATURE_TYPE");
+40	 }
+41	 require( signer != address(0x0), "SignatureValidator#recoverSigner: INVALID_SIGNER" );
+42	 return signer;
+43	 }
+44	 function isValidSignature( bytes32 _hash, address _signer, bytes memory _signature ) internal view returns (bool valid) {
+45	 uint256 signatureType = uint8(_signature[_signature.length - 1]);
+46	 if (signatureType == SIG_TYPE_EIP712 || signatureType == SIG_TYPE_ETH_SIGN) {
+47	 valid = recoverSigner(_hash, _signature) == _signer;
+48	 }
+49	 else if (signatureType == SIG_TYPE_WALLET_BYTES32) {
+50	 uint256 prevSize;
+51	 assembly {
+52	 prevSize := mload(_signature) mstore(_signature, sub(prevSize, 1)) }
+53	 valid = ERC1271_MAGICVALUE_BYTES32 == IERC1271Wallet(_signer).isValidSignature(_hash, _signature);
+54	 assembly {
+55	 mstore(_signature, prevSize) }
+56	 }
+57	 else {
+58	 revert("SignatureValidator#isValidSignature: UNSUPPORTED_SIGNATURE_TYPE");
+59	 }
+60	 }
+61	 }
+62	 pragma solidity 0.7.6;
+63	 interface IERC1271Wallet {
+64	 function isValidSignature( bytes calldata _data, bytes calldata _signature) external view returns (bytes4 magicValue);
+65	 function isValidSignature( bytes32 _hash, bytes calldata _signature) external view returns (bytes4 magicValue);
+66	 }
+67	 pragma solidity 0.7.6;
+68	 contract Implementation {
+69	 function _setImplementation(address _imp) internal {
+70	 assembly {
+71	 sstore(address(), _imp) }
+72	 }
+73	 function _getImplementation() internal view returns (address _imp) {
+74	 assembly {
+75	 _imp := sload(address()) }
+76	 }
+77	 }
+78	 pragma solidity 0.7.6;
+79	 interface IERC1155Receiver {
+80	 function onERC1155Received(address, address, uint256, uint256, bytes calldata) external returns (bytes4);
+81	 function onERC1155BatchReceived(address, address, uint256[] calldata, uint256[] calldata, bytes calldata) external returns (bytes4);
+82	 }
+83	 pragma solidity 0.7.6;
+84	 interface IERC721Receiver {
+85	 function onERC721Received(address, address, uint256, bytes calldata) external returns (bytes4);
+86	 }
+87	 pragma solidity 0.7.6;
+88	 abstract contract ModuleAuth is IModuleAuth, ModuleERC165, SignatureValidator, IERC1271Wallet {
+89	 using LibBytes for bytes;
+90	 uint256 private constant FLAG_SIGNATURE = 0;
+91	 uint256 private constant FLAG_ADDRESS = 1;
+92	 uint256 private constant FLAG_DYNAMIC_SIGNATURE = 2;
+93	 bytes4 private constant SELECTOR_ERC1271_BYTES_BYTES = 0x20c13b0b;
+94	 bytes4 private constant SELECTOR_ERC1271_BYTES32_BYTES = 0x1626ba7e;
+95	 function _signatureValidation( bytes32 _hash, bytes memory _signature ) internal override view returns (bool) {
+96	 ( uint16 threshold, uint256 rindex ) = _signature.readFirstUint16();
+97	 bytes32 imageHash = bytes32(uint256(threshold));
+98	 uint256 totalWeight;
+99	 while (rindex < _signature.length) {
+100	 uint256 flag;
+101	 uint256 addrWeight;
+102	 address addr;
+103	 (flag, addrWeight, rindex) = _signature.readUint8Uint8(rindex);
+104	 if (flag == FLAG_ADDRESS) {
+105	 (addr, rindex) = _signature.readAddress(rindex);
+106	 }
+107	 else if (flag == FLAG_SIGNATURE) {
+108	 bytes memory signature;
+109	 (signature, rindex) = _signature.readBytes66(rindex);
+110	 addr = recoverSigner(_hash, signature);
+111	 totalWeight += addrWeight;
+112	 }
+113	 else if (flag == FLAG_DYNAMIC_SIGNATURE) {
+114	 (addr, rindex) = _signature.readAddress(rindex);
+115	 uint256 size;
+116	 (size, rindex) = _signature.readUint16(rindex);
+117	 bytes memory signature;
+118	 (signature, rindex) = _signature.readBytes(rindex, size);
+119	 require(isValidSignature(_hash, addr, signature), "ModuleAuth#_signatureValidation: INVALID_SIGNATURE");
+120	 totalWeight += addrWeight;
+121	 }
+122	 else {
+123	 revert("ModuleAuth#_signatureValidation INVALID_FLAG");
+124	 }
+125	 imageHash = keccak256(abi.encode(imageHash, addrWeight, addr));
+126	 }
+127	 return totalWeight >= threshold && _isValidImage(imageHash);
+128	 }
+129	 function _isValidImage(bytes32 _imageHash) internal virtual view returns (bool);
+130	 function _subDigest(bytes32 _digest) internal override view returns (bytes32) {
+131	 uint256 chainId;
+132	 assembly {
+133	 chainId := chainid() }
+134	 return keccak256( abi.encodePacked( "\x19\x01", chainId, address(this), _digest ) );
+135	 }
+136	 function isValidSignature( bytes calldata _data, bytes calldata _signatures ) external override view returns (bytes4) {
+137	 if (_signatureValidation(_subDigest(keccak256(_data)), _signatures)) {
+138	 return SELECTOR_ERC1271_BYTES_BYTES;
+139	 }
+140	 }
+141	 function isValidSignature( bytes32 _hash, bytes calldata _signatures ) external override view returns (bytes4) {
+142	 if (_signatureValidation(_subDigest(_hash), _signatures)) {
+143	 return SELECTOR_ERC1271_BYTES32_BYTES;
+144	 }
+145	 }
+146	 function supportsInterface(bytes4 _interfaceID) public override virtual pure returns (bool) {
+147	 if ( _interfaceID == type(IModuleAuth).interfaceId || _interfaceID == type(IERC1271Wallet).interfaceId ) {
+148	 return true;
+149	 }
+150	 return super.supportsInterface(_interfaceID);
+151	 }
+152	 }
+153	 pragma solidity 0.7.6;
+154	 interface IModuleHooks {
+155	 function readHook(bytes4 _signature) external view returns (address);
+156	 function addHook(bytes4 _signature, address _implementation) external;
+157	 function removeHook(bytes4 _signature) external;
+158	 }
+159	 pragma solidity 0.7.6;
+160	 contract ModuleSelfAuth {
+161	 modifier onlySelf() {
+162	 require(msg.sender == address(this), "ModuleSelfAuth#onlySelf: NOT_AUTHORIZED");
+163	 _;
+164	 }
+165	 }
+166	 pragma solidity 0.7.6;
+167	 interface IModuleCalls {
+168	 event NonceChange(uint256 _space, uint256 _newNonce);
+169	 event TxFailed(bytes32 _tx, bytes _reason);
+170	 event TxExecuted(bytes32 _tx) anonymous;
+171	 struct Transaction {
+172	 bool delegateCall;
+173	 bool revertOnError;
+174	 uint256 gasLimit;
+175	 address target;
+176	 uint256 value;
+177	 bytes data;
+178	 }
+179	 function nonce() external view returns (uint256);
+180	 function readNonce(uint256 _space) external view returns (uint256);
+181	 function execute( Transaction[] calldata _txs, uint256 _nonce, bytes calldata _signature ) external;
+182	 function selfExecute( Transaction[] calldata _txs ) external;
+183	 }
+184	 pragma solidity 0.7.6;
+185	 interface IModuleUpdate {
+186	 function updateImplementation(address _implementation) external;
+187	 }
+188	 pragma solidity 0.7.6;
+189	 interface IModuleCreator {
+190	 function createContract(bytes calldata _code) external payable returns (address addr);
+191	 }
+192	 pragma solidity 0.7.6;
+193	 abstract contract ModuleAuthFixed is ModuleAuth {
+194	 bytes32 public immutable INIT_CODE_HASH;
+195	 address public immutable FACTORY;
+196	 constructor(address _factory) {
+197	 bytes32 initCodeHash = keccak256(abi.encodePacked(Wallet.creationCode, uint256(address(this))));
+198	 INIT_CODE_HASH = initCodeHash;
+199	 FACTORY = _factory;
+200	 }
+201	 function _isValidImage(bytes32 _imageHash) internal override view returns (bool) {
+202	 return address( uint256( keccak256( abi.encodePacked( byte(0xff), FACTORY, _imageHash, INIT_CODE_HASH ) ) ) ) == address(this);
+203	 }
+204	 }
+205	 pragma solidity 0.7.6;
+206	 contract ModuleHooks is IERC1155Receiver, IERC721Receiver, IModuleHooks, ModuleERC165, ModuleSelfAuth {
+207	 bytes32 private constant HOOKS_KEY = bytes32(0xbe27a319efc8734e89e26ba4bc95f5c788584163b959f03fa04e2d7ab4b9a120);
+208	 function readHook(bytes4 _signature) external override view returns (address) {
+209	 return _readHook(_signature);
+210	 }
+211	 function addHook(bytes4 _signature, address _implementation) external override onlySelf {
+212	 require(_readHook(_signature) == address(0), "ModuleHooks#addHook: HOOK_ALREADY_REGISTERED");
+213	 _writeHook(_signature, _implementation);
+214	 }
+215	 function removeHook(bytes4 _signature) external override onlySelf {
+216	 require(_readHook(_signature) != address(0), "ModuleHooks#removeHook: HOOK_NOT_REGISTERED");
+217	 _writeHook(_signature, address(0));
+218	 }
+219	 function _readHook(bytes4 _signature) private view returns (address) {
+220	 return address(uint256(ModuleStorage.readBytes32Map(HOOKS_KEY, _signature)));
+221	 }
+222	 function _writeHook(bytes4 _signature, address _implementation) private {
+223	 ModuleStorage.writeBytes32Map(HOOKS_KEY, _signature, bytes32(uint256(_implementation)));
+224	 }
+225	 function onERC1155Received( address, address, uint256, uint256, bytes calldata ) external override returns (bytes4) {
+226	 return ModuleHooks.onERC1155Received.selector;
+227	 }
+228	 function onERC1155BatchReceived( address, address, uint256[] calldata, uint256[] calldata, bytes calldata ) external override returns (bytes4) {
+229	 return ModuleHooks.onERC1155BatchReceived.selector;
+230	 }
+231	 function onERC721Received(address, address, uint256, bytes calldata) external override returns (bytes4) {
+232	 return ModuleHooks.onERC721Received.selector;
+233	 }
+234	 fallback() external payable {
+235	 address target = _readHook(msg.sig);
+236	 if (target != address(0)) {
+237	 (bool success, bytes memory result) = target.delegatecall(msg.data);
+238	 assembly {
+239	 if iszero(success) {
+240	 revert(add(result, 0x20), mload(result)) }
+241	 return(add(result, 0x20), mload(result)) }
+242	 }
+243	 }
+244	 receive() external payable {
+245	 }
+246	 function supportsInterface(bytes4 _interfaceID) public override virtual pure returns (bool) {
+247	 if ( _interfaceID == type(IModuleHooks).interfaceId || _interfaceID == type(IERC1155Receiver).interfaceId || _interfaceID == type(IERC721Receiver).interfaceId || _interfaceID == type(IERC223Receiver).interfaceId ) {
+248	 return true;
+249	 }
+250	 return super.supportsInterface(_interfaceID);
+251	 }
+252	 }
+253	 pragma solidity 0.7.6;
+254	 abstract contract ModuleCalls is IModuleCalls, IModuleAuth, ModuleERC165, ModuleSelfAuth {
+255	 bytes32 private constant NONCE_KEY = bytes32(0x8d0bf1fd623d628c741362c1289948e57b3e2905218c676d3e69abee36d6ae2e);
+256	 uint256 private constant NONCE_BITS = 96;
+257	 bytes32 private constant NONCE_MASK = bytes32((1 << NONCE_BITS) - 1);
+258	 function nonce() external override virtual view returns (uint256) {
+259	 return readNonce(0);
+260	 }
+261	 function readNonce(uint256 _space) public override virtual view returns (uint256) {
+262	 return uint256(ModuleStorage.readBytes32Map(NONCE_KEY, bytes32(_space)));
+263	 }
+264	 function _writeNonce(uint256 _space, uint256 _nonce) private {
+265	 ModuleStorage.writeBytes32Map(NONCE_KEY, bytes32(_space), bytes32(_nonce));
+266	 }
+267	 function execute( Transaction[] memory _txs, uint256 _nonce, bytes memory _signature ) public override virtual {
+268	 _validateNonce(_nonce);
+269	 bytes32 txHash = _subDigest(keccak256(abi.encode(_nonce, _txs)));
+270	 require( _signatureValidation(txHash, _signature), "ModuleCalls#execute: INVALID_SIGNATURE" );
+271	 _execute(txHash, _txs);
+272	 }
+273	 function selfExecute( Transaction[] memory _txs ) public override virtual onlySelf {
+274	 bytes32 txHash = _subDigest(keccak256(abi.encode('self:', _txs)));
+275	 _execute(txHash, _txs);
+276	 }
+277	 function _execute( bytes32 _txHash, Transaction[] memory _txs ) private {
+278	 for (uint256 i = 0; i < _txs.length; i++) {
+279	 Transaction memory transaction = _txs[i];
+280	 bool success;
+281	 bytes memory result;
+282	 require(gasleft() >= transaction.gasLimit, "ModuleCalls#_execute: NOT_ENOUGH_GAS");
+283	 if (transaction.delegateCall) {
+284	 (success, result) = transaction.target.delegatecall{
+285	 gas: transaction.gasLimit == 0 ? gasleft() : transaction.gasLimit }
+286	 (transaction.data);
+287	 }
+288	 else {
+289	 (success, result) = transaction.target.call{
+290	 value: transaction.value, gas: transaction.gasLimit == 0 ? gasleft() : transaction.gasLimit }
+291	 (transaction.data);
+292	 }
+293	 if (success) {
+294	 emit TxExecuted(_txHash);
+295	 }
+296	 else {
+297	 _revertBytes(transaction, _txHash, result);
+298	 }
+299	 }
+300	 }
+301	 function _validateNonce(uint256 _rawNonce) private {
+302	 (uint256 space, uint256 providedNonce) = _decodeNonce(_rawNonce);
+303	 uint256 currentNonce = readNonce(space);
+304	 require( providedNonce == currentNonce, "MainModule#_auth: INVALID_NONCE" );
+305	 uint256 newNonce = providedNonce + 1;
+306	 _writeNonce(space, newNonce);
+307	 emit NonceChange(space, newNonce);
+308	 }
+309	 function _revertBytes( Transaction memory _tx, bytes32 _txHash, bytes memory _reason ) internal {
+310	 if (_tx.revertOnError) {
+311	 assembly {
+312	 revert(add(_reason, 0x20), mload(_reason)) }
+313	 }
+314	 else {
+315	 emit TxFailed(_txHash, _reason);
+316	 }
+317	 }
+318	 function _decodeNonce(uint256 _rawNonce) private pure returns (uint256 _space, uint256 _nonce) {
+319	 _nonce = uint256(bytes32(_rawNonce) & NONCE_MASK);
+320	 _space = _rawNonce >> NONCE_BITS;
+321	 }
+322	 function supportsInterface(bytes4 _interfaceID) public override virtual pure returns (bool) {
+323	 if (_interfaceID == type(IModuleCalls).interfaceId) {
+324	 return true;
+325	 }
+326	 return super.supportsInterface(_interfaceID);
+327	 }
+328	 }
+329	 pragma solidity 0.7.6;
+330	 contract ModuleUpdate is IModuleUpdate, ModuleERC165, ModuleSelfAuth, Implementation {
+331	 using LibAddress for address;
+332	 event ImplementationUpdated(address newImplementation);
+333	 function updateImplementation(address _implementation) external override onlySelf {
+334	 require(_implementation.isContract(), "ModuleUpdate#updateImplementation: INVALID_IMPLEMENTATION");
+335	 _setImplementation(_implementation);
+336	 emit ImplementationUpdated(_implementation);
+337	 }
+338	 function supportsInterface(bytes4 _interfaceID) public override virtual pure returns (bool) {
+339	 if (_interfaceID == type(IModuleUpdate).interfaceId) {
+340	 return true;
+341	 }
+342	 return super.supportsInterface(_interfaceID);
+343	 }
+344	 }
+345	 pragma solidity 0.7.6;
+346	 contract ModuleCreator is IModuleCreator, ModuleERC165, ModuleSelfAuth {
+347	 event CreatedContract(address _contract);
+348	 function createContract(bytes memory _code) public override payable onlySelf returns (address addr) {
+349	 assembly {
+350	 addr := create(callvalue(), add(_code, 32), mload(_code)) }
+351	 emit CreatedContract(addr);
+352	 }
+353	 function supportsInterface(bytes4 _interfaceID) public override virtual pure returns (bool) {
+354	 if (_interfaceID == type(IModuleCreator).interfaceId) {
+355	 return true;
+356	 }
+357	 return super.supportsInterface(_interfaceID);
+358	 }
+359	 }
+360	 pragma solidity 0.7.6;
+361	 contract MainModule is ModuleAuthFixed, ModuleCalls, ModuleUpdate, ModuleHooks, ModuleCreator {
+362	 constructor( address _factory ) public ModuleAuthFixed( _factory ) {
+363	 }
+364	 function supportsInterface( bytes4 _interfaceID ) public override( ModuleAuth, ModuleCalls, ModuleUpdate, ModuleHooks, ModuleCreator ) pure returns (bool) {
+365	 return super.supportsInterface(_interfaceID);
+366	 }
+367	 }
+368	 pragma solidity 0.7.6;
+369	 library LibBytes {
+370	 using LibBytes for bytes;
+371	 function readFirstUint16( bytes memory data ) internal pure returns ( uint16 a, uint256 newIndex ) {
+372	 assembly {
+373	 let word := mload(add(32, data)) a := shr(240, word) newIndex := 2 }
+374	 require(2 <= data.length, "LibBytes#readFirstUint16: OUT_OF_BOUNDS");
+375	 }
+376	 function readUint8Uint8( bytes memory data, uint256 index ) internal pure returns ( uint8 a, uint8 b, uint256 newIndex ) {
+377	 assembly {
+378	 let word := mload(add(index, add(32, data))) a := shr(248, word) b := and(shr(240, word), 0xff) newIndex := add(index, 2) }
+379	 require(newIndex <= data.length, "LibBytes#readUint8Uint8: OUT_OF_BOUNDS");
+380	 }
+381	 function readAddress( bytes memory data, uint256 index ) internal pure returns ( address a, uint256 newIndex ) {
+382	 assembly {
+383	 let word := mload(add(index, add(32, data))) a := and(shr(96, word), 0xffffffffffffffffffffffffffffffffffffffff) newIndex := add(index, 20) }
+384	 require(newIndex <= data.length, "LibBytes#readAddress: OUT_OF_BOUNDS");
+385	 }
+386	 function readBytes66( bytes memory data, uint256 index ) internal pure returns ( bytes memory a, uint256 newIndex ) {
+387	 a = new bytes(66);
+388	 assembly {
+389	 let offset := add(32, add(data, index)) mstore(add(a, 32), mload(offset)) mstore(add(a, 64), mload(add(offset, 32))) mstore(add(a, 66), mload(add(offset, 34))) newIndex := add(index, 66) }
+390	 require(newIndex <= data.length, "LibBytes#readBytes66: OUT_OF_BOUNDS");
+391	 }
+392	 function readBytes32( bytes memory b, uint256 index ) internal pure returns (bytes32 result) {
+393	 require( b.length >= index + 32, "LibBytes#readBytes32: GREATER_OR_EQUAL_TO_32_LENGTH_REQUIRED" );
+394	 uint256 pos = index + 32;
+395	 assembly {
+396	 result := mload(add(b, pos)) }
+397	 return result;
+398	 }
+399	 function readUint16( bytes memory data, uint256 index ) internal pure returns (uint16 a, uint256 newIndex) {
+400	 assembly {
+401	 let word := mload(add(index, add(32, data))) a := and(shr(240, word), 0xffff) newIndex := add(index, 2) }
+402	 require(newIndex <= data.length, "LibBytes#readUint16: OUT_OF_BOUNDS");
+403	 }
+404	 function readBytes( bytes memory data, uint256 index, uint256 size ) internal pure returns (bytes memory a, uint256 newIndex) {
+405	 a = new bytes(size);
+406	 assembly {
+407	 let offset := add(32, add(data, index)) let i := 0 let n := 32 for {
+408	 }
+409	 lt(n, size) {
+410	 i := n n := add(n, 32) }
+411	 {
+412	 mstore(add(a, n), mload(add(offset, i))) }
+413	 let suffix := add(a, add(32, size)) let suffixWord := mload(suffix) mstore(add(a, n), mload(add(offset, i))) mstore(suffix, suffixWord) newIndex := add(index, size) }
+414	 require(newIndex <= data.length, "LibBytes#readBytes: OUT_OF_BOUNDS");
+415	 }
+416	 }
+417	 pragma solidity 0.7.6;
+418	 library Wallet {
+419	 bytes internal constant creationCode = hex"603a600e3d39601a805130553df3363d3d373d3d3d363d30545af43d82803e903d91601857fd5bf3";
+420	 }
+421	 pragma solidity 0.7.6;
+422	 library ModuleStorage {
+423	 function writeBytes32(bytes32 _key, bytes32 _val) internal {
+424	 assembly {
+425	 sstore(_key, _val) }
+426	 }
+427	 function readBytes32(bytes32 _key) internal view returns (bytes32 val) {
+428	 assembly {
+429	 val := sload(_key) }
+430	 }
+431	 function writeBytes32Map(bytes32 _key, bytes32 _subKey, bytes32 _val) internal {
+432	 bytes32 key = keccak256(abi.encode(_key, _subKey));
+433	 assembly {
+434	 sstore(key, _val) }
+435	 }
+436	 function readBytes32Map(bytes32 _key, bytes32 _subKey) internal view returns (bytes32 val) {
+437	 bytes32 key = keccak256(abi.encode(_key, _subKey));
+438	 assembly {
+439	 val := sload(key) }
+440	 }
+441	 }
+442	 pragma solidity 0.7.6;
+443	 interface IERC223Receiver {
+444	 function tokenFallback(address, uint256, bytes calldata) external;
+445	 }
+446	 pragma solidity 0.7.6;
+447	 library LibAddress {
+448	 function isContract(address account) internal view returns (bool) {
+449	 uint256 csize;
+450	 assembly {
+451	 csize := extcodesize(account) }
+452	 return csize != 0;
+453	 }
+454	 }

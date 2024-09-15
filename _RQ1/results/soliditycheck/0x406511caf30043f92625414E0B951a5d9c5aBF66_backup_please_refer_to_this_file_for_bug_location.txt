@@ -1,0 +1,372 @@
+row number 
+1	         pragma solidity ^0.5.0;
+2	 contract MasterAware {
+3	 INXMMaster public master;
+4	 modifier onlyMember {
+5	 require(master.isMember(msg.sender), "Caller is not a member");
+6	 _;
+7	 }
+8	 modifier onlyInternal {
+9	 require(master.isInternal(msg.sender), "Caller is not an internal contract");
+10	 _;
+11	 }
+12	 modifier onlyMaster {
+13	 if (address(master) != address(0)) {
+14	 require(address(master) == msg.sender, "Not master");
+15	 }
+16	 _;
+17	 }
+18	 modifier onlyGovernance {
+19	 require( master.checkIsAuthToGoverned(msg.sender), "Caller is not authorized to govern" );
+20	 _;
+21	 }
+22	 modifier whenPaused {
+23	 require(master.isPause(), "System is not paused");
+24	 _;
+25	 }
+26	 modifier whenNotPaused {
+27	 require(!master.isPause(), "System is paused");
+28	 _;
+29	 }
+30	 function changeDependentContractAddress() external;
+31	 function changeMasterAddress(address masterAddress) public onlyMaster {
+32	 master = INXMMaster(masterAddress);
+33	 }
+34	 }
+35	 pragma solidity >=0.5.0;
+36	 interface IMCR {
+37	 function updateMCRInternal(uint poolValueInEth, bool forceUpdate) external;
+38	 function getMCR() external view returns (uint);
+39	 function maxMCRFloorIncrement() external view returns (uint24);
+40	 function mcrFloor() external view returns (uint112);
+41	 function mcr() external view returns (uint112);
+42	 function desiredMCR() external view returns (uint112);
+43	 function lastUpdateTime() external view returns (uint32);
+44	 }
+45	 pragma solidity ^0.5.0;
+46	 contract MCR is IMCR, MasterAware {
+47	 using SafeMath for uint;
+48	 IPool public pool;
+49	 IQuotationData public qd;
+50	 uint96 _unused;
+51	 uint24 public mcrFloorIncrementThreshold = 13000;
+52	 uint24 public maxMCRFloorIncrement = 100;
+53	 uint24 public maxMCRIncrement = 500;
+54	 uint24 public gearingFactor = 48000;
+55	 uint24 public minUpdateTime = 3600;
+56	 uint112 public mcrFloor;
+57	 uint112 public mcr;
+58	 uint112 public desiredMCR;
+59	 uint32 public lastUpdateTime;
+60	 IMCR public previousMCR;
+61	 event MCRUpdated( uint mcr, uint desiredMCR, uint mcrFloor, uint mcrETHWithGear, uint totalSumAssured );
+62	 uint constant UINT24_MAX = ~uint24(0);
+63	 uint constant MAX_MCR_ADJUSTMENT = 100;
+64	 uint constant BASIS_PRECISION = 10000;
+65	 constructor (address masterAddress) public {
+66	 changeMasterAddress(masterAddress);
+67	 if (masterAddress != address(0)) {
+68	 previousMCR = IMCR(master.getLatestAddress("MC"));
+69	 }
+70	 }
+71	 function changeDependentContractAddress() public {
+72	 qd = IQuotationData(master.getLatestAddress("QD"));
+73	 pool = IPool(master.getLatestAddress("P1"));
+74	 initialize();
+75	 }
+76	 function initialize() internal {
+77	 address currentMCR = master.getLatestAddress("MC");
+78	 if (address(previousMCR) == address(0) || currentMCR != address(this)) {
+79	 return;
+80	 }
+81	 mcrFloor = previousMCR.mcrFloor();
+82	 mcr = previousMCR.mcr();
+83	 desiredMCR = previousMCR.desiredMCR();
+84	 lastUpdateTime = previousMCR.lastUpdateTime();
+85	 maxMCRFloorIncrement = previousMCR.maxMCRFloorIncrement();
+86	 previousMCR = IMCR(address(0));
+87	 }
+88	 function getAllSumAssurance() public view returns (uint) {
+89	 IPriceFeedOracle priceFeed = pool.priceFeedOracle();
+90	 address daiAddress = priceFeed.daiAddress();
+91	 uint ethAmount = qd.getTotalSumAssured("ETH").mul(1e18);
+92	 uint daiAmount = qd.getTotalSumAssured("DAI").mul(1e18);
+93	 uint daiRate = priceFeed.getAssetToEthRate(daiAddress);
+94	 uint daiAmountInEth = daiAmount.mul(daiRate).div(1e18);
+95	 return ethAmount.add(daiAmountInEth);
+96	 }
+97	 function updateMCR() whenNotPaused public {
+98	 _updateMCR(pool.getPoolValueInEth(), false);
+99	 }
+100	 function updateMCRInternal(uint poolValueInEth, bool forceUpdate) public onlyInternal {
+101	 _updateMCR(poolValueInEth, forceUpdate);
+102	 }
+103	 function _updateMCR(uint poolValueInEth, bool forceUpdate) internal {
+104	 uint _mcrFloorIncrementThreshold = mcrFloorIncrementThreshold;
+105	 uint _maxMCRFloorIncrement = maxMCRFloorIncrement;
+106	 uint _gearingFactor = gearingFactor;
+107	 uint _minUpdateTime = minUpdateTime;
+108	 uint _mcrFloor = mcrFloor;
+109	 uint112 _mcr = mcr;
+110	 uint112 _desiredMCR = desiredMCR;
+111	 uint32 _lastUpdateTime = lastUpdateTime;
+112	 if (!forceUpdate && _lastUpdateTime + _minUpdateTime > block.timestamp) {
+113	 return;
+114	 }
+115	 if (block.timestamp > _lastUpdateTime && pool.calculateMCRRatio(poolValueInEth, _mcr) >= _mcrFloorIncrementThreshold) {
+116	 uint basisPointsAdjustment = min( _maxMCRFloorIncrement.mul(block.timestamp - _lastUpdateTime).div(1 days), _maxMCRFloorIncrement );
+117	 uint newMCRFloor = _mcrFloor.mul(basisPointsAdjustment.add(BASIS_PRECISION)).div(BASIS_PRECISION);
+118	 require(newMCRFloor <= uint112(~0), 'MCR: newMCRFloor overflow');
+119	 mcrFloor = uint112(newMCRFloor);
+120	 }
+121	 uint112 newMCR = uint112(getMCR());
+122	 if (newMCR != _mcr) {
+123	 mcr = newMCR;
+124	 }
+125	 uint totalSumAssured = getAllSumAssurance();
+126	 uint gearedMCR = totalSumAssured.mul(BASIS_PRECISION).div(_gearingFactor);
+127	 uint112 newDesiredMCR = uint112(max(gearedMCR, mcrFloor));
+128	 if (newDesiredMCR != _desiredMCR) {
+129	 desiredMCR = newDesiredMCR;
+130	 }
+131	 lastUpdateTime = uint32(block.timestamp);
+132	 emit MCRUpdated(mcr, desiredMCR, mcrFloor, gearedMCR, totalSumAssured);
+133	 }
+134	 function getMCR() public view returns (uint) {
+135	 uint _mcr = mcr;
+136	 uint _desiredMCR = desiredMCR;
+137	 uint _lastUpdateTime = lastUpdateTime;
+138	 if (block.timestamp == _lastUpdateTime) {
+139	 return _mcr;
+140	 }
+141	 uint _maxMCRIncrement = maxMCRIncrement;
+142	 uint basisPointsAdjustment = _maxMCRIncrement.mul(block.timestamp - _lastUpdateTime).div(1 days);
+143	 basisPointsAdjustment = min(basisPointsAdjustment, MAX_MCR_ADJUSTMENT);
+144	 if (_desiredMCR > _mcr) {
+145	 return min(_mcr.mul(basisPointsAdjustment.add(BASIS_PRECISION)).div(BASIS_PRECISION), _desiredMCR);
+146	 }
+147	 return max(_mcr.mul(BASIS_PRECISION - basisPointsAdjustment).div(BASIS_PRECISION), _desiredMCR);
+148	 }
+149	 function getGearedMCR() external view returns (uint) {
+150	 return getAllSumAssurance().mul(BASIS_PRECISION).div(gearingFactor);
+151	 }
+152	 function min(uint x, uint y) pure internal returns (uint) {
+153	 return x < y ? x : y;
+154	 }
+155	 function max(uint x, uint y) pure internal returns (uint) {
+156	 return x > y ? x : y;
+157	 }
+158	 function updateUintParameters(bytes8 code, uint val) public {
+159	 require(master.checkIsAuthToGoverned(msg.sender));
+160	 if (code == "DMCT") {
+161	 require(val <= UINT24_MAX, "MCR: value too large");
+162	 mcrFloorIncrementThreshold = uint24(val);
+163	 }
+164	 else if (code == "DMCI") {
+165	 require(val <= UINT24_MAX, "MCR: value too large");
+166	 maxMCRFloorIncrement = uint24(val);
+167	 }
+168	 else if (code == "MMIC") {
+169	 require(val <= UINT24_MAX, "MCR: value too large");
+170	 maxMCRIncrement = uint24(val);
+171	 }
+172	 else if (code == "GEAR") {
+173	 require(val <= UINT24_MAX, "MCR: value too large");
+174	 gearingFactor = uint24(val);
+175	 }
+176	 else if (code == "MUTI") {
+177	 require(val <= UINT24_MAX, "MCR: value too large");
+178	 minUpdateTime = uint24(val);
+179	 }
+180	 else {
+181	 revert("Invalid param code");
+182	 }
+183	 }
+184	 }
+185	 pragma solidity ^0.5.0;
+186	 library SafeMath {
+187	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+188	 uint256 c = a + b;
+189	 require(c >= a, "SafeMath: addition overflow");
+190	 return c;
+191	 }
+192	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+193	 return sub(a, b, "SafeMath: subtraction overflow");
+194	 }
+195	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+196	 require(b <= a, errorMessage);
+197	 uint256 c = a - b;
+198	 return c;
+199	 }
+200	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+201	 if (a == 0) {
+202	 return 0;
+203	 }
+204	 uint256 c = a * b;
+205	 require(c / a == b, "SafeMath: multiplication overflow");
+206	 return c;
+207	 }
+208	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+209	 return div(a, b, "SafeMath: division by zero");
+210	 }
+211	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+212	 require(b > 0, errorMessage);
+213	 uint256 c = a / b;
+214	 return c;
+215	 }
+216	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+217	 return mod(a, b, "SafeMath: modulo by zero");
+218	 }
+219	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+220	 require(b != 0, errorMessage);
+221	 return a % b;
+222	 }
+223	 }
+224	 pragma solidity ^0.5.0;
+225	 interface IERC20 {
+226	 function totalSupply() external view returns (uint256);
+227	 function balanceOf(address account) external view returns (uint256);
+228	 function transfer(address recipient, uint256 amount) external returns (bool);
+229	 function allowance(address owner, address spender) external view returns (uint256);
+230	 function approve(address spender, uint256 amount) external returns (bool);
+231	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+232	 event Transfer(address indexed from, address indexed to, uint256 value);
+233	 event Approval(address indexed owner, address indexed spender, uint256 value);
+234	 }
+235	 pragma solidity >=0.5.0;
+236	 interface INXMToken {
+237	 function burn(uint256 amount) external returns (bool);
+238	 function burnFrom(address from, uint256 value) external returns (bool);
+239	 function operatorTransfer(address from, uint256 value) external returns (bool);
+240	 function mint(address account, uint256 amount) external;
+241	 function isLockedForMV(address member) external view returns (uint);
+242	 function addToWhiteList(address _member) external returns (bool);
+243	 function removeFromWhiteList(address _member) external returns (bool);
+244	 function changeOperator(address _newOperator) external returns (bool);
+245	 function lockForMemberVote(address _of, uint _days) external;
+246	 function totalSupply() external view returns (uint256);
+247	 function balanceOf(address account) external view returns (uint256);
+248	 function transfer(address recipient, uint256 amount) external returns (bool);
+249	 function allowance(address owner, address spender) external view returns (uint256);
+250	 function approve(address spender, uint256 amount) external returns (bool);
+251	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+252	 event Transfer(address indexed from, address indexed to, uint256 value);
+253	 event Approval(address indexed owner, address indexed spender, uint256 value);
+254	 }
+255	 pragma solidity >=0.5.0;
+256	 interface IPool {
+257	 function sellNXM(uint tokenAmount, uint minEthOut) external;
+258	 function sellNXMTokens(uint tokenAmount) external returns (bool);
+259	 function minPoolEth() external returns (uint);
+260	 function transferAssetToSwapOperator(address asset, uint amount) external;
+261	 function setAssetDataLastSwapTime(address asset, uint32 lastSwapTime) external;
+262	 function getAssetDetails(address _asset) external view returns ( uint112 min, uint112 max, uint32 lastAssetSwapTime, uint maxSlippageRatio );
+263	 function sendClaimPayout ( address asset, address payable payoutAddress, uint amount ) external returns (bool success);
+264	 function transferAsset( address asset, address payable destination, uint amount ) external;
+265	 function upgradeCapitalPool(address payable newPoolAddress) external;
+266	 function priceFeedOracle() external view returns (IPriceFeedOracle);
+267	 function getPoolValueInEth() external view returns (uint);
+268	 function transferAssetFrom(address asset, address from, uint amount) external;
+269	 function getEthForNXM(uint nxmAmount) external view returns (uint ethAmount);
+270	 function calculateEthForNXM( uint nxmAmount, uint currentTotalAssetValue, uint mcrEth ) external pure returns (uint);
+271	 function calculateMCRRatio(uint totalAssetValue, uint mcrEth) external pure returns (uint);
+272	 function calculateTokenSpotPrice(uint totalAssetValue, uint mcrEth) external pure returns (uint tokenPrice);
+273	 function getTokenPrice(address asset) external view returns (uint tokenPrice);
+274	 function getMCRRatio() external view returns (uint);
+275	 }
+276	 pragma solidity >=0.5.0;
+277	 interface IPriceFeedOracle {
+278	 function daiAddress() external view returns (address);
+279	 function stETH() external view returns (address);
+280	 function ETH() external view returns (address);
+281	 function getAssetToEthRate(address asset) external view returns (uint);
+282	 function getAssetForEth(address asset, uint ethIn) external view returns (uint);
+283	 }
+284	 pragma solidity >=0.5.0;
+285	 interface IQuotationData {
+286	 function authQuoteEngine() external view returns (address);
+287	 function stlp() external view returns (uint);
+288	 function stl() external view returns (uint);
+289	 function pm() external view returns (uint);
+290	 function minDays() external view returns (uint);
+291	 function tokensRetained() external view returns (uint);
+292	 function kycAuthAddress() external view returns (address);
+293	 function refundEligible(address) external view returns (bool);
+294	 function holdedCoverIDStatus(uint) external view returns (uint);
+295	 function timestampRepeated(uint) external view returns (bool);
+296	 enum HCIDStatus {
+297	 NA, kycPending, kycPass, kycFailedOrRefunded, kycPassNoCover}
+298	 enum CoverStatus {
+299	 Active, ClaimAccepted, ClaimDenied, CoverExpired, ClaimSubmitted, Requested}
+300	 function addInTotalSumAssuredSC(address _add, bytes4 _curr, uint _amount) external;
+301	 function subFromTotalSumAssuredSC(address _add, bytes4 _curr, uint _amount) external;
+302	 function subFromTotalSumAssured(bytes4 _curr, uint _amount) external;
+303	 function addInTotalSumAssured(bytes4 _curr, uint _amount) external;
+304	 function setTimestampRepeated(uint _timestamp) external;
+305	 function addCover( uint16 _coverPeriod, uint _sumAssured, address payable _userAddress, bytes4 _currencyCode, address _scAddress, uint premium, uint premiumNXM ) external;
+306	 function addHoldCover( address payable from, address scAddress, bytes4 coverCurr, uint[] calldata coverDetails, uint16 coverPeriod ) external;
+307	 function setRefundEligible(address _add, bool status) external;
+308	 function setHoldedCoverIDStatus(uint holdedCoverID, uint status) external;
+309	 function setKycAuthAddress(address _add) external;
+310	 function changeAuthQuoteEngine(address _add) external;
+311	 function getUintParameters(bytes8 code) external view returns (bytes8 codeVal, uint val);
+312	 function getProductDetails() external view returns ( uint _minDays, uint _pm, uint _stl, uint _stlp );
+313	 function getCoverLength() external view returns (uint len);
+314	 function getAuthQuoteEngine() external view returns (address _add);
+315	 function getTotalSumAssured(bytes4 _curr) external view returns (uint amount);
+316	 function getAllCoversOfUser(address _add) external view returns (uint[] memory allCover);
+317	 function getUserCoverLength(address _add) external view returns (uint len);
+318	 function getCoverStatusNo(uint _cid) external view returns (uint8);
+319	 function getCoverPeriod(uint _cid) external view returns (uint32 cp);
+320	 function getCoverSumAssured(uint _cid) external view returns (uint sa);
+321	 function getCurrencyOfCover(uint _cid) external view returns (bytes4 curr);
+322	 function getValidityOfCover(uint _cid) external view returns (uint date);
+323	 function getscAddressOfCover(uint _cid) external view returns (uint, address);
+324	 function getCoverMemberAddress(uint _cid) external view returns (address payable _add);
+325	 function getCoverPremiumNXM(uint _cid) external view returns (uint _premiumNXM);
+326	 function getCoverDetailsByCoverID1( uint _cid ) external view returns ( uint cid, address _memberAddress, address _scAddress, bytes4 _currencyCode, uint _sumAssured, uint premiumNXM );
+327	 function getCoverDetailsByCoverID2( uint _cid ) external view returns ( uint cid, uint8 status, uint sumAssured, uint16 coverPeriod, uint validUntil );
+328	 function getHoldedCoverDetailsByID1( uint _hcid ) external view returns ( uint hcid, address scAddress, bytes4 coverCurr, uint16 coverPeriod );
+329	 function getUserHoldedCoverLength(address _add) external view returns (uint);
+330	 function getUserHoldedCoverByIndex(address _add, uint index) external view returns (uint);
+331	 function getHoldedCoverDetailsByID2( uint _hcid ) external view returns ( uint hcid, address payable memberAddress, uint[] memory coverDetails );
+332	 function getTotalSumAssuredSC(address _add, bytes4 _curr) external view returns (uint amount);
+333	 function changeCoverStatusNo(uint _cid, uint8 _stat) external;
+334	 }
+335	 pragma solidity ^0.5.0;
+336	 interface LegacyMCR {
+337	 function addMCRData(uint mcrP, uint mcrE, uint vF, bytes4[] calldata curr, uint[] calldata _threeDayAvg, uint64 onlyDate) external;
+338	 function addLastMCRData(uint64 date) external;
+339	 function changeDependentContractAddress() external;
+340	 function getAllSumAssurance() external view returns (uint amount);
+341	 function _calVtpAndMCRtp(uint poolBalance) external view returns (uint vtp, uint mcrtp);
+342	 function calculateStepTokenPrice(bytes4 curr, uint mcrtp) external view returns (uint tokenPrice);
+343	 function calculateTokenPrice(bytes4 curr) external view returns (uint tokenPrice);
+344	 function calVtpAndMCRtp() external view returns (uint vtp, uint mcrtp);
+345	 function calculateVtpAndMCRtp(uint poolBalance) external view returns (uint vtp, uint mcrtp);
+346	 function getThresholdValues(uint vtp, uint vF, uint totalSA, uint minCap) external view returns (uint lowerThreshold, uint upperThreshold);
+347	 function getMaxSellTokens() external view returns (uint maxTokens);
+348	 function getUintParameters(bytes8 code) external view returns (bytes8 codeVal, uint val);
+349	 function updateUintParameters(bytes8 code, uint val) external;
+350	 function variableMincap() external view returns (uint);
+351	 function dynamicMincapThresholdx100() external view returns (uint);
+352	 function dynamicMincapIncrementx100() external view returns (uint);
+353	 function getLastMCREther() external view returns (uint);
+354	 }
+355	 pragma solidity >=0.5.0;
+356	 interface INXMMaster {
+357	 function tokenAddress() external view returns (address);
+358	 function owner() external view returns (address);
+359	 function masterInitialized() external view returns (bool);
+360	 function isInternal(address _add) external view returns (bool);
+361	 function isPause() external view returns (bool check);
+362	 function isOwner(address _add) external view returns (bool);
+363	 function isMember(address _add) external view returns (bool);
+364	 function checkIsAuthToGoverned(address _add) external view returns (bool);
+365	 function dAppLocker() external view returns (address _add);
+366	 function getLatestAddress(bytes2 _contractName) external view returns (address payable contractAddress);
+367	 function upgradeMultipleContracts( bytes2[] calldata _contractCodes, address payable[] calldata newAddresses ) external;
+368	 function removeContracts(bytes2[] calldata contractCodesToRemove) external;
+369	 function addNewInternalContracts( bytes2[] calldata _contractCodes, address payable[] calldata newAddresses, uint[] calldata _types ) external;
+370	 function updateOwnerParameters(bytes8 code, address payable val) external;
+371	 }

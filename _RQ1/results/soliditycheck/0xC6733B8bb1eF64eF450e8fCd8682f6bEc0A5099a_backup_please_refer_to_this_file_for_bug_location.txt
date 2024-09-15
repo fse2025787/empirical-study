@@ -1,0 +1,234 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma experimental ABIEncoderV2;
+3	 pragma solidity 0.7.6;
+4	 contract ReentrancyGuard {
+5	 uint256 private constant _NOT_ENTERED = 1;
+6	 uint256 private constant _ENTERED = 2;
+7	 uint256 private _status;
+8	 constructor () {
+9	 _status = _NOT_ENTERED;
+10	 }
+11	 modifier nonReentrant() {
+12	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+13	 _status = _ENTERED;
+14	 _;
+15	 _status = _NOT_ENTERED;
+16	 }
+17	 }
+18	 pragma solidity 0.7.6;
+19	 contract LiquidationAuction02 is ReentrancyGuard {
+20	 using SafeMath for uint;
+21	 IVault public immutable vault;
+22	 IVaultManagerParameters public immutable vaultManagerParameters;
+23	 ICDPRegistry public immutable cdpRegistry;
+24	 IForceTransferAssetStore public immutable forceTransferAssetStore;
+25	 uint public constant DENOMINATOR_1E2 = 1e2;
+26	 uint public constant WRAPPED_TO_UNDERLYING_ORACLE_TYPE = 11;
+27	 event Buyout(address indexed asset, address indexed owner, address indexed buyer, uint amount, uint price, uint penalty);
+28	 modifier checkpoint(address asset, address owner) {
+29	 _;
+30	 cdpRegistry.checkpoint(asset, owner);
+31	 }
+32	 constructor(address _vaultManagerParameters, address _cdpRegistry, address _forceTransferAssetStore) {
+33	 require( _vaultManagerParameters != address(0) && _forceTransferAssetStore != (address(0)), "Unit Protocol: INVALID_ARGS" );
+34	 vaultManagerParameters = IVaultManagerParameters(_vaultManagerParameters);
+35	 vault = IVault(IVaultParameters(IVaultManagerParameters(_vaultManagerParameters).vaultParameters()).vault());
+36	 cdpRegistry = ICDPRegistry(_cdpRegistry);
+37	 forceTransferAssetStore = IForceTransferAssetStore(_forceTransferAssetStore);
+38	 }
+39	 function buyout(address asset, address owner) public nonReentrant checkpoint(asset, owner) {
+40	 require(vault.liquidationBlock(asset, owner) != 0, "Unit Protocol: LIQUIDATION_NOT_TRIGGERED");
+41	 uint startingPrice = vault.liquidationPrice(asset, owner);
+42	 uint blocksPast = block.number.sub(vault.liquidationBlock(asset, owner));
+43	 uint depreciationPeriod = vaultManagerParameters.devaluationPeriod(asset);
+44	 uint debt = vault.getTotalDebt(asset, owner);
+45	 uint penalty = debt.mul(vault.liquidationFee(asset, owner)).div(DENOMINATOR_1E2);
+46	 uint collateralInPosition = vault.collaterals(asset, owner);
+47	 uint collateralToLiquidator;
+48	 uint collateralToOwner;
+49	 uint repayment;
+50	 (collateralToLiquidator, collateralToOwner, repayment) = _calcLiquidationParams( depreciationPeriod, blocksPast, startingPrice, debt.add(penalty), collateralInPosition );
+51	 if (collateralToOwner == 0 && forceTransferAssetStore.shouldForceTransfer(asset)) {
+52	 collateralToOwner = 1;
+53	 collateralToLiquidator = collateralToLiquidator.sub(1);
+54	 }
+55	 _liquidate( asset, owner, collateralToLiquidator, collateralToOwner, repayment, penalty );
+56	 }
+57	 function _liquidate( address asset, address user, uint collateralToBuyer, uint collateralToOwner, uint repayment, uint penalty ) private {
+58	 vault.liquidate( asset, user, collateralToBuyer, 0, collateralToOwner, 0, repayment, penalty, msg.sender );
+59	 uint fee = repayment > penalty ? penalty : repayment;
+60	 IFoundation(IVaultParameters(vaultManagerParameters.vaultParameters()).foundation()).submitLiquidationFee(fee);
+61	 emit Buyout(asset, user, msg.sender, collateralToBuyer, repayment, penalty);
+62	 }
+63	 function _calcLiquidationParams( uint depreciationPeriod, uint blocksPast, uint startingPrice, uint debtWithPenalty, uint collateralInPosition ) internal pure returns( uint collateralToBuyer, uint collateralToOwner, uint price ) {
+64	 if (depreciationPeriod > blocksPast) {
+65	 uint valuation = depreciationPeriod.sub(blocksPast);
+66	 uint collateralPrice = startingPrice.mul(valuation).div(depreciationPeriod);
+67	 if (collateralPrice > debtWithPenalty) {
+68	 collateralToBuyer = collateralInPosition.mul(debtWithPenalty).div(collateralPrice);
+69	 collateralToOwner = collateralInPosition.sub(collateralToBuyer);
+70	 price = debtWithPenalty;
+71	 }
+72	 else {
+73	 collateralToBuyer = collateralInPosition;
+74	 price = collateralPrice;
+75	 }
+76	 }
+77	 else {
+78	 collateralToBuyer = collateralInPosition;
+79	 }
+80	 }
+81	 }
+82	 pragma solidity 0.7.6;
+83	 library SafeMath {
+84	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+85	 if (a == 0) {
+86	 return 0;
+87	 }
+88	 c = a * b;
+89	 assert(c / a == b);
+90	 return c;
+91	 }
+92	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+93	 require(b != 0, "SafeMath: division by zero");
+94	 return a / b;
+95	 }
+96	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+97	 assert(b <= a);
+98	 return a - b;
+99	 }
+100	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+101	 c = a + b;
+102	 assert(c >= a);
+103	 return c;
+104	 }
+105	 }
+106	 pragma solidity ^0.7.6;
+107	 interface IFoundation {
+108	 function submitLiquidationFee(uint fee) external;
+109	 }
+110	 pragma solidity ^0.7.6;
+111	 interface IForceTransferAssetStore {
+112	 function shouldForceTransfer ( address ) external view returns ( bool );
+113	 function add ( address asset ) external;
+114	 }
+115	 pragma solidity ^0.7.6;
+116	 interface IWrappedToUnderlyingOracle {
+117	 function assetToUnderlying(address) external view returns (address);
+118	 }
+119	 pragma solidity ^0.7.6;
+120	 interface IVaultParameters {
+121	 function canModifyVault ( address ) external view returns ( bool );
+122	 function foundation ( ) external view returns ( address );
+123	 function isManager ( address ) external view returns ( bool );
+124	 function isOracleTypeEnabled ( uint256, address ) external view returns ( bool );
+125	 function liquidationFee ( address ) external view returns ( uint256 );
+126	 function setCollateral ( address asset, uint256 stabilityFeeValue, uint256 liquidationFeeValue, uint256 usdpLimit, uint256[] calldata oracles ) external;
+127	 function setFoundation ( address newFoundation ) external;
+128	 function setLiquidationFee ( address asset, uint256 newValue ) external;
+129	 function setManager ( address who, bool permit ) external;
+130	 function setOracleType ( uint256 _type, address asset, bool enabled ) external;
+131	 function setStabilityFee ( address asset, uint256 newValue ) external;
+132	 function setTokenDebtLimit ( address asset, uint256 limit ) external;
+133	 function setVaultAccess ( address who, bool permit ) external;
+134	 function stabilityFee ( address ) external view returns ( uint256 );
+135	 function tokenDebtLimit ( address ) external view returns ( uint256 );
+136	 function vault ( ) external view returns ( address );
+137	 function vaultParameters ( ) external view returns ( address );
+138	 }
+139	 pragma solidity ^0.7.6;
+140	 interface IVaultManagerParameters {
+141	 function devaluationPeriod ( address ) external view returns ( uint256 );
+142	 function initialCollateralRatio ( address ) external view returns ( uint256 );
+143	 function liquidationDiscount ( address ) external view returns ( uint256 );
+144	 function liquidationRatio ( address ) external view returns ( uint256 );
+145	 function maxColPercent ( address ) external view returns ( uint256 );
+146	 function minColPercent ( address ) external view returns ( uint256 );
+147	 function setColPartRange ( address asset, uint256 min, uint256 max ) external;
+148	 function setCollateral ( address asset, uint256 stabilityFeeValue, uint256 liquidationFeeValue, uint256 initialCollateralRatioValue, uint256 liquidationRatioValue, uint256 liquidationDiscountValue, uint256 devaluationPeriodValue, uint256 usdpLimit, uint256[] calldata oracles, uint256 minColP, uint256 maxColP ) external;
+149	 function setDevaluationPeriod ( address asset, uint256 newValue ) external;
+150	 function setInitialCollateralRatio ( address asset, uint256 newValue ) external;
+151	 function setLiquidationDiscount ( address asset, uint256 newValue ) external;
+152	 function setLiquidationRatio ( address asset, uint256 newValue ) external;
+153	 function vaultParameters ( ) external view returns ( address );
+154	 }
+155	 pragma solidity ^0.7.6;
+156	 interface ICDPRegistry {
+157	 struct CDP {
+158	 address asset;
+159	 address owner;
+160	 }
+161	 function batchCheckpoint ( address[] calldata assets, address[] calldata owners ) external;
+162	 function batchCheckpointForAsset ( address asset, address[] calldata owners ) external;
+163	 function checkpoint ( address asset, address owner ) external;
+164	 function cr ( ) external view returns ( address );
+165	 function getAllCdps ( ) external view returns ( CDP[] memory r );
+166	 function getCdpsByCollateral ( address asset ) external view returns ( CDP[] memory cdps );
+167	 function getCdpsByOwner ( address owner ) external view returns ( CDP[] memory r );
+168	 function getCdpsCount ( ) external view returns ( uint256 totalCdpCount );
+169	 function getCdpsCountForCollateral ( address asset ) external view returns ( uint256 );
+170	 function isAlive ( address asset, address owner ) external view returns ( bool );
+171	 function isListed ( address asset, address owner ) external view returns ( bool );
+172	 function vault ( ) external view returns ( address );
+173	 }
+174	 pragma solidity ^0.7.6;
+175	 interface IVault {
+176	 function DENOMINATOR_1E2 ( ) external view returns ( uint256 );
+177	 function DENOMINATOR_1E5 ( ) external view returns ( uint256 );
+178	 function borrow ( address asset, address user, uint256 amount ) external returns ( uint256 );
+179	 function calculateFee ( address asset, address user, uint256 amount ) external view returns ( uint256 );
+180	 function changeOracleType ( address asset, address user, uint256 newOracleType ) external;
+181	 function chargeFee ( address asset, address user, uint256 amount ) external;
+182	 function col ( ) external view returns ( address );
+183	 function colToken ( address, address ) external view returns ( uint256 );
+184	 function collaterals ( address, address ) external view returns ( uint256 );
+185	 function debts ( address, address ) external view returns ( uint256 );
+186	 function depositCol ( address asset, address user, uint256 amount ) external;
+187	 function depositEth ( address user ) external payable;
+188	 function depositMain ( address asset, address user, uint256 amount ) external;
+189	 function destroy ( address asset, address user ) external;
+190	 function getTotalDebt ( address asset, address user ) external view returns ( uint256 );
+191	 function lastUpdate ( address, address ) external view returns ( uint256 );
+192	 function liquidate ( address asset, address positionOwner, uint256 mainAssetToLiquidator, uint256 colToLiquidator, uint256 mainAssetToPositionOwner, uint256 colToPositionOwner, uint256 repayment, uint256 penalty, address liquidator ) external;
+193	 function liquidationBlock ( address, address ) external view returns ( uint256 );
+194	 function liquidationFee ( address, address ) external view returns ( uint256 );
+195	 function liquidationPrice ( address, address ) external view returns ( uint256 );
+196	 function oracleType ( address, address ) external view returns ( uint256 );
+197	 function repay ( address asset, address user, uint256 amount ) external returns ( uint256 );
+198	 function spawn ( address asset, address user, uint256 _oracleType ) external;
+199	 function stabilityFee ( address, address ) external view returns ( uint256 );
+200	 function tokenDebts ( address ) external view returns ( uint256 );
+201	 function triggerLiquidation ( address asset, address positionOwner, uint256 initialPrice ) external;
+202	 function update ( address asset, address user ) external;
+203	 function usdp ( ) external view returns ( address );
+204	 function vaultParameters ( ) external view returns ( address );
+205	 function weth ( ) external view returns ( address payable );
+206	 function withdrawCol ( address asset, address user, uint256 amount ) external;
+207	 function withdrawEth ( address user, uint256 amount ) external;
+208	 function withdrawMain ( address asset, address user, uint256 amount ) external;
+209	 }
+210	 pragma solidity ^0.7.6;
+211	 interface IOracleRegistry {
+212	 struct Oracle {
+213	 uint oracleType;
+214	 address oracleAddress;
+215	 }
+216	 function WETH ( ) external view returns ( address );
+217	 function getKeydonixOracleTypes ( ) external view returns ( uint256[] memory );
+218	 function getOracles ( ) external view returns ( Oracle[] memory foundOracles );
+219	 function keydonixOracleTypes ( uint256 ) external view returns ( uint256 );
+220	 function maxOracleType ( ) external view returns ( uint256 );
+221	 function oracleByAsset ( address asset ) external view returns ( address );
+222	 function oracleByType ( uint256 ) external view returns ( address );
+223	 function oracleTypeByAsset ( address ) external view returns ( uint256 );
+224	 function oracleTypeByOracle ( address ) external view returns ( uint256 );
+225	 function setKeydonixOracleTypes ( uint256[] memory _keydonixOracleTypes ) external;
+226	 function setOracle ( uint256 oracleType, address oracle ) external;
+227	 function setOracleTypeForAsset ( address asset, uint256 oracleType ) external;
+228	 function setOracleTypeForAssets ( address[] memory assets, uint256 oracleType ) external;
+229	 function unsetOracle ( uint256 oracleType ) external;
+230	 function unsetOracleForAsset ( address asset ) external;
+231	 function unsetOracleForAssets ( address[] memory assets ) external;
+232	 function vaultParameters ( ) external view returns ( address );
+233	 }

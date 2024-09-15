@@ -1,0 +1,208 @@
+row number 
+1	      pragma solidity ^0.7.0;
+2	 contract DSMath {
+3	 uint constant WAD = 10 ** 18;
+4	 uint constant RAY = 10 ** 27;
+5	 function add(uint x, uint y) internal pure returns (uint z) {
+6	 z = SafeMath.add(x, y);
+7	 }
+8	 function sub(uint x, uint y) internal virtual pure returns (uint z) {
+9	 z = SafeMath.sub(x, y);
+10	 }
+11	 function mul(uint x, uint y) internal pure returns (uint z) {
+12	 z = SafeMath.mul(x, y);
+13	 }
+14	 function div(uint x, uint y) internal pure returns (uint z) {
+15	 z = SafeMath.div(x, y);
+16	 }
+17	 function wmul(uint x, uint y) internal pure returns (uint z) {
+18	 z = SafeMath.add(SafeMath.mul(x, y), WAD / 2) / WAD;
+19	 }
+20	 function wdiv(uint x, uint y) internal pure returns (uint z) {
+21	 z = SafeMath.add(SafeMath.mul(x, WAD), y / 2) / y;
+22	 }
+23	 function rdiv(uint x, uint y) internal pure returns (uint z) {
+24	 z = SafeMath.add(SafeMath.mul(x, RAY), y / 2) / y;
+25	 }
+26	 function rmul(uint x, uint y) internal pure returns (uint z) {
+27	 z = SafeMath.add(SafeMath.mul(x, y), RAY / 2) / RAY;
+28	 }
+29	 function toInt(uint x) internal pure returns (int y) {
+30	 y = int(x);
+31	 require(y >= 0, "int-overflow");
+32	 }
+33	 function toRad(uint wad) internal pure returns (uint rad) {
+34	 rad = mul(wad, 10 ** 27);
+35	 }
+36	 }
+37	 pragma solidity ^0.7.0;
+38	 abstract contract Stores {
+39	 address constant internal ethAddr = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+40	 address constant internal wethAddr = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+41	 MemoryInterface constant internal instaMemory = MemoryInterface(0x8a5419CfC711B2343c17a6ABf4B2bAFaBb06957F);
+42	 InstaMapping constant internal instaMapping = InstaMapping(0xe81F70Cc7C0D46e12d70efc60607F16bbD617E88);
+43	 function getUint(uint getId, uint val) internal returns (uint returnVal) {
+44	 returnVal = getId == 0 ? val : instaMemory.getUint(getId);
+45	 }
+46	 function setUint(uint setId, uint val) virtual internal {
+47	 if (setId != 0) instaMemory.setUint(setId, val);
+48	 }
+49	 }
+50	 pragma solidity ^0.7.0;
+51	 abstract contract Basic is DSMath, Stores {
+52	 function convert18ToDec(uint _dec, uint256 _amt) internal pure returns (uint256 amt) {
+53	 amt = (_amt / 10 ** (18 - _dec));
+54	 }
+55	 function convertTo18(uint _dec, uint256 _amt) internal pure returns (uint256 amt) {
+56	 amt = mul(_amt, 10 ** (18 - _dec));
+57	 }
+58	 function getTokenBal(TokenInterface token) internal view returns(uint _amt) {
+59	 _amt = address(token) == ethAddr ? address(this).balance : token.balanceOf(address(this));
+60	 }
+61	 function getTokensDec(TokenInterface buyAddr, TokenInterface sellAddr) internal view returns(uint buyDec, uint sellDec) {
+62	 buyDec = address(buyAddr) == ethAddr ? 18 : buyAddr.decimals();
+63	 sellDec = address(sellAddr) == ethAddr ? 18 : sellAddr.decimals();
+64	 }
+65	 function encodeEvent(string memory eventName, bytes memory eventParam) internal pure returns (bytes memory) {
+66	 return abi.encode(eventName, eventParam);
+67	 }
+68	 function changeEthAddress(address buy, address sell) internal pure returns(TokenInterface _buy, TokenInterface _sell){
+69	 _buy = buy == ethAddr ? TokenInterface(wethAddr) : TokenInterface(buy);
+70	 _sell = sell == ethAddr ? TokenInterface(wethAddr) : TokenInterface(sell);
+71	 }
+72	 function convertEthToWeth(bool isEth, TokenInterface token, uint amount) internal {
+73	 if(isEth) token.deposit{
+74	 value: amount}
+75	 ();
+76	 }
+77	 function convertWethToEth(bool isEth, TokenInterface token, uint amount) internal {
+78	 if(isEth) {
+79	 token.approve(address(token), amount);
+80	 token.withdraw(amount);
+81	 }
+82	 }
+83	 }
+84	 pragma solidity ^0.7.0;
+85	 abstract contract Helpers is DSMath, Basic {
+86	 address internal constant erc20Predicate = 0x40ec5B33f54e0E8A33A975908C5BA1c14e5BbbDf;
+87	 RootChainManagerInterface internal constant migrator = RootChainManagerInterface(0xA0c68C638235ee32657e8f720a23ceC1bFc77C77);
+88	 }
+89	 pragma solidity ^0.7.0;
+90	 contract Events {
+91	 event LogDeposit( address targetDsa, address token, uint256 amt, uint256 getId, uint256 setId );
+92	 event LogWithdraw(bytes proof);
+93	 }
+94	 pragma solidity ^0.7.0;
+95	 abstract contract PolygonBridgeResolver is Events, Helpers {
+96	 function deposit( address targetDsa, address token, uint256 amt, uint256 getId, uint256 setId ) external payable returns (string memory _eventName, bytes memory _eventParam) {
+97	 uint _amt = getUint(getId, amt);
+98	 if (token == ethAddr) {
+99	 _amt = _amt == uint(-1) ? address(this).balance : _amt;
+100	 migrator.depositEtherFor{
+101	 value: _amt}
+102	 (targetDsa);
+103	 }
+104	 else {
+105	 TokenInterface _token = TokenInterface(token);
+106	 _amt = _amt == uint(-1) ? _token.balanceOf(address(this)) : _amt;
+107	 _token.approve(erc20Predicate, _amt);
+108	 migrator.depositFor(targetDsa, token, abi.encode(_amt));
+109	 }
+110	 setUint(setId, _amt);
+111	 _eventName = "LogDeposit(address,address,uint256,uint256,uint256)";
+112	 _eventParam = abi.encode(targetDsa, token, _amt, getId, setId);
+113	 }
+114	 }
+115	 contract ConnectV2PolygonBridge is PolygonBridgeResolver {
+116	 string public constant name = "Polygon-Bridge-v1";
+117	 }
+118	 pragma solidity ^0.7.0;
+119	 interface TokenInterface {
+120	 function approve(address, uint256) external;
+121	 function transfer(address, uint) external;
+122	 function transferFrom(address, address, uint) external;
+123	 function deposit() external payable;
+124	 function withdraw(uint) external;
+125	 function balanceOf(address) external view returns (uint);
+126	 function decimals() external view returns (uint);
+127	 }
+128	 interface MemoryInterface {
+129	 function getUint(uint id) external returns (uint num);
+130	 function setUint(uint id, uint val) external;
+131	 }
+132	 interface InstaMapping {
+133	 function cTokenMapping(address) external view returns (address);
+134	 function gemJoinMapping(bytes32) external view returns (address);
+135	 }
+136	 interface AccountInterface {
+137	 function enable(address) external;
+138	 function disable(address) external;
+139	 function isAuth(address) external view returns (bool);
+140	 }
+141	 pragma solidity ^0.7.0;
+142	 interface RootChainManagerInterface {
+143	 function depositEtherFor(address user) external payable;
+144	 function depositFor( address user, address rootToken, bytes calldata depositData ) external;
+145	 function exit(bytes calldata inputData) external;
+146	 }
+147	 pragma solidity >=0.6.0 <0.8.0;
+148	 library SafeMath {
+149	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+150	 uint256 c = a + b;
+151	 if (c < a) return (false, 0);
+152	 return (true, c);
+153	 }
+154	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+155	 if (b > a) return (false, 0);
+156	 return (true, a - b);
+157	 }
+158	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+159	 if (a == 0) return (true, 0);
+160	 uint256 c = a * b;
+161	 if (c / a != b) return (false, 0);
+162	 return (true, c);
+163	 }
+164	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+165	 if (b == 0) return (false, 0);
+166	 return (true, a / b);
+167	 }
+168	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+169	 if (b == 0) return (false, 0);
+170	 return (true, a % b);
+171	 }
+172	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+173	 uint256 c = a + b;
+174	 require(c >= a, "SafeMath: addition overflow");
+175	 return c;
+176	 }
+177	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+178	 require(b <= a, "SafeMath: subtraction overflow");
+179	 return a - b;
+180	 }
+181	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+182	 if (a == 0) return 0;
+183	 uint256 c = a * b;
+184	 require(c / a == b, "SafeMath: multiplication overflow");
+185	 return c;
+186	 }
+187	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+188	 require(b > 0, "SafeMath: division by zero");
+189	 return a / b;
+190	 }
+191	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+192	 require(b > 0, "SafeMath: modulo by zero");
+193	 return a % b;
+194	 }
+195	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+196	 require(b <= a, errorMessage);
+197	 return a - b;
+198	 }
+199	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+200	 require(b > 0, errorMessage);
+201	 return a / b;
+202	 }
+203	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+204	 require(b > 0, errorMessage);
+205	 return a % b;
+206	 }
+207	 }

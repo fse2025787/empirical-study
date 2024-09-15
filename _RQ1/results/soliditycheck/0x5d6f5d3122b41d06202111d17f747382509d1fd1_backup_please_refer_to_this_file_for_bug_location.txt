@@ -1,0 +1,192 @@
+row number 
+1	   pragma solidity ^0.4.13;
+2	 library Math {
+3	 function max64(uint64 a, uint64 b) internal constant returns (uint64) {
+4	 return a >= b ? a : b;
+5	 }
+6	 function min64(uint64 a, uint64 b) internal constant returns (uint64) {
+7	 return a < b ? a : b;
+8	 }
+9	 function max256(uint256 a, uint256 b) internal constant returns (uint256) {
+10	 return a >= b ? a : b;
+11	 }
+12	 function min256(uint256 a, uint256 b) internal constant returns (uint256) {
+13	 return a < b ? a : b;
+14	 }
+15	 }
+16	 library SafeMath {
+17	 function mul(uint256 a, uint256 b) internal constant returns (uint256) {
+18	 uint256 c = a * b;
+19	 assert(a == 0 || c / a == b);
+20	 return c;
+21	 }
+22	 function div(uint256 a, uint256 b) internal constant returns (uint256) {
+23	 uint256 c = a / b;
+24	 return c;
+25	 }
+26	 function sub(uint256 a, uint256 b) internal constant returns (uint256) {
+27	 assert(b <= a);
+28	 return a - b;
+29	 }
+30	 function add(uint256 a, uint256 b) internal constant returns (uint256) {
+31	 uint256 c = a + b;
+32	 assert(c >= a);
+33	 return c;
+34	 }
+35	 }
+36	 contract Ownable {
+37	 address public owner;
+38	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+39	 function Ownable() {
+40	 owner = msg.sender;
+41	 }
+42	 modifier onlyOwner() {
+43	 require(msg.sender == owner);
+44	 _;
+45	 }
+46	 function transferOwnership(address newOwner) onlyOwner public {
+47	 require(newOwner != address(0));
+48	 OwnershipTransferred(owner, newOwner);
+49	 owner = newOwner;
+50	 }
+51	 }
+52	 contract ERC20Basic {
+53	 uint256 public totalSupply;
+54	 function balanceOf(address who) public constant returns (uint256);
+55	 function transfer(address to, uint256 value) public returns (bool);
+56	 event Transfer(address indexed from, address indexed to, uint256 value);
+57	 }
+58	 contract ERC20 is ERC20Basic {
+59	 function allowance(address owner, address spender) public constant returns (uint256);
+60	 function transferFrom(address from, address to, uint256 value) public returns (bool);
+61	 function approve(address spender, uint256 value) public returns (bool);
+62	 event Approval(address indexed owner, address indexed spender, uint256 value);
+63	 }
+64	 library SafeERC20 {
+65	 function safeTransfer(ERC20Basic token, address to, uint256 value) internal {
+66	 assert(token.transfer(to, value));
+67	 }
+68	 function safeTransferFrom(ERC20 token, address from, address to, uint256 value) internal {
+69	 assert(token.transferFrom(from, to, value));
+70	 }
+71	 function safeApprove(ERC20 token, address spender, uint256 value) internal {
+72	 assert(token.approve(spender, value));
+73	 }
+74	 }
+75	 contract ReturnVestingRegistry is Ownable {
+76	 mapping (address => address) public returnAddress;
+77	 function record(address from, address to) onlyOwner public {
+78	 require(from != 0);
+79	 returnAddress[from] = to;
+80	 }
+81	 }
+82	 contract TerraformReserve is Ownable {
+83	 mapping (address => uint256) public lockedBalance;
+84	 uint public totalLocked;
+85	 ERC20 public manaToken;
+86	 address public landClaim;
+87	 bool public acceptingDeposits;
+88	 event LockedBalance(address user, uint mana);
+89	 event LandClaimContractSet(address target);
+90	 event LandClaimExecuted(address user, uint value, bytes data);
+91	 event AcceptingDepositsChanged(bool _acceptingDeposits);
+92	 function TerraformReserve(address _token) {
+93	 require(_token != 0);
+94	 manaToken = ERC20(_token);
+95	 acceptingDeposits = true;
+96	 }
+97	 function lockMana(address _from, uint256 mana) public {
+98	 require(acceptingDeposits);
+99	 require(mana >= 1000 * 1e18);
+100	 require(manaToken.transferFrom(_from, this, mana));
+101	 lockedBalance[_from] += mana;
+102	 totalLocked += mana;
+103	 LockedBalance(_from, mana);
+104	 }
+105	 function changeContractState(bool _acceptingDeposits) public onlyOwner {
+106	 acceptingDeposits = _acceptingDeposits;
+107	 AcceptingDepositsChanged(acceptingDeposits);
+108	 }
+109	 function setTargetContract(address target) public onlyOwner {
+110	 landClaim = target;
+111	 manaToken.approve(landClaim, totalLocked);
+112	 LandClaimContractSet(target);
+113	 }
+114	 function () public payable {
+115	 revert();
+116	 }
+117	 }
+118	 contract TokenVesting is Ownable {
+119	 using SafeMath for uint256;
+120	 using SafeERC20 for ERC20;
+121	 event Released(uint256 amount);
+122	 event Revoked();
+123	 address public beneficiary;
+124	 uint256 public cliff;
+125	 uint256 public start;
+126	 uint256 public duration;
+127	 bool public revocable;
+128	 bool public revoked;
+129	 uint256 public released;
+130	 ERC20 public token;
+131	 function TokenVesting( address _beneficiary, uint256 _start, uint256 _cliff, uint256 _duration, bool _revocable, address _token ) {
+132	 require(_beneficiary != 0x0);
+133	 require(_cliff <= _duration);
+134	 beneficiary = _beneficiary;
+135	 start = _start;
+136	 cliff = _start.add(_cliff);
+137	 duration = _duration;
+138	 revocable = _revocable;
+139	 token = ERC20(_token);
+140	 }
+141	 modifier onlyBeneficiary() {
+142	 require(msg.sender == beneficiary);
+143	 _;
+144	 }
+145	 function changeBeneficiary(address target) onlyBeneficiary public {
+146	 require(target != 0);
+147	 beneficiary = target;
+148	 }
+149	 function release() onlyBeneficiary public {
+150	 require(now >= cliff);
+151	 _releaseTo(beneficiary);
+152	 }
+153	 function releaseTo(address target) onlyBeneficiary public {
+154	 require(now >= cliff);
+155	 _releaseTo(target);
+156	 }
+157	 function _releaseTo(address target) internal {
+158	 uint256 unreleased = releasableAmount();
+159	 released = released.add(unreleased);
+160	 token.safeTransfer(target, unreleased);
+161	 Released(released);
+162	 }
+163	 function revoke() onlyOwner public {
+164	 require(revocable);
+165	 require(!revoked);
+166	 _releaseTo(beneficiary);
+167	 token.safeTransfer(owner, token.balanceOf(this));
+168	 revoked = true;
+169	 Revoked();
+170	 }
+171	 function releasableAmount() public constant returns (uint256) {
+172	 return vestedAmount().sub(released);
+173	 }
+174	 function vestedAmount() public constant returns (uint256) {
+175	 uint256 currentBalance = token.balanceOf(this);
+176	 uint256 totalBalance = currentBalance.add(released);
+177	 if (now < cliff) {
+178	 return 0;
+179	 }
+180	 else if (now >= start.add(duration) || revoked) {
+181	 return totalBalance;
+182	 }
+183	 else {
+184	 return totalBalance.mul(now.sub(start)).div(duration);
+185	 }
+186	 }
+187	 function releaseForeignToken(ERC20 _token, uint256 amount) onlyOwner {
+188	 require(_token != token);
+189	 _token.transfer(owner, amount);
+190	 }
+191	 }

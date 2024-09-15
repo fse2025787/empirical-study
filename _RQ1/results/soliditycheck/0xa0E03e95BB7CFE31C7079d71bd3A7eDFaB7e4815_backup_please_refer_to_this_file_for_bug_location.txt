@@ -1,0 +1,231 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity ^0.7.0;
+12	 abstract contract Ownable is Context {
+13	 address private _owner;
+14	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+15	 constructor () {
+16	 address msgSender = _msgSender();
+17	 _owner = msgSender;
+18	 emit OwnershipTransferred(address(0), msgSender);
+19	 }
+20	 function owner() public view virtual returns (address) {
+21	 return _owner;
+22	 }
+23	 modifier onlyOwner() {
+24	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+25	 _;
+26	 }
+27	 function renounceOwnership() public virtual onlyOwner {
+28	 emit OwnershipTransferred(_owner, address(0));
+29	 _owner = address(0);
+30	 }
+31	 function transferOwnership(address newOwner) public virtual onlyOwner {
+32	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+33	 emit OwnershipTransferred(_owner, newOwner);
+34	 _owner = newOwner;
+35	 }
+36	 }
+37	 pragma solidity ^0.7.0;
+38	 abstract contract Proxy {
+39	 function _delegate(address implementation) internal virtual {
+40	 assembly {
+41	 calldatacopy(0, 0, calldatasize()) let result := delegatecall(gas(), implementation, 0, calldatasize(), 0, 0) returndatacopy(0, 0, returndatasize()) switch result case 0 {
+42	 revert(0, returndatasize()) }
+43	 default {
+44	 return(0, returndatasize()) }
+45	 }
+46	 }
+47	 function _implementation() internal view virtual returns (address);
+48	 function _fallback() internal virtual {
+49	 _beforeFallback();
+50	 _delegate(_implementation());
+51	 }
+52	 fallback () external payable virtual {
+53	 _fallback();
+54	 }
+55	 receive () external payable virtual {
+56	 _fallback();
+57	 }
+58	 function _beforeFallback() internal virtual {
+59	 }
+60	 }
+61	 pragma solidity ^0.7.0;
+62	 contract ProxyAdmin is Ownable {
+63	 function getProxyImplementation(TransparentUpgradeableProxy proxy) public view virtual returns (address) {
+64	 (bool success, bytes memory returndata) = address(proxy).staticcall(hex"5c60da1b");
+65	 require(success);
+66	 return abi.decode(returndata, (address));
+67	 }
+68	 function getProxyAdmin(TransparentUpgradeableProxy proxy) public view virtual returns (address) {
+69	 (bool success, bytes memory returndata) = address(proxy).staticcall(hex"f851a440");
+70	 require(success);
+71	 return abi.decode(returndata, (address));
+72	 }
+73	 function changeProxyAdmin(TransparentUpgradeableProxy proxy, address newAdmin) public virtual onlyOwner {
+74	 proxy.changeAdmin(newAdmin);
+75	 }
+76	 function upgrade(TransparentUpgradeableProxy proxy, address implementation) public virtual onlyOwner {
+77	 proxy.upgradeTo(implementation);
+78	 }
+79	 function upgradeAndCall(TransparentUpgradeableProxy proxy, address implementation, bytes memory data) public payable virtual onlyOwner {
+80	 proxy.upgradeToAndCall{
+81	 value: msg.value}
+82	 (implementation, data);
+83	 }
+84	 }
+85	 pragma solidity ^0.7.0;
+86	 contract UpgradeableProxy is Proxy {
+87	 constructor(address _logic, bytes memory _data) payable {
+88	 assert(_IMPLEMENTATION_SLOT == bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1));
+89	 _setImplementation(_logic);
+90	 if(_data.length > 0) {
+91	 Address.functionDelegateCall(_logic, _data);
+92	 }
+93	 }
+94	 event Upgraded(address indexed implementation);
+95	 bytes32 private constant _IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+96	 function _implementation() internal view virtual override returns (address impl) {
+97	 bytes32 slot = _IMPLEMENTATION_SLOT;
+98	 assembly {
+99	 impl := sload(slot) }
+100	 }
+101	 function _upgradeTo(address newImplementation) internal virtual {
+102	 _setImplementation(newImplementation);
+103	 emit Upgraded(newImplementation);
+104	 }
+105	 function _setImplementation(address newImplementation) private {
+106	 require(Address.isContract(newImplementation), "UpgradeableProxy: new implementation is not a contract");
+107	 bytes32 slot = _IMPLEMENTATION_SLOT;
+108	 assembly {
+109	 sstore(slot, newImplementation) }
+110	 }
+111	 }
+112	 pragma solidity ^0.7.0;
+113	 contract InstaMasterSigProxy is ProxyAdmin {
+114	 constructor(address masterAddress) public {
+115	 require(masterAddress != address(0), "not-vaild-address");
+116	 transferOwnership(masterAddress);
+117	 }
+118	 }
+119	 pragma solidity ^0.7.0;
+120	 contract TransparentUpgradeableProxy is UpgradeableProxy {
+121	 constructor(address _logic, address admin_, bytes memory _data) payable UpgradeableProxy(_logic, _data) {
+122	 assert(_ADMIN_SLOT == bytes32(uint256(keccak256("eip1967.proxy.admin")) - 1));
+123	 _setAdmin(admin_);
+124	 }
+125	 event AdminChanged(address previousAdmin, address newAdmin);
+126	 bytes32 private constant _ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+127	 modifier ifAdmin() {
+128	 if (msg.sender == _admin()) {
+129	 _;
+130	 }
+131	 else {
+132	 _fallback();
+133	 }
+134	 }
+135	 function admin() external ifAdmin returns (address admin_) {
+136	 admin_ = _admin();
+137	 }
+138	 function implementation() external ifAdmin returns (address implementation_) {
+139	 implementation_ = _implementation();
+140	 }
+141	 function changeAdmin(address newAdmin) external virtual ifAdmin {
+142	 require(newAdmin != address(0), "TransparentUpgradeableProxy: new admin is the zero address");
+143	 emit AdminChanged(_admin(), newAdmin);
+144	 _setAdmin(newAdmin);
+145	 }
+146	 function upgradeTo(address newImplementation) external virtual ifAdmin {
+147	 _upgradeTo(newImplementation);
+148	 }
+149	 function upgradeToAndCall(address newImplementation, bytes calldata data) external payable virtual ifAdmin {
+150	 _upgradeTo(newImplementation);
+151	 Address.functionDelegateCall(newImplementation, data);
+152	 }
+153	 function _admin() internal view virtual returns (address adm) {
+154	 bytes32 slot = _ADMIN_SLOT;
+155	 assembly {
+156	 adm := sload(slot) }
+157	 }
+158	 function _setAdmin(address newAdmin) private {
+159	 bytes32 slot = _ADMIN_SLOT;
+160	 assembly {
+161	 sstore(slot, newAdmin) }
+162	 }
+163	 function _beforeFallback() internal virtual override {
+164	 require(msg.sender != _admin(), "TransparentUpgradeableProxy: admin cannot fallback to proxy target");
+165	 super._beforeFallback();
+166	 }
+167	 }
+168	 pragma solidity ^0.7.0;
+169	 library Address {
+170	 function isContract(address account) internal view returns (bool) {
+171	 uint256 size;
+172	 assembly {
+173	 size := extcodesize(account) }
+174	 return size > 0;
+175	 }
+176	 function sendValue(address payable recipient, uint256 amount) internal {
+177	 require(address(this).balance >= amount, "Address: insufficient balance");
+178	 (bool success, ) = recipient.call{
+179	 value: amount }
+180	 ("");
+181	 require(success, "Address: unable to send value, recipient may have reverted");
+182	 }
+183	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+184	 return functionCall(target, data, "Address: low-level call failed");
+185	 }
+186	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+187	 return functionCallWithValue(target, data, 0, errorMessage);
+188	 }
+189	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+190	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+191	 }
+192	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+193	 require(address(this).balance >= value, "Address: insufficient balance for call");
+194	 require(isContract(target), "Address: call to non-contract");
+195	 (bool success, bytes memory returndata) = target.call{
+196	 value: value }
+197	 (data);
+198	 return _verifyCallResult(success, returndata, errorMessage);
+199	 }
+200	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+201	 return functionStaticCall(target, data, "Address: low-level static call failed");
+202	 }
+203	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+204	 require(isContract(target), "Address: static call to non-contract");
+205	 (bool success, bytes memory returndata) = target.staticcall(data);
+206	 return _verifyCallResult(success, returndata, errorMessage);
+207	 }
+208	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+209	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+210	 }
+211	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+212	 require(isContract(target), "Address: delegate call to non-contract");
+213	 (bool success, bytes memory returndata) = target.delegatecall(data);
+214	 return _verifyCallResult(success, returndata, errorMessage);
+215	 }
+216	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+217	 if (success) {
+218	 return returndata;
+219	 }
+220	 else {
+221	 if (returndata.length > 0) {
+222	 assembly {
+223	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+224	 }
+225	 else {
+226	 revert(errorMessage);
+227	 }
+228	 }
+229	 }
+230	 }

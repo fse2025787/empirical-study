@@ -1,0 +1,615 @@
+row number 
+1	       pragma solidity ^0.7.0;
+2	 contract Owned {
+3	 address payable public owner;
+4	 address private pendingOwner;
+5	 event OwnershipTransferRequested( address indexed from, address indexed to );
+6	 event OwnershipTransferred( address indexed from, address indexed to );
+7	 constructor() {
+8	 owner = msg.sender;
+9	 }
+10	 function transferOwnership(address _to) external onlyOwner() {
+11	 pendingOwner = _to;
+12	 emit OwnershipTransferRequested(owner, _to);
+13	 }
+14	 function acceptOwnership() external {
+15	 require(msg.sender == pendingOwner, "Must be proposed owner");
+16	 address oldOwner = owner;
+17	 owner = msg.sender;
+18	 pendingOwner = address(0);
+19	 emit OwnershipTransferred(oldOwner, msg.sender);
+20	 }
+21	 modifier onlyOwner() {
+22	 require(msg.sender == owner, "Only callable by owner");
+23	 _;
+24	 }
+25	 }
+26	 pragma solidity ^0.7.0;
+27	 interface AccessControllerInterface {
+28	 function hasAccess(address user, bytes calldata data) external view returns (bool);
+29	 }
+30	 pragma solidity ^0.7.0;
+31	 interface AggregatorInterface {
+32	 function latestAnswer() external view returns (int256);
+33	 function latestTimestamp() external view returns (uint256);
+34	 function latestRound() external view returns (uint256);
+35	 function getAnswer(uint256 roundId) external view returns (int256);
+36	 function getTimestamp(uint256 roundId) external view returns (uint256);
+37	 event AnswerUpdated(int256 indexed current, uint256 indexed roundId, uint256 updatedAt);
+38	 event NewRound(uint256 indexed roundId, address indexed startedBy, uint256 startedAt);
+39	 }
+40	 pragma solidity ^0.7.0;
+41	 interface AggregatorV3Interface {
+42	 function decimals() external view returns (uint8);
+43	 function description() external view returns (string memory);
+44	 function version() external view returns (uint256);
+45	 function getRoundData(uint80 _roundId) external view returns ( uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound );
+46	 function latestRoundData() external view returns ( uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound );
+47	 }
+48	 pragma solidity ^0.7.0;
+49	 interface AggregatorV2V3Interface is AggregatorInterface, AggregatorV3Interface {
+50	 }
+51	 pragma solidity ^0.7.0;
+52	 contract OffchainAggregatorBilling is Owned {
+53	 uint256 constant internal maxNumOracles = 31;
+54	 struct Billing {
+55	 uint32 maximumGasPrice;
+56	 uint32 reasonableGasPrice;
+57	 uint32 microLinkPerEth;
+58	 uint32 linkGweiPerObservation;
+59	 uint32 linkGweiPerTransmission;
+60	 }
+61	 Billing internal s_billing;
+62	 LinkTokenInterface immutable public LINK;
+63	 AccessControllerInterface internal s_billingAccessController;
+64	 uint16[maxNumOracles] internal s_oracleObservationsCounts;
+65	 mapping (address => address ) internal s_payees;
+66	 mapping (address => address ) internal s_proposedPayees;
+67	 uint256[maxNumOracles] internal s_gasReimbursementsLinkWei;
+68	 enum Role {
+69	 Unset, Signer, Transmitter }
+70	 struct Oracle {
+71	 uint8 index;
+72	 Role role;
+73	 }
+74	 mapping (address => Oracle) internal s_oracles;
+75	 address[] internal s_signers;
+76	 address[] internal s_transmitters;
+77	 uint256 constant private maxUint16 = (1 << 16) - 1;
+78	 uint256 constant internal maxUint128 = (1 << 128) - 1;
+79	 constructor( uint32 _maximumGasPrice, uint32 _reasonableGasPrice, uint32 _microLinkPerEth, uint32 _linkGweiPerObservation, uint32 _linkGweiPerTransmission, address _link, AccessControllerInterface _billingAccessController ) {
+80	 setBillingInternal(_maximumGasPrice, _reasonableGasPrice, _microLinkPerEth, _linkGweiPerObservation, _linkGweiPerTransmission);
+81	 setBillingAccessControllerInternal(_billingAccessController);
+82	 LINK = LinkTokenInterface(_link);
+83	 uint16[maxNumOracles] memory counts;
+84	 uint256[maxNumOracles] memory gas;
+85	 for (uint8 i = 0; i < maxNumOracles; i++) {
+86	 counts[i] = 1;
+87	 gas[i] = 1;
+88	 }
+89	 s_oracleObservationsCounts = counts;
+90	 s_gasReimbursementsLinkWei = gas;
+91	 }
+92	 event BillingSet( uint32 maximumGasPrice, uint32 reasonableGasPrice, uint32 microLinkPerEth, uint32 linkGweiPerObservation, uint32 linkGweiPerTransmission );
+93	 function setBillingInternal( uint32 _maximumGasPrice, uint32 _reasonableGasPrice, uint32 _microLinkPerEth, uint32 _linkGweiPerObservation, uint32 _linkGweiPerTransmission ) internal {
+94	 s_billing = Billing(_maximumGasPrice, _reasonableGasPrice, _microLinkPerEth, _linkGweiPerObservation, _linkGweiPerTransmission);
+95	 emit BillingSet(_maximumGasPrice, _reasonableGasPrice, _microLinkPerEth, _linkGweiPerObservation, _linkGweiPerTransmission);
+96	 }
+97	 function setBilling( uint32 _maximumGasPrice, uint32 _reasonableGasPrice, uint32 _microLinkPerEth, uint32 _linkGweiPerObservation, uint32 _linkGweiPerTransmission ) external {
+98	 AccessControllerInterface access = s_billingAccessController;
+99	 require(msg.sender == owner || access.hasAccess(msg.sender, msg.data), "Only owner&billingAdmin can call");
+100	 payOracles();
+101	 setBillingInternal(_maximumGasPrice, _reasonableGasPrice, _microLinkPerEth, _linkGweiPerObservation, _linkGweiPerTransmission);
+102	 }
+103	 function getBilling() external view returns ( uint32 maximumGasPrice, uint32 reasonableGasPrice, uint32 microLinkPerEth, uint32 linkGweiPerObservation, uint32 linkGweiPerTransmission ) {
+104	 Billing memory billing = s_billing;
+105	 return ( billing.maximumGasPrice, billing.reasonableGasPrice, billing.microLinkPerEth, billing.linkGweiPerObservation, billing.linkGweiPerTransmission );
+106	 }
+107	 event BillingAccessControllerSet(AccessControllerInterface old, AccessControllerInterface current);
+108	 function setBillingAccessControllerInternal(AccessControllerInterface _billingAccessController) internal {
+109	 AccessControllerInterface oldController = s_billingAccessController;
+110	 if (_billingAccessController != oldController) {
+111	 s_billingAccessController = _billingAccessController;
+112	 emit BillingAccessControllerSet( oldController, _billingAccessController );
+113	 }
+114	 }
+115	 function setBillingAccessController(AccessControllerInterface _billingAccessController) external onlyOwner {
+116	 setBillingAccessControllerInternal(_billingAccessController);
+117	 }
+118	 function billingAccessController() external view returns (AccessControllerInterface) {
+119	 return s_billingAccessController;
+120	 }
+121	 function withdrawPayment(address _transmitter) external {
+122	 require(msg.sender == s_payees[_transmitter], "Only payee can withdraw");
+123	 payOracle(_transmitter);
+124	 }
+125	 function owedPayment(address _transmitter) public view returns (uint256) {
+126	 Oracle memory oracle = s_oracles[_transmitter];
+127	 if (oracle.role == Role.Unset) {
+128	 return 0;
+129	 }
+130	 Billing memory billing = s_billing;
+131	 uint256 linkWeiAmount = uint256(s_oracleObservationsCounts[oracle.index] - 1) * uint256(billing.linkGweiPerObservation) * (1 gwei);
+132	 linkWeiAmount += s_gasReimbursementsLinkWei[oracle.index] - 1;
+133	 return linkWeiAmount;
+134	 }
+135	 event OraclePaid(address transmitter, address payee, uint256 amount);
+136	 function payOracle(address _transmitter) internal {
+137	 Oracle memory oracle = s_oracles[_transmitter];
+138	 uint256 linkWeiAmount = owedPayment(_transmitter);
+139	 if (linkWeiAmount > 0) {
+140	 address payee = s_payees[_transmitter];
+141	 require(LINK.transfer(payee, linkWeiAmount), "insufficient funds");
+142	 s_oracleObservationsCounts[oracle.index] = 1;
+143	 s_gasReimbursementsLinkWei[oracle.index] = 1;
+144	 emit OraclePaid(_transmitter, payee, linkWeiAmount);
+145	 }
+146	 }
+147	 function payOracles() internal {
+148	 Billing memory billing = s_billing;
+149	 uint16[maxNumOracles] memory observationsCounts = s_oracleObservationsCounts;
+150	 uint256[maxNumOracles] memory gasReimbursementsLinkWei = s_gasReimbursementsLinkWei;
+151	 address[] memory transmitters = s_transmitters;
+152	 for (uint transmitteridx = 0; transmitteridx < transmitters.length; transmitteridx++) {
+153	 uint256 reimbursementAmountLinkWei = gasReimbursementsLinkWei[transmitteridx] - 1;
+154	 uint256 obsCount = observationsCounts[transmitteridx] - 1;
+155	 uint256 linkWeiAmount = obsCount * uint256(billing.linkGweiPerObservation) * (1 gwei) + reimbursementAmountLinkWei;
+156	 if (linkWeiAmount > 0) {
+157	 address payee = s_payees[transmitters[transmitteridx]];
+158	 require(LINK.transfer(payee, linkWeiAmount), "insufficient funds");
+159	 observationsCounts[transmitteridx] = 1;
+160	 gasReimbursementsLinkWei[transmitteridx] = 1;
+161	 emit OraclePaid(transmitters[transmitteridx], payee, linkWeiAmount);
+162	 }
+163	 }
+164	 s_oracleObservationsCounts = observationsCounts;
+165	 s_gasReimbursementsLinkWei = gasReimbursementsLinkWei;
+166	 }
+167	 function oracleRewards( bytes memory observers, uint16[maxNumOracles] memory observations ) internal pure returns (uint16[maxNumOracles] memory) {
+168	 for (uint obsIdx = 0; obsIdx < observers.length; obsIdx++) {
+169	 uint8 observer = uint8(observers[obsIdx]);
+170	 observations[observer] = saturatingAddUint16(observations[observer], 1);
+171	 }
+172	 return observations;
+173	 }
+174	 uint256 internal constant accountingGasCost = 6035;
+175	 function impliedGasPrice( uint256 txGasPrice, uint256 reasonableGasPrice, uint256 maximumGasPrice ) internal pure returns (uint256) {
+176	 uint256 gasPrice = txGasPrice;
+177	 if (txGasPrice < reasonableGasPrice) {
+178	 gasPrice += (reasonableGasPrice - txGasPrice) / 2;
+179	 }
+180	 return min(gasPrice, maximumGasPrice);
+181	 }
+182	 function transmitterGasCostEthWei( uint256 initialGas, uint256 gasPrice, uint256 callDataCost, uint256 gasLeft ) internal pure returns (uint128 gasCostEthWei) {
+183	 require(initialGas >= gasLeft, "gasLeft cannot exceed initialGas");
+184	 uint256 gasUsed = initialGas - gasLeft + callDataCost + accountingGasCost;
+185	 uint256 fullGasCostEthWei = gasUsed * gasPrice * (1 gwei);
+186	 assert(fullGasCostEthWei < maxUint128);
+187	 return uint128(fullGasCostEthWei);
+188	 }
+189	 function withdrawFunds(address _recipient, uint256 _amount) external {
+190	 require(msg.sender == owner || s_billingAccessController.hasAccess(msg.sender, msg.data), "Only owner&billingAdmin can call");
+191	 uint256 linkDue = totalLINKDue();
+192	 uint256 linkBalance = LINK.balanceOf(address(this));
+193	 require(linkBalance >= linkDue, "insufficient balance");
+194	 require(LINK.transfer(_recipient, min(linkBalance - linkDue, _amount)), "insufficient funds");
+195	 }
+196	 function totalLINKDue() internal view returns (uint256 linkDue) {
+197	 uint16[maxNumOracles] memory observationCounts = s_oracleObservationsCounts;
+198	 for (uint i = 0; i < maxNumOracles; i++) {
+199	 linkDue += observationCounts[i] - 1;
+200	 }
+201	 Billing memory billing = s_billing;
+202	 linkDue *= uint256(billing.linkGweiPerObservation) * (1 gwei);
+203	 address[] memory transmitters = s_transmitters;
+204	 uint256[maxNumOracles] memory gasReimbursementsLinkWei = s_gasReimbursementsLinkWei;
+205	 for (uint i = 0; i < transmitters.length; i++) {
+206	 linkDue += uint256(gasReimbursementsLinkWei[i]-1);
+207	 }
+208	 }
+209	 function linkAvailableForPayment() external view returns (int256 availableBalance) {
+210	 int256 balance = int256(LINK.balanceOf(address(this)));
+211	 int256 due = int256(totalLINKDue());
+212	 return int256(balance) - int256(due);
+213	 }
+214	 function oracleObservationCount(address _signerOrTransmitter) external view returns (uint16) {
+215	 Oracle memory oracle = s_oracles[_signerOrTransmitter];
+216	 if (oracle.role == Role.Unset) {
+217	 return 0;
+218	 }
+219	 return s_oracleObservationsCounts[oracle.index] - 1;
+220	 }
+221	 function reimburseAndRewardOracles( uint32 initialGas, bytes memory observers ) internal {
+222	 Oracle memory txOracle = s_oracles[msg.sender];
+223	 Billing memory billing = s_billing;
+224	 s_oracleObservationsCounts = oracleRewards(observers, s_oracleObservationsCounts);
+225	 require(txOracle.role == Role.Transmitter, "sent by undesignated transmitter" );
+226	 uint256 gasPrice = impliedGasPrice( tx.gasprice / (1 gwei), billing.reasonableGasPrice, billing.maximumGasPrice );
+227	 uint256 callDataGasCost = 16 * msg.data.length;
+228	 uint256 gasLeft = gasleft();
+229	 uint256 gasCostEthWei = transmitterGasCostEthWei( uint256(initialGas), gasPrice, callDataGasCost, gasLeft );
+230	 uint256 gasCostLinkWei = (gasCostEthWei * billing.microLinkPerEth)/ 1e6;
+231	 s_gasReimbursementsLinkWei[txOracle.index] = s_gasReimbursementsLinkWei[txOracle.index] + gasCostLinkWei + uint256(billing.linkGweiPerTransmission) * (1 gwei);
+232	 }
+233	 event PayeeshipTransferRequested( address indexed transmitter, address indexed current, address indexed proposed );
+234	 event PayeeshipTransferred( address indexed transmitter, address indexed previous, address indexed current );
+235	 function setPayees( address[] calldata _transmitters, address[] calldata _payees ) external onlyOwner() {
+236	 require(_transmitters.length == _payees.length, "transmitters.size != payees.size");
+237	 for (uint i = 0; i < _transmitters.length; i++) {
+238	 address transmitter = _transmitters[i];
+239	 address payee = _payees[i];
+240	 address currentPayee = s_payees[transmitter];
+241	 bool zeroedOut = currentPayee == address(0);
+242	 require(zeroedOut || currentPayee == payee, "payee already set");
+243	 s_payees[transmitter] = payee;
+244	 if (currentPayee != payee) {
+245	 emit PayeeshipTransferred(transmitter, currentPayee, payee);
+246	 }
+247	 }
+248	 }
+249	 function transferPayeeship( address _transmitter, address _proposed ) external {
+250	 require(msg.sender == s_payees[_transmitter], "only current payee can update");
+251	 require(msg.sender != _proposed, "cannot transfer to self");
+252	 address previousProposed = s_proposedPayees[_transmitter];
+253	 s_proposedPayees[_transmitter] = _proposed;
+254	 if (previousProposed != _proposed) {
+255	 emit PayeeshipTransferRequested(_transmitter, msg.sender, _proposed);
+256	 }
+257	 }
+258	 function acceptPayeeship( address _transmitter ) external {
+259	 require(msg.sender == s_proposedPayees[_transmitter], "only proposed payees can accept");
+260	 address currentPayee = s_payees[_transmitter];
+261	 s_payees[_transmitter] = msg.sender;
+262	 s_proposedPayees[_transmitter] = address(0);
+263	 emit PayeeshipTransferred(_transmitter, currentPayee, msg.sender);
+264	 }
+265	 function saturatingAddUint16(uint16 _x, uint16 _y) internal pure returns (uint16) {
+266	 return uint16(min(uint256(_x)+uint256(_y), maxUint16));
+267	 }
+268	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+269	 if (a < b) {
+270	 return a;
+271	 }
+272	 return b;
+273	 }
+274	 }
+275	 pragma solidity ^0.7.0;
+276	 contract SimpleWriteAccessController is AccessControllerInterface, Owned {
+277	 bool public checkEnabled;
+278	 mapping(address => bool) internal accessList;
+279	 event AddedAccess(address user);
+280	 event RemovedAccess(address user);
+281	 event CheckAccessEnabled();
+282	 event CheckAccessDisabled();
+283	 constructor() {
+284	 checkEnabled = true;
+285	 }
+286	 function hasAccess( address _user, bytes memory ) public view virtual override returns (bool) {
+287	 return accessList[_user] || !checkEnabled;
+288	 }
+289	 function addAccess(address _user) external onlyOwner() {
+290	 addAccessInternal(_user);
+291	 }
+292	 function addAccessInternal(address _user) internal {
+293	 if (!accessList[_user]) {
+294	 accessList[_user] = true;
+295	 emit AddedAccess(_user);
+296	 }
+297	 }
+298	 function removeAccess(address _user) external onlyOwner() {
+299	 if (accessList[_user]) {
+300	 accessList[_user] = false;
+301	 emit RemovedAccess(_user);
+302	 }
+303	 }
+304	 function enableAccessCheck() external onlyOwner() {
+305	 if (!checkEnabled) {
+306	 checkEnabled = true;
+307	 emit CheckAccessEnabled();
+308	 }
+309	 }
+310	 function disableAccessCheck() external onlyOwner() {
+311	 if (checkEnabled) {
+312	 checkEnabled = false;
+313	 emit CheckAccessDisabled();
+314	 }
+315	 }
+316	 modifier checkAccess() {
+317	 require(hasAccess(msg.sender, msg.data), "No access");
+318	 _;
+319	 }
+320	 }
+321	 pragma solidity ^0.7.0;
+322	 contract OffchainAggregator is Owned, OffchainAggregatorBilling, AggregatorV2V3Interface {
+323	 uint256 constant private maxUint32 = (1 << 32) - 1;
+324	 struct HotVars {
+325	 bytes16 latestConfigDigest;
+326	 uint40 latestEpochAndRound;
+327	 uint8 threshold;
+328	 uint32 latestAggregatorRoundId;
+329	 }
+330	 HotVars internal s_hotVars;
+331	 struct Transmission {
+332	 int192 answer;
+333	 uint64 timestamp;
+334	 }
+335	 mapping(uint32 => Transmission) internal s_transmissions;
+336	 uint32 internal s_configCount;
+337	 uint32 internal s_latestConfigBlockNumber;
+338	 int192 immutable public minAnswer;
+339	 int192 immutable public maxAnswer;
+340	 constructor( uint32 _maximumGasPrice, uint32 _reasonableGasPrice, uint32 _microLinkPerEth, uint32 _linkGweiPerObservation, uint32 _linkGweiPerTransmission, address _link, address _validator, int192 _minAnswer, int192 _maxAnswer, AccessControllerInterface _billingAccessController, AccessControllerInterface _requesterAccessController, uint8 _decimals, string memory _description ) OffchainAggregatorBilling(_maximumGasPrice, _reasonableGasPrice, _microLinkPerEth, _linkGweiPerObservation, _linkGweiPerTransmission, _link, _billingAccessController ) {
+341	 decimals = _decimals;
+342	 s_description = _description;
+343	 setRequesterAccessController(_requesterAccessController);
+344	 setValidator(_validator);
+345	 minAnswer = _minAnswer;
+346	 maxAnswer = _maxAnswer;
+347	 }
+348	 event ConfigSet( uint32 previousConfigBlockNumber, uint64 configCount, address[] signers, address[] transmitters, uint8 threshold, uint64 encodedConfigVersion, bytes encoded );
+349	 modifier checkConfigValid ( uint256 _numSigners, uint256 _numTransmitters, uint256 _threshold ) {
+350	 require(_numSigners <= maxNumOracles, "too many signers");
+351	 require(_threshold > 0, "threshold must be positive");
+352	 require( _numSigners == _numTransmitters, "oracle addresses out of registration" );
+353	 require(_numSigners > 3*_threshold, "faulty-oracle threshold too high");
+354	 _;
+355	 }
+356	 function setConfig( address[] calldata _signers, address[] calldata _transmitters, uint8 _threshold, uint64 _encodedConfigVersion, bytes calldata _encoded ) external checkConfigValid(_signers.length, _transmitters.length, _threshold) onlyOwner() {
+357	 while (s_signers.length != 0) {
+358	 uint lastIdx = s_signers.length - 1;
+359	 address signer = s_signers[lastIdx];
+360	 address transmitter = s_transmitters[lastIdx];
+361	 payOracle(transmitter);
+362	 delete s_oracles[signer];
+363	 delete s_oracles[transmitter];
+364	 s_signers.pop();
+365	 s_transmitters.pop();
+366	 }
+367	 for (uint i = 0; i < _signers.length; i++) {
+368	 require( s_oracles[_signers[i]].role == Role.Unset, "repeated signer address" );
+369	 s_oracles[_signers[i]] = Oracle(uint8(i), Role.Signer);
+370	 require(s_payees[_transmitters[i]] != address(0), "payee must be set");
+371	 require( s_oracles[_transmitters[i]].role == Role.Unset, "repeated transmitter address" );
+372	 s_oracles[_transmitters[i]] = Oracle(uint8(i), Role.Transmitter);
+373	 s_signers.push(_signers[i]);
+374	 s_transmitters.push(_transmitters[i]);
+375	 }
+376	 s_hotVars.threshold = _threshold;
+377	 uint32 previousConfigBlockNumber = s_latestConfigBlockNumber;
+378	 s_latestConfigBlockNumber = uint32(block.number);
+379	 s_configCount += 1;
+380	 uint64 configCount = s_configCount;
+381	 {
+382	 s_hotVars.latestConfigDigest = configDigestFromConfigData( address(this), configCount, _signers, _transmitters, _threshold, _encodedConfigVersion, _encoded );
+383	 s_hotVars.latestEpochAndRound = 0;
+384	 }
+385	 emit ConfigSet( previousConfigBlockNumber, configCount, _signers, _transmitters, _threshold, _encodedConfigVersion, _encoded );
+386	 }
+387	 function configDigestFromConfigData( address _contractAddress, uint64 _configCount, address[] calldata _signers, address[] calldata _transmitters, uint8 _threshold, uint64 _encodedConfigVersion, bytes calldata _encodedConfig ) internal pure returns (bytes16) {
+388	 return bytes16(keccak256(abi.encode(_contractAddress, _configCount, _signers, _transmitters, _threshold, _encodedConfigVersion, _encodedConfig )));
+389	 }
+390	 function latestConfigDetails() external view returns ( uint32 configCount, uint32 blockNumber, bytes16 configDigest ) {
+391	 return (s_configCount, s_latestConfigBlockNumber, s_hotVars.latestConfigDigest);
+392	 }
+393	 function transmitters() external view returns(address[] memory) {
+394	 return s_transmitters;
+395	 }
+396	 uint256 private constant VALIDATOR_GAS_LIMIT = 100000;
+397	 AggregatorValidatorInterface private s_validator;
+398	 event ValidatorUpdated( address indexed previous, address indexed current );
+399	 function validator() external view returns (AggregatorValidatorInterface) {
+400	 return s_validator;
+401	 }
+402	 function setValidator(address _newValidator) public onlyOwner() {
+403	 address previous = address(s_validator);
+404	 if (previous != _newValidator) {
+405	 s_validator = AggregatorValidatorInterface(_newValidator);
+406	 emit ValidatorUpdated(previous, _newValidator);
+407	 }
+408	 }
+409	 function validateAnswer( uint32 _aggregatorRoundId, int256 _answer ) private {
+410	 AggregatorValidatorInterface av = s_validator;
+411	 if (address(av) == address(0)) return;
+412	 uint32 prevAggregatorRoundId = _aggregatorRoundId - 1;
+413	 int256 prevAggregatorRoundAnswer = s_transmissions[prevAggregatorRoundId].answer;
+414	 try av.validate{
+415	 gas: VALIDATOR_GAS_LIMIT}
+416	 ( prevAggregatorRoundId, prevAggregatorRoundAnswer, _aggregatorRoundId, _answer ) {
+417	 }
+418	 catch {
+419	 }
+420	 }
+421	 AccessControllerInterface internal s_requesterAccessController;
+422	 event RequesterAccessControllerSet(AccessControllerInterface old, AccessControllerInterface current);
+423	 event RoundRequested(address indexed requester, bytes16 configDigest, uint32 epoch, uint8 round);
+424	 function requesterAccessController() external view returns (AccessControllerInterface) {
+425	 return s_requesterAccessController;
+426	 }
+427	 function setRequesterAccessController(AccessControllerInterface _requesterAccessController) public onlyOwner() {
+428	 AccessControllerInterface oldController = s_requesterAccessController;
+429	 if (_requesterAccessController != oldController) {
+430	 s_requesterAccessController = AccessControllerInterface(_requesterAccessController);
+431	 emit RequesterAccessControllerSet(oldController, _requesterAccessController);
+432	 }
+433	 }
+434	 function requestNewRound() external returns (uint80) {
+435	 require(msg.sender == owner || s_requesterAccessController.hasAccess(msg.sender, msg.data), "Only owner&requester can call");
+436	 HotVars memory hotVars = s_hotVars;
+437	 emit RoundRequested( msg.sender, hotVars.latestConfigDigest, uint32(s_hotVars.latestEpochAndRound >> 8), uint8(s_hotVars.latestEpochAndRound) );
+438	 return hotVars.latestAggregatorRoundId + 1;
+439	 }
+440	 event NewTransmission( uint32 indexed aggregatorRoundId, int192 answer, address transmitter, int192[] observations, bytes observers, bytes32 rawReportContext );
+441	 function decodeReport(bytes memory _report) internal pure returns ( bytes32 rawReportContext, bytes32 rawObservers, int192[] memory observations ) {
+442	 (rawReportContext, rawObservers, observations) = abi.decode(_report, (bytes32, bytes32, int192[]));
+443	 }
+444	 struct ReportData {
+445	 HotVars hotVars;
+446	 bytes observers;
+447	 int192[] observations;
+448	 bytes vs;
+449	 bytes32 rawReportContext;
+450	 }
+451	 function latestTransmissionDetails() external view returns ( bytes16 configDigest, uint32 epoch, uint8 round, int192 latestAnswer, uint64 latestTimestamp ) {
+452	 require(msg.sender == tx.origin, "Only callable by EOA");
+453	 return ( s_hotVars.latestConfigDigest, uint32(s_hotVars.latestEpochAndRound >> 8), uint8(s_hotVars.latestEpochAndRound), s_transmissions[s_hotVars.latestAggregatorRoundId].answer, s_transmissions[s_hotVars.latestAggregatorRoundId].timestamp );
+454	 }
+455	 uint16 private constant TRANSMIT_MSGDATA_CONSTANT_LENGTH_COMPONENT = 4 + 32 + 32 + 32 + 32 + 32 + 32 + 32 + 0;
+456	 function expectedMsgDataLength( bytes calldata _report, bytes32[] calldata _rs, bytes32[] calldata _ss ) private pure returns (uint256 length) {
+457	 return uint256(TRANSMIT_MSGDATA_CONSTANT_LENGTH_COMPONENT) + _report.length + _rs.length * 32 + _ss.length * 32 + 0;
+458	 }
+459	 function transmit( bytes calldata _report, bytes32[] calldata _rs, bytes32[] calldata _ss, bytes32 _rawVs ) external {
+460	 uint256 initialGas = gasleft();
+461	 require(msg.data.length == expectedMsgDataLength(_report, _rs, _ss), "transmit message too long");
+462	 ReportData memory r;
+463	 {
+464	 r.hotVars = s_hotVars;
+465	 bytes32 rawObservers;
+466	 (r.rawReportContext, rawObservers, r.observations) = abi.decode( _report, (bytes32, bytes32, int192[]) );
+467	 bytes16 configDigest = bytes16(r.rawReportContext << 88);
+468	 require( r.hotVars.latestConfigDigest == configDigest, "configDigest mismatch" );
+469	 uint40 epochAndRound = uint40(uint256(r.rawReportContext));
+470	 require(r.hotVars.latestEpochAndRound < epochAndRound, "stale report");
+471	 require(_rs.length > r.hotVars.threshold, "not enough signatures");
+472	 require(_rs.length <= maxNumOracles, "too many signatures");
+473	 require(_ss.length == _rs.length, "signatures out of registration");
+474	 require(r.observations.length <= maxNumOracles, "num observations out of bounds");
+475	 require(r.observations.length > 2 * r.hotVars.threshold, "too few values to trust median");
+476	 r.vs = new bytes(_rs.length);
+477	 for (uint8 i = 0; i < _rs.length; i++) {
+478	 r.vs[i] = _rawVs[i];
+479	 }
+480	 r.observers = new bytes(r.observations.length);
+481	 bool[maxNumOracles] memory seen;
+482	 for (uint8 i = 0; i < r.observations.length; i++) {
+483	 uint8 observerIdx = uint8(rawObservers[i]);
+484	 require(!seen[observerIdx], "observer index repeated");
+485	 seen[observerIdx] = true;
+486	 r.observers[i] = rawObservers[i];
+487	 }
+488	 Oracle memory transmitter = s_oracles[msg.sender];
+489	 require( transmitter.role == Role.Transmitter && msg.sender == s_transmitters[transmitter.index], "unauthorized transmitter" );
+490	 r.hotVars.latestEpochAndRound = epochAndRound;
+491	 }
+492	 {
+493	 bytes32 h = keccak256(_report);
+494	 bool[maxNumOracles] memory signed;
+495	 Oracle memory o;
+496	 for (uint i = 0; i < _rs.length; i++) {
+497	 address signer = ecrecover(h, uint8(r.vs[i])+27, _rs[i], _ss[i]);
+498	 o = s_oracles[signer];
+499	 require(o.role == Role.Signer, "address not authorized to sign");
+500	 require(!signed[o.index], "non-unique signature");
+501	 signed[o.index] = true;
+502	 }
+503	 }
+504	 {
+505	 for (uint i = 0; i < r.observations.length - 1; i++) {
+506	 bool inOrder = r.observations[i] <= r.observations[i+1];
+507	 require(inOrder, "observations not sorted");
+508	 }
+509	 int192 median = r.observations[r.observations.length/2];
+510	 require(minAnswer <= median && median <= maxAnswer, "median is out of min-max range");
+511	 r.hotVars.latestAggregatorRoundId++;
+512	 s_transmissions[r.hotVars.latestAggregatorRoundId] = Transmission(median, uint64(block.timestamp));
+513	 emit NewTransmission( r.hotVars.latestAggregatorRoundId, median, msg.sender, r.observations, r.observers, r.rawReportContext );
+514	 emit NewRound( r.hotVars.latestAggregatorRoundId, address(0x0), block.timestamp );
+515	 emit AnswerUpdated( median, r.hotVars.latestAggregatorRoundId, block.timestamp );
+516	 validateAnswer(r.hotVars.latestAggregatorRoundId, median);
+517	 }
+518	 s_hotVars = r.hotVars;
+519	 assert(initialGas < maxUint32);
+520	 reimburseAndRewardOracles(uint32(initialGas), r.observers);
+521	 }
+522	 function latestAnswer() public override view virtual returns (int256) {
+523	 return s_transmissions[s_hotVars.latestAggregatorRoundId].answer;
+524	 }
+525	 function latestTimestamp() public override view virtual returns (uint256) {
+526	 return s_transmissions[s_hotVars.latestAggregatorRoundId].timestamp;
+527	 }
+528	 function latestRound() public override view virtual returns (uint256) {
+529	 return s_hotVars.latestAggregatorRoundId;
+530	 }
+531	 function getAnswer(uint256 _roundId) public override view virtual returns (int256) {
+532	 if (_roundId > 0xFFFFFFFF) {
+533	 return 0;
+534	 }
+535	 return s_transmissions[uint32(_roundId)].answer;
+536	 }
+537	 function getTimestamp(uint256 _roundId) public override view virtual returns (uint256) {
+538	 if (_roundId > 0xFFFFFFFF) {
+539	 return 0;
+540	 }
+541	 return s_transmissions[uint32(_roundId)].timestamp;
+542	 }
+543	 string constant private V3_NO_DATA_ERROR = "No data present";
+544	 uint8 immutable public override decimals;
+545	 uint256 constant public override version = 4;
+546	 string internal s_description;
+547	 function description() public override view virtual returns (string memory) {
+548	 return s_description;
+549	 }
+550	 function getRoundData(uint80 _roundId) public override view virtual returns ( uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound ) {
+551	 require(_roundId <= 0xFFFFFFFF, V3_NO_DATA_ERROR);
+552	 Transmission memory transmission = s_transmissions[uint32(_roundId)];
+553	 return ( _roundId, transmission.answer, transmission.timestamp, transmission.timestamp, _roundId );
+554	 }
+555	 function latestRoundData() public override view virtual returns ( uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound ) {
+556	 roundId = s_hotVars.latestAggregatorRoundId;
+557	 Transmission memory transmission = s_transmissions[uint32(roundId)];
+558	 return ( roundId, transmission.answer, transmission.timestamp, transmission.timestamp, roundId );
+559	 }
+560	 }
+561	 pragma solidity ^0.7.1;
+562	 contract SimpleReadAccessController is SimpleWriteAccessController {
+563	 function hasAccess( address _user, bytes memory _calldata ) public view virtual override returns (bool) {
+564	 return super.hasAccess(_user, _calldata) || _user == tx.origin;
+565	 }
+566	 }
+567	 pragma solidity ^0.7.1;
+568	 contract AccessControlledOffchainAggregator is OffchainAggregator, SimpleReadAccessController {
+569	 constructor( uint32 _maximumGasPrice, uint32 _reasonableGasPrice, uint32 _microLinkPerEth, uint32 _linkGweiPerObservation, uint32 _linkGweiPerTransmission, address _link, address _validator, int192 _minAnswer, int192 _maxAnswer, AccessControllerInterface _billingAccessController, AccessControllerInterface _requesterAccessController, uint8 _decimals, string memory description ) OffchainAggregator( _maximumGasPrice, _reasonableGasPrice, _microLinkPerEth, _linkGweiPerObservation, _linkGweiPerTransmission, _link, _validator, _minAnswer, _maxAnswer, _billingAccessController, _requesterAccessController, _decimals, description ) {
+570	 }
+571	 function latestAnswer() public override view checkAccess() returns (int256) {
+572	 return super.latestAnswer();
+573	 }
+574	 function latestTimestamp() public override view checkAccess() returns (uint256) {
+575	 return super.latestTimestamp();
+576	 }
+577	 function latestRound() public override view checkAccess() returns (uint256) {
+578	 return super.latestRound();
+579	 }
+580	 function getAnswer(uint256 _roundId) public override view checkAccess() returns (int256) {
+581	 return super.getAnswer(_roundId);
+582	 }
+583	 function getTimestamp(uint256 _roundId) public override view checkAccess() returns (uint256) {
+584	 return super.getTimestamp(_roundId);
+585	 }
+586	 function description() public override view checkAccess() returns (string memory) {
+587	 return super.description();
+588	 }
+589	 function getRoundData(uint80 _roundId) public override view checkAccess() returns ( uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound ) {
+590	 return super.getRoundData(_roundId);
+591	 }
+592	 function latestRoundData() public override view checkAccess() returns ( uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound ) {
+593	 return super.latestRoundData();
+594	 }
+595	 }
+596	 pragma solidity ^0.7.0;
+597	 interface AggregatorValidatorInterface {
+598	 function validate( uint256 previousRoundId, int256 previousAnswer, uint256 currentRoundId, int256 currentAnswer ) external returns (bool);
+599	 }
+600	 pragma solidity ^0.7.1;
+601	 interface LinkTokenInterface {
+602	 function allowance(address owner, address spender) external view returns (uint256 remaining);
+603	 function approve(address spender, uint256 value) external returns (bool success);
+604	 function balanceOf(address owner) external view returns (uint256 balance);
+605	 function decimals() external view returns (uint8 decimalPlaces);
+606	 function decreaseApproval(address spender, uint256 addedValue) external returns (bool success);
+607	 function increaseApproval(address spender, uint256 subtractedValue) external;
+608	 function name() external view returns (string memory tokenName);
+609	 function symbol() external view returns (string memory tokenSymbol);
+610	 function totalSupply() external view returns (uint256 totalTokensIssued);
+611	 function transfer(address to, uint256 value) external returns (bool success);
+612	 function transferAndCall(address to, uint256 value, bytes calldata data) external returns (bool success);
+613	 function transferFrom(address from, address to, uint256 value) external returns (bool success);
+614	 }

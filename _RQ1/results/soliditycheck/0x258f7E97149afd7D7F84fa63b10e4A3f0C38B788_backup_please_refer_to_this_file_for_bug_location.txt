@@ -1,0 +1,710 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity 0.6.12;
+3	 abstract contract Context {
+4	 function _msgSender() internal view virtual returns (address payable) {
+5	 return msg.sender;
+6	 }
+7	 function _msgData() internal view virtual returns (bytes memory) {
+8	 this;
+9	 return msg.data;
+10	 }
+11	 }
+12	 pragma solidity 0.6.12;
+13	 abstract contract AccessControl is Context {
+14	 using EnumerableSet for EnumerableSet.AddressSet;
+15	 struct RoleData {
+16	 EnumerableSet.AddressSet members;
+17	 bytes32 adminRole;
+18	 }
+19	 mapping (bytes32 => RoleData) private _roles;
+20	 bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
+21	 event RoleAdminChanged(bytes32 indexed role, bytes32 indexed previousAdminRole, bytes32 indexed newAdminRole);
+22	 event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
+23	 event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+24	 function hasRole(bytes32 role, address account) public view returns (bool) {
+25	 return _roles[role].members.contains(account);
+26	 }
+27	 function getRoleMemberCount(bytes32 role) public view returns (uint256) {
+28	 return _roles[role].members.length();
+29	 }
+30	 function getRoleMember(bytes32 role, uint256 index) public view returns (address) {
+31	 return _roles[role].members.at(index);
+32	 }
+33	 function getRoleAdmin(bytes32 role) public view returns (bytes32) {
+34	 return _roles[role].adminRole;
+35	 }
+36	 function grantRole(bytes32 role, address account) public virtual {
+37	 require(hasRole(_roles[role].adminRole, _msgSender()), "AccessControl: sender must be an admin to grant");
+38	 _grantRole(role, account);
+39	 }
+40	 function revokeRole(bytes32 role, address account) public virtual {
+41	 require(hasRole(_roles[role].adminRole, _msgSender()), "AccessControl: sender must be an admin to revoke");
+42	 _revokeRole(role, account);
+43	 }
+44	 function renounceRole(bytes32 role, address account) public virtual {
+45	 require(account == _msgSender(), "AccessControl: can only renounce roles for self");
+46	 _revokeRole(role, account);
+47	 }
+48	 function _setupRole(bytes32 role, address account) internal virtual {
+49	 _grantRole(role, account);
+50	 }
+51	 function _setRoleAdmin(bytes32 role, bytes32 adminRole) internal virtual {
+52	 emit RoleAdminChanged(role, _roles[role].adminRole, adminRole);
+53	 _roles[role].adminRole = adminRole;
+54	 }
+55	 function _grantRole(bytes32 role, address account) private {
+56	 if (_roles[role].members.add(account)) {
+57	 emit RoleGranted(role, account, _msgSender());
+58	 }
+59	 }
+60	 function _revokeRole(bytes32 role, address account) private {
+61	 if (_roles[role].members.remove(account)) {
+62	 emit RoleRevoked(role, account, _msgSender());
+63	 }
+64	 }
+65	 }
+66	 pragma solidity 0.6.12;
+67	 contract BaseBoringBatchable {
+68	 function _getRevertMsg(bytes memory _returnData) internal pure returns (string memory) {
+69	 if (_returnData.length < 68) return "Transaction reverted silently";
+70	 assembly {
+71	 _returnData := add(_returnData, 0x04) }
+72	 return abi.decode(_returnData, (string));
+73	 }
+74	 function batch(bytes[] calldata calls, bool revertOnFail) external payable returns (bool[] memory successes, bytes[] memory results) {
+75	 successes = new bool[](calls.length);
+76	 results = new bytes[](calls.length);
+77	 for (uint256 i = 0; i < calls.length; i++) {
+78	 (bool success, bytes memory result) = address(this).delegatecall(calls[i]);
+79	 require(success || !revertOnFail, _getRevertMsg(result));
+80	 successes[i] = success;
+81	 results[i] = result;
+82	 }
+83	 }
+84	 }
+85	 pragma solidity 0.6.12;
+86	 contract MISOAdminAccess is AccessControl {
+87	 bool private initAccess;
+88	 constructor() public {
+89	 }
+90	 function initAccessControls(address _admin) public {
+91	 require(!initAccess, "Already initialised");
+92	 require(_admin != address(0), "Incorrect input");
+93	 _setupRole(DEFAULT_ADMIN_ROLE, _admin);
+94	 initAccess = true;
+95	 }
+96	 function hasAdminRole(address _address) public view returns (bool) {
+97	 return hasRole(DEFAULT_ADMIN_ROLE, _address);
+98	 }
+99	 function addAdminRole(address _address) external {
+100	 grantRole(DEFAULT_ADMIN_ROLE, _address);
+101	 }
+102	 function removeAdminRole(address _address) external {
+103	 revokeRole(DEFAULT_ADMIN_ROLE, _address);
+104	 }
+105	 }
+106	 pragma solidity 0.6.12;
+107	 abstract contract ReentrancyGuard {
+108	 uint256 private constant _NOT_ENTERED = 1;
+109	 uint256 private constant _ENTERED = 2;
+110	 uint256 private _status;
+111	 constructor () internal {
+112	 _status = _NOT_ENTERED;
+113	 }
+114	 modifier nonReentrant() {
+115	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+116	 _status = _ENTERED;
+117	 _;
+118	 _status = _NOT_ENTERED;
+119	 }
+120	 }
+121	 pragma solidity 0.6.12;
+122	 contract MISOAccessControls is MISOAdminAccess {
+123	 bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+124	 bytes32 public constant SMART_CONTRACT_ROLE = keccak256("SMART_CONTRACT_ROLE");
+125	 bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
+126	 constructor() public {
+127	 }
+128	 function hasMinterRole(address _address) public view returns (bool) {
+129	 return hasRole(MINTER_ROLE, _address);
+130	 }
+131	 function hasSmartContractRole(address _address) public view returns (bool) {
+132	 return hasRole(SMART_CONTRACT_ROLE, _address);
+133	 }
+134	 function hasOperatorRole(address _address) public view returns (bool) {
+135	 return hasRole(OPERATOR_ROLE, _address);
+136	 }
+137	 function addMinterRole(address _address) external {
+138	 grantRole(MINTER_ROLE, _address);
+139	 }
+140	 function removeMinterRole(address _address) external {
+141	 revokeRole(MINTER_ROLE, _address);
+142	 }
+143	 function addSmartContractRole(address _address) external {
+144	 grantRole(SMART_CONTRACT_ROLE, _address);
+145	 }
+146	 function removeSmartContractRole(address _address) external {
+147	 revokeRole(SMART_CONTRACT_ROLE, _address);
+148	 }
+149	 function addOperatorRole(address _address) external {
+150	 grantRole(OPERATOR_ROLE, _address);
+151	 }
+152	 function removeOperatorRole(address _address) external {
+153	 revokeRole(OPERATOR_ROLE, _address);
+154	 }
+155	 }
+156	 pragma solidity 0.6.12;
+157	 contract SafeTransfer {
+158	 address private constant ETH_ADDRESS = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+159	 event TokensWithdrawn(address token, address to, uint256 amount);
+160	 function _safeTokenPayment( address _token, address payable _to, uint256 _amount ) internal {
+161	 if (address(_token) == ETH_ADDRESS) {
+162	 _safeTransferETH(_to,_amount );
+163	 }
+164	 else {
+165	 _safeTransfer(_token, _to, _amount);
+166	 }
+167	 emit TokensWithdrawn(_token, _to, _amount);
+168	 }
+169	 function _tokenPayment( address _token, address payable _to, uint256 _amount ) internal {
+170	 if (address(_token) == ETH_ADDRESS) {
+171	 _to.transfer(_amount);
+172	 }
+173	 else {
+174	 _safeTransfer(_token, _to, _amount);
+175	 }
+176	 emit TokensWithdrawn(_token, _to, _amount);
+177	 }
+178	 function _safeApprove(address token, address to, uint value) internal {
+179	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+180	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');
+181	 }
+182	 function _safeTransfer( address token, address to, uint256 amount ) internal virtual {
+183	 (bool success, bytes memory data) = token.call( abi.encodeWithSelector(0xa9059cbb, to, amount) );
+184	 require(success && (data.length == 0 || abi.decode(data, (bool))));
+185	 }
+186	 function _safeTransferFrom( address token, address from, uint256 amount ) internal virtual {
+187	 (bool success, bytes memory data) = token.call( abi.encodeWithSelector(0x23b872dd, from, address(this), amount) );
+188	 require(success && (data.length == 0 || abi.decode(data, (bool))));
+189	 }
+190	 function _safeTransferFrom(address token, address from, address to, uint value) internal {
+191	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+192	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');
+193	 }
+194	 function _safeTransferETH(address to, uint value) internal {
+195	 (bool success,) = to.call{
+196	 value:value}
+197	 (new bytes(0));
+198	 require(success, 'TransferHelper: ETH_TRANSFER_FAILED');
+199	 }
+200	 }
+201	 contract BoringBatchable is BaseBoringBatchable {
+202	 function permitToken( IERC20 token, address from, address to, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s ) public {
+203	 token.permit(from, to, amount, deadline, v, r, s);
+204	 }
+205	 }
+206	 pragma solidity 0.6.12;
+207	 contract Documents {
+208	 struct Document {
+209	 uint32 docIndex;
+210	 uint64 lastModified;
+211	 string data;
+212	 }
+213	 mapping(string => Document) internal _documents;
+214	 mapping(string => uint32) internal _docIndexes;
+215	 string[] _docNames;
+216	 event DocumentRemoved(string indexed _name, string _data);
+217	 event DocumentUpdated(string indexed _name, string _data);
+218	 function _setDocument(string calldata _name, string calldata _data) internal {
+219	 require(bytes(_name).length > 0, "Zero name is not allowed");
+220	 require(bytes(_data).length > 0, "Should not be a empty data");
+221	 if (_documents[_name].lastModified == uint64(0)) {
+222	 _docNames.push(_name);
+223	 _documents[_name].docIndex = uint32(_docNames.length);
+224	 }
+225	 _documents[_name] = Document(_documents[_name].docIndex, uint64(now), _data);
+226	 emit DocumentUpdated(_name, _data);
+227	 }
+228	 function _removeDocument(string calldata _name) internal {
+229	 require(_documents[_name].lastModified != uint64(0), "Document should exist");
+230	 uint32 index = _documents[_name].docIndex - 1;
+231	 if (index != _docNames.length - 1) {
+232	 _docNames[index] = _docNames[_docNames.length - 1];
+233	 _documents[_docNames[index]].docIndex = index + 1;
+234	 }
+235	 _docNames.pop();
+236	 emit DocumentRemoved(_name, _documents[_name].data);
+237	 delete _documents[_name];
+238	 }
+239	 function getDocument(string calldata _name) external view returns (string memory, uint256) {
+240	 return ( _documents[_name].data, uint256(_documents[_name].lastModified) );
+241	 }
+242	 function getAllDocuments() external view returns (string[] memory) {
+243	 return _docNames;
+244	 }
+245	 function getDocumentCount() external view returns (uint256) {
+246	 return _docNames.length;
+247	 }
+248	 function getDocumentName(uint256 _index) external view returns (string memory) {
+249	 require(_index < _docNames.length, "Index out of bounds");
+250	 return _docNames[_index];
+251	 }
+252	 }
+253	 pragma solidity 0.6.12;
+254	 interface IMisoMarket {
+255	 function init(bytes calldata data) external payable;
+256	 function initMarket( bytes calldata data ) external;
+257	 function marketTemplate() external view returns (uint256);
+258	 }
+259	 pragma solidity 0.6.12;
+260	 contract BatchAuction is IMisoMarket, MISOAccessControls, BoringBatchable, SafeTransfer, Documents, ReentrancyGuard {
+261	 using BoringMath for uint256;
+262	 using BoringMath128 for uint128;
+263	 using BoringMath64 for uint64;
+264	 using BoringERC20 for IERC20;
+265	 uint256 public constant override marketTemplate = 3;
+266	 address private constant ETH_ADDRESS = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+267	 struct MarketInfo {
+268	 uint64 startTime;
+269	 uint64 endTime;
+270	 uint128 totalTokens;
+271	 }
+272	 MarketInfo public marketInfo;
+273	 struct MarketStatus {
+274	 uint128 commitmentsTotal;
+275	 uint128 minimumCommitmentAmount;
+276	 bool finalized;
+277	 bool usePointList;
+278	 }
+279	 MarketStatus public marketStatus;
+280	 address public auctionToken;
+281	 address public paymentCurrency;
+282	 address public pointList;
+283	 address payable public wallet;
+284	 mapping(address => uint256) public commitments;
+285	 mapping(address => uint256) public claimed;
+286	 event AuctionDeployed(address funder, address token, uint256 totalTokens, address paymentCurrency, address admin, address wallet);
+287	 event AuctionTimeUpdated(uint256 startTime, uint256 endTime);
+288	 event AuctionPriceUpdated(uint256 minimumCommitmentAmount);
+289	 event AuctionWalletUpdated(address wallet);
+290	 event AuctionPointListUpdated(address pointList, bool enabled);
+291	 event AddedCommitment(address addr, uint256 commitment);
+292	 event TokensWithdrawn(address token, address to, uint256 amount);
+293	 event AuctionFinalized();
+294	 event AuctionCancelled();
+295	 function initAuction( address _funder, address _token, uint256 _totalTokens, uint256 _startTime, uint256 _endTime, address _paymentCurrency, uint256 _minimumCommitmentAmount, address _admin, address _pointList, address payable _wallet ) public {
+296	 require(_endTime < 10000000000, "BatchAuction: enter an unix timestamp in seconds, not miliseconds");
+297	 require(_startTime >= block.timestamp, "BatchAuction: start time is before current time");
+298	 require(_endTime > _startTime, "BatchAuction: end time must be older than start time");
+299	 require(_totalTokens > 0,"BatchAuction: total tokens must be greater than zero");
+300	 require(_admin != address(0), "BatchAuction: admin is the zero address");
+301	 require(_wallet != address(0), "BatchAuction: wallet is the zero address");
+302	 require(IERC20(_token).decimals() == 18, "BatchAuction: Token does not have 18 decimals");
+303	 if (_paymentCurrency != ETH_ADDRESS) {
+304	 require(IERC20(_paymentCurrency).decimals() > 0, "BatchAuction: Payment currency is not ERC20");
+305	 }
+306	 marketStatus.minimumCommitmentAmount = BoringMath.to128(_minimumCommitmentAmount);
+307	 marketInfo.startTime = BoringMath.to64(_startTime);
+308	 marketInfo.endTime = BoringMath.to64(_endTime);
+309	 marketInfo.totalTokens = BoringMath.to128(_totalTokens);
+310	 auctionToken = _token;
+311	 paymentCurrency = _paymentCurrency;
+312	 wallet = _wallet;
+313	 initAccessControls(_admin);
+314	 _setList(_pointList);
+315	 _safeTransferFrom(auctionToken, _funder, _totalTokens);
+316	 emit AuctionDeployed(_funder, _token, _totalTokens, _paymentCurrency, _admin, _wallet);
+317	 emit AuctionTimeUpdated(_startTime, _endTime);
+318	 emit AuctionPriceUpdated(_minimumCommitmentAmount);
+319	 }
+320	 receive() external payable {
+321	 revertBecauseUserDidNotProvideAgreement();
+322	 }
+323	 function marketParticipationAgreement() public pure returns (string memory) {
+324	 return "I understand that I am interacting with a smart contract. I understand that tokens commited are subject to the token issuer and local laws where applicable. I have reviewed the code of this smart contract and understand it fully. I agree to not hold developers or other people associated with the project liable for any losses or misunderstandings";
+325	 }
+326	 function revertBecauseUserDidNotProvideAgreement() internal pure {
+327	 revert("No agreement provided, please review the smart contract before interacting with it");
+328	 }
+329	 function commitEth(address payable _beneficiary, bool readAndAgreedToMarketParticipationAgreement) public payable {
+330	 require(paymentCurrency == ETH_ADDRESS, "BatchAuction: payment currency is not ETH");
+331	 require(msg.value > 0, "BatchAuction: Value must be higher than 0");
+332	 if(readAndAgreedToMarketParticipationAgreement == false) {
+333	 revertBecauseUserDidNotProvideAgreement();
+334	 }
+335	 _addCommitment(_beneficiary, msg.value);
+336	 require(marketStatus.commitmentsTotal <= address(this).balance, "BatchAuction: The committed ETH exceeds the balance");
+337	 }
+338	 function commitTokens(uint256 _amount, bool readAndAgreedToMarketParticipationAgreement) public {
+339	 commitTokensFrom(msg.sender, _amount, readAndAgreedToMarketParticipationAgreement);
+340	 }
+341	 function commitTokensFrom(address _from, uint256 _amount, bool readAndAgreedToMarketParticipationAgreement) public nonReentrant {
+342	 require(paymentCurrency != ETH_ADDRESS, "BatchAuction: Payment currency is not a token");
+343	 if(readAndAgreedToMarketParticipationAgreement == false) {
+344	 revertBecauseUserDidNotProvideAgreement();
+345	 }
+346	 require(_amount> 0, "BatchAuction: Value must be higher than 0");
+347	 _safeTransferFrom(paymentCurrency, msg.sender, _amount);
+348	 _addCommitment(_from, _amount);
+349	 }
+350	 function _addCommitment(address _addr, uint256 _commitment) internal {
+351	 require(block.timestamp >= marketInfo.startTime && block.timestamp <= marketInfo.endTime, "BatchAuction: outside auction hours");
+352	 uint256 newCommitment = commitments[_addr].add(_commitment);
+353	 if (marketStatus.usePointList) {
+354	 require(IPointList(pointList).hasPoints(_addr, newCommitment));
+355	 }
+356	 commitments[_addr] = newCommitment;
+357	 marketStatus.commitmentsTotal = BoringMath.to128(uint256(marketStatus.commitmentsTotal).add(_commitment));
+358	 emit AddedCommitment(_addr, _commitment);
+359	 }
+360	 function _getTokenAmount(uint256 amount) internal view returns (uint256) {
+361	 if (marketStatus.commitmentsTotal == 0) return 0;
+362	 return amount.mul(1e18).div(tokenPrice());
+363	 }
+364	 function tokenPrice() public view returns (uint256) {
+365	 return uint256(marketStatus.commitmentsTotal) .mul(1e18).div(uint256(marketInfo.totalTokens));
+366	 }
+367	 function finalize() public nonReentrant {
+368	 require(hasAdminRole(msg.sender) || wallet == msg.sender || hasSmartContractRole(msg.sender) || finalizeTimeExpired(), "BatchAuction: Sender must be admin");
+369	 require(!marketStatus.finalized, "BatchAuction: Auction has already finalized");
+370	 require(marketInfo.totalTokens > 0, "Not initialized");
+371	 require(block.timestamp > marketInfo.endTime, "BatchAuction: Auction has not finished yet");
+372	 if (auctionSuccessful()) {
+373	 _safeTokenPayment(paymentCurrency, wallet, uint256(marketStatus.commitmentsTotal));
+374	 }
+375	 else {
+376	 _safeTokenPayment(auctionToken, wallet, marketInfo.totalTokens);
+377	 }
+378	 marketStatus.finalized = true;
+379	 emit AuctionFinalized();
+380	 }
+381	 function cancelAuction() public nonReentrant {
+382	 require(hasAdminRole(msg.sender));
+383	 MarketStatus storage status = marketStatus;
+384	 require(!status.finalized, "BatchAuction: already finalized");
+385	 require( uint256(status.commitmentsTotal) == 0, "BatchAuction: Funds already raised" );
+386	 _safeTokenPayment(auctionToken, wallet, uint256(marketInfo.totalTokens));
+387	 status.finalized = true;
+388	 emit AuctionCancelled();
+389	 }
+390	 function withdrawTokens() public {
+391	 withdrawTokens(msg.sender);
+392	 }
+393	 function withdrawTokens(address payable beneficiary) public nonReentrant {
+394	 if (auctionSuccessful()) {
+395	 require(marketStatus.finalized, "BatchAuction: not finalized");
+396	 uint256 tokensToClaim = tokensClaimable(beneficiary);
+397	 require(tokensToClaim > 0, "BatchAuction: No tokens to claim");
+398	 claimed[beneficiary] = claimed[beneficiary].add(tokensToClaim);
+399	 _safeTokenPayment(auctionToken, beneficiary, tokensToClaim);
+400	 }
+401	 else {
+402	 require(block.timestamp > marketInfo.endTime, "BatchAuction: Auction has not finished yet");
+403	 uint256 fundsCommitted = commitments[beneficiary];
+404	 require(fundsCommitted > 0, "BatchAuction: No funds committed");
+405	 commitments[beneficiary] = 0;
+406	 _safeTokenPayment(paymentCurrency, beneficiary, fundsCommitted);
+407	 }
+408	 }
+409	 function tokensClaimable(address _user) public view returns (uint256 claimerCommitment) {
+410	 if (commitments[_user] == 0) return 0;
+411	 uint256 unclaimedTokens = IERC20(auctionToken).balanceOf(address(this));
+412	 claimerCommitment = _getTokenAmount(commitments[_user]);
+413	 claimerCommitment = claimerCommitment.sub(claimed[_user]);
+414	 if(claimerCommitment > unclaimedTokens){
+415	 claimerCommitment = unclaimedTokens;
+416	 }
+417	 }
+418	 function auctionSuccessful() public view returns (bool) {
+419	 return uint256(marketStatus.commitmentsTotal) >= uint256(marketStatus.minimumCommitmentAmount) && uint256(marketStatus.commitmentsTotal) > 0;
+420	 }
+421	 function auctionEnded() public view returns (bool) {
+422	 return block.timestamp > marketInfo.endTime;
+423	 }
+424	 function finalized() public view returns (bool) {
+425	 return marketStatus.finalized;
+426	 }
+427	 function finalizeTimeExpired() public view returns (bool) {
+428	 return uint256(marketInfo.endTime) + 7 days < block.timestamp;
+429	 }
+430	 function setDocument(string calldata _name, string calldata _data) external {
+431	 require(hasAdminRole(msg.sender) );
+432	 _setDocument( _name, _data);
+433	 }
+434	 function setDocuments(string[] calldata _name, string[] calldata _data) external {
+435	 require(hasAdminRole(msg.sender) );
+436	 uint256 numDocs = _name.length;
+437	 for (uint256 i = 0; i < numDocs; i++) {
+438	 _setDocument( _name[i], _data[i]);
+439	 }
+440	 }
+441	 function removeDocument(string calldata _name) external {
+442	 require(hasAdminRole(msg.sender));
+443	 _removeDocument(_name);
+444	 }
+445	 function setList(address _list) external {
+446	 require(hasAdminRole(msg.sender));
+447	 _setList(_list);
+448	 }
+449	 function enableList(bool _status) external {
+450	 require(hasAdminRole(msg.sender));
+451	 marketStatus.usePointList = _status;
+452	 emit AuctionPointListUpdated(pointList, marketStatus.usePointList);
+453	 }
+454	 function _setList(address _pointList) private {
+455	 if (_pointList != address(0)) {
+456	 pointList = _pointList;
+457	 marketStatus.usePointList = true;
+458	 }
+459	 emit AuctionPointListUpdated(_pointList, marketStatus.usePointList);
+460	 }
+461	 function setAuctionTime(uint256 _startTime, uint256 _endTime) external {
+462	 require(hasAdminRole(msg.sender));
+463	 require(_startTime < 10000000000, "BatchAuction: enter an unix timestamp in seconds, not miliseconds");
+464	 require(_endTime < 10000000000, "BatchAuction: enter an unix timestamp in seconds, not miliseconds");
+465	 require(_startTime >= block.timestamp, "BatchAuction: start time is before current time");
+466	 require(_endTime > _startTime, "BatchAuction: end time must be older than start price");
+467	 require(marketStatus.commitmentsTotal == 0, "BatchAuction: auction cannot have already started");
+468	 marketInfo.startTime = BoringMath.to64(_startTime);
+469	 marketInfo.endTime = BoringMath.to64(_endTime);
+470	 emit AuctionTimeUpdated(_startTime,_endTime);
+471	 }
+472	 function setAuctionPrice(uint256 _minimumCommitmentAmount) external {
+473	 require(hasAdminRole(msg.sender));
+474	 require(marketStatus.commitmentsTotal == 0, "BatchAuction: auction cannot have already started");
+475	 marketStatus.minimumCommitmentAmount = BoringMath.to128(_minimumCommitmentAmount);
+476	 emit AuctionPriceUpdated(_minimumCommitmentAmount);
+477	 }
+478	 function setAuctionWallet(address payable _wallet) external {
+479	 require(hasAdminRole(msg.sender));
+480	 require(_wallet != address(0), "BatchAuction: wallet is the zero address");
+481	 wallet = _wallet;
+482	 emit AuctionWalletUpdated(_wallet);
+483	 }
+484	 function init(bytes calldata _data) external override payable {
+485	 }
+486	 function initMarket( bytes calldata _data ) public override {
+487	 ( address _funder, address _token, uint256 _totalTokens, uint256 _startTime, uint256 _endTime, address _paymentCurrency, uint256 _minimumCommitmentAmount, address _admin, address _pointList, address payable _wallet ) = abi.decode(_data, ( address, address, uint256, uint256, uint256, address, uint256, address, address, address ));
+488	 initAuction(_funder, _token, _totalTokens, _startTime, _endTime, _paymentCurrency, _minimumCommitmentAmount, _admin, _pointList, _wallet);
+489	 }
+490	 function getBatchAuctionInitData( address _funder, address _token, uint256 _totalTokens, uint256 _startTime, uint256 _endTime, address _paymentCurrency, uint256 _minimumCommitmentAmount, address _admin, address _pointList, address payable _wallet ) external pure returns (bytes memory _data) {
+491	 return abi.encode( _funder, _token, _totalTokens, _startTime, _endTime, _paymentCurrency, _minimumCommitmentAmount, _admin, _pointList, _wallet );
+492	 }
+493	 function getBaseInformation() external view returns( address token, uint64 startTime, uint64 endTime, bool marketFinalized ) {
+494	 return (auctionToken, marketInfo.startTime, marketInfo.endTime, marketStatus.finalized);
+495	 }
+496	 function getTotalTokens() external view returns(uint256) {
+497	 return uint256(marketInfo.totalTokens);
+498	 }
+499	 }
+500	 pragma solidity 0.6.12;
+501	 library BoringMath {
+502	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+503	 require((c = a + b) >= b, "BoringMath: Add Overflow");
+504	 }
+505	 function sub(uint256 a, uint256 b) internal pure returns (uint256 c) {
+506	 require((c = a - b) <= a, "BoringMath: Underflow");
+507	 }
+508	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+509	 require(b == 0 || (c = a * b) / b == a, "BoringMath: Mul Overflow");
+510	 }
+511	 function div(uint256 a, uint256 b) internal pure returns (uint256 c) {
+512	 require(b > 0, "BoringMath: Div zero");
+513	 c = a / b;
+514	 }
+515	 function to128(uint256 a) internal pure returns (uint128 c) {
+516	 require(a <= uint128(-1), "BoringMath: uint128 Overflow");
+517	 c = uint128(a);
+518	 }
+519	 function to64(uint256 a) internal pure returns (uint64 c) {
+520	 require(a <= uint64(-1), "BoringMath: uint64 Overflow");
+521	 c = uint64(a);
+522	 }
+523	 function to32(uint256 a) internal pure returns (uint32 c) {
+524	 require(a <= uint32(-1), "BoringMath: uint32 Overflow");
+525	 c = uint32(a);
+526	 }
+527	 function to16(uint256 a) internal pure returns (uint16 c) {
+528	 require(a <= uint16(-1), "BoringMath: uint16 Overflow");
+529	 c = uint16(a);
+530	 }
+531	 }
+532	 library BoringMath128 {
+533	 function add(uint128 a, uint128 b) internal pure returns (uint128 c) {
+534	 require((c = a + b) >= b, "BoringMath: Add Overflow");
+535	 }
+536	 function sub(uint128 a, uint128 b) internal pure returns (uint128 c) {
+537	 require((c = a - b) <= a, "BoringMath: Underflow");
+538	 }
+539	 }
+540	 library BoringMath64 {
+541	 function add(uint64 a, uint64 b) internal pure returns (uint64 c) {
+542	 require((c = a + b) >= b, "BoringMath: Add Overflow");
+543	 }
+544	 function sub(uint64 a, uint64 b) internal pure returns (uint64 c) {
+545	 require((c = a - b) <= a, "BoringMath: Underflow");
+546	 }
+547	 }
+548	 library BoringMath32 {
+549	 function add(uint32 a, uint32 b) internal pure returns (uint32 c) {
+550	 require((c = a + b) >= b, "BoringMath: Add Overflow");
+551	 }
+552	 function sub(uint32 a, uint32 b) internal pure returns (uint32 c) {
+553	 require((c = a - b) <= a, "BoringMath: Underflow");
+554	 }
+555	 }
+556	 library BoringMath16 {
+557	 function add(uint16 a, uint16 b) internal pure returns (uint16 c) {
+558	 require((c = a + b) >= b, "BoringMath: Add Overflow");
+559	 }
+560	 function sub(uint16 a, uint16 b) internal pure returns (uint16 c) {
+561	 require((c = a - b) <= a, "BoringMath: Underflow");
+562	 }
+563	 }
+564	 pragma solidity 0.6.12;
+565	 library BoringERC20 {
+566	 bytes4 private constant SIG_SYMBOL = 0x95d89b41;
+567	 bytes4 private constant SIG_NAME = 0x06fdde03;
+568	 bytes4 private constant SIG_DECIMALS = 0x313ce567;
+569	 bytes4 private constant SIG_TRANSFER = 0xa9059cbb;
+570	 bytes4 private constant SIG_TRANSFER_FROM = 0x23b872dd;
+571	 function safeSymbol(IERC20 token) internal view returns (string memory) {
+572	 (bool success, bytes memory data) = address(token).staticcall(abi.encodeWithSelector(SIG_SYMBOL));
+573	 return success && data.length > 0 ? abi.decode(data, (string)) : "???";
+574	 }
+575	 function safeName(IERC20 token) internal view returns (string memory) {
+576	 (bool success, bytes memory data) = address(token).staticcall(abi.encodeWithSelector(SIG_NAME));
+577	 return success && data.length > 0 ? abi.decode(data, (string)) : "???";
+578	 }
+579	 function safeDecimals(IERC20 token) internal view returns (uint8) {
+580	 (bool success, bytes memory data) = address(token).staticcall(abi.encodeWithSelector(SIG_DECIMALS));
+581	 return success && data.length == 32 ? abi.decode(data, (uint8)) : 18;
+582	 }
+583	 function safeTransfer( IERC20 token, address to, uint256 amount ) internal {
+584	 (bool success, bytes memory data) = address(token).call(abi.encodeWithSelector(SIG_TRANSFER, to, amount));
+585	 require(success && (data.length == 0 || abi.decode(data, (bool))), "BoringERC20: Transfer failed");
+586	 }
+587	 function safeTransferFrom( IERC20 token, address from, address to, uint256 amount ) internal {
+588	 (bool success, bytes memory data) = address(token).call(abi.encodeWithSelector(SIG_TRANSFER_FROM, from, to, amount));
+589	 require(success && (data.length == 0 || abi.decode(data, (bool))), "BoringERC20: TransferFrom failed");
+590	 }
+591	 }
+592	 pragma solidity 0.6.12;
+593	 interface IPointList {
+594	 function isInList(address account) external view returns (bool);
+595	 function hasPoints(address account, uint256 amount) external view returns (bool);
+596	 function setPoints( address[] memory accounts, uint256[] memory amounts ) external;
+597	 function initPointList(address accessControl) external ;
+598	 }
+599	 pragma solidity 0.6.12;
+600	 library EnumerableSet {
+601	 struct Set {
+602	 bytes32[] _values;
+603	 mapping (bytes32 => uint256) _indexes;
+604	 }
+605	 function _add(Set storage set, bytes32 value) private returns (bool) {
+606	 if (!_contains(set, value)) {
+607	 set._values.push(value);
+608	 set._indexes[value] = set._values.length;
+609	 return true;
+610	 }
+611	 else {
+612	 return false;
+613	 }
+614	 }
+615	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+616	 uint256 valueIndex = set._indexes[value];
+617	 if (valueIndex != 0) {
+618	 uint256 toDeleteIndex = valueIndex - 1;
+619	 uint256 lastIndex = set._values.length - 1;
+620	 bytes32 lastvalue = set._values[lastIndex];
+621	 set._values[toDeleteIndex] = lastvalue;
+622	 set._indexes[lastvalue] = toDeleteIndex + 1;
+623	 set._values.pop();
+624	 delete set._indexes[value];
+625	 return true;
+626	 }
+627	 else {
+628	 return false;
+629	 }
+630	 }
+631	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+632	 return set._indexes[value] != 0;
+633	 }
+634	 function _length(Set storage set) private view returns (uint256) {
+635	 return set._values.length;
+636	 }
+637	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+638	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+639	 return set._values[index];
+640	 }
+641	 struct Bytes32Set {
+642	 Set _inner;
+643	 }
+644	 function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+645	 return _add(set._inner, value);
+646	 }
+647	 function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+648	 return _remove(set._inner, value);
+649	 }
+650	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+651	 return _contains(set._inner, value);
+652	 }
+653	 function length(Bytes32Set storage set) internal view returns (uint256) {
+654	 return _length(set._inner);
+655	 }
+656	 function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+657	 return _at(set._inner, index);
+658	 }
+659	 struct AddressSet {
+660	 Set _inner;
+661	 }
+662	 function add(AddressSet storage set, address value) internal returns (bool) {
+663	 return _add(set._inner, bytes32(uint256(uint160(value))));
+664	 }
+665	 function remove(AddressSet storage set, address value) internal returns (bool) {
+666	 return _remove(set._inner, bytes32(uint256(uint160(value))));
+667	 }
+668	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+669	 return _contains(set._inner, bytes32(uint256(uint160(value))));
+670	 }
+671	 function length(AddressSet storage set) internal view returns (uint256) {
+672	 return _length(set._inner);
+673	 }
+674	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+675	 return address(uint160(uint256(_at(set._inner, index))));
+676	 }
+677	 struct UintSet {
+678	 Set _inner;
+679	 }
+680	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+681	 return _add(set._inner, bytes32(value));
+682	 }
+683	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+684	 return _remove(set._inner, bytes32(value));
+685	 }
+686	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+687	 return _contains(set._inner, bytes32(value));
+688	 }
+689	 function length(UintSet storage set) internal view returns (uint256) {
+690	 return _length(set._inner);
+691	 }
+692	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+693	 return uint256(_at(set._inner, index));
+694	 }
+695	 }
+696	 pragma solidity 0.6.12;
+697	 interface IERC20 {
+698	 function totalSupply() external view returns (uint256);
+699	 function balanceOf(address account) external view returns (uint256);
+700	 function allowance(address owner, address spender) external view returns (uint256);
+701	 function approve(address spender, uint256 amount) external returns (bool);
+702	 function name() external view returns (string memory);
+703	 function symbol() external view returns (string memory);
+704	 function decimals() external view returns (uint8);
+705	 event Transfer(address indexed from, address indexed to, uint256 value);
+706	 event Approval(address indexed owner, address indexed spender, uint256 value);
+707	 function transferFrom( address from, address to, uint256 amount ) external returns (bool);
+708	 function permit( address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s ) external;
+709	 }

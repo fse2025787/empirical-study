@@ -1,0 +1,132 @@
+row number 
+1	       pragma solidity >=0.4.22 <0.6.0;
+2	 contract owned {
+3	 address payable public owner;
+4	 constructor() public {
+5	 owner = msg.sender;
+6	 }
+7	 modifier onlyOwner {
+8	 require(msg.sender == owner);
+9	 _;
+10	 }
+11	 function transferOwnership(address payable newOwner) onlyOwner public {
+12	 owner = newOwner;
+13	 }
+14	 }
+15	 interface tokenRecipient {
+16	 function receiveApproval(address _from, uint256 _value, address _token, bytes calldata _extraData) external;
+17	 }
+18	 contract TokenERC20 {
+19	 string public name;
+20	 string public symbol;
+21	 uint8 public decimals = 18;
+22	 uint256 public totalSupply;
+23	 mapping (address => uint256) public balanceOf;
+24	 mapping (address => mapping (address => uint256)) public allowance;
+25	 event Transfer(address indexed from, address indexed to, uint256 value);
+26	 event Approval(address indexed _owner, address indexed _spender, uint256 _value);
+27	 event Burn(address indexed from, uint256 value);
+28	 constructor( uint256 initialSupply, string memory tokenName, string memory tokenSymbol ) public {
+29	 totalSupply = initialSupply * 10 ** uint256(decimals);
+30	 balanceOf[msg.sender] = totalSupply;
+31	 name = tokenName;
+32	 symbol = tokenSymbol;
+33	 }
+34	 function _transfer(address _from, address _to, uint _value) internal {
+35	 require(_to != address(0x0));
+36	 require(balanceOf[_from] >= _value);
+37	 require(balanceOf[_to] + _value > balanceOf[_to]);
+38	 uint previousBalances = balanceOf[_from] + balanceOf[_to];
+39	 balanceOf[_from] -= _value;
+40	 balanceOf[_to] += _value;
+41	 emit Transfer(_from, _to, _value);
+42	 assert(balanceOf[_from] + balanceOf[_to] == previousBalances);
+43	 }
+44	 function transfer(address _to, uint256 _value) public returns (bool success) {
+45	 _transfer(msg.sender, _to, _value);
+46	 return true;
+47	 }
+48	 function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+49	 require(_value <= allowance[_from][msg.sender]);
+50	 allowance[_from][msg.sender] -= _value;
+51	 _transfer(_from, _to, _value);
+52	 return true;
+53	 }
+54	 function approve(address _spender, uint256 _value) public returns (bool success) {
+55	 allowance[msg.sender][_spender] = _value;
+56	 emit Approval(msg.sender, _spender, _value);
+57	 return true;
+58	 }
+59	 function approveAndCall(address _spender, uint256 _value, bytes memory _extraData) public returns (bool success) {
+60	 tokenRecipient spender = tokenRecipient(_spender);
+61	 if (approve(_spender, _value)) {
+62	 spender.receiveApproval(msg.sender, _value, address(this), _extraData);
+63	 return true;
+64	 }
+65	 }
+66	 function burn(uint256 _value) public returns (bool success) {
+67	 require(balanceOf[msg.sender] >= _value);
+68	 balanceOf[msg.sender] -= _value;
+69	 totalSupply -= _value;
+70	 emit Burn(msg.sender, _value);
+71	 return true;
+72	 }
+73	 function burnFrom(address _from, uint256 _value) public returns (bool success) {
+74	 require(balanceOf[_from] >= _value);
+75	 require(_value <= allowance[_from][msg.sender]);
+76	 balanceOf[_from] -= _value;
+77	 allowance[_from][msg.sender] -= _value;
+78	 totalSupply -= _value;
+79	 emit Burn(_from, _value);
+80	 return true;
+81	 }
+82	 }
+83	 contract CO2A is owned, TokenERC20 {
+84	 uint256 public buyPrice;
+85	 bool public isContractFrozen;
+86	 mapping (address => bool) public frozenAccount;
+87	 event FrozenFunds(address target, bool frozen);
+88	 event FrozenContract(bool frozen);
+89	 constructor( uint256 initialSupply, string memory tokenName, string memory tokenSymbol ) TokenERC20(initialSupply, tokenName, tokenSymbol) public {
+90	 }
+91	 function _transfer(address _from, address _to, uint _value) internal {
+92	 require (!isContractFrozen);
+93	 require (_to != address(0x0));
+94	 require (balanceOf[_from] >= _value);
+95	 require (balanceOf[_to] + _value >= balanceOf[_to]);
+96	 require(!frozenAccount[_from]);
+97	 require(!frozenAccount[_to]);
+98	 balanceOf[_from] -= _value;
+99	 balanceOf[_to] += _value;
+100	 emit Transfer(_from, _to, _value);
+101	 }
+102	 function mintToken(address target, uint256 mintedAmount) onlyOwner public {
+103	 balanceOf[target] += mintedAmount;
+104	 totalSupply += mintedAmount;
+105	 emit Transfer(address(0), address(this), mintedAmount);
+106	 emit Transfer(address(this), target, mintedAmount);
+107	 }
+108	 function freezeAccount(address target, bool freeze) onlyOwner public {
+109	 frozenAccount[target] = freeze;
+110	 emit FrozenFunds(target, freeze);
+111	 }
+112	 function freezeContract(bool freeze) onlyOwner public {
+113	 isContractFrozen = freeze;
+114	 emit FrozenContract(freeze);
+115	 }
+116	 function setPrice(uint256 newBuyPrice) onlyOwner public {
+117	 buyPrice = newBuyPrice;
+118	 }
+119	 function () payable external {
+120	 require (buyPrice != 0);
+121	 uint amount = msg.value * buyPrice;
+122	 _transfer(address(this), msg.sender, amount);
+123	 owner.transfer(msg.value);
+124	 }
+125	 function withdrawTokens(uint256 amount) onlyOwner public{
+126	 _transfer(address(this), owner, amount);
+127	 }
+128	 function kill() onlyOwner public{
+129	 selfdestruct(owner);
+130	 }
+131	 }

@@ -1,0 +1,334 @@
+row number 
+1	               pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Ownable {
+3	 address private _owner;
+4	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+5	 constructor () internal {
+6	 _owner = msg.sender;
+7	 emit OwnershipTransferred(address(0), _owner);
+8	 }
+9	 function owner() public view returns (address) {
+10	 return _owner;
+11	 }
+12	 modifier onlyOwner() {
+13	 require(_owner == msg.sender, "Ownable: caller is not the owner");
+14	 _;
+15	 }
+16	 function renounceOwnership() public virtual onlyOwner {
+17	 emit OwnershipTransferred(_owner, address(0));
+18	 _owner = address(0);
+19	 }
+20	 function transferOwnership(address newOwner) public virtual onlyOwner {
+21	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+22	 emit OwnershipTransferred(_owner, newOwner);
+23	 _owner = newOwner;
+24	 }
+25	 }
+26	 abstract contract ReentrancyGuard {
+27	 uint256 private constant _NOT_ENTERED = 1;
+28	 uint256 private constant _ENTERED = 2;
+29	 uint256 private _status;
+30	 constructor () internal {
+31	 _status = _NOT_ENTERED;
+32	 }
+33	 modifier nonReentrant() {
+34	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+35	 _status = _ENTERED;
+36	 _;
+37	 _status = _NOT_ENTERED;
+38	 }
+39	 }
+40	 contract DappIncubator is Ownable, ReentrancyGuard {
+41	 struct TokenLedger {
+42	 uint supply;
+43	 uint dividend;
+44	 uint initialPrice;
+45	 uint incrementPrice;
+46	 }
+47	 struct BalanceLedger {
+48	 uint tokenBalance;
+49	 uint referralBalance;
+50	 int payOut;
+51	 }
+52	 mapping(address => bool) contractAddressRecord;
+53	 mapping(address => bool) walletAddressRecord;
+54	 uint constant magnitude = 1e18 ;
+55	 uint constant dividendFee = 10;
+56	 mapping (address => mapping(address => BalanceLedger)) balanceLedger;
+57	 mapping(address => TokenLedger) tokenLedger;
+58	 event onTokenOnboard(address indexed contractAddress, uint initialPrice, uint incrementPrice);
+59	 event onPurchase(address indexed walletAddress, address indexed contractAddress, uint incomingTokenAmount, uint collateralMinted, address indexed referredBy);
+60	 event onSell(address indexed walletAddress, address indexed contractAddress, uint tokenAmountToReceiver, uint collateralBurned);
+61	 event onReinvest(address indexed walletAddress, address indexed contractAddress, uint reInvestTokenAmount, uint collateralMinted);
+62	 event onWithdraw(address indexed walletAddress, address indexed contractAddress, uint amountToWithdraw);
+63	 event onTransfer(address indexed contractAddress, address indexed from,address indexed to,uint256 tokens);
+64	 function tokenOnboard(address contractAddress, uint initialPrice, uint incrementPrice) public nonReentrant onlyOwner returns(bool) {
+65	 if(contractAddressRecord[contractAddress] == false) {
+66	 contractAddressRecord[contractAddress] = true;
+67	 tokenLedger[contractAddress].initialPrice = initialPrice;
+68	 tokenLedger[contractAddress].incrementPrice = incrementPrice;
+69	 tokenLedger[contractAddress].supply = 0;
+70	 tokenLedger[contractAddress].dividend = 0;
+71	 emit onTokenOnboard(contractAddress, initialPrice, incrementPrice);
+72	 return true;
+73	 }
+74	 }
+75	 function buy(address _referredBy) public nonReentrant payable returns(uint256) {
+76	 require(msg.value>0);
+77	 require(contractAddressRecord[address(0)] == true);
+78	 if(walletAddressRecord[msg.sender] == false){
+79	 walletAddressRecord[msg.sender] = true;
+80	 }
+81	 uint256 collateAmount = purchaseCollate(address(0), msg.value, _referredBy);
+82	 return collateAmount;
+83	 }
+84	 function buy(address contractAddress, uint256 tokenAmount, address _referredBy) public nonReentrant returns(uint256) {
+85	 require(contractAddressRecord[contractAddress] == true);
+86	 require(tokenAmount > 0);
+87	 require(ERC20(contractAddress).allowance(msg.sender, address(this)) >= tokenAmount);
+88	 require(ERC20(contractAddress).transferFrom(msg.sender, address(this), tokenAmount));
+89	 if(walletAddressRecord[msg.sender] == false){
+90	 walletAddressRecord[msg.sender] = true;
+91	 }
+92	 uint256 collateAmount = purchaseCollate(contractAddress,tokenAmount, _referredBy);
+93	 return collateAmount;
+94	 }
+95	 fallback() nonReentrant payable external {
+96	 require(msg.value > 0);
+97	 require(contractAddressRecord[address(0)] == true);
+98	 if(walletAddressRecord[msg.sender] == false){
+99	 walletAddressRecord[msg.sender] = true;
+100	 }
+101	 purchaseCollate(address(0), msg.value, address(0));
+102	 }
+103	 function reinvest(address contractAddress) public nonReentrant {
+104	 require(contractAddressRecord[contractAddress] == true);
+105	 require(walletAddressRecord[msg.sender] == true);
+106	 uint256 _dividends = myDividends(contractAddress, false);
+107	 address _customerAddress = msg.sender;
+108	 balanceLedger[_customerAddress][contractAddress].payOut += (int256) (_dividends * magnitude);
+109	 _dividends += balanceLedger[_customerAddress][contractAddress].referralBalance;
+110	 balanceLedger[_customerAddress][contractAddress].referralBalance = 0;
+111	 uint256 _collate = purchaseCollate(contractAddress, _dividends, address(0));
+112	 emit onReinvest(_customerAddress, contractAddress, _dividends, _collate);
+113	 }
+114	 function exit(address contractAddress) public nonReentrant {
+115	 require(contractAddressRecord[contractAddress] == true);
+116	 require(walletAddressRecord[msg.sender] == true);
+117	 address _customerAddress = msg.sender;
+118	 uint256 _tokens = balanceLedger[_customerAddress][contractAddress].tokenBalance;
+119	 if(_tokens > 0) sell(contractAddress, _tokens);
+120	 withdraw(contractAddress);
+121	 }
+122	 function withdraw(address contractAddress) public nonReentrant {
+123	 require(contractAddressRecord[contractAddress] == true);
+124	 require(walletAddressRecord[msg.sender] == true);
+125	 address _customerAddress = msg.sender;
+126	 uint256 _dividends = myDividends(contractAddress, false);
+127	 balanceLedger[_customerAddress][contractAddress].payOut += (int256) (_dividends * magnitude);
+128	 _dividends += balanceLedger[_customerAddress][contractAddress].referralBalance;
+129	 balanceLedger[_customerAddress][contractAddress].referralBalance = 0;
+130	 if (contractAddress == address(0)){
+131	 payable(address(_customerAddress)).transfer(_dividends);
+132	 }
+133	 else{
+134	 ERC20(contractAddress).transfer(_customerAddress,_dividends);
+135	 }
+136	 emit onWithdraw(_customerAddress, contractAddress, _dividends);
+137	 }
+138	 function transfer(address contractAddress, address toAddress, uint256 amountOfCollate) public returns(bool) {
+139	 address _customerAddress = msg.sender;
+140	 require(contractAddressRecord[contractAddress] == true);
+141	 require(walletAddressRecord[_customerAddress] == true);
+142	 require(amountOfCollate <= balanceLedger[_customerAddress][contractAddress].tokenBalance);
+143	 if(walletAddressRecord[toAddress] == false){
+144	 walletAddressRecord[toAddress] = true;
+145	 }
+146	 if(myDividends(contractAddress, true) > 0) withdraw(contractAddress);
+147	 uint256 _tokenFee = SafeMath.div(amountOfCollate, dividendFee);
+148	 uint256 _taxedTokens = SafeMath.sub(amountOfCollate, _tokenFee);
+149	 uint256 _dividends = collateralToToken_(contractAddress, _tokenFee);
+150	 tokenLedger[contractAddress].supply = SafeMath.sub(tokenLedger[contractAddress].supply, _tokenFee);
+151	 balanceLedger[_customerAddress][contractAddress].tokenBalance = SafeMath.sub(balanceLedger[_customerAddress][contractAddress].tokenBalance, amountOfCollate);
+152	 balanceLedger[toAddress][contractAddress].tokenBalance = SafeMath.add(balanceLedger[toAddress][contractAddress].tokenBalance, _taxedTokens);
+153	 balanceLedger[_customerAddress][contractAddress].payOut -= (int256) (tokenLedger[contractAddress].dividend * amountOfCollate);
+154	 balanceLedger[toAddress][contractAddress].payOut += (int256) (tokenLedger[contractAddress].dividend * _taxedTokens);
+155	 tokenLedger[contractAddress].dividend = SafeMath.add(tokenLedger[contractAddress].dividend, (_dividends * magnitude) / tokenLedger[contractAddress].supply);
+156	 emit onTransfer(contractAddress, _customerAddress, toAddress, _taxedTokens);
+157	 return true;
+158	 }
+159	 function sell(address contractAddress, uint256 _amountOfCollate) public {
+160	 require(contractAddressRecord[contractAddress] == true);
+161	 require(walletAddressRecord[msg.sender] == true);
+162	 address _customerAddress = msg.sender;
+163	 require(_amountOfCollate <= balanceLedger[_customerAddress][contractAddress].tokenBalance);
+164	 uint256 _collates = _amountOfCollate;
+165	 uint256 _tokens = collateralToToken_(contractAddress, _collates);
+166	 uint256 _dividends = SafeMath.div(_tokens, dividendFee);
+167	 uint256 _taxedToken = SafeMath.sub(_tokens, _dividends);
+168	 tokenLedger[contractAddress].supply = SafeMath.sub(tokenLedger[contractAddress].supply, _collates);
+169	 balanceLedger[_customerAddress][contractAddress].tokenBalance = SafeMath.sub(balanceLedger[_customerAddress][contractAddress].tokenBalance, _collates);
+170	 int256 _updatedPayouts = (int256) (tokenLedger[contractAddress].dividend * _collates + (_taxedToken * magnitude));
+171	 balanceLedger[_customerAddress][contractAddress].payOut -= _updatedPayouts;
+172	 if (tokenLedger[contractAddress].supply > 0) {
+173	 tokenLedger[contractAddress].dividend = SafeMath.add(tokenLedger[contractAddress].dividend, (_dividends * magnitude) / tokenLedger[contractAddress].supply);
+174	 }
+175	 emit onSell(_customerAddress, contractAddress, _taxedToken, _collates);
+176	 }
+177	 function buyPrice(address contractAddress) public view returns(uint currentBuyPrice) {
+178	 require(contractAddressRecord[contractAddress] == true);
+179	 if(tokenLedger[contractAddress].supply == 0){
+180	 return tokenLedger[contractAddress].initialPrice + tokenLedger[contractAddress].incrementPrice;
+181	 }
+182	 else {
+183	 uint256 _token = collateralToToken_(contractAddress, 1e18);
+184	 uint256 _dividends = SafeMath.div(_token, dividendFee);
+185	 uint256 _taxedToken = SafeMath.add(_token, _dividends);
+186	 return _taxedToken;
+187	 }
+188	 }
+189	 function sellPrice(address contractAddress) public view returns(uint) {
+190	 require(contractAddressRecord[contractAddress] == true);
+191	 if(tokenLedger[contractAddress].supply == 0){
+192	 return tokenLedger[contractAddress].initialPrice - tokenLedger[contractAddress].incrementPrice;
+193	 }
+194	 else {
+195	 uint256 _token = collateralToToken_(contractAddress, 1e18);
+196	 uint256 _dividends = SafeMath.div(_token, dividendFee);
+197	 uint256 _taxedToken = SafeMath.sub(_token, _dividends);
+198	 return _taxedToken;
+199	 }
+200	 }
+201	 function tokentoCollateral_(address contractAddress, uint amount) internal view returns(uint) {
+202	 uint256 _tokenPriceInitial = tokenLedger[contractAddress].initialPrice * 1e18;
+203	 uint256 tokenSupply_ = tokenLedger[contractAddress].supply;
+204	 uint tokenPriceIncremental_ = tokenLedger[contractAddress].incrementPrice;
+205	 uint256 _tokensReceived = ( ( SafeMath.sub( (sqrt ( (_tokenPriceInitial**2) + (2*(tokenPriceIncremental_ * 1e18)*(amount * 1e18)) + (((tokenPriceIncremental_)**2)*(tokenSupply_**2)) + (2*(tokenPriceIncremental_)*_tokenPriceInitial*tokenSupply_) ) ), _tokenPriceInitial ) )/(tokenPriceIncremental_) )-(tokenSupply_) ;
+206	 return _tokensReceived;
+207	 }
+208	 function collateralToToken_(address contractAddress, uint256 _tokens) internal view returns(uint256) {
+209	 uint256 tokens_ = _tokens + 1e18 ;
+210	 uint256 _tokenSupply = tokenLedger[contractAddress].supply + 1e18;
+211	 uint256 tokenPriceInitial_ = tokenLedger[contractAddress].initialPrice;
+212	 uint tokenPriceIncremental_ = tokenLedger[contractAddress].incrementPrice;
+213	 uint256 _etherReceived = ( SafeMath.sub( ( ( ( tokenPriceInitial_ +(tokenPriceIncremental_ * (_tokenSupply/1e18)) )-tokenPriceIncremental_ )*(tokens_ - 1e18) ),(tokenPriceIncremental_*((tokens_**2-tokens_)/1e18))/2 ) /1e18);
+214	 return _etherReceived;
+215	 }
+216	 function calculateCollateReceived(address contractAddress, uint256 _tokenAmount) public view returns(uint256) {
+217	 require(contractAddressRecord[contractAddress] == true);
+218	 uint256 _dividends = SafeMath.div(_tokenAmount, dividendFee);
+219	 uint256 _taxedToken = SafeMath.sub(_tokenAmount, _dividends);
+220	 uint256 _amountOfCollatral = tokentoCollateral_(contractAddress, _taxedToken);
+221	 return _amountOfCollatral;
+222	 }
+223	 function calculateTokenReceived(address contractAddress, uint256 _collateToSell) public view returns(uint256) {
+224	 require(contractAddressRecord[contractAddress] == true);
+225	 require(_collateToSell <= tokenLedger[contractAddress].supply);
+226	 uint256 _token = collateralToToken_(contractAddress, _collateToSell);
+227	 uint256 _dividends = SafeMath.div(_token, dividendFee);
+228	 uint256 _taxedToken = SafeMath.sub(_token, _dividends);
+229	 return _taxedToken;
+230	 }
+231	 function purchaseCollate(address contractAddress, uint256 _incomingToken, address _referredBy) internal returns(uint256) {
+232	 address _customerAddress = msg.sender;
+233	 uint256 _undividedDividends = SafeMath.div(_incomingToken, dividendFee);
+234	 uint256 _referralBonus = SafeMath.div(_undividedDividends, 3);
+235	 uint256 _dividends = SafeMath.sub(_undividedDividends, _referralBonus);
+236	 uint256 _taxedToken = SafeMath.sub(_incomingToken, _undividedDividends);
+237	 uint256 _amountOfCollate = tokentoCollateral_(contractAddress,_taxedToken);
+238	 uint256 _fee = _dividends * magnitude;
+239	 require(_amountOfCollate > 0 && (SafeMath.add(_amountOfCollate,tokenLedger[contractAddress].supply) > tokenLedger[contractAddress].supply));
+240	 if( _referredBy != address(0) && _referredBy != _customerAddress && walletAddressRecord[_referredBy] == true ){
+241	 balanceLedger[_referredBy][contractAddress].referralBalance = SafeMath.add(balanceLedger[_referredBy][contractAddress].referralBalance, _referralBonus);
+242	 }
+243	 else {
+244	 _dividends = SafeMath.add(_dividends, _referralBonus);
+245	 _fee = _dividends * magnitude;
+246	 }
+247	 if(tokenLedger[contractAddress].supply > 0){
+248	 tokenLedger[contractAddress].supply = SafeMath.add(tokenLedger[contractAddress].supply, _amountOfCollate);
+249	 tokenLedger[contractAddress].dividend += (_dividends * magnitude / (tokenLedger[contractAddress].supply));
+250	 _fee = _fee - (_fee-(_amountOfCollate * (_dividends * magnitude / (tokenLedger[contractAddress].supply))));
+251	 }
+252	 else {
+253	 tokenLedger[contractAddress].supply = _amountOfCollate;
+254	 }
+255	 balanceLedger[_customerAddress][contractAddress].tokenBalance = SafeMath.add(balanceLedger[_customerAddress][contractAddress].tokenBalance, _amountOfCollate);
+256	 int256 _updatedPayouts = (int256) ((tokenLedger[contractAddress].dividend * _amountOfCollate) - _fee);
+257	 balanceLedger[_customerAddress][contractAddress].payOut += _updatedPayouts;
+258	 emit onPurchase(_customerAddress, contractAddress, _incomingToken, _amountOfCollate, _referredBy);
+259	 return _amountOfCollate;
+260	 }
+261	 function totalTokenBalance(address contractAddress) public view returns(uint) {
+262	 require(contractAddressRecord[contractAddress] == true);
+263	 if (contractAddress== address(0)){
+264	 return address(this).balance;
+265	 }
+266	 else{
+267	 return ERC20(contractAddress).balanceOf(address(this));
+268	 }
+269	 }
+270	 function totalSupply(address contractAddress) public view returns(uint256) {
+271	 require(contractAddressRecord[contractAddress] == true);
+272	 return tokenLedger[contractAddress].supply;
+273	 }
+274	 function myTokens(address contractAddress) public view returns(uint256) {
+275	 require(contractAddressRecord[contractAddress] == true);
+276	 address _customerAddress = msg.sender;
+277	 return balanceOf(contractAddress, _customerAddress);
+278	 }
+279	 function myDividends(address contractAddress, bool _includeReferralBonus) public view returns(uint256) {
+280	 require(contractAddressRecord[contractAddress] == true);
+281	 address _customerAddress = msg.sender;
+282	 return _includeReferralBonus ? dividendsOf(contractAddress,_customerAddress) + balanceLedger[_customerAddress][contractAddress].referralBalance : dividendsOf(contractAddress, _customerAddress) ;
+283	 }
+284	 function balanceOf(address contractAddress, address _customerAddress) view public returns(uint256) {
+285	 require(contractAddressRecord[contractAddress] == true);
+286	 return balanceLedger[_customerAddress][contractAddress].tokenBalance;
+287	 }
+288	 function dividendsOf(address contractAddress, address _customerAddress) view public returns(uint256) {
+289	 require(contractAddressRecord[contractAddress] == true);
+290	 return (uint256) ((int256)(tokenLedger[contractAddress].dividend * balanceLedger[_customerAddress][contractAddress].tokenBalance) - balanceLedger[_customerAddress][contractAddress].payOut) / magnitude;
+291	 }
+292	 function sqrt(uint x) internal pure returns (uint y) {
+293	 uint z = (x + 1) / 2;
+294	 y = x;
+295	 while (z < y) {
+296	 y = z;
+297	 z = (x / z + z) / 2;
+298	 }
+299	 }
+300	 }
+301	 interface ERC20 {
+302	 function totalSupply() external view returns (uint supply);
+303	 function allowance(address _owner, address _spender) external view returns (uint remaining);
+304	 function approve(address _spender, uint _value) external returns (bool success);
+305	 function balanceOf(address _owner) external view returns (uint balance);
+306	 function transfer(address _to, uint _value) external returns (bool success);
+307	 function transferFrom(address _from, address _to, uint _value) external returns (bool success);
+308	 event Approval(address indexed _owner, address indexed _spender, uint _value);
+309	 event Transfer(address indexed _from, address indexed _to, uint _value);
+310	 }
+311	 library SafeMath {
+312	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+313	 if (a == 0) {
+314	 return 0;
+315	 }
+316	 uint256 c = a * b;
+317	 assert(c / a == b);
+318	 return c;
+319	 }
+320	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+321	 uint256 c = a / b;
+322	 return c;
+323	 }
+324	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+325	 assert(b <= a);
+326	 return a - b;
+327	 }
+328	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+329	 uint256 c = a + b;
+330	 assert(c >= a);
+331	 return c;
+332	 }
+333	 }

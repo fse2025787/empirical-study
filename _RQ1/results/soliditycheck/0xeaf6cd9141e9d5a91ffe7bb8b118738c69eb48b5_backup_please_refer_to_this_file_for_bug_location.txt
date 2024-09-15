@@ -1,0 +1,127 @@
+row number 
+1	         pragma solidity 0.8.7;
+2	 contract Ownable {
+3	 string public constant NOT_CURRENT_OWNER = "018001";
+4	 string public constant CANNOT_TRANSFER_TO_ZERO_ADDRESS = "018002";
+5	 address public owner;
+6	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+7	 constructor() {
+8	 owner = msg.sender;
+9	 }
+10	 modifier onlyOwner() {
+11	 require(msg.sender == owner, NOT_CURRENT_OWNER);
+12	 _;
+13	 }
+14	 function transferOwnership( address _newOwner ) public onlyOwner {
+15	 require(_newOwner != address(0), CANNOT_TRANSFER_TO_ZERO_ADDRESS);
+16	 emit OwnershipTransferred(owner, _newOwner);
+17	 owner = _newOwner;
+18	 }
+19	 }
+20	 abstract contract NFTInterface {
+21	 function mint(address _to,uint256 _tokenId,string calldata _uri) virtual external ;
+22	 function safeTransferFrom(address _from, address _to, uint256 _tokenId, bytes calldata _data) virtual external;
+23	 function balanceOf(address tokenOwner) virtual public view returns (uint balance);
+24	 function ownerOf(uint __artId) virtual public view returns ( address artOwner);
+25	 function safeTransferFrom( address _from, address _to, uint256 _tokenId) virtual public;
+26	 function tokenURI(uint256 _tokenId) virtual external returns (string memory);
+27	 function approveResaleNFT( uint256 _tokenId ) virtual public;
+28	 function approveAuctionNFT( uint256 _tokenId ) virtual public;
+29	 function addNftPurchaser(uint __artId,uint __tokenId, address __buyer) public virtual ;
+30	 function deleteNftPurchaser(uint __artId, address seller )virtual public ;
+31	 function deleteArtworkPurchased(uint __tokenId, address exOwner ) virtual public ;
+32	 function getArtIdOwners(uint __artId) virtual public view returns (address [] memory);
+33	 function getArtworksOwnedBy(address __buyer) virtual public view returns (uint [] memory);
+34	 function getNftTokenIds(uint __artId) virtual public view returns (uint [] memory);
+35	 }
+36	 contract NFTsaleRio is Ownable{
+37	 address nftAddress = 0xe0d189176C68F2fc55BE8FeF32E9883b287f739a ;
+38	 NFTInterface public tokenNFT = NFTInterface(nftAddress);
+39	 bool isActive;
+40	 mapping(uint => address payable) public artistAddress;
+41	 mapping(uint => uint) public feeArtclub;
+42	 mapping(uint => uint) priceNFT;
+43	 mapping(uint => bool) public isNftForSale;
+44	 event ArtPurchasingDetail( string indexed __uri );
+45	 constructor() {
+46	 owner = msg.sender;
+47	 isActive = true;
+48	 }
+49	 function setArtNFTContract( address _contract) public returns (bool success) {
+50	 require(msg.sender == owner,"Only theArtClub can add NFTs");
+51	 nftAddress = _contract ;
+52	 tokenNFT = NFTInterface(nftAddress);
+53	 return true;
+54	 }
+55	 function setArtNFT(uint256[] memory __artId , address[] memory __artist, uint[] memory __price, uint[] memory __fee) public {
+56	 require(msg.sender == owner,"Only theArtClub can add NFTs");
+57	 for(uint8 i = 0; i < __artId.length; i++) {
+58	 priceNFT[__artId[i]] = __price[i];
+59	 artistAddress[__artId[i]] = payable(__artist[i]);
+60	 feeArtclub[__artId[i]] = __fee[i];
+61	 }
+62	 }
+63	 function buyArtIdNFT (uint __artId, uint __tokenId, string calldata __uri) external payable returns (bool success) {
+64	 require(isActive,"Contract has to be active");
+65	 require(artistAddress[__artId]!=address(0),"ADDRESS artist unknown");
+66	 uint vendita = priceNFT[__artId];
+67	 if(msg.value>priceNFT[__artId]){
+68	 vendita = msg.value;
+69	 }
+70	 uint commissione = vendita * feeArtclub[__artId] / 100;
+71	 uint quotaArtista = vendita - commissione ;
+72	 payable(address(uint160(owner))).transfer(commissione);
+73	 artistAddress[__artId].transfer(quotaArtista);
+74	 tokenNFT.mint(msg.sender,__tokenId,__uri);
+75	 tokenNFT.addNftPurchaser(__artId,__tokenId,msg.sender);
+76	 priceNFT[__tokenId] = vendita;
+77	 emit ArtPurchasingDetail( __uri );
+78	 return true;
+79	 }
+80	 function resaleNFT (uint256 _tokenId,uint __price) external returns (bool success){
+81	 require(msg.sender == tokenNFT.ownerOf(_tokenId),"Only NFT owner can act here");
+82	 priceNFT[_tokenId]=__price;
+83	 tokenNFT.approveResaleNFT( _tokenId);
+84	 isNftForSale[_tokenId]=true;
+85	 return true;
+86	 }
+87	 function buyResaleNFT (uint __artId, uint __tokenId) external payable returns (bool success) {
+88	 require(isActive,"Contract has to be active");
+89	 address proprietario = tokenNFT.ownerOf(__tokenId);
+90	 uint vendita = priceNFT[__tokenId];
+91	 uint commissione = vendita * 10 /100;
+92	 uint quotaArtista = vendita * 10 /100;
+93	 uint quotaProprietario = vendita - commissione - quotaArtista;
+94	 payable(address(uint160(proprietario))).transfer(quotaProprietario);
+95	 payable(address(uint160(owner))).transfer(commissione);
+96	 artistAddress[__artId].transfer(quotaArtista);
+97	 tokenNFT.safeTransferFrom(proprietario, msg.sender, __tokenId);
+98	 isNftForSale[__tokenId] = false;
+99	 tokenNFT.addNftPurchaser(__artId,__tokenId,msg.sender);
+100	 tokenNFT.deleteNftPurchaser(__artId,proprietario);
+101	 tokenNFT.deleteArtworkPurchased(__tokenId,proprietario);
+102	 return true;
+103	 }
+104	 function changeStato(bool stato) public {
+105	 require(msg.sender == owner,"Solo TheArtClub puo disattivare il contratto");
+106	 isActive = stato;
+107	 }
+108	 function getArtIdOwners(uint __artId) public view returns (address [] memory) {
+109	 return tokenNFT.getArtIdOwners(__artId);
+110	 }
+111	 function getArtworksOwnedBy(address __buyer) public view returns (uint [] memory) {
+112	 return tokenNFT.getArtworksOwnedBy(__buyer);
+113	 }
+114	 function getNftTokenIds(uint __artId) public view returns (uint [] memory) {
+115	 return tokenNFT.getNftTokenIds(__artId);
+116	 }
+117	 function getOwnerOf(uint __artId) public view returns (address) {
+118	 return tokenNFT.ownerOf(__artId);
+119	 }
+120	 function getPriceNFT(uint __artId) public view returns (uint){
+121	 return priceNFT[__artId];
+122	 }
+123	 receive () payable external {
+124	 revert();
+125	 }
+126	 }

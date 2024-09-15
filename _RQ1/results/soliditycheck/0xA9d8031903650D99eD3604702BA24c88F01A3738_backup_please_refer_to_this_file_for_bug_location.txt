@@ -1,0 +1,733 @@
+row number 
+1	          pragma solidity >=0.4.24 <0.8.0;
+2	 abstract contract Initializable {
+3	 bool private _initialized;
+4	 bool private _initializing;
+5	 modifier initializer() {
+6	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+7	 bool isTopLevelCall = !_initializing;
+8	 if (isTopLevelCall) {
+9	 _initializing = true;
+10	 _initialized = true;
+11	 }
+12	 _;
+13	 if (isTopLevelCall) {
+14	 _initializing = false;
+15	 }
+16	 }
+17	 function _isConstructor() private view returns (bool) {
+18	 return !AddressUpgradeable.isContract(address(this));
+19	 }
+20	 }
+21	 pragma solidity >=0.6.0 <0.8.0;
+22	 abstract contract ContextUpgradeable is Initializable {
+23	 function __Context_init() internal initializer {
+24	 __Context_init_unchained();
+25	 }
+26	 function __Context_init_unchained() internal initializer {
+27	 }
+28	 function _msgSender() internal view virtual returns (address payable) {
+29	 return msg.sender;
+30	 }
+31	 function _msgData() internal view virtual returns (bytes memory) {
+32	 this;
+33	 return msg.data;
+34	 }
+35	 uint256[50] private __gap;
+36	 }
+37	 pragma solidity >=0.6.0 <0.8.0;
+38	 interface IERC165 {
+39	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+40	 }
+41	 pragma solidity >=0.6.0 <0.8.0;
+42	 abstract contract OwnableUpgradeable is Initializable, ContextUpgradeable {
+43	 address private _owner;
+44	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+45	 function __Ownable_init() internal initializer {
+46	 __Context_init_unchained();
+47	 __Ownable_init_unchained();
+48	 }
+49	 function __Ownable_init_unchained() internal initializer {
+50	 address msgSender = _msgSender();
+51	 _owner = msgSender;
+52	 emit OwnershipTransferred(address(0), msgSender);
+53	 }
+54	 function owner() public view virtual returns (address) {
+55	 return _owner;
+56	 }
+57	 modifier onlyOwner() {
+58	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+59	 _;
+60	 }
+61	 function renounceOwnership() public virtual onlyOwner {
+62	 emit OwnershipTransferred(_owner, address(0));
+63	 _owner = address(0);
+64	 }
+65	 function transferOwnership(address newOwner) public virtual onlyOwner {
+66	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+67	 emit OwnershipTransferred(_owner, newOwner);
+68	 _owner = newOwner;
+69	 }
+70	 uint256[49] private __gap;
+71	 }
+72	 pragma solidity >=0.6.0 <0.8.0;
+73	 abstract contract ReentrancyGuardUpgradeable is Initializable {
+74	 uint256 private constant _NOT_ENTERED = 1;
+75	 uint256 private constant _ENTERED = 2;
+76	 uint256 private _status;
+77	 function __ReentrancyGuard_init() internal initializer {
+78	 __ReentrancyGuard_init_unchained();
+79	 }
+80	 function __ReentrancyGuard_init_unchained() internal initializer {
+81	 _status = _NOT_ENTERED;
+82	 }
+83	 modifier nonReentrant() {
+84	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+85	 _status = _ENTERED;
+86	 _;
+87	 _status = _NOT_ENTERED;
+88	 }
+89	 uint256[49] private __gap;
+90	 }
+91	 pragma solidity 0.6.12;
+92	 interface IPiAddressRegistry {
+93	 function auction() external view returns (address);
+94	 function marketplace() external view returns (address);
+95	 function tokenRegistry() external view returns (address);
+96	 }
+97	 interface IPiMarketplace {
+98	 function validateItemSold( address, uint256, address, address ) external;
+99	 function getPrice(address) external view returns (int256);
+100	 }
+101	 interface IPiTokenRegistry {
+102	 function enabled(address) external returns (bool);
+103	 }
+104	 contract PiBundleMarketplace is OwnableUpgradeable, ReentrancyGuardUpgradeable {
+105	 using SafeMath for uint256;
+106	 using AddressUpgradeable for address payable;
+107	 using SafeERC20 for IERC20;
+108	 using EnumerableSet for EnumerableSet.Bytes32Set;
+109	 event ItemListed( address indexed owner, string bundleID, address payToken, uint256 price, uint256 startingTime );
+110	 event ItemSold( address indexed seller, address indexed buyer, string bundleID, address payToken, int256 unitPrice, uint256 price );
+111	 event ItemUpdated( address indexed owner, string bundleID, address[] nft, uint256[] tokenId, uint256[] quantity, address payToken, uint256 newPrice );
+112	 event ItemCanceled(address indexed owner, string bundleID);
+113	 event OfferCreated( address indexed creator, string bundleID, address payToken, uint256 price, uint256 deadline );
+114	 event OfferCanceled(address indexed creator, string bundleID);
+115	 event UpdatePlatformFee(uint256 platformFee);
+116	 event UpdatePlatformFeeRecipient(address payable platformFeeRecipient);
+117	 struct Listing {
+118	 address[] nfts;
+119	 uint256[] tokenIds;
+120	 uint256[] quantities;
+121	 address payToken;
+122	 uint256 price;
+123	 uint256 startingTime;
+124	 }
+125	 struct Offer {
+126	 IERC20 payToken;
+127	 uint256 price;
+128	 uint256 deadline;
+129	 }
+130	 bytes4 private constant INTERFACE_ID_ERC721 = 0x80ac58cd;
+131	 bytes4 private constant INTERFACE_ID_ERC1155 = 0xd9b67a26;
+132	 mapping(address => mapping(bytes32 => Listing)) public listings;
+133	 mapping(bytes32 => address) public owners;
+134	 mapping(address => mapping(uint256 => EnumerableSet.Bytes32Set)) bundleIdsPerItem;
+135	 mapping(bytes32 => mapping(address => mapping(uint256 => uint256))) nftIndexes;
+136	 mapping(bytes32 => string) bundleIds;
+137	 mapping(bytes32 => mapping(address => Offer)) public offers;
+138	 uint256 public platformFee;
+139	 address payable public feeReceipient;
+140	 IPiAddressRegistry public addressRegistry;
+141	 modifier onlyContract() {
+142	 require( addressRegistry.auction() == _msgSender() || addressRegistry.marketplace() == _msgSender(), "sender must be auction or marketplace" );
+143	 _;
+144	 }
+145	 function initialize(address payable _feeRecipient, uint256 _platformFee) public initializer {
+146	 platformFee = _platformFee;
+147	 feeReceipient = _feeRecipient;
+148	 __Ownable_init();
+149	 __ReentrancyGuard_init();
+150	 }
+151	 function getListing(address _owner, string memory _bundleID) external view returns ( address[] memory nfts, uint256[] memory tokenIds, uint256[] memory quantities, uint256 price, uint256 startingTime ) {
+152	 bytes32 bundleID = _getBundleID(_bundleID);
+153	 nfts = listings[_owner][bundleID].nfts;
+154	 tokenIds = listings[_owner][bundleID].tokenIds;
+155	 quantities = listings[_owner][bundleID].quantities;
+156	 price = listings[_owner][bundleID].price;
+157	 startingTime = listings[_owner][bundleID].startingTime;
+158	 }
+159	 function listItem( string memory _bundleID, address[] calldata _nftAddresses, uint256[] calldata _tokenIds, uint256[] calldata _quantities, address _payToken, uint256 _price, uint256 _startingTime ) external {
+160	 bytes32 bundleID = _getBundleID(_bundleID);
+161	 bundleIds[bundleID] = _bundleID;
+162	 require( _nftAddresses.length == _tokenIds.length && _tokenIds.length == _quantities.length, "invalid data" );
+163	 require( owners[bundleID] == address(0) || (owners[bundleID] == _msgSender() && listings[_msgSender()][bundleID].price == 0), "already listed" );
+164	 address tokenRegistry = addressRegistry.tokenRegistry();
+165	 require( _payToken == address(0) || (tokenRegistry != address(0) && IPiTokenRegistry(tokenRegistry).enabled(_payToken)), "invalid pay token" );
+166	 Listing storage listing = listings[_msgSender()][bundleID];
+167	 delete listing.nfts;
+168	 delete listing.tokenIds;
+169	 delete listing.quantities;
+170	 for (uint256 i; i < _nftAddresses.length; i++) {
+171	 if (_supportsInterface(_nftAddresses[i], INTERFACE_ID_ERC721)) {
+172	 IERC721 nft = IERC721(_nftAddresses[i]);
+173	 _check721Owning(_nftAddresses[i], _tokenIds[i], _msgSender());
+174	 require( nft.isApprovedForAll(_msgSender(), address(this)), "item not approved" );
+175	 listing.quantities.push(uint256(1));
+176	 }
+177	 else if ( _supportsInterface(_nftAddresses[i], INTERFACE_ID_ERC1155) ) {
+178	 IERC1155 nft = IERC1155(_nftAddresses[i]);
+179	 _check1155Owning( _nftAddresses[i], _tokenIds[i], _quantities[i], _msgSender() );
+180	 require( nft.isApprovedForAll(_msgSender(), address(this)), "item not approved" );
+181	 listing.quantities.push(_quantities[i]);
+182	 }
+183	 else {
+184	 revert("invalid nft address");
+185	 }
+186	 address _nft = _nftAddresses[i];
+187	 listing.nfts.push(_nft);
+188	 listing.tokenIds.push(_tokenIds[i]);
+189	 bundleIdsPerItem[_nft][_tokenIds[i]].add(bundleID);
+190	 nftIndexes[bundleID][_nft][_tokenIds[i]] = i;
+191	 }
+192	 listing.payToken = _payToken;
+193	 listing.price = _price;
+194	 listing.startingTime = _startingTime;
+195	 owners[bundleID] = _msgSender();
+196	 emit ItemListed( _msgSender(), _bundleID, _payToken, _price, _startingTime );
+197	 }
+198	 function cancelListing(string memory _bundleID) external nonReentrant {
+199	 bytes32 bundleID = _getBundleID(_bundleID);
+200	 require(listings[_msgSender()][bundleID].price > 0, "not listed");
+201	 _cancelListing(_msgSender(), _bundleID);
+202	 }
+203	 function updateListing( string memory _bundleID, address _payToken, uint256 _newPrice ) external nonReentrant {
+204	 bytes32 bundleID = _getBundleID(_bundleID);
+205	 Listing storage listing = listings[_msgSender()][bundleID];
+206	 require(listing.price > 0, "not listed");
+207	 address tokenRegistry = addressRegistry.tokenRegistry();
+208	 require( _payToken == address(0) || (tokenRegistry != address(0) && IPiTokenRegistry(tokenRegistry).enabled(_payToken)), "invalid pay token" );
+209	 listing.payToken = _payToken;
+210	 listing.price = _newPrice;
+211	 emit ItemUpdated( _msgSender(), _bundleID, listing.nfts, listing.tokenIds, listing.quantities, _payToken, _newPrice );
+212	 }
+213	 function buyItem(string memory _bundleID, address _payToken) external nonReentrant {
+214	 bytes32 bundleID = _getBundleID(_bundleID);
+215	 address owner = owners[bundleID];
+216	 require(owner != address(0), "invalid id");
+217	 Listing memory listing = listings[owner][bundleID];
+218	 require(listing.payToken == _payToken, "invalid pay token");
+219	 _buyItem(_bundleID, _payToken);
+220	 }
+221	 function _buyItem(string memory _bundleID, address _payToken) private {
+222	 bytes32 bundleID = _getBundleID(_bundleID);
+223	 address owner = owners[bundleID];
+224	 Listing memory listing = listings[owner][bundleID];
+225	 require(listing.price > 0, "not listed");
+226	 for (uint256 i; i < listing.nfts.length; i++) {
+227	 if (_supportsInterface(listing.nfts[i], INTERFACE_ID_ERC721)) {
+228	 _check721Owning(listing.nfts[i], listing.tokenIds[i], owner);
+229	 }
+230	 else if ( _supportsInterface(listing.nfts[i], INTERFACE_ID_ERC1155) ) {
+231	 _check1155Owning( listing.nfts[i], listing.tokenIds[i], listing.quantities[i], owner );
+232	 }
+233	 }
+234	 require(_getNow() >= listing.startingTime, "not buyable");
+235	 uint256 price = listing.price;
+236	 uint256 feeAmount = price.mul(platformFee).div(1e3);
+237	 if (_payToken == address(0)) {
+238	 (bool feeTransferSuccess, ) = feeReceipient.call{
+239	 value: feeAmount}
+240	 ( "" );
+241	 require( feeTransferSuccess, "PiMarketplace: Fee transfer failed" );
+242	 (bool ownerTransferSuccess, ) = owner.call{
+243	 value: price.sub(feeAmount) }
+244	 ("");
+245	 require( ownerTransferSuccess, "PiMarketplace: Owner transfer failed" );
+246	 }
+247	 else {
+248	 IERC20(_payToken).safeTransferFrom( _msgSender(), feeReceipient, feeAmount );
+249	 IERC20(_payToken).safeTransferFrom( _msgSender(), owner, price.sub(feeAmount) );
+250	 }
+251	 for (uint256 i; i < listing.nfts.length; i++) {
+252	 if (_supportsInterface(listing.nfts[i], INTERFACE_ID_ERC721)) {
+253	 IERC721(listing.nfts[i]).safeTransferFrom( owner, _msgSender(), listing.tokenIds[i] );
+254	 }
+255	 else {
+256	 IERC1155(listing.nfts[i]).safeTransferFrom( owner, _msgSender(), listing.tokenIds[i], listing.quantities[i], bytes("") );
+257	 }
+258	 IPiMarketplace(addressRegistry.marketplace()).validateItemSold( listing.nfts[i], listing.tokenIds[i], owner, _msgSender() );
+259	 }
+260	 delete (listings[owner][bundleID]);
+261	 listing.price = 0;
+262	 listings[_msgSender()][bundleID] = listing;
+263	 owners[bundleID] = _msgSender();
+264	 delete (offers[bundleID][_msgSender()]);
+265	 emit ItemSold( owner, _msgSender(), _bundleID, _payToken, IPiMarketplace(addressRegistry.marketplace()).getPrice(_payToken), price );
+266	 emit OfferCanceled(_msgSender(), _bundleID);
+267	 }
+268	 function createOffer( string memory _bundleID, IERC20 _payToken, uint256 _price, uint256 _deadline ) external {
+269	 bytes32 bundleID = _getBundleID(_bundleID);
+270	 require(owners[bundleID] != address(0), "invalid id");
+271	 require(_deadline > _getNow(), "invalid expiration");
+272	 require(_price > 0, "invalid price");
+273	 Offer memory offer = offers[bundleID][_msgSender()];
+274	 require(offer.deadline <= _getNow(), "offer exists");
+275	 offers[bundleID][_msgSender()] = Offer(_payToken, _price, _deadline);
+276	 emit OfferCreated( _msgSender(), _bundleID, address(_payToken), _price, _deadline );
+277	 }
+278	 function cancelOffer(string memory _bundleID) external {
+279	 bytes32 bundleID = _getBundleID(_bundleID);
+280	 Offer memory offer = offers[bundleID][_msgSender()];
+281	 require(offer.deadline > _getNow(), "offer not exists or expired");
+282	 delete (offers[bundleID][_msgSender()]);
+283	 emit OfferCanceled(_msgSender(), _bundleID);
+284	 }
+285	 function acceptOffer(string memory _bundleID, address _creator) external nonReentrant {
+286	 bytes32 bundleID = _getBundleID(_bundleID);
+287	 require(owners[bundleID] == _msgSender(), "not owning item");
+288	 Offer memory offer = offers[bundleID][_creator];
+289	 require(offer.deadline > _getNow(), "offer not exists or expired");
+290	 uint256 price = offer.price;
+291	 uint256 feeAmount = price.mul(platformFee).div(1e3);
+292	 offer.payToken.safeTransferFrom(_creator, feeReceipient, feeAmount);
+293	 offer.payToken.safeTransferFrom( _creator, _msgSender(), price.sub(feeAmount) );
+294	 Listing memory listing = listings[_msgSender()][bundleID];
+295	 for (uint256 i; i < listing.nfts.length; i++) {
+296	 if (_supportsInterface(listing.nfts[i], INTERFACE_ID_ERC721)) {
+297	 IERC721(listing.nfts[i]).safeTransferFrom( _msgSender(), _creator, listing.tokenIds[i] );
+298	 }
+299	 else {
+300	 IERC1155(listing.nfts[i]).safeTransferFrom( _msgSender(), _creator, listing.tokenIds[i], listing.quantities[i], bytes("") );
+301	 }
+302	 IPiMarketplace(addressRegistry.marketplace()).validateItemSold( listing.nfts[i], listing.tokenIds[i], owners[bundleID], _creator );
+303	 }
+304	 delete (listings[_msgSender()][bundleID]);
+305	 listing.price = 0;
+306	 listings[_creator][bundleID] = listing;
+307	 owners[bundleID] = _creator;
+308	 delete (offers[bundleID][_creator]);
+309	 emit ItemSold( _msgSender(), _creator, _bundleID, address(offer.payToken), IPiMarketplace(addressRegistry.marketplace()).getPrice(address(offer.payToken)), offer.price );
+310	 emit OfferCanceled(_creator, _bundleID);
+311	 }
+312	 function updatePlatformFee(uint256 _platformFee) external onlyOwner {
+313	 platformFee = _platformFee;
+314	 emit UpdatePlatformFee(_platformFee);
+315	 }
+316	 function updatePlatformFeeRecipient(address payable _platformFeeRecipient) external onlyOwner {
+317	 feeReceipient = _platformFeeRecipient;
+318	 emit UpdatePlatformFeeRecipient(_platformFeeRecipient);
+319	 }
+320	 function updateAddressRegistry(address _registry) external onlyOwner {
+321	 addressRegistry = IPiAddressRegistry(_registry);
+322	 }
+323	 function validateItemSold( address _nftAddress, uint256 _tokenId, uint256 _quantity ) external onlyContract {
+324	 uint256 length = bundleIdsPerItem[_nftAddress][_tokenId].length();
+325	 for (uint256 i; i < length; i++) {
+326	 bytes32 bundleID = bundleIdsPerItem[_nftAddress][_tokenId].at(i);
+327	 address _owner = owners[bundleID];
+328	 if (_owner != address(0)) {
+329	 Listing storage listing = listings[_owner][bundleID];
+330	 string memory _bundleID = bundleIds[bundleID];
+331	 uint256 index = nftIndexes[bundleID][_nftAddress][_tokenId];
+332	 if (listing.quantities[index] > _quantity) {
+333	 listing.quantities[index] = listing.quantities[index].sub( _quantity );
+334	 }
+335	 else {
+336	 delete (nftIndexes[bundleID][_nftAddress][_tokenId]);
+337	 if (listing.nfts.length == 1) {
+338	 delete (listings[_owner][bundleID]);
+339	 delete (owners[bundleID]);
+340	 delete (bundleIds[bundleID]);
+341	 emit ItemUpdated( _owner, _bundleID, new address[](0), new uint256[](0), new uint256[](0), address(0), 0 );
+342	 continue;
+343	 }
+344	 else {
+345	 if (index < listing.nfts.length - 1) {
+346	 listing.nfts[index] = listing.nfts[ listing.nfts.length - 1 ];
+347	 listing.tokenIds[index] = listing.tokenIds[ listing.tokenIds.length - 1 ];
+348	 listing.quantities[index] = listing.quantities[ listing.quantities.length - 1 ];
+349	 nftIndexes[bundleID][listing.nfts[index]][ listing.tokenIds[index] ] = index;
+350	 }
+351	 listing.nfts.pop();
+352	 listing.tokenIds.pop();
+353	 listing.quantities.pop();
+354	 }
+355	 }
+356	 emit ItemUpdated( _owner, _bundleID, listing.nfts, listing.tokenIds, listing.quantities, listing.payToken, listing.price );
+357	 }
+358	 }
+359	 delete (bundleIdsPerItem[_nftAddress][_tokenId]);
+360	 }
+361	 function _supportsInterface(address _addr, bytes4 iface) internal view returns (bool) {
+362	 return IERC165(_addr).supportsInterface(iface);
+363	 }
+364	 function _check721Owning( address _nft, uint256 _tokenId, address _owner ) internal view {
+365	 require(IERC721(_nft).ownerOf(_tokenId) == _owner, "not owning item");
+366	 }
+367	 function _check1155Owning( address _nft, uint256 _tokenId, uint256 _quantity, address _owner ) internal view {
+368	 require( IERC1155(_nft).balanceOf(_owner, _tokenId) >= _quantity, "not owning item" );
+369	 }
+370	 function _getNow() internal view virtual returns (uint256) {
+371	 return block.timestamp;
+372	 }
+373	 function _cancelListing(address _owner, string memory _bundleID) private {
+374	 bytes32 bundleID = _getBundleID(_bundleID);
+375	 Listing memory listing = listings[_owner][bundleID];
+376	 for (uint256 i; i < listing.nfts.length; i++) {
+377	 bundleIdsPerItem[listing.nfts[i]][listing.tokenIds[i]].remove( bundleID );
+378	 delete (nftIndexes[bundleID][listing.nfts[i]][listing.tokenIds[i]]);
+379	 }
+380	 delete (listings[_owner][bundleID]);
+381	 delete (owners[bundleID]);
+382	 delete (bundleIds[bundleID]);
+383	 emit ItemCanceled(_owner, _bundleID);
+384	 }
+385	 function _getBundleID(string memory _bundleID) private pure returns (bytes32) {
+386	 return keccak256(abi.encodePacked(_bundleID));
+387	 }
+388	 }
+389	 pragma solidity >=0.6.2 <0.8.0;
+390	 interface IERC1155 is IERC165 {
+391	 event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value);
+392	 event TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values);
+393	 event ApprovalForAll(address indexed account, address indexed operator, bool approved);
+394	 event URI(string value, uint256 indexed id);
+395	 function balanceOf(address account, uint256 id) external view returns (uint256);
+396	 function balanceOfBatch(address[] calldata accounts, uint256[] calldata ids) external view returns (uint256[] memory);
+397	 function setApprovalForAll(address operator, bool approved) external;
+398	 function isApprovedForAll(address account, address operator) external view returns (bool);
+399	 function safeTransferFrom(address from, address to, uint256 id, uint256 amount, bytes calldata data) external;
+400	 function safeBatchTransferFrom(address from, address to, uint256[] calldata ids, uint256[] calldata amounts, bytes calldata data) external;
+401	 }
+402	 pragma solidity >=0.6.2 <0.8.0;
+403	 interface IERC721 is IERC165 {
+404	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+405	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+406	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+407	 function balanceOf(address owner) external view returns (uint256 balance);
+408	 function ownerOf(uint256 tokenId) external view returns (address owner);
+409	 function safeTransferFrom(address from, address to, uint256 tokenId) external;
+410	 function transferFrom(address from, address to, uint256 tokenId) external;
+411	 function approve(address to, uint256 tokenId) external;
+412	 function getApproved(uint256 tokenId) external view returns (address operator);
+413	 function setApprovalForAll(address operator, bool _approved) external;
+414	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+415	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;
+416	 }
+417	 pragma solidity >=0.6.0 <0.8.0;
+418	 interface IERC20 {
+419	 function totalSupply() external view returns (uint256);
+420	 function balanceOf(address account) external view returns (uint256);
+421	 function transfer(address recipient, uint256 amount) external returns (bool);
+422	 function allowance(address owner, address spender) external view returns (uint256);
+423	 function approve(address spender, uint256 amount) external returns (bool);
+424	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+425	 event Transfer(address indexed from, address indexed to, uint256 value);
+426	 event Approval(address indexed owner, address indexed spender, uint256 value);
+427	 }
+428	 pragma solidity >=0.6.0 <0.8.0;
+429	 library SafeERC20 {
+430	 using SafeMath for uint256;
+431	 using Address for address;
+432	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+433	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+434	 }
+435	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+436	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+437	 }
+438	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+439	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+440	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+441	 }
+442	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+443	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+444	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+445	 }
+446	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+447	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+448	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+449	 }
+450	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+451	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+452	 if (returndata.length > 0) {
+453	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+454	 }
+455	 }
+456	 }
+457	 pragma solidity >=0.6.0 <0.8.0;
+458	 library SafeMath {
+459	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+460	 uint256 c = a + b;
+461	 if (c < a) return (false, 0);
+462	 return (true, c);
+463	 }
+464	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+465	 if (b > a) return (false, 0);
+466	 return (true, a - b);
+467	 }
+468	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+469	 if (a == 0) return (true, 0);
+470	 uint256 c = a * b;
+471	 if (c / a != b) return (false, 0);
+472	 return (true, c);
+473	 }
+474	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+475	 if (b == 0) return (false, 0);
+476	 return (true, a / b);
+477	 }
+478	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+479	 if (b == 0) return (false, 0);
+480	 return (true, a % b);
+481	 }
+482	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+483	 uint256 c = a + b;
+484	 require(c >= a, "SafeMath: addition overflow");
+485	 return c;
+486	 }
+487	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+488	 require(b <= a, "SafeMath: subtraction overflow");
+489	 return a - b;
+490	 }
+491	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+492	 if (a == 0) return 0;
+493	 uint256 c = a * b;
+494	 require(c / a == b, "SafeMath: multiplication overflow");
+495	 return c;
+496	 }
+497	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+498	 require(b > 0, "SafeMath: division by zero");
+499	 return a / b;
+500	 }
+501	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+502	 require(b > 0, "SafeMath: modulo by zero");
+503	 return a % b;
+504	 }
+505	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+506	 require(b <= a, errorMessage);
+507	 return a - b;
+508	 }
+509	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+510	 require(b > 0, errorMessage);
+511	 return a / b;
+512	 }
+513	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+514	 require(b > 0, errorMessage);
+515	 return a % b;
+516	 }
+517	 }
+518	 pragma solidity >=0.6.0 <0.8.0;
+519	 library EnumerableSet {
+520	 struct Set {
+521	 bytes32[] _values;
+522	 mapping (bytes32 => uint256) _indexes;
+523	 }
+524	 function _add(Set storage set, bytes32 value) private returns (bool) {
+525	 if (!_contains(set, value)) {
+526	 set._values.push(value);
+527	 set._indexes[value] = set._values.length;
+528	 return true;
+529	 }
+530	 else {
+531	 return false;
+532	 }
+533	 }
+534	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+535	 uint256 valueIndex = set._indexes[value];
+536	 if (valueIndex != 0) {
+537	 uint256 toDeleteIndex = valueIndex - 1;
+538	 uint256 lastIndex = set._values.length - 1;
+539	 bytes32 lastvalue = set._values[lastIndex];
+540	 set._values[toDeleteIndex] = lastvalue;
+541	 set._indexes[lastvalue] = toDeleteIndex + 1;
+542	 set._values.pop();
+543	 delete set._indexes[value];
+544	 return true;
+545	 }
+546	 else {
+547	 return false;
+548	 }
+549	 }
+550	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+551	 return set._indexes[value] != 0;
+552	 }
+553	 function _length(Set storage set) private view returns (uint256) {
+554	 return set._values.length;
+555	 }
+556	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+557	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+558	 return set._values[index];
+559	 }
+560	 struct Bytes32Set {
+561	 Set _inner;
+562	 }
+563	 function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+564	 return _add(set._inner, value);
+565	 }
+566	 function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+567	 return _remove(set._inner, value);
+568	 }
+569	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+570	 return _contains(set._inner, value);
+571	 }
+572	 function length(Bytes32Set storage set) internal view returns (uint256) {
+573	 return _length(set._inner);
+574	 }
+575	 function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+576	 return _at(set._inner, index);
+577	 }
+578	 struct AddressSet {
+579	 Set _inner;
+580	 }
+581	 function add(AddressSet storage set, address value) internal returns (bool) {
+582	 return _add(set._inner, bytes32(uint256(uint160(value))));
+583	 }
+584	 function remove(AddressSet storage set, address value) internal returns (bool) {
+585	 return _remove(set._inner, bytes32(uint256(uint160(value))));
+586	 }
+587	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+588	 return _contains(set._inner, bytes32(uint256(uint160(value))));
+589	 }
+590	 function length(AddressSet storage set) internal view returns (uint256) {
+591	 return _length(set._inner);
+592	 }
+593	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+594	 return address(uint160(uint256(_at(set._inner, index))));
+595	 }
+596	 struct UintSet {
+597	 Set _inner;
+598	 }
+599	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+600	 return _add(set._inner, bytes32(value));
+601	 }
+602	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+603	 return _remove(set._inner, bytes32(value));
+604	 }
+605	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+606	 return _contains(set._inner, bytes32(value));
+607	 }
+608	 function length(UintSet storage set) internal view returns (uint256) {
+609	 return _length(set._inner);
+610	 }
+611	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+612	 return uint256(_at(set._inner, index));
+613	 }
+614	 }
+615	 pragma solidity >=0.6.2 <0.8.0;
+616	 library AddressUpgradeable {
+617	 function isContract(address account) internal view returns (bool) {
+618	 uint256 size;
+619	 assembly {
+620	 size := extcodesize(account) }
+621	 return size > 0;
+622	 }
+623	 function sendValue(address payable recipient, uint256 amount) internal {
+624	 require(address(this).balance >= amount, "Address: insufficient balance");
+625	 (bool success, ) = recipient.call{
+626	 value: amount }
+627	 ("");
+628	 require(success, "Address: unable to send value, recipient may have reverted");
+629	 }
+630	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+631	 return functionCall(target, data, "Address: low-level call failed");
+632	 }
+633	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+634	 return functionCallWithValue(target, data, 0, errorMessage);
+635	 }
+636	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+637	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+638	 }
+639	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+640	 require(address(this).balance >= value, "Address: insufficient balance for call");
+641	 require(isContract(target), "Address: call to non-contract");
+642	 (bool success, bytes memory returndata) = target.call{
+643	 value: value }
+644	 (data);
+645	 return _verifyCallResult(success, returndata, errorMessage);
+646	 }
+647	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+648	 return functionStaticCall(target, data, "Address: low-level static call failed");
+649	 }
+650	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+651	 require(isContract(target), "Address: static call to non-contract");
+652	 (bool success, bytes memory returndata) = target.staticcall(data);
+653	 return _verifyCallResult(success, returndata, errorMessage);
+654	 }
+655	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+656	 if (success) {
+657	 return returndata;
+658	 }
+659	 else {
+660	 if (returndata.length > 0) {
+661	 assembly {
+662	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+663	 }
+664	 else {
+665	 revert(errorMessage);
+666	 }
+667	 }
+668	 }
+669	 }
+670	 pragma solidity >=0.6.2 <0.8.0;
+671	 library Address {
+672	 function isContract(address account) internal view returns (bool) {
+673	 uint256 size;
+674	 assembly {
+675	 size := extcodesize(account) }
+676	 return size > 0;
+677	 }
+678	 function sendValue(address payable recipient, uint256 amount) internal {
+679	 require(address(this).balance >= amount, "Address: insufficient balance");
+680	 (bool success, ) = recipient.call{
+681	 value: amount }
+682	 ("");
+683	 require(success, "Address: unable to send value, recipient may have reverted");
+684	 }
+685	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+686	 return functionCall(target, data, "Address: low-level call failed");
+687	 }
+688	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+689	 return functionCallWithValue(target, data, 0, errorMessage);
+690	 }
+691	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+692	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+693	 }
+694	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+695	 require(address(this).balance >= value, "Address: insufficient balance for call");
+696	 require(isContract(target), "Address: call to non-contract");
+697	 (bool success, bytes memory returndata) = target.call{
+698	 value: value }
+699	 (data);
+700	 return _verifyCallResult(success, returndata, errorMessage);
+701	 }
+702	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+703	 return functionStaticCall(target, data, "Address: low-level static call failed");
+704	 }
+705	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+706	 require(isContract(target), "Address: static call to non-contract");
+707	 (bool success, bytes memory returndata) = target.staticcall(data);
+708	 return _verifyCallResult(success, returndata, errorMessage);
+709	 }
+710	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+711	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+712	 }
+713	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+714	 require(isContract(target), "Address: delegate call to non-contract");
+715	 (bool success, bytes memory returndata) = target.delegatecall(data);
+716	 return _verifyCallResult(success, returndata, errorMessage);
+717	 }
+718	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+719	 if (success) {
+720	 return returndata;
+721	 }
+722	 else {
+723	 if (returndata.length > 0) {
+724	 assembly {
+725	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+726	 }
+727	 else {
+728	 revert(errorMessage);
+729	 }
+730	 }
+731	 }
+732	 }

@@ -1,0 +1,482 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.7.5;
+3	 interface IMulticall {
+4	 function multicall(bytes[] calldata data) external payable returns (bytes[] memory results);
+5	 }
+6	 pragma solidity =0.7.6;
+7	 abstract contract Multicall is IMulticall {
+8	 function multicall(bytes[] calldata data) external payable override returns (bytes[] memory results) {
+9	 results = new bytes[](data.length);
+10	 for (uint256 i = 0; i < data.length; i++) {
+11	 (bool success, bytes memory result) = address(this).delegatecall(data[i]);
+12	 if (!success) {
+13	 if (result.length < 68) revert();
+14	 assembly {
+15	 result := add(result, 0x04) }
+16	 revert(abi.decode(result, (string)));
+17	 }
+18	 results[i] = result;
+19	 }
+20	 }
+21	 }
+22	 pragma solidity 0.7.6;
+23	 interface IRouter {
+24	 function createPoolFromUni( address tradeToken, address poolToken, uint24 fee, bool reverse ) external;
+25	 function createPoolFromSushi( address tradeToken, address poolToken, bool reverse ) external;
+26	 function getLsBalance( address tradeToken, address poolToken, uint24 fee, bool reverse, address user ) external view returns (uint256);
+27	 function getLsBalance2( address tradeToken, address poolToken, bool reverse, address user ) external view returns (uint256);
+28	 function getLsPrice( address tradeToken, address poolToken, uint24 fee, bool reverse ) external view returns (uint256);
+29	 function getLsPrice2( address tradeToken, address poolToken, bool reverse ) external view returns (uint256);
+30	 function addLiquidity( address tradeToken, address poolToken, uint24 fee, bool reverse, uint256 amount ) external payable;
+31	 function addLiquidity2( address tradeToken, address poolToken, bool reverse, uint256 amount ) external payable;
+32	 function removeLiquidity( address tradeToken, address poolToken, uint24 fee, bool reverse, uint256 lsAmount, uint256 bondsAmount, address receipt ) external;
+33	 function removeLiquidity2( address tradeToken, address poolToken, bool reverse, uint256 lsAmount, uint256 bondsAmount, address receipt ) external;
+34	 function openPosition( address tradeToken, address poolToken, uint24 fee, bool reverse, uint8 direction, uint16 leverage, uint256 position ) external payable;
+35	 function openPosition2( address tradeToken, address poolToken, bool reverse, uint8 direction, uint16 leverage, uint256 position ) external payable;
+36	 function addMargin(uint32 tokenId, uint256 margin) external payable;
+37	 function closePosition(uint32 tokenId, address receipt) external;
+38	 function liquidate(uint32 tokenId, address receipt) external;
+39	 function liquidateByPool(address poolAddress, uint32 positionId, address receipt) external;
+40	 function withdrawERC20(address poolToken) external;
+41	 function withdrawETH() external;
+42	 function repayLoan( address tradeToken, address poolToken, uint24 fee, bool reverse, uint256 amount, address receipt ) external payable;
+43	 function repayLoan2( address tradeToken, address poolToken, bool reverse, uint256 amount, address receipt ) external payable;
+44	 function exit(uint32 tokenId, address receipt) external;
+45	 event TokenCreate(uint32 tokenId, address pool, address sender, uint32 positionId);
+46	 }
+47	 pragma solidity 0.7.6;
+48	 interface IPoolCallback {
+49	 function poolV2Callback( uint256 amount, address poolToken, address oraclePool, address payer, bool reverse ) external payable;
+50	 function poolV2RemoveCallback( uint256 amount, address poolToken, address oraclePool, address payer, bool reverse ) external;
+51	 function poolV2BondsCallback( uint256 amount, address poolToken, address oraclePool, address payer, bool reverse ) external;
+52	 function poolV2BondsCallbackFromDebt( uint256 amount, address poolToken, address oraclePool, address payer, bool reverse ) external;
+53	 }
+54	 pragma solidity 0.7.6;
+55	 contract Router is IRouter, IPoolCallback, Multicall {
+56	 fallback() external {
+57	 }
+58	 receive() payable external {
+59	 }
+60	 using SafeERC20 for IERC20;
+61	 address public _factory;
+62	 address public _wETH;
+63	 address private _uniV3Factory;
+64	 address private _uniV2Factory;
+65	 address private _sushiFactory;
+66	 uint32 private _tokenId = 0;
+67	 struct tokenDate {
+68	 address user;
+69	 address poolAddress;
+70	 uint32 positionId;
+71	 }
+72	 mapping(uint32 => tokenDate) public _tokenData;
+73	 constructor(address factory, address uniV3Factory, address uniV2Factory, address sushiFactory, address wETH) {
+74	 _factory = factory;
+75	 _uniV3Factory = uniV3Factory;
+76	 _uniV2Factory = uniV2Factory;
+77	 _sushiFactory = sushiFactory;
+78	 _wETH = wETH;
+79	 }
+80	 function poolV2Callback( uint256 amount, address poolToken, address oraclePool, address payer, bool reverse ) external override payable {
+81	 IPoolFactory qilin = IPoolFactory(_factory);
+82	 require( qilin.pools(poolToken, oraclePool, reverse) == msg.sender, "poolV2Callback caller is not the pool contract" );
+83	 if (poolToken == _wETH && address(this).balance >= amount) {
+84	 IWETH wETH = IWETH(_wETH);
+85	 wETH.deposit{
+86	 value: amount}
+87	 ();
+88	 wETH.transfer(msg.sender, amount);
+89	 }
+90	 else {
+91	 IERC20(poolToken).safeTransferFrom(payer, msg.sender, amount);
+92	 }
+93	 }
+94	 function poolV2RemoveCallback( uint256 amount, address poolToken, address oraclePool, address payer, bool reverse ) external override {
+95	 IPoolFactory qilin = IPoolFactory(_factory);
+96	 require( qilin.pools(poolToken, oraclePool, reverse) == msg.sender, "poolV2Callback caller is not the pool contract" );
+97	 IERC20(msg.sender).safeTransferFrom(payer, msg.sender, amount);
+98	 }
+99	 function poolV2BondsCallback( uint256 amount, address poolToken, address oraclePool, address payer, bool reverse ) external override {
+100	 address pool = IPoolFactory(_factory).pools(poolToken, oraclePool, reverse);
+101	 require( pool == msg.sender, "poolV2BondsCallback caller is not the pool contract" );
+102	 address debt = IPool(pool).debtToken();
+103	 IERC20(debt).safeTransferFrom(payer, debt, amount);
+104	 }
+105	 function poolV2BondsCallbackFromDebt( uint256 amount, address poolToken, address oraclePool, address payer, bool reverse ) external override {
+106	 address pool = IPoolFactory(_factory).pools(poolToken, oraclePool, reverse);
+107	 address debt = IPool(pool).debtToken();
+108	 require( debt == msg.sender, "poolV2BondsCallbackFromDebt caller is not the debt contract" );
+109	 IERC20(debt).safeTransferFrom(payer, debt, amount);
+110	 }
+111	 function getPoolFromUni( address tradeToken, address poolToken, uint24 fee, bool reverse ) public view returns (address) {
+112	 address oraclePool;
+113	 if (fee == 0) {
+114	 oraclePool = IUniswapV2Factory(_uniV2Factory).getPair(tradeToken, poolToken);
+115	 }
+116	 else {
+117	 oraclePool = IUniswapV3Factory(_uniV3Factory).getPool(tradeToken, poolToken, fee);
+118	 }
+119	 return IPoolFactory(_factory).pools(poolToken, oraclePool, reverse);
+120	 }
+121	 function getPoolFromSushi( address tradeToken, address poolToken, bool reverse ) public view returns (address) {
+122	 address oraclePool = IUniswapV2Factory(_sushiFactory).getPair(tradeToken, poolToken);
+123	 return IPoolFactory(_factory).pools(poolToken, oraclePool, reverse);
+124	 }
+125	 function createPoolFromUni( address tradeToken, address poolToken, uint24 fee, bool reverse ) external override {
+126	 IPoolFactory(_factory).createPoolFromUni(tradeToken, poolToken, fee, reverse);
+127	 }
+128	 function createPoolFromSushi( address tradeToken, address poolToken, bool reverse ) external override {
+129	 IPoolFactory(_factory).createPoolFromSushi(tradeToken, poolToken, reverse);
+130	 }
+131	 function getLsBalance( address tradeToken, address poolToken, uint24 fee, bool reverse, address user ) external override view returns (uint256) {
+132	 address pool = getPoolFromUni(tradeToken, poolToken, fee, reverse);
+133	 require(pool != address(0), "non-exist pool");
+134	 return IERC20(pool).balanceOf(user);
+135	 }
+136	 function getLsBalance2( address tradeToken, address poolToken, bool reverse, address user ) external override view returns (uint256) {
+137	 address pool = getPoolFromSushi(tradeToken, poolToken, reverse);
+138	 require(pool != address(0), "non-exist pool");
+139	 return IERC20(pool).balanceOf(user);
+140	 }
+141	 function getLsPrice( address tradeToken, address poolToken, uint24 fee, bool reverse ) external override view returns (uint256) {
+142	 address pool = getPoolFromUni(tradeToken, poolToken, fee, reverse);
+143	 require(pool != address(0), "non-exist pool");
+144	 return IPool(pool).lsTokenPrice();
+145	 }
+146	 function getLsPrice2( address tradeToken, address poolToken, bool reverse ) external override view returns (uint256) {
+147	 address pool = getPoolFromSushi(tradeToken, poolToken, reverse);
+148	 require(pool != address(0), "non-exist pool");
+149	 return IPool(pool).lsTokenPrice();
+150	 }
+151	 function addLiquidity( address tradeToken, address poolToken, uint24 fee, bool reverse, uint256 amount ) external override payable {
+152	 address pool = getPoolFromUni(tradeToken, poolToken, fee, reverse);
+153	 require(pool != address(0), "non-exist pool");
+154	 IPool(pool).addLiquidity(msg.sender, amount);
+155	 }
+156	 function addLiquidity2( address tradeToken, address poolToken, bool reverse, uint256 amount ) external override payable {
+157	 address pool = getPoolFromSushi(tradeToken, poolToken, reverse);
+158	 require(pool != address(0), "non-exist pool");
+159	 IPool(pool).addLiquidity(msg.sender, amount);
+160	 }
+161	 function removeLiquidity( address tradeToken, address poolToken, uint24 fee, bool reverse, uint256 lsAmount, uint256 bondsAmount, address receipt ) external override {
+162	 address pool = getPoolFromUni(tradeToken, poolToken, fee, reverse);
+163	 require(pool != address(0), "non-exist pool");
+164	 IPool(pool).removeLiquidity(msg.sender, lsAmount, bondsAmount, receipt);
+165	 }
+166	 function removeLiquidity2( address tradeToken, address poolToken, bool reverse, uint256 lsAmount, uint256 bondsAmount, address receipt ) external override {
+167	 address pool = getPoolFromSushi(tradeToken, poolToken, reverse);
+168	 require(pool != address(0), "non-exist pool");
+169	 IPool(pool).removeLiquidity(msg.sender, lsAmount, bondsAmount, receipt);
+170	 }
+171	 function openPosition( address tradeToken, address poolToken, uint24 fee, bool reverse, uint8 direction, uint16 leverage, uint256 position ) external override payable {
+172	 address pool = getPoolFromUni(tradeToken, poolToken, fee, reverse);
+173	 require(pool != address(0), "non-exist pool");
+174	 _tokenId++;
+175	 uint32 positionId = IPool(pool).openPosition( msg.sender, direction, leverage, position );
+176	 tokenDate memory tempTokenDate = tokenDate( msg.sender, pool, positionId );
+177	 _tokenData[_tokenId] = tempTokenDate;
+178	 emit TokenCreate(_tokenId, address(pool), msg.sender, positionId);
+179	 }
+180	 function openPosition2( address tradeToken, address poolToken, bool reverse, uint8 direction, uint16 leverage, uint256 position ) external override payable {
+181	 address pool = getPoolFromSushi(tradeToken, poolToken, reverse);
+182	 require(pool != address(0), "non-exist pool");
+183	 _tokenId++;
+184	 uint32 positionId = IPool(pool).openPosition( msg.sender, direction, leverage, position );
+185	 tokenDate memory tempTokenDate = tokenDate( msg.sender, pool, positionId );
+186	 _tokenData[_tokenId] = tempTokenDate;
+187	 emit TokenCreate(_tokenId, address(pool), msg.sender, positionId);
+188	 }
+189	 function addMargin(uint32 tokenId, uint256 margin) external override payable {
+190	 tokenDate memory tempTokenDate = _tokenData[tokenId];
+191	 require( tempTokenDate.user == msg.sender, "token owner not match msg.sender" );
+192	 IPool(tempTokenDate.poolAddress).addMargin( msg.sender, tempTokenDate.positionId, margin );
+193	 }
+194	 function closePosition(uint32 tokenId, address receipt) external override {
+195	 tokenDate memory tempTokenDate = _tokenData[tokenId];
+196	 require( tempTokenDate.user == msg.sender, "token owner not match msg.sender" );
+197	 IPool(tempTokenDate.poolAddress).closePosition( receipt, tempTokenDate.positionId );
+198	 }
+199	 function liquidate(uint32 tokenId, address receipt) external override {
+200	 tokenDate memory tempTokenDate = _tokenData[tokenId];
+201	 require(tempTokenDate.user != address(0), "tokenId does not exist");
+202	 IPool(tempTokenDate.poolAddress).liquidate( msg.sender, tempTokenDate.positionId, receipt );
+203	 }
+204	 function liquidateByPool(address poolAddress, uint32 positionId, address receipt) external override {
+205	 IPool(poolAddress).liquidate(msg.sender, positionId, receipt);
+206	 }
+207	 function withdrawERC20(address poolToken) external override {
+208	 IERC20 erc20 = IERC20(poolToken);
+209	 uint256 balance = erc20.balanceOf(address(this));
+210	 require(balance > 0, "balance of router must > 0");
+211	 erc20.safeTransfer(msg.sender, balance);
+212	 }
+213	 function withdrawETH() external override {
+214	 uint256 balance = IERC20(_wETH).balanceOf(address(this));
+215	 require(balance > 0, "balance of router must > 0");
+216	 IWETH(_wETH).withdraw(balance);
+217	 (bool success, ) = msg.sender.call{
+218	 value: balance}
+219	 (new bytes(0));
+220	 require(success, "ETH transfer failed");
+221	 }
+222	 function repayLoan( address tradeToken, address poolToken, uint24 fee, bool reverse, uint256 amount, address receipt ) external override payable {
+223	 address pool = getPoolFromUni(tradeToken, poolToken, fee, reverse);
+224	 require(pool != address(0), "non-exist pool");
+225	 address debtToken = IPool(pool).debtToken();
+226	 IDebt(debtToken).repayLoan(msg.sender, receipt, amount);
+227	 }
+228	 function repayLoan2( address tradeToken, address poolToken, bool reverse, uint256 amount, address receipt ) external override payable {
+229	 address pool = getPoolFromSushi(tradeToken, poolToken, reverse);
+230	 require(pool != address(0), "non-exist pool");
+231	 address debtToken = IPool(pool).debtToken();
+232	 IDebt(debtToken).repayLoan(msg.sender, receipt, amount);
+233	 }
+234	 function exit(uint32 tokenId, address receipt) external override {
+235	 tokenDate memory tempTokenDate = _tokenData[tokenId];
+236	 require( tempTokenDate.user == msg.sender, "token owner not match msg.sender" );
+237	 IPool(tempTokenDate.poolAddress).exit( receipt, tempTokenDate.positionId );
+238	 }
+239	 }
+240	 pragma solidity >=0.5.0;
+241	 interface IUniswapV3Factory {
+242	 event OwnerChanged(address indexed oldOwner, address indexed newOwner);
+243	 event PoolCreated( address indexed token0, address indexed token1, uint24 indexed fee, int24 tickSpacing, address pool );
+244	 event FeeAmountEnabled(uint24 indexed fee, int24 indexed tickSpacing);
+245	 function owner() external view returns (address);
+246	 function feeAmountTickSpacing(uint24 fee) external view returns (int24);
+247	 function getPool( address tokenA, address tokenB, uint24 fee ) external view returns (address pool);
+248	 function createPool( address tokenA, address tokenB, uint24 fee ) external returns (address pool);
+249	 function setOwner(address _owner) external;
+250	 function enableFeeAmount(uint24 fee, int24 tickSpacing) external;
+251	 }
+252	 pragma solidity >=0.5.0;
+253	 interface IUniswapV2Factory {
+254	 event PairCreated(address indexed token0, address indexed token1, address pair, uint);
+255	 function feeTo() external view returns (address);
+256	 function feeToSetter() external view returns (address);
+257	 function getPair(address tokenA, address tokenB) external view returns (address pair);
+258	 function allPairs(uint) external view returns (address pair);
+259	 function allPairsLength() external view returns (uint);
+260	 function createPair(address tokenA, address tokenB) external returns (address pair);
+261	 function setFeeTo(address) external;
+262	 function setFeeToSetter(address) external;
+263	 }
+264	 pragma solidity >=0.6.2 <0.8.0;
+265	 library Address {
+266	 function isContract(address account) internal view returns (bool) {
+267	 uint256 size;
+268	 assembly {
+269	 size := extcodesize(account) }
+270	 return size > 0;
+271	 }
+272	 function sendValue(address payable recipient, uint256 amount) internal {
+273	 require(address(this).balance >= amount, "Address: insufficient balance");
+274	 (bool success, ) = recipient.call{
+275	 value: amount }
+276	 ("");
+277	 require(success, "Address: unable to send value, recipient may have reverted");
+278	 }
+279	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+280	 return functionCall(target, data, "Address: low-level call failed");
+281	 }
+282	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+283	 return functionCallWithValue(target, data, 0, errorMessage);
+284	 }
+285	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+286	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+287	 }
+288	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+289	 require(address(this).balance >= value, "Address: insufficient balance for call");
+290	 require(isContract(target), "Address: call to non-contract");
+291	 (bool success, bytes memory returndata) = target.call{
+292	 value: value }
+293	 (data);
+294	 return _verifyCallResult(success, returndata, errorMessage);
+295	 }
+296	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+297	 return functionStaticCall(target, data, "Address: low-level static call failed");
+298	 }
+299	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+300	 require(isContract(target), "Address: static call to non-contract");
+301	 (bool success, bytes memory returndata) = target.staticcall(data);
+302	 return _verifyCallResult(success, returndata, errorMessage);
+303	 }
+304	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+305	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+306	 }
+307	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+308	 require(isContract(target), "Address: delegate call to non-contract");
+309	 (bool success, bytes memory returndata) = target.delegatecall(data);
+310	 return _verifyCallResult(success, returndata, errorMessage);
+311	 }
+312	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+313	 if (success) {
+314	 return returndata;
+315	 }
+316	 else {
+317	 if (returndata.length > 0) {
+318	 assembly {
+319	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+320	 }
+321	 else {
+322	 revert(errorMessage);
+323	 }
+324	 }
+325	 }
+326	 }
+327	 pragma solidity >=0.6.0 <0.8.0;
+328	 library SafeERC20 {
+329	 using SafeMath for uint256;
+330	 using Address for address;
+331	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+332	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+333	 }
+334	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+335	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+336	 }
+337	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+338	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+339	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+340	 }
+341	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+342	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+343	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+344	 }
+345	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+346	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+347	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+348	 }
+349	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+350	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+351	 if (returndata.length > 0) {
+352	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+353	 }
+354	 }
+355	 }
+356	 pragma solidity >=0.6.0 <0.8.0;
+357	 interface IERC20 {
+358	 function totalSupply() external view returns (uint256);
+359	 function balanceOf(address account) external view returns (uint256);
+360	 function transfer(address recipient, uint256 amount) external returns (bool);
+361	 function allowance(address owner, address spender) external view returns (uint256);
+362	 function approve(address spender, uint256 amount) external returns (bool);
+363	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+364	 event Transfer(address indexed from, address indexed to, uint256 value);
+365	 event Approval(address indexed owner, address indexed spender, uint256 value);
+366	 }
+367	 pragma solidity >=0.6.0 <0.8.0;
+368	 library SafeMath {
+369	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+370	 uint256 c = a + b;
+371	 if (c < a) return (false, 0);
+372	 return (true, c);
+373	 }
+374	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+375	 if (b > a) return (false, 0);
+376	 return (true, a - b);
+377	 }
+378	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+379	 if (a == 0) return (true, 0);
+380	 uint256 c = a * b;
+381	 if (c / a != b) return (false, 0);
+382	 return (true, c);
+383	 }
+384	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+385	 if (b == 0) return (false, 0);
+386	 return (true, a / b);
+387	 }
+388	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+389	 if (b == 0) return (false, 0);
+390	 return (true, a % b);
+391	 }
+392	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+393	 uint256 c = a + b;
+394	 require(c >= a, "SafeMath: addition overflow");
+395	 return c;
+396	 }
+397	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+398	 require(b <= a, "SafeMath: subtraction overflow");
+399	 return a - b;
+400	 }
+401	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+402	 if (a == 0) return 0;
+403	 uint256 c = a * b;
+404	 require(c / a == b, "SafeMath: multiplication overflow");
+405	 return c;
+406	 }
+407	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+408	 require(b > 0, "SafeMath: division by zero");
+409	 return a / b;
+410	 }
+411	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+412	 require(b > 0, "SafeMath: modulo by zero");
+413	 return a % b;
+414	 }
+415	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+416	 require(b <= a, errorMessage);
+417	 return a - b;
+418	 }
+419	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+420	 require(b > 0, errorMessage);
+421	 return a / b;
+422	 }
+423	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+424	 require(b > 0, errorMessage);
+425	 return a % b;
+426	 }
+427	 }
+428	 pragma solidity 0.7.6;
+429	 interface IWETH {
+430	 function deposit() external payable;
+431	 function transfer(address to, uint value) external returns (bool);
+432	 function withdraw(uint) external;
+433	 }
+434	 pragma solidity 0.7.6;
+435	 interface IPoolFactory {
+436	 function createPoolFromUni(address tradeToken, address poolToken, uint24 fee, bool reverse) external;
+437	 function createPoolFromSushi(address tradeToken, address poolToken, bool reverse) external;
+438	 function pools(address poolToken, address oraclePool, bool reverse) external view returns (address pool);
+439	 event CreatePoolFromUni( address tradeToken, address poolToken, address uniPool, address pool, address debt, string tradePair, uint24 fee, bool reverse);
+440	 event CreatePoolFromSushi( address tradeToken, address poolToken, address sushiPool, address pool, address debt, string tradePair, bool reverse);
+441	 }
+442	 pragma solidity 0.7.6;
+443	 interface IPool {
+444	 struct Position {
+445	 uint256 openPrice;
+446	 uint256 openBlock;
+447	 uint256 margin;
+448	 uint256 size;
+449	 uint256 openRebase;
+450	 address account;
+451	 uint8 direction;
+452	 }
+453	 function _positions(uint32 positionId) external view returns ( uint256 openPrice, uint256 openBlock, uint256 margin, uint256 size, uint256 openRebase, address account, uint8 direction );
+454	 function debtToken() external view returns (address);
+455	 function lsTokenPrice() external view returns (uint256);
+456	 function addLiquidity(address user, uint256 amount) external;
+457	 function removeLiquidity(address user, uint256 lsAmount, uint256 bondsAmount, address receipt) external;
+458	 function openPosition( address user, uint8 direction, uint16 leverage, uint256 position ) external returns (uint32);
+459	 function addMargin( address user, uint32 positionId, uint256 margin ) external;
+460	 function closePosition( address receipt, uint32 positionId ) external;
+461	 function liquidate( address user, uint32 positionId, address receipt ) external;
+462	 function exit( address receipt, uint32 positionId ) external;
+463	 event MintLiquidity(uint256 amount);
+464	 event AddLiquidity( address indexed sender, uint256 amount, uint256 lsAmount, uint256 bonds );
+465	 event RemoveLiquidity( address indexed sender, uint256 amount, uint256 lsAmount, uint256 bondsRequired );
+466	 event OpenPosition( address indexed sender, uint256 openPrice, uint256 openRebase, uint8 direction, uint16 level, uint256 margin, uint256 size, uint32 positionId );
+467	 event AddMargin( address indexed sender, uint256 margin, uint32 positionId );
+468	 event ClosePosition( address indexed receipt, uint256 closePrice, uint256 serviceFee, uint256 fundingFee, uint256 pnl, uint32 positionId, bool isProfit, int256 debtChange );
+469	 event Liquidate( address indexed sender, uint32 positionID, uint256 liqPrice, uint256 serviceFee, uint256 fundingFee, uint256 liqReward, uint256 pnl, bool isProfit, uint256 debtRepay );
+470	 event Rebase(uint256 rebaseAccumulatedLong, uint256 rebaseAccumulatedShort);
+471	 }
+472	 pragma solidity 0.7.6;
+473	 interface IDebt {
+474	 function owner() external view returns (address);
+475	 function issueBonds(address recipient, uint256 amount) external;
+476	 function burnBonds(uint256 amount) external;
+477	 function repayLoan(address payer, address recipient, uint256 amount) external;
+478	 function totalDebt() external view returns (uint256);
+479	 function bondsLeft() external view returns (uint256);
+480	 event RepayLoan( address indexed receipt, uint256 bondsTokenAmount, uint256 poolTokenAmount );
+481	 }

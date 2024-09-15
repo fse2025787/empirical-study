@@ -1,0 +1,779 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity 0.6.12;
+3	 struct StrategyParams {
+4	 uint256 performanceFee;
+5	 uint256 activation;
+6	 uint256 debtRatio;
+7	 uint256 minDebtPerHarvest;
+8	 uint256 maxDebtPerHarvest;
+9	 uint256 lastReport;
+10	 uint256 totalDebt;
+11	 uint256 totalGain;
+12	 uint256 totalLoss;
+13	 }
+14	 interface IBaseFee {
+15	 function isCurrentBaseFeeAcceptable() external view returns (bool);
+16	 }
+17	 interface IBaseFeeOracle {
+18	 function basefee_global() external view returns (uint256);
+19	 }
+20	 interface IPriceFeed {
+21	 event LastGoodPriceUpdated(uint256 _lastGoodPrice);
+22	 function fetchPrice() external returns (uint256);
+23	 function lastGoodPrice() external view returns (uint256);
+24	 }
+25	 interface IStabilityPool {
+26	 event StabilityPoolETHBalanceUpdated(uint _newBalance);
+27	 event StabilityPoolLUSDBalanceUpdated(uint _newBalance);
+28	 event BorrowerOperationsAddressChanged(address _newBorrowerOperationsAddress);
+29	 event TroveManagerAddressChanged(address _newTroveManagerAddress);
+30	 event ActivePoolAddressChanged(address _newActivePoolAddress);
+31	 event DefaultPoolAddressChanged(address _newDefaultPoolAddress);
+32	 event LUSDTokenAddressChanged(address _newLUSDTokenAddress);
+33	 event SortedTrovesAddressChanged(address _newSortedTrovesAddress);
+34	 event PriceFeedAddressChanged(address _newPriceFeedAddress);
+35	 event CommunityIssuanceAddressChanged(address _newCommunityIssuanceAddress);
+36	 event P_Updated(uint _P);
+37	 event S_Updated(uint _S, uint128 _epoch, uint128 _scale);
+38	 event G_Updated(uint _G, uint128 _epoch, uint128 _scale);
+39	 event EpochUpdated(uint128 _currentEpoch);
+40	 event ScaleUpdated(uint128 _currentScale);
+41	 event FrontEndRegistered(address indexed _frontEnd, uint _kickbackRate);
+42	 event FrontEndTagSet(address indexed _depositor, address indexed _frontEnd);
+43	 event DepositSnapshotUpdated(address indexed _depositor, uint _P, uint _S, uint _G);
+44	 event FrontEndSnapshotUpdated(address indexed _frontEnd, uint _P, uint _G);
+45	 event UserDepositChanged(address indexed _depositor, uint _newDeposit);
+46	 event FrontEndStakeChanged(address indexed _frontEnd, uint _newFrontEndStake, address _depositor);
+47	 event ETHGainWithdrawn(address indexed _depositor, uint _ETH, uint _LUSDLoss);
+48	 event LQTYPaidToDepositor(address indexed _depositor, uint _LQTY);
+49	 event LQTYPaidToFrontEnd(address indexed _frontEnd, uint _LQTY);
+50	 event EtherSent(address _to, uint _amount);
+51	 function setAddresses( address _borrowerOperationsAddress, address _troveManagerAddress, address _activePoolAddress, address _lusdTokenAddress, address _sortedTrovesAddress, address _priceFeedAddress, address _communityIssuanceAddress ) external;
+52	 function provideToSP(uint _amount, address _frontEndTag) external;
+53	 function withdrawFromSP(uint _amount) external;
+54	 function withdrawETHGainToTrove(address _upperHint, address _lowerHint) external;
+55	 function registerFrontEnd(uint _kickbackRate) external;
+56	 function offset(uint _debt, uint _coll) external;
+57	 function getETH() external view returns (uint);
+58	 function getTotalLUSDDeposits() external view returns (uint);
+59	 function getDepositorETHGain(address _depositor) external view returns (uint);
+60	 function getDepositorLQTYGain(address _depositor) external view returns (uint);
+61	 function getFrontEndLQTYGain(address _frontEnd) external view returns (uint);
+62	 function getCompoundedLUSDDeposit(address _depositor) external view returns (uint);
+63	 function getCompoundedFrontEndStake(address _frontEnd) external view returns (uint);
+64	 }
+65	 interface IStableSwapExchange {
+66	 function get_dy_underlying( int128 i, int128 j, uint256 dx ) external view returns (uint256);
+67	 function exchange_underlying( int128 i, int128 j, uint256 dx, uint256 min_dy ) external returns (uint256);
+68	 }
+69	 interface IUniswapV3SwapCallback {
+70	 function uniswapV3SwapCallback( int256 amount0Delta, int256 amount1Delta, bytes calldata data ) external;
+71	 }
+72	 library Address {
+73	 function isContract(address account) internal view returns (bool) {
+74	 bytes32 codehash;
+75	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+76	 assembly {
+77	 codehash := extcodehash(account) }
+78	 return (codehash != accountHash && codehash != 0x0);
+79	 }
+80	 function sendValue(address payable recipient, uint256 amount) internal {
+81	 require(address(this).balance >= amount, "Address: insufficient balance");
+82	 (bool success, ) = recipient.call{
+83	 value: amount }
+84	 ("");
+85	 require(success, "Address: unable to send value, recipient may have reverted");
+86	 }
+87	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+88	 return functionCall(target, data, "Address: low-level call failed");
+89	 }
+90	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+91	 return _functionCallWithValue(target, data, 0, errorMessage);
+92	 }
+93	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+94	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+95	 }
+96	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+97	 require(address(this).balance >= value, "Address: insufficient balance for call");
+98	 return _functionCallWithValue(target, data, value, errorMessage);
+99	 }
+100	 function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+101	 require(isContract(target), "Address: call to non-contract");
+102	 (bool success, bytes memory returndata) = target.call{
+103	 value: weiValue }
+104	 (data);
+105	 if (success) {
+106	 return returndata;
+107	 }
+108	 else {
+109	 if (returndata.length > 0) {
+110	 assembly {
+111	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+112	 }
+113	 else {
+114	 revert(errorMessage);
+115	 }
+116	 }
+117	 }
+118	 }
+119	 interface IERC20 {
+120	 function totalSupply() external view returns (uint256);
+121	 function balanceOf(address account) external view returns (uint256);
+122	 function transfer(address recipient, uint256 amount) external returns (bool);
+123	 function allowance(address owner, address spender) external view returns (uint256);
+124	 function approve(address spender, uint256 amount) external returns (bool);
+125	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+126	 event Transfer(address indexed from, address indexed to, uint256 value);
+127	 event Approval(address indexed owner, address indexed spender, uint256 value);
+128	 }
+129	 library Math {
+130	 function max(uint256 a, uint256 b) internal pure returns (uint256) {
+131	 return a >= b ? a : b;
+132	 }
+133	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+134	 return a < b ? a : b;
+135	 }
+136	 function average(uint256 a, uint256 b) internal pure returns (uint256) {
+137	 return (a / 2) + (b / 2) + ((a % 2 + b % 2) / 2);
+138	 }
+139	 }
+140	 library SafeMath {
+141	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+142	 uint256 c = a + b;
+143	 require(c >= a, "SafeMath: addition overflow");
+144	 return c;
+145	 }
+146	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+147	 return sub(a, b, "SafeMath: subtraction overflow");
+148	 }
+149	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+150	 require(b <= a, errorMessage);
+151	 uint256 c = a - b;
+152	 return c;
+153	 }
+154	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+155	 if (a == 0) {
+156	 return 0;
+157	 }
+158	 uint256 c = a * b;
+159	 require(c / a == b, "SafeMath: multiplication overflow");
+160	 return c;
+161	 }
+162	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+163	 return div(a, b, "SafeMath: division by zero");
+164	 }
+165	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+166	 require(b > 0, errorMessage);
+167	 uint256 c = a / b;
+168	 return c;
+169	 }
+170	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+171	 return mod(a, b, "SafeMath: modulo by zero");
+172	 }
+173	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+174	 require(b != 0, errorMessage);
+175	 return a % b;
+176	 }
+177	 }
+178	 interface HealthCheck {
+179	 function check( uint256 profit, uint256 loss, uint256 debtPayment, uint256 debtOutstanding, uint256 totalDebt ) external view returns (bool);
+180	 }
+181	 interface ISwapRouter is IUniswapV3SwapCallback {
+182	 struct ExactInputSingleParams {
+183	 address tokenIn;
+184	 address tokenOut;
+185	 uint24 fee;
+186	 address recipient;
+187	 uint256 deadline;
+188	 uint256 amountIn;
+189	 uint256 amountOutMinimum;
+190	 uint160 sqrtPriceLimitX96;
+191	 }
+192	 function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+193	 struct ExactInputParams {
+194	 bytes path;
+195	 address recipient;
+196	 uint256 deadline;
+197	 uint256 amountIn;
+198	 uint256 amountOutMinimum;
+199	 }
+200	 function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
+201	 struct ExactOutputSingleParams {
+202	 address tokenIn;
+203	 address tokenOut;
+204	 uint24 fee;
+205	 address recipient;
+206	 uint256 deadline;
+207	 uint256 amountOut;
+208	 uint256 amountInMaximum;
+209	 uint160 sqrtPriceLimitX96;
+210	 }
+211	 function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
+212	 struct ExactOutputParams {
+213	 bytes path;
+214	 address recipient;
+215	 uint256 deadline;
+216	 uint256 amountOut;
+217	 uint256 amountInMaximum;
+218	 }
+219	 function exactOutput(ExactOutputParams calldata params) external payable returns (uint256 amountIn);
+220	 function refundETH() external payable;
+221	 }
+222	 interface IWETH9 is IERC20 {
+223	 function deposit() external payable;
+224	 function withdraw(uint256 wad) external;
+225	 }
+226	 library SafeERC20 {
+227	 using SafeMath for uint256;
+228	 using Address for address;
+229	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+230	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+231	 }
+232	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+233	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+234	 }
+235	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+236	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+237	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+238	 }
+239	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+240	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+241	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+242	 }
+243	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+244	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+245	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+246	 }
+247	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+248	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+249	 if (returndata.length > 0) {
+250	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+251	 }
+252	 }
+253	 }
+254	 interface VaultAPI is IERC20 {
+255	 function name() external view returns (string calldata);
+256	 function symbol() external view returns (string calldata);
+257	 function decimals() external view returns (uint256);
+258	 function apiVersion() external pure returns (string memory);
+259	 function permit( address owner, address spender, uint256 amount, uint256 expiry, bytes calldata signature ) external returns (bool);
+260	 function deposit() external returns (uint256);
+261	 function deposit(uint256 amount) external returns (uint256);
+262	 function deposit(uint256 amount, address recipient) external returns (uint256);
+263	 function withdraw() external returns (uint256);
+264	 function withdraw(uint256 maxShares) external returns (uint256);
+265	 function withdraw(uint256 maxShares, address recipient) external returns (uint256);
+266	 function token() external view returns (address);
+267	 function strategies(address _strategy) external view returns (StrategyParams memory);
+268	 function pricePerShare() external view returns (uint256);
+269	 function totalAssets() external view returns (uint256);
+270	 function depositLimit() external view returns (uint256);
+271	 function maxAvailableShares() external view returns (uint256);
+272	 function creditAvailable() external view returns (uint256);
+273	 function debtOutstanding() external view returns (uint256);
+274	 function expectedReturn() external view returns (uint256);
+275	 function report( uint256 _gain, uint256 _loss, uint256 _debtPayment ) external returns (uint256);
+276	 function revokeStrategy() external;
+277	 function governance() external view returns (address);
+278	 function management() external view returns (address);
+279	 function guardian() external view returns (address);
+280	 }
+281	 abstract contract BaseStrategy {
+282	 using SafeMath for uint256;
+283	 using SafeERC20 for IERC20;
+284	 string public metadataURI;
+285	 bool public doHealthCheck;
+286	 address public healthCheck;
+287	 function apiVersion() public pure returns (string memory) {
+288	 return "0.4.3";
+289	 }
+290	 function name() external view virtual returns (string memory);
+291	 function delegatedAssets() external view virtual returns (uint256) {
+292	 return 0;
+293	 }
+294	 VaultAPI public vault;
+295	 address public strategist;
+296	 address public rewards;
+297	 address public keeper;
+298	 IERC20 public want;
+299	 event Harvested(uint256 profit, uint256 loss, uint256 debtPayment, uint256 debtOutstanding);
+300	 event UpdatedStrategist(address newStrategist);
+301	 event UpdatedKeeper(address newKeeper);
+302	 event UpdatedRewards(address rewards);
+303	 event UpdatedMinReportDelay(uint256 delay);
+304	 event UpdatedMaxReportDelay(uint256 delay);
+305	 event UpdatedProfitFactor(uint256 profitFactor);
+306	 event UpdatedDebtThreshold(uint256 debtThreshold);
+307	 event EmergencyExitEnabled();
+308	 event UpdatedMetadataURI(string metadataURI);
+309	 uint256 public minReportDelay;
+310	 uint256 public maxReportDelay;
+311	 uint256 public profitFactor;
+312	 uint256 public debtThreshold;
+313	 bool public emergencyExit;
+314	 modifier onlyAuthorized() {
+315	 require(msg.sender == strategist || msg.sender == governance(), "!authorized");
+316	 _;
+317	 }
+318	 modifier onlyEmergencyAuthorized() {
+319	 require( msg.sender == strategist || msg.sender == governance() || msg.sender == vault.guardian() || msg.sender == vault.management(), "!authorized" );
+320	 _;
+321	 }
+322	 modifier onlyStrategist() {
+323	 require(msg.sender == strategist, "!strategist");
+324	 _;
+325	 }
+326	 modifier onlyGovernance() {
+327	 require(msg.sender == governance(), "!authorized");
+328	 _;
+329	 }
+330	 modifier onlyKeepers() {
+331	 require( msg.sender == keeper || msg.sender == strategist || msg.sender == governance() || msg.sender == vault.guardian() || msg.sender == vault.management(), "!authorized" );
+332	 _;
+333	 }
+334	 modifier onlyVaultManagers() {
+335	 require(msg.sender == vault.management() || msg.sender == governance(), "!authorized");
+336	 _;
+337	 }
+338	 constructor(address _vault) public {
+339	 _initialize(_vault, msg.sender, msg.sender, msg.sender);
+340	 }
+341	 function _initialize( address _vault, address _strategist, address _rewards, address _keeper ) internal {
+342	 require(address(want) == address(0), "Strategy already initialized");
+343	 vault = VaultAPI(_vault);
+344	 want = IERC20(vault.token());
+345	 want.safeApprove(_vault, uint256(-1));
+346	 strategist = _strategist;
+347	 rewards = _rewards;
+348	 keeper = _keeper;
+349	 minReportDelay = 0;
+350	 maxReportDelay = 86400;
+351	 profitFactor = 100;
+352	 debtThreshold = 0;
+353	 vault.approve(rewards, uint256(-1));
+354	 }
+355	 function setHealthCheck(address _healthCheck) external onlyVaultManagers {
+356	 healthCheck = _healthCheck;
+357	 }
+358	 function setDoHealthCheck(bool _doHealthCheck) external onlyVaultManagers {
+359	 doHealthCheck = _doHealthCheck;
+360	 }
+361	 function setStrategist(address _strategist) external onlyAuthorized {
+362	 require(_strategist != address(0));
+363	 strategist = _strategist;
+364	 emit UpdatedStrategist(_strategist);
+365	 }
+366	 function setKeeper(address _keeper) external onlyAuthorized {
+367	 require(_keeper != address(0));
+368	 keeper = _keeper;
+369	 emit UpdatedKeeper(_keeper);
+370	 }
+371	 function setRewards(address _rewards) external onlyStrategist {
+372	 require(_rewards != address(0));
+373	 vault.approve(rewards, 0);
+374	 rewards = _rewards;
+375	 vault.approve(rewards, uint256(-1));
+376	 emit UpdatedRewards(_rewards);
+377	 }
+378	 function setMinReportDelay(uint256 _delay) external onlyAuthorized {
+379	 minReportDelay = _delay;
+380	 emit UpdatedMinReportDelay(_delay);
+381	 }
+382	 function setMaxReportDelay(uint256 _delay) external onlyAuthorized {
+383	 maxReportDelay = _delay;
+384	 emit UpdatedMaxReportDelay(_delay);
+385	 }
+386	 function setProfitFactor(uint256 _profitFactor) external onlyAuthorized {
+387	 profitFactor = _profitFactor;
+388	 emit UpdatedProfitFactor(_profitFactor);
+389	 }
+390	 function setDebtThreshold(uint256 _debtThreshold) external onlyAuthorized {
+391	 debtThreshold = _debtThreshold;
+392	 emit UpdatedDebtThreshold(_debtThreshold);
+393	 }
+394	 function setMetadataURI(string calldata _metadataURI) external onlyAuthorized {
+395	 metadataURI = _metadataURI;
+396	 emit UpdatedMetadataURI(_metadataURI);
+397	 }
+398	 function governance() internal view returns (address) {
+399	 return vault.governance();
+400	 }
+401	 function ethToWant(uint256 _amtInWei) public view virtual returns (uint256);
+402	 function estimatedTotalAssets() public view virtual returns (uint256);
+403	 function isActive() public view returns (bool) {
+404	 return vault.strategies(address(this)).debtRatio > 0 || estimatedTotalAssets() > 0;
+405	 }
+406	 function prepareReturn(uint256 _debtOutstanding) internal virtual returns ( uint256 _profit, uint256 _loss, uint256 _debtPayment );
+407	 function adjustPosition(uint256 _debtOutstanding) internal virtual;
+408	 function liquidatePosition(uint256 _amountNeeded) internal virtual returns (uint256 _liquidatedAmount, uint256 _loss);
+409	 function liquidateAllPositions() internal virtual returns (uint256 _amountFreed);
+410	 function tendTrigger(uint256 callCostInWei) public view virtual returns (bool) {
+411	 return false;
+412	 }
+413	 function tend() external onlyKeepers {
+414	 adjustPosition(vault.debtOutstanding());
+415	 }
+416	 function harvestTrigger(uint256 callCostInWei) public view virtual returns (bool) {
+417	 uint256 callCost = ethToWant(callCostInWei);
+418	 StrategyParams memory params = vault.strategies(address(this));
+419	 if (params.activation == 0) return false;
+420	 if (block.timestamp.sub(params.lastReport) < minReportDelay) return false;
+421	 if (block.timestamp.sub(params.lastReport) >= maxReportDelay) return true;
+422	 uint256 outstanding = vault.debtOutstanding();
+423	 if (outstanding > debtThreshold) return true;
+424	 uint256 total = estimatedTotalAssets();
+425	 if (total.add(debtThreshold) < params.totalDebt) return true;
+426	 uint256 profit = 0;
+427	 if (total > params.totalDebt) profit = total.sub(params.totalDebt);
+428	 uint256 credit = vault.creditAvailable();
+429	 return (profitFactor.mul(callCost) < credit.add(profit));
+430	 }
+431	 function harvest() external onlyKeepers {
+432	 uint256 profit = 0;
+433	 uint256 loss = 0;
+434	 uint256 debtOutstanding = vault.debtOutstanding();
+435	 uint256 debtPayment = 0;
+436	 if (emergencyExit) {
+437	 uint256 amountFreed = liquidateAllPositions();
+438	 if (amountFreed < debtOutstanding) {
+439	 loss = debtOutstanding.sub(amountFreed);
+440	 }
+441	 else if (amountFreed > debtOutstanding) {
+442	 profit = amountFreed.sub(debtOutstanding);
+443	 }
+444	 debtPayment = debtOutstanding.sub(loss);
+445	 }
+446	 else {
+447	 (profit, loss, debtPayment) = prepareReturn(debtOutstanding);
+448	 }
+449	 uint256 totalDebt = vault.strategies(address(this)).totalDebt;
+450	 debtOutstanding = vault.report(profit, loss, debtPayment);
+451	 adjustPosition(debtOutstanding);
+452	 if (doHealthCheck && healthCheck != address(0)) {
+453	 require(HealthCheck(healthCheck).check(profit, loss, debtPayment, debtOutstanding, totalDebt), "!healthcheck");
+454	 }
+455	 else {
+456	 doHealthCheck = true;
+457	 }
+458	 emit Harvested(profit, loss, debtPayment, debtOutstanding);
+459	 }
+460	 function withdraw(uint256 _amountNeeded) external returns (uint256 _loss) {
+461	 require(msg.sender == address(vault), "!vault");
+462	 uint256 amountFreed;
+463	 (amountFreed, _loss) = liquidatePosition(_amountNeeded);
+464	 want.safeTransfer(msg.sender, amountFreed);
+465	 }
+466	 function prepareMigration(address _newStrategy) internal virtual;
+467	 function migrate(address _newStrategy) external {
+468	 require(msg.sender == address(vault));
+469	 require(BaseStrategy(_newStrategy).vault() == vault);
+470	 prepareMigration(_newStrategy);
+471	 want.safeTransfer(_newStrategy, want.balanceOf(address(this)));
+472	 }
+473	 function setEmergencyExit() external onlyEmergencyAuthorized {
+474	 emergencyExit = true;
+475	 vault.revokeStrategy();
+476	 emit EmergencyExitEnabled();
+477	 }
+478	 function protectedTokens() internal view virtual returns (address[] memory);
+479	 function sweep(address _token) external onlyGovernance {
+480	 require(_token != address(want), "!want");
+481	 require(_token != address(vault), "!shares");
+482	 address[] memory _protectedTokens = protectedTokens();
+483	 for (uint256 i; i < _protectedTokens.length; i++) require(_token != _protectedTokens[i], "!protected");
+484	 IERC20(_token).safeTransfer(governance(), IERC20(_token).balanceOf(address(this)));
+485	 }
+486	 }
+487	 contract Strategy is BaseStrategy {
+488	 using SafeERC20 for IERC20;
+489	 using Address for address;
+490	 using SafeMath for uint256;
+491	 IERC20 internal constant LQTY = IERC20(0x6DEA81C8171D0bA574754EF6F8b412F2Ed88c54D);
+492	 IStabilityPool internal constant stabilityPool = IStabilityPool(0x66017D22b0f8556afDd19FC67041899Eb65a21bb);
+493	 IPriceFeed internal constant priceFeed = IPriceFeed(0x4c517D4e2C851CA76d7eC94B805269Df0f2201De);
+494	 ISwapRouter internal constant router = ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564);
+495	 IStableSwapExchange internal constant curvePool = IStableSwapExchange(0xEd279fDD11cA84bEef15AF5D39BB4d4bEE23F0cA);
+496	 IWETH9 internal constant WETH = IWETH9(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+497	 IERC20 internal constant DAI = IERC20(0x6B175474E89094C44Da98b954EedeAC495271d0F);
+498	 bool public convertDAItoLUSDonCurve;
+499	 uint24 public lqtyToEthFee;
+500	 uint24 public ethToDaiFee;
+501	 uint24 public daiToLusdFee;
+502	 uint256 public minExpectedSwapPercentage;
+503	 uint256 internal constant MAX_BPS = 10000;
+504	 uint256 public harvestProfitMin;
+505	 uint256 public maxTendBaseFee;
+506	 uint256 public maxEthPercent;
+507	 uint256 public maxEthAmount;
+508	 uint256 public maxEthToSell;
+509	 constructor(address _vault) public BaseStrategy(_vault) {
+510	 convertDAItoLUSDonCurve = true;
+511	 healthCheck = 0xDDCea799fF1699e98EDF118e0629A974Df7DF012;
+512	 lqtyToEthFee = 3000;
+513	 ethToDaiFee = 3000;
+514	 daiToLusdFee = 500;
+515	 minExpectedSwapPercentage = 9800;
+516	 harvestProfitMin = 1_000e18;
+517	 maxTendBaseFee = 200e9;
+518	 maxEthPercent = 100;
+519	 maxEthAmount = 100e18;
+520	 maxEthToSell = type(uint256).max;
+521	 }
+522	 receive() external payable {
+523	 }
+524	 function swallowETH() external onlyGovernance {
+525	 (bool sent, ) = msg.sender.call{
+526	 value: address(this).balance}
+527	 ("");
+528	 require(sent);
+529	 }
+530	 function wrapETH() external onlyGovernance {
+531	 WETH.deposit{
+532	 value: address(this).balance}
+533	 ();
+534	 }
+535	 function setConvertDAItoLUSDonCurve(bool _convertDAItoLUSDonCurve) external onlyEmergencyAuthorized {
+536	 convertDAItoLUSDonCurve = _convertDAItoLUSDonCurve;
+537	 }
+538	 function setSwapFees( uint24 _lqtyToEthFee, uint24 _ethToDaiFee, uint24 _daiToLusdFee ) external onlyEmergencyAuthorized {
+539	 lqtyToEthFee = _lqtyToEthFee;
+540	 ethToDaiFee = _ethToDaiFee;
+541	 daiToLusdFee = _daiToLusdFee;
+542	 }
+543	 function setMinExpectedSwapPercentage(uint256 _minExpectedSwapPercentage) external onlyEmergencyAuthorized {
+544	 minExpectedSwapPercentage = _minExpectedSwapPercentage;
+545	 }
+546	 function setTendAmounts( uint256 _maxEthPercent, uint256 _maxEthAmount, uint256 _maxEthToSell, uint256 _maxTendBaseFee ) external onlyEmergencyAuthorized {
+547	 require(_maxEthPercent <= MAX_BPS, "Too Many Bips");
+548	 require(_maxEthToSell > 0, "Can't be 0");
+549	 maxEthPercent = _maxEthPercent;
+550	 maxEthAmount = _maxEthAmount;
+551	 maxEthToSell = _maxEthToSell;
+552	 maxTendBaseFee = _maxTendBaseFee;
+553	 }
+554	 function setHarvestTriggerMin( uint256 _harvestProfitMin ) external onlyEmergencyAuthorized {
+555	 harvestProfitMin = _harvestProfitMin;
+556	 }
+557	 function depositLUSD(uint256 _amount) external onlyEmergencyAuthorized {
+558	 stabilityPool.provideToSP(_amount, address(0));
+559	 }
+560	 function withdrawLUSD(uint256 _amount) external onlyEmergencyAuthorized {
+561	 stabilityPool.withdrawFromSP(_amount);
+562	 }
+563	 function name() external view override returns (string memory) {
+564	 return "StrategyLiquityStabilityPoolLUSD";
+565	 }
+566	 function estimatedTotalAssets() public view override returns (uint256) {
+567	 uint256 daiBalance = DAI.balanceOf(address(this));
+568	 uint256 daiToWant = daiBalance > 0 ? curvePool.get_dy_underlying(1, 0, daiBalance) : 0;
+569	 return totalLUSDBalance().add(daiToWant).add( totalETHBalance().mul(priceFeed.lastGoodPrice()).div(1e18) );
+570	 }
+571	 function prepareReturn(uint256 _debtOutstanding) internal override returns ( uint256 _profit, uint256 _loss, uint256 _debtPayment ) {
+572	 uint256 totalDebt = vault.strategies(address(this)).totalDebt;
+573	 _claimRewards();
+574	 uint256 totalAssetsAfterClaim = totalLUSDBalance();
+575	 if (totalAssetsAfterClaim > totalDebt) {
+576	 _profit = totalAssetsAfterClaim.sub(totalDebt);
+577	 _loss = 0;
+578	 }
+579	 else {
+580	 _profit = 0;
+581	 _loss = totalDebt.sub(totalAssetsAfterClaim);
+582	 }
+583	 uint256 _amountFreed;
+584	 (_amountFreed, ) = liquidatePosition(_debtOutstanding.add(_profit));
+585	 _debtPayment = Math.min(_debtOutstanding, _amountFreed);
+586	 }
+587	 function adjustPosition(uint256 _debtOutstanding) internal override {
+588	 if(totalETHBalance() > 0) {
+589	 claimAndSellEth();
+590	 }
+591	 if(DAI.balanceOf(address(this)) > 0) {
+592	 _tryToSellDAIForLUSDonCurve();
+593	 }
+594	 uint256 wantBalance = balanceOfWant();
+595	 if (wantBalance > _debtOutstanding) {
+596	 stabilityPool.provideToSP( wantBalance.sub(_debtOutstanding), address(0) );
+597	 }
+598	 }
+599	 function liquidatePosition(uint256 _amountNeeded) internal override returns (uint256 _liquidatedAmount, uint256 _loss) {
+600	 uint256 balance = balanceOfWant();
+601	 if (balance >= _amountNeeded) {
+602	 return (_amountNeeded, 0);
+603	 }
+604	 uint256 amountToWithdraw = _amountNeeded.sub(balance);
+605	 uint256 stabilityBalance = stabilityPool.getCompoundedLUSDDeposit(address(this));
+606	 if(amountToWithdraw > stabilityBalance) {
+607	 require(DAI.balanceOf(address(this)) == 0, "To much DAI");
+608	 stabilityPool.withdrawFromSP(stabilityBalance);
+609	 }
+610	 else {
+611	 stabilityPool.withdrawFromSP(amountToWithdraw);
+612	 }
+613	 uint256 looseWant = balanceOfWant();
+614	 if (_amountNeeded > looseWant) {
+615	 _liquidatedAmount = looseWant;
+616	 _loss = _amountNeeded.sub(looseWant);
+617	 }
+618	 else {
+619	 _liquidatedAmount = _amountNeeded;
+620	 _loss = 0;
+621	 }
+622	 }
+623	 function liquidateAllPositions() internal override returns (uint256 _amountFreed) {
+624	 stabilityPool.withdrawFromSP( stabilityPool.getCompoundedLUSDDeposit(address(this)) );
+625	 uint256 daiBalance = DAI.balanceOf(address(this));
+626	 if (daiBalance > 0) {
+627	 _sellDAIAmountForLusd(daiBalance);
+628	 }
+629	 return balanceOfWant();
+630	 }
+631	 function prepareMigration(address _newStrategy) internal override {
+632	 if (stabilityPool.getCompoundedLUSDDeposit(address(this)) <= 0) {
+633	 return;
+634	 }
+635	 stabilityPool.withdrawFromSP( stabilityPool.getCompoundedLUSDDeposit(address(this)) );
+636	 }
+637	 function protectedTokens() internal view override returns (address[] memory) {
+638	 }
+639	 function ethToWant(uint256 _amtInWei) public view virtual override returns (uint256) {
+640	 return _amtInWei.mul(priceFeed.lastGoodPrice()).div(1e18);
+641	 }
+642	 function balanceOfWant() public view returns (uint256) {
+643	 return want.balanceOf(address(this));
+644	 }
+645	 function totalLUSDBalance() public view returns (uint256) {
+646	 return balanceOfWant().add( stabilityPool.getCompoundedLUSDDeposit(address(this)) );
+647	 }
+648	 function totalLQTYBalance() public view returns (uint256) {
+649	 return LQTY.balanceOf(address(this)).add( stabilityPool.getDepositorLQTYGain(address(this)) );
+650	 }
+651	 function totalETHBalance() public view returns (uint256) {
+652	 return address(this).balance.add( stabilityPool.getDepositorETHGain(address(this)) );
+653	 }
+654	 function _checkAllowance( address _contract, IERC20 _token, uint256 _amount ) internal {
+655	 if (_token.allowance(address(this), _contract) < _amount) {
+656	 _token.safeApprove(_contract, 0);
+657	 _token.safeApprove(_contract, type(uint256).max);
+658	 }
+659	 }
+660	 function _claimRewards() internal {
+661	 if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
+662	 stabilityPool.withdrawFromSP(0);
+663	 }
+664	 if (LQTY.balanceOf(address(this)) > 0) {
+665	 _sellLQTYforDAI();
+666	 }
+667	 uint256 ethBalance = address(this).balance;
+668	 if (ethBalance > 0) {
+669	 _sellETHforDAI(ethBalance);
+670	 }
+671	 uint256 daiBalance = DAI.balanceOf(address(this));
+672	 if (daiBalance > 0) {
+673	 _sellDAIAmountForLusd(daiBalance);
+674	 }
+675	 }
+676	 function _sellLQTYforDAI() internal {
+677	 _checkAllowance(address(router), LQTY, LQTY.balanceOf(address(this)));
+678	 bytes memory path = abi.encodePacked( address(LQTY), lqtyToEthFee, address(WETH), ethToDaiFee, address(DAI) );
+679	 router.exactInput( ISwapRouter.ExactInputParams( path, address(this), now, LQTY.balanceOf(address(this)), 0 ) );
+680	 }
+681	 function _sellETHforDAI(uint256 ethBalance) internal {
+682	 uint256 ethUSD = priceFeed.fetchPrice();
+683	 uint256 minExpected = ethBalance .mul(ethUSD) .mul(minExpectedSwapPercentage) .div(MAX_BPS) .div(1e18);
+684	 ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams( address(WETH), address(DAI), ethToDaiFee, address(this), now, ethBalance, minExpected, 0 );
+685	 router.exactInputSingle{
+686	 value: ethBalance}
+687	 (params);
+688	 router.refundETH();
+689	 }
+690	 function _sellDAIAmountForLusd(uint256 _amount) internal {
+691	 require(DAI.balanceOf(address(this)) >= _amount, "Not enough DAI");
+692	 if (convertDAItoLUSDonCurve) {
+693	 _sellDAIAmountForLUSDonCurve(_amount);
+694	 }
+695	 else {
+696	 _sellDAIAmountForLUSDonUniswap(_amount);
+697	 }
+698	 }
+699	 function _sellDAIAmountForLUSDonCurve(uint256 daiBalance) internal {
+700	 _checkAllowance(address(curvePool), DAI, daiBalance);
+701	 curvePool.exchange_underlying( 1, 0, daiBalance, daiBalance.mul(minExpectedSwapPercentage).div(MAX_BPS) );
+702	 }
+703	 function _sellDAIAmountForLUSDonUniswap(uint256 daiBalance) internal {
+704	 _checkAllowance(address(router), DAI, daiBalance);
+705	 ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams( address(DAI), address(want), daiToLusdFee, address(this), now, daiBalance, daiBalance.mul(minExpectedSwapPercentage).div(MAX_BPS), 0 );
+706	 router.exactInputSingle(params);
+707	 }
+708	 function _tryToSellDAIForLUSDonCurve() internal {
+709	 uint256 _amount = DAI.balanceOf(address(this));
+710	 uint256 minOut = _amount.mul(minExpectedSwapPercentage).div(MAX_BPS);
+711	 uint256 actualOut = curvePool.get_dy_underlying(1, 0, _amount);
+712	 if(actualOut >= minOut) {
+713	 _checkAllowance(address(curvePool), DAI, _amount);
+714	 curvePool.exchange_underlying( 1, 0, _amount, minOut );
+715	 }
+716	 }
+717	 function claimAndSellEth() internal {
+718	 if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
+719	 stabilityPool.withdrawFromSP(0);
+720	 }
+721	 uint256 ethBalance = Math.min(address(this).balance, maxEthToSell);
+722	 if(ethBalance == 0) return;
+723	 _sellETHforDAI(ethBalance);
+724	 }
+725	 function sellDaiAmountToLusd(uint256 _amount) external onlyEmergencyAuthorized {
+726	 _sellDAIAmountForLusd(_amount);
+727	 }
+728	 function tendTrigger(uint256 callCostInWei) public view override returns (bool){
+729	 uint256 totalAssets = estimatedTotalAssets();
+730	 uint256 ethBalance = totalETHBalance();
+731	 if(ethBalance == 0) return false;
+732	 if(getBaseFee() > maxTendBaseFee) return false;
+733	 if(ethBalance >= maxEthAmount) return true;
+734	 if (callCostInWei > ethBalance / 10) return false;
+735	 uint256 ethInWant = ethToWant(ethBalance);
+736	 uint256 maxAllowedEth = totalAssets.mul(maxEthPercent).div(MAX_BPS);
+737	 if(ethInWant > maxAllowedEth) return true;
+738	 return false;
+739	 }
+740	 function harvestTrigger(uint256 callCostInWei) public view override returns (bool) {
+741	 if (!isActive()) {
+742	 return false;
+743	 }
+744	 StrategyParams memory params = vault.strategies(address(this));
+745	 uint256 assets = estimatedTotalAssets();
+746	 uint256 debt = params.totalDebt;
+747	 uint256 needToSwap = assets.sub(totalLUSDBalance());
+748	 if(needToSwap > 0) {
+749	 if(curvePool.get_dy_underlying(1, 0, needToSwap) < needToSwap.mul(minExpectedSwapPercentage).div(MAX_BPS)) {
+750	 return false;
+751	 }
+752	 }
+753	 if (!isBaseFeeAcceptable()) {
+754	 return false;
+755	 }
+756	 uint256 claimableProfit = assets > debt ? assets.sub(debt) : 0;
+757	 if (claimableProfit > harvestProfitMin) {
+758	 return true;
+759	 }
+760	 if (block.timestamp.sub(params.lastReport) < minReportDelay) return false;
+761	 if (block.timestamp.sub(params.lastReport) > maxReportDelay) {
+762	 return true;
+763	 }
+764	 return false;
+765	 }
+766	 function isBaseFeeAcceptable() internal view returns (bool) {
+767	 return IBaseFee(0xb5e1CAcB567d98faaDB60a1fD4820720141f064F) .isCurrentBaseFeeAcceptable();
+768	 }
+769	 function getBaseFee() internal view returns (uint256) {
+770	 uint256 baseFee;
+771	 try IBaseFeeOracle(0xf8d0Ec04e94296773cE20eFbeeA82e76220cD549) .basefee_global() returns (uint256 currentBaseFee) {
+772	 baseFee = currentBaseFee;
+773	 }
+774	 catch {
+775	 baseFee = 1000 gwei;
+776	 }
+777	 }
+778	 }

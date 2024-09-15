@@ -1,0 +1,720 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.6.0;
+3	 abstract contract Proxy {
+4	 fallback() external payable {
+5	 _fallback();
+6	 }
+7	 function _implementation() internal view virtual returns (address);
+8	 function _delegate(address implementation) internal {
+9	 assembly {
+10	 calldatacopy(0, 0, calldatasize()) let result := delegatecall(gas(), implementation, 0, calldatasize(), 0, 0) returndatacopy(0, 0, returndatasize()) switch result case 0 {
+11	 revert(0, returndatasize()) }
+12	 default {
+13	 return(0, returndatasize()) }
+14	 }
+15	 }
+16	 function _willFallback() internal virtual {
+17	 }
+18	 function _fallback() internal {
+19	 _willFallback();
+20	 _delegate(_implementation());
+21	 }
+22	 }
+23	 pragma solidity 0.6.12;
+24	 contract BaseUpgradeabilityProxy is Proxy {
+25	 event Upgraded(address indexed implementation);
+26	 bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+27	 function _implementation() internal view override returns (address impl) {
+28	 bytes32 slot = IMPLEMENTATION_SLOT;
+29	 assembly {
+30	 impl := sload(slot) }
+31	 }
+32	 function _upgradeTo(address newImplementation) internal {
+33	 _setImplementation(newImplementation);
+34	 emit Upgraded(newImplementation);
+35	 }
+36	 function _setImplementation(address newImplementation) internal {
+37	 require( Address.isContract(newImplementation), 'Cannot set a proxy implementation to a non-contract address' );
+38	 bytes32 slot = IMPLEMENTATION_SLOT;
+39	 assembly {
+40	 sstore(slot, newImplementation) }
+41	 }
+42	 }
+43	 pragma solidity 0.6.12;
+44	 abstract contract VersionedInitializable {
+45	 uint256 private lastInitializedRevision = 0;
+46	 bool private initializing;
+47	 modifier initializer() {
+48	 uint256 revision = getRevision();
+49	 require( initializing || isConstructor() || revision > lastInitializedRevision, 'Contract instance has already been initialized' );
+50	 bool isTopLevelCall = !initializing;
+51	 if (isTopLevelCall) {
+52	 initializing = true;
+53	 lastInitializedRevision = revision;
+54	 }
+55	 _;
+56	 if (isTopLevelCall) {
+57	 initializing = false;
+58	 }
+59	 }
+60	 function getRevision() internal pure virtual returns (uint256);
+61	 function isConstructor() private view returns (bool) {
+62	 uint256 cs;
+63	 assembly {
+64	 cs := extcodesize(address()) }
+65	 return cs == 0;
+66	 }
+67	 uint256[50] private ______gap;
+68	 }
+69	 pragma solidity 0.6.12;
+70	 contract BaseImmutableAdminUpgradeabilityProxy is BaseUpgradeabilityProxy {
+71	 address immutable ADMIN;
+72	 constructor(address admin) public {
+73	 ADMIN = admin;
+74	 }
+75	 modifier ifAdmin() {
+76	 if (msg.sender == ADMIN) {
+77	 _;
+78	 }
+79	 else {
+80	 _fallback();
+81	 }
+82	 }
+83	 function admin() external ifAdmin returns (address) {
+84	 return ADMIN;
+85	 }
+86	 function implementation() external ifAdmin returns (address) {
+87	 return _implementation();
+88	 }
+89	 function upgradeTo(address newImplementation) external ifAdmin {
+90	 _upgradeTo(newImplementation);
+91	 }
+92	 function upgradeToAndCall(address newImplementation, bytes calldata data) external payable ifAdmin {
+93	 _upgradeTo(newImplementation);
+94	 (bool success, ) = newImplementation.delegatecall(data);
+95	 require(success);
+96	 }
+97	 function _willFallback() internal virtual override {
+98	 require(msg.sender != ADMIN, 'Cannot call fallback function from the proxy admin');
+99	 super._willFallback();
+100	 }
+101	 }
+102	 pragma solidity 0.6.12;
+103	 contract InitializableUpgradeabilityProxy is BaseUpgradeabilityProxy {
+104	 function initialize(address _logic, bytes memory _data) public payable {
+105	 require(_implementation() == address(0));
+106	 assert(IMPLEMENTATION_SLOT == bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1));
+107	 _setImplementation(_logic);
+108	 if (_data.length > 0) {
+109	 (bool success, ) = _logic.delegatecall(_data);
+110	 require(success);
+111	 }
+112	 }
+113	 }
+114	 pragma solidity 0.6.12;
+115	 interface IERC20 {
+116	 function totalSupply() external view returns (uint256);
+117	 function balanceOf(address account) external view returns (uint256);
+118	 function transfer(address recipient, uint256 amount) external returns (bool);
+119	 function allowance(address owner, address spender) external view returns (uint256);
+120	 function approve(address spender, uint256 amount) external returns (bool);
+121	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+122	 event Transfer(address indexed from, address indexed to, uint256 value);
+123	 event Approval(address indexed owner, address indexed spender, uint256 value);
+124	 }
+125	 pragma solidity 0.6.12;
+126	 interface ILendingPoolConfigurator {
+127	 struct InitReserveInput {
+128	 address aTokenImpl;
+129	 address stableDebtTokenImpl;
+130	 address variableDebtTokenImpl;
+131	 uint8 underlyingAssetDecimals;
+132	 address interestRateStrategyAddress;
+133	 address underlyingAsset;
+134	 address treasury;
+135	 address incentivesController;
+136	 string underlyingAssetName;
+137	 string aTokenName;
+138	 string aTokenSymbol;
+139	 string variableDebtTokenName;
+140	 string variableDebtTokenSymbol;
+141	 string stableDebtTokenName;
+142	 string stableDebtTokenSymbol;
+143	 bytes params;
+144	 }
+145	 struct UpdateATokenInput {
+146	 address asset;
+147	 address treasury;
+148	 address incentivesController;
+149	 string name;
+150	 string symbol;
+151	 address implementation;
+152	 bytes params;
+153	 }
+154	 struct UpdateDebtTokenInput {
+155	 address asset;
+156	 address incentivesController;
+157	 string name;
+158	 string symbol;
+159	 address implementation;
+160	 bytes params;
+161	 }
+162	 event ReserveInitialized( address indexed asset, address indexed aToken, address stableDebtToken, address variableDebtToken, address interestRateStrategyAddress );
+163	 event BorrowingEnabledOnReserve(address indexed asset, bool stableRateEnabled);
+164	 event BorrowingDisabledOnReserve(address indexed asset);
+165	 event CollateralConfigurationChanged( address indexed asset, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus );
+166	 event StableRateEnabledOnReserve(address indexed asset);
+167	 event StableRateDisabledOnReserve(address indexed asset);
+168	 event ReserveActivated(address indexed asset);
+169	 event ReserveDeactivated(address indexed asset);
+170	 event ReserveFrozen(address indexed asset);
+171	 event ReserveUnfrozen(address indexed asset);
+172	 event ReserveFactorChanged(address indexed asset, uint256 factor);
+173	 event ReserveDecimalsChanged(address indexed asset, uint256 decimals);
+174	 event ReserveInterestRateStrategyChanged(address indexed asset, address strategy);
+175	 event ATokenUpgraded( address indexed asset, address indexed proxy, address indexed implementation );
+176	 event StableDebtTokenUpgraded( address indexed asset, address indexed proxy, address indexed implementation );
+177	 event VariableDebtTokenUpgraded( address indexed asset, address indexed proxy, address indexed implementation );
+178	 }
+179	 pragma solidity 0.6.12;
+180	 contract LendingPoolConfigurator is VersionedInitializable, ILendingPoolConfigurator {
+181	 using SafeMath for uint256;
+182	 using PercentageMath for uint256;
+183	 using ReserveConfiguration for DataTypes.ReserveConfigurationMap;
+184	 ILendingPoolAddressesProvider internal addressesProvider;
+185	 ILendingPool internal pool;
+186	 modifier onlyPoolAdmin {
+187	 require(addressesProvider.getPoolAdmin() == msg.sender, Errors.CALLER_NOT_POOL_ADMIN);
+188	 _;
+189	 }
+190	 modifier onlyEmergencyAdmin {
+191	 require( addressesProvider.getEmergencyAdmin() == msg.sender, Errors.LPC_CALLER_NOT_EMERGENCY_ADMIN );
+192	 _;
+193	 }
+194	 uint256 internal constant CONFIGURATOR_REVISION = 0x1;
+195	 function getRevision() internal pure override returns (uint256) {
+196	 return CONFIGURATOR_REVISION;
+197	 }
+198	 function initialize(ILendingPoolAddressesProvider provider) public initializer {
+199	 addressesProvider = provider;
+200	 pool = ILendingPool(addressesProvider.getLendingPool());
+201	 }
+202	 function batchInitReserve(InitReserveInput[] calldata input) external onlyPoolAdmin {
+203	 ILendingPool cachedPool = pool;
+204	 for (uint256 i = 0; i < input.length; i++) {
+205	 _initReserve(cachedPool, input[i]);
+206	 }
+207	 }
+208	 function _initReserve(ILendingPool pool, InitReserveInput calldata input) internal {
+209	 address aTokenProxyAddress = _initTokenWithProxy( input.aTokenImpl, abi.encodeWithSelector( IInitializableEToken.initialize.selector, pool, input.treasury, input.underlyingAsset, IEaveIncentivesController(input.incentivesController), input.underlyingAssetDecimals, input.aTokenName, input.aTokenSymbol, input.params ) );
+210	 address stableDebtTokenProxyAddress = _initTokenWithProxy( input.stableDebtTokenImpl, abi.encodeWithSelector( IInitializableDebtToken.initialize.selector, pool, input.underlyingAsset, IEaveIncentivesController(input.incentivesController), input.underlyingAssetDecimals, input.stableDebtTokenName, input.stableDebtTokenSymbol, input.params ) );
+211	 address variableDebtTokenProxyAddress = _initTokenWithProxy( input.variableDebtTokenImpl, abi.encodeWithSelector( IInitializableDebtToken.initialize.selector, pool, input.underlyingAsset, IEaveIncentivesController(input.incentivesController), input.underlyingAssetDecimals, input.variableDebtTokenName, input.variableDebtTokenSymbol, input.params ) );
+212	 pool.initReserve( input.underlyingAsset, aTokenProxyAddress, stableDebtTokenProxyAddress, variableDebtTokenProxyAddress, input.interestRateStrategyAddress );
+213	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(input.underlyingAsset);
+214	 currentConfig.setDecimals(input.underlyingAssetDecimals);
+215	 currentConfig.setActive(true);
+216	 currentConfig.setFrozen(false);
+217	 pool.setConfiguration(input.underlyingAsset, currentConfig.data);
+218	 emit ReserveInitialized( input.underlyingAsset, aTokenProxyAddress, stableDebtTokenProxyAddress, variableDebtTokenProxyAddress, input.interestRateStrategyAddress );
+219	 }
+220	 function updateAToken(UpdateATokenInput calldata input) external onlyPoolAdmin {
+221	 ILendingPool cachedPool = pool;
+222	 DataTypes.ReserveData memory reserveData = cachedPool.getReserveData(input.asset);
+223	 (, , , uint256 decimals, ) = cachedPool.getConfiguration(input.asset).getParamsMemory();
+224	 bytes memory encodedCall = abi.encodeWithSelector( IInitializableEToken.initialize.selector, cachedPool, input.treasury, input.asset, input.incentivesController, decimals, input.name, input.symbol, input.params );
+225	 _upgradeTokenImplementation( reserveData.aTokenAddress, input.implementation, encodedCall );
+226	 emit ATokenUpgraded(input.asset, reserveData.aTokenAddress, input.implementation);
+227	 }
+228	 function updateStableDebtToken(UpdateDebtTokenInput calldata input) external onlyPoolAdmin {
+229	 ILendingPool cachedPool = pool;
+230	 DataTypes.ReserveData memory reserveData = cachedPool.getReserveData(input.asset);
+231	 (, , , uint256 decimals, ) = cachedPool.getConfiguration(input.asset).getParamsMemory();
+232	 bytes memory encodedCall = abi.encodeWithSelector( IInitializableDebtToken.initialize.selector, cachedPool, input.asset, input.incentivesController, decimals, input.name, input.symbol, input.params );
+233	 _upgradeTokenImplementation( reserveData.stableDebtTokenAddress, input.implementation, encodedCall );
+234	 emit StableDebtTokenUpgraded( input.asset, reserveData.stableDebtTokenAddress, input.implementation );
+235	 }
+236	 function updateVariableDebtToken(UpdateDebtTokenInput calldata input) external onlyPoolAdmin {
+237	 ILendingPool cachedPool = pool;
+238	 DataTypes.ReserveData memory reserveData = cachedPool.getReserveData(input.asset);
+239	 (, , , uint256 decimals, ) = cachedPool.getConfiguration(input.asset).getParamsMemory();
+240	 bytes memory encodedCall = abi.encodeWithSelector( IInitializableDebtToken.initialize.selector, cachedPool, input.asset, input.incentivesController, decimals, input.name, input.symbol, input.params );
+241	 _upgradeTokenImplementation( reserveData.variableDebtTokenAddress, input.implementation, encodedCall );
+242	 emit VariableDebtTokenUpgraded( input.asset, reserveData.variableDebtTokenAddress, input.implementation );
+243	 }
+244	 function enableBorrowingOnReserve(address asset, bool stableBorrowRateEnabled) external onlyPoolAdmin {
+245	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(asset);
+246	 currentConfig.setBorrowingEnabled(true);
+247	 currentConfig.setStableRateBorrowingEnabled(stableBorrowRateEnabled);
+248	 pool.setConfiguration(asset, currentConfig.data);
+249	 emit BorrowingEnabledOnReserve(asset, stableBorrowRateEnabled);
+250	 }
+251	 function disableBorrowingOnReserve(address asset) external onlyPoolAdmin {
+252	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(asset);
+253	 currentConfig.setBorrowingEnabled(false);
+254	 pool.setConfiguration(asset, currentConfig.data);
+255	 emit BorrowingDisabledOnReserve(asset);
+256	 }
+257	 function configureReserveAsCollateral( address asset, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus ) external onlyPoolAdmin {
+258	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(asset);
+259	 require(ltv <= liquidationThreshold, Errors.LPC_INVALID_CONFIGURATION);
+260	 if (liquidationThreshold != 0) {
+261	 require( liquidationBonus > PercentageMath.PERCENTAGE_FACTOR, Errors.LPC_INVALID_CONFIGURATION );
+262	 require( liquidationThreshold.percentMul(liquidationBonus) <= PercentageMath.PERCENTAGE_FACTOR, Errors.LPC_INVALID_CONFIGURATION );
+263	 }
+264	 else {
+265	 require(liquidationBonus == 0, Errors.LPC_INVALID_CONFIGURATION);
+266	 _checkNoLiquidity(asset);
+267	 }
+268	 currentConfig.setLtv(ltv);
+269	 currentConfig.setLiquidationThreshold(liquidationThreshold);
+270	 currentConfig.setLiquidationBonus(liquidationBonus);
+271	 pool.setConfiguration(asset, currentConfig.data);
+272	 emit CollateralConfigurationChanged(asset, ltv, liquidationThreshold, liquidationBonus);
+273	 }
+274	 function enableReserveStableRate(address asset) external onlyPoolAdmin {
+275	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(asset);
+276	 currentConfig.setStableRateBorrowingEnabled(true);
+277	 pool.setConfiguration(asset, currentConfig.data);
+278	 emit StableRateEnabledOnReserve(asset);
+279	 }
+280	 function disableReserveStableRate(address asset) external onlyPoolAdmin {
+281	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(asset);
+282	 currentConfig.setStableRateBorrowingEnabled(false);
+283	 pool.setConfiguration(asset, currentConfig.data);
+284	 emit StableRateDisabledOnReserve(asset);
+285	 }
+286	 function activateReserve(address asset) external onlyPoolAdmin {
+287	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(asset);
+288	 currentConfig.setActive(true);
+289	 pool.setConfiguration(asset, currentConfig.data);
+290	 emit ReserveActivated(asset);
+291	 }
+292	 function deactivateReserve(address asset) external onlyPoolAdmin {
+293	 _checkNoLiquidity(asset);
+294	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(asset);
+295	 currentConfig.setActive(false);
+296	 pool.setConfiguration(asset, currentConfig.data);
+297	 emit ReserveDeactivated(asset);
+298	 }
+299	 function freezeReserve(address asset) external onlyPoolAdmin {
+300	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(asset);
+301	 currentConfig.setFrozen(true);
+302	 pool.setConfiguration(asset, currentConfig.data);
+303	 emit ReserveFrozen(asset);
+304	 }
+305	 function unfreezeReserve(address asset) external onlyPoolAdmin {
+306	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(asset);
+307	 currentConfig.setFrozen(false);
+308	 pool.setConfiguration(asset, currentConfig.data);
+309	 emit ReserveUnfrozen(asset);
+310	 }
+311	 function setReserveFactor(address asset, uint256 reserveFactor) external onlyPoolAdmin {
+312	 DataTypes.ReserveConfigurationMap memory currentConfig = pool.getConfiguration(asset);
+313	 currentConfig.setReserveFactor(reserveFactor);
+314	 pool.setConfiguration(asset, currentConfig.data);
+315	 emit ReserveFactorChanged(asset, reserveFactor);
+316	 }
+317	 function setReserveInterestRateStrategyAddress(address asset, address rateStrategyAddress) external onlyPoolAdmin {
+318	 pool.setReserveInterestRateStrategyAddress(asset, rateStrategyAddress);
+319	 emit ReserveInterestRateStrategyChanged(asset, rateStrategyAddress);
+320	 }
+321	 function setPoolPause(bool val) external onlyEmergencyAdmin {
+322	 pool.setPause(val);
+323	 }
+324	 function _initTokenWithProxy(address implementation, bytes memory initParams) internal returns (address) {
+325	 InitializableImmutableAdminUpgradeabilityProxy proxy = new InitializableImmutableAdminUpgradeabilityProxy(address(this));
+326	 proxy.initialize(implementation, initParams);
+327	 return address(proxy);
+328	 }
+329	 function _upgradeTokenImplementation( address proxyAddress, address implementation, bytes memory initParams ) internal {
+330	 InitializableImmutableAdminUpgradeabilityProxy proxy = InitializableImmutableAdminUpgradeabilityProxy(payable(proxyAddress));
+331	 proxy.upgradeToAndCall(implementation, initParams);
+332	 }
+333	 function _checkNoLiquidity(address asset) internal view {
+334	 DataTypes.ReserveData memory reserveData = pool.getReserveData(asset);
+335	 uint256 availableLiquidity = IERC20Detailed(asset).balanceOf(reserveData.aTokenAddress);
+336	 require( availableLiquidity == 0 && reserveData.currentLiquidityRate == 0, Errors.LPC_RESERVE_LIQUIDITY_NOT_0 );
+337	 }
+338	 }
+339	 pragma solidity 0.6.12;
+340	 library SafeMath {
+341	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+342	 uint256 c = a + b;
+343	 require(c >= a, 'SafeMath: addition overflow');
+344	 return c;
+345	 }
+346	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+347	 return sub(a, b, 'SafeMath: subtraction overflow');
+348	 }
+349	 function sub( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+350	 require(b <= a, errorMessage);
+351	 uint256 c = a - b;
+352	 return c;
+353	 }
+354	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+355	 if (a == 0) {
+356	 return 0;
+357	 }
+358	 uint256 c = a * b;
+359	 require(c / a == b, 'SafeMath: multiplication overflow');
+360	 return c;
+361	 }
+362	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+363	 return div(a, b, 'SafeMath: division by zero');
+364	 }
+365	 function div( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+366	 require(b > 0, errorMessage);
+367	 uint256 c = a / b;
+368	 return c;
+369	 }
+370	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+371	 return mod(a, b, 'SafeMath: modulo by zero');
+372	 }
+373	 function mod( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+374	 require(b != 0, errorMessage);
+375	 return a % b;
+376	 }
+377	 }
+378	 pragma solidity 0.6.12;
+379	 contract InitializableImmutableAdminUpgradeabilityProxy is BaseImmutableAdminUpgradeabilityProxy, InitializableUpgradeabilityProxy {
+380	 constructor(address admin) public BaseImmutableAdminUpgradeabilityProxy(admin) {
+381	 }
+382	 function _willFallback() internal override(BaseImmutableAdminUpgradeabilityProxy, Proxy) {
+383	 BaseImmutableAdminUpgradeabilityProxy._willFallback();
+384	 }
+385	 }
+386	 pragma solidity 0.6.12;
+387	 library Address {
+388	 function isContract(address account) internal view returns (bool) {
+389	 bytes32 codehash;
+390	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+391	 assembly {
+392	 codehash := extcodehash(account) }
+393	 return (codehash != accountHash && codehash != 0x0);
+394	 }
+395	 function sendValue(address payable recipient, uint256 amount) internal {
+396	 require(address(this).balance >= amount, 'Address: insufficient balance');
+397	 (bool success, ) = recipient.call{
+398	 value: amount}
+399	 ('');
+400	 require(success, 'Address: unable to send value, recipient may have reverted');
+401	 }
+402	 }
+403	 pragma solidity 0.6.12;
+404	 library ReserveConfiguration {
+405	 uint256 constant LTV_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0000;
+406	 uint256 constant LIQUIDATION_THRESHOLD_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0000FFFF;
+407	 uint256 constant LIQUIDATION_BONUS_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0000FFFFFFFF;
+408	 uint256 constant DECIMALS_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00FFFFFFFFFFFF;
+409	 uint256 constant ACTIVE_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFFFFFFFF;
+410	 uint256 constant FROZEN_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFDFFFFFFFFFFFFFF;
+411	 uint256 constant BORROWING_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFBFFFFFFFFFFFFFF;
+412	 uint256 constant STABLE_BORROWING_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF7FFFFFFFFFFFFFF;
+413	 uint256 constant RESERVE_FACTOR_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0000FFFFFFFFFFFFFFFF;
+414	 uint256 constant LIQUIDATION_THRESHOLD_START_BIT_POSITION = 16;
+415	 uint256 constant LIQUIDATION_BONUS_START_BIT_POSITION = 32;
+416	 uint256 constant RESERVE_DECIMALS_START_BIT_POSITION = 48;
+417	 uint256 constant IS_ACTIVE_START_BIT_POSITION = 56;
+418	 uint256 constant IS_FROZEN_START_BIT_POSITION = 57;
+419	 uint256 constant BORROWING_ENABLED_START_BIT_POSITION = 58;
+420	 uint256 constant STABLE_BORROWING_ENABLED_START_BIT_POSITION = 59;
+421	 uint256 constant RESERVE_FACTOR_START_BIT_POSITION = 64;
+422	 uint256 constant MAX_VALID_LTV = 65535;
+423	 uint256 constant MAX_VALID_LIQUIDATION_THRESHOLD = 65535;
+424	 uint256 constant MAX_VALID_LIQUIDATION_BONUS = 65535;
+425	 uint256 constant MAX_VALID_DECIMALS = 255;
+426	 uint256 constant MAX_VALID_RESERVE_FACTOR = 65535;
+427	 function setLtv(DataTypes.ReserveConfigurationMap memory self, uint256 ltv) internal pure {
+428	 require(ltv <= MAX_VALID_LTV, Errors.RC_INVALID_LTV);
+429	 self.data = (self.data & LTV_MASK) | ltv;
+430	 }
+431	 function getLtv(DataTypes.ReserveConfigurationMap storage self) internal view returns (uint256) {
+432	 return self.data & ~LTV_MASK;
+433	 }
+434	 function setLiquidationThreshold(DataTypes.ReserveConfigurationMap memory self, uint256 threshold) internal pure {
+435	 require(threshold <= MAX_VALID_LIQUIDATION_THRESHOLD, Errors.RC_INVALID_LIQ_THRESHOLD);
+436	 self.data = (self.data & LIQUIDATION_THRESHOLD_MASK) | (threshold << LIQUIDATION_THRESHOLD_START_BIT_POSITION);
+437	 }
+438	 function getLiquidationThreshold(DataTypes.ReserveConfigurationMap storage self) internal view returns (uint256) {
+439	 return (self.data & ~LIQUIDATION_THRESHOLD_MASK) >> LIQUIDATION_THRESHOLD_START_BIT_POSITION;
+440	 }
+441	 function setLiquidationBonus(DataTypes.ReserveConfigurationMap memory self, uint256 bonus) internal pure {
+442	 require(bonus <= MAX_VALID_LIQUIDATION_BONUS, Errors.RC_INVALID_LIQ_BONUS);
+443	 self.data = (self.data & LIQUIDATION_BONUS_MASK) | (bonus << LIQUIDATION_BONUS_START_BIT_POSITION);
+444	 }
+445	 function getLiquidationBonus(DataTypes.ReserveConfigurationMap storage self) internal view returns (uint256) {
+446	 return (self.data & ~LIQUIDATION_BONUS_MASK) >> LIQUIDATION_BONUS_START_BIT_POSITION;
+447	 }
+448	 function setDecimals(DataTypes.ReserveConfigurationMap memory self, uint256 decimals) internal pure {
+449	 require(decimals <= MAX_VALID_DECIMALS, Errors.RC_INVALID_DECIMALS);
+450	 self.data = (self.data & DECIMALS_MASK) | (decimals << RESERVE_DECIMALS_START_BIT_POSITION);
+451	 }
+452	 function getDecimals(DataTypes.ReserveConfigurationMap storage self) internal view returns (uint256) {
+453	 return (self.data & ~DECIMALS_MASK) >> RESERVE_DECIMALS_START_BIT_POSITION;
+454	 }
+455	 function setActive(DataTypes.ReserveConfigurationMap memory self, bool active) internal pure {
+456	 self.data = (self.data & ACTIVE_MASK) | (uint256(active ? 1 : 0) << IS_ACTIVE_START_BIT_POSITION);
+457	 }
+458	 function getActive(DataTypes.ReserveConfigurationMap storage self) internal view returns (bool) {
+459	 return (self.data & ~ACTIVE_MASK) != 0;
+460	 }
+461	 function setFrozen(DataTypes.ReserveConfigurationMap memory self, bool frozen) internal pure {
+462	 self.data = (self.data & FROZEN_MASK) | (uint256(frozen ? 1 : 0) << IS_FROZEN_START_BIT_POSITION);
+463	 }
+464	 function getFrozen(DataTypes.ReserveConfigurationMap storage self) internal view returns (bool) {
+465	 return (self.data & ~FROZEN_MASK) != 0;
+466	 }
+467	 function setBorrowingEnabled(DataTypes.ReserveConfigurationMap memory self, bool enabled) internal pure {
+468	 self.data = (self.data & BORROWING_MASK) | (uint256(enabled ? 1 : 0) << BORROWING_ENABLED_START_BIT_POSITION);
+469	 }
+470	 function getBorrowingEnabled(DataTypes.ReserveConfigurationMap storage self) internal view returns (bool) {
+471	 return (self.data & ~BORROWING_MASK) != 0;
+472	 }
+473	 function setStableRateBorrowingEnabled( DataTypes.ReserveConfigurationMap memory self, bool enabled ) internal pure {
+474	 self.data = (self.data & STABLE_BORROWING_MASK) | (uint256(enabled ? 1 : 0) << STABLE_BORROWING_ENABLED_START_BIT_POSITION);
+475	 }
+476	 function getStableRateBorrowingEnabled(DataTypes.ReserveConfigurationMap storage self) internal view returns (bool) {
+477	 return (self.data & ~STABLE_BORROWING_MASK) != 0;
+478	 }
+479	 function setReserveFactor(DataTypes.ReserveConfigurationMap memory self, uint256 reserveFactor) internal pure {
+480	 require(reserveFactor <= MAX_VALID_RESERVE_FACTOR, Errors.RC_INVALID_RESERVE_FACTOR);
+481	 self.data = (self.data & RESERVE_FACTOR_MASK) | (reserveFactor << RESERVE_FACTOR_START_BIT_POSITION);
+482	 }
+483	 function getReserveFactor(DataTypes.ReserveConfigurationMap storage self) internal view returns (uint256) {
+484	 return (self.data & ~RESERVE_FACTOR_MASK) >> RESERVE_FACTOR_START_BIT_POSITION;
+485	 }
+486	 function getFlags(DataTypes.ReserveConfigurationMap storage self) internal view returns ( bool, bool, bool, bool ) {
+487	 uint256 dataLocal = self.data;
+488	 return ( (dataLocal & ~ACTIVE_MASK) != 0, (dataLocal & ~FROZEN_MASK) != 0, (dataLocal & ~BORROWING_MASK) != 0, (dataLocal & ~STABLE_BORROWING_MASK) != 0 );
+489	 }
+490	 function getParams(DataTypes.ReserveConfigurationMap storage self) internal view returns ( uint256, uint256, uint256, uint256, uint256 ) {
+491	 uint256 dataLocal = self.data;
+492	 return ( dataLocal & ~LTV_MASK, (dataLocal & ~LIQUIDATION_THRESHOLD_MASK) >> LIQUIDATION_THRESHOLD_START_BIT_POSITION, (dataLocal & ~LIQUIDATION_BONUS_MASK) >> LIQUIDATION_BONUS_START_BIT_POSITION, (dataLocal & ~DECIMALS_MASK) >> RESERVE_DECIMALS_START_BIT_POSITION, (dataLocal & ~RESERVE_FACTOR_MASK) >> RESERVE_FACTOR_START_BIT_POSITION );
+493	 }
+494	 function getParamsMemory(DataTypes.ReserveConfigurationMap memory self) internal pure returns ( uint256, uint256, uint256, uint256, uint256 ) {
+495	 return ( self.data & ~LTV_MASK, (self.data & ~LIQUIDATION_THRESHOLD_MASK) >> LIQUIDATION_THRESHOLD_START_BIT_POSITION, (self.data & ~LIQUIDATION_BONUS_MASK) >> LIQUIDATION_BONUS_START_BIT_POSITION, (self.data & ~DECIMALS_MASK) >> RESERVE_DECIMALS_START_BIT_POSITION, (self.data & ~RESERVE_FACTOR_MASK) >> RESERVE_FACTOR_START_BIT_POSITION );
+496	 }
+497	 function getFlagsMemory(DataTypes.ReserveConfigurationMap memory self) internal pure returns ( bool, bool, bool, bool ) {
+498	 return ( (self.data & ~ACTIVE_MASK) != 0, (self.data & ~FROZEN_MASK) != 0, (self.data & ~BORROWING_MASK) != 0, (self.data & ~STABLE_BORROWING_MASK) != 0 );
+499	 }
+500	 }
+501	 pragma solidity 0.6.12;
+502	 library Errors {
+503	 string public constant CALLER_NOT_POOL_ADMIN = '33';
+504	 string public constant BORROW_ALLOWANCE_NOT_ENOUGH = '59';
+505	 string public constant VL_INVALID_AMOUNT = '1';
+506	 string public constant VL_NO_ACTIVE_RESERVE = '2';
+507	 string public constant VL_RESERVE_FROZEN = '3';
+508	 string public constant VL_CURRENT_AVAILABLE_LIQUIDITY_NOT_ENOUGH = '4';
+509	 string public constant VL_NOT_ENOUGH_AVAILABLE_USER_BALANCE = '5';
+510	 string public constant VL_TRANSFER_NOT_ALLOWED = '6';
+511	 string public constant VL_BORROWING_NOT_ENABLED = '7';
+512	 string public constant VL_INVALID_INTEREST_RATE_MODE_SELECTED = '8';
+513	 string public constant VL_COLLATERAL_BALANCE_IS_0 = '9';
+514	 string public constant VL_HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD = '10';
+515	 string public constant VL_COLLATERAL_CANNOT_COVER_NEW_BORROW = '11';
+516	 string public constant VL_STABLE_BORROWING_NOT_ENABLED = '12';
+517	 string public constant VL_COLLATERAL_SAME_AS_BORROWING_CURRENCY = '13';
+518	 string public constant VL_AMOUNT_BIGGER_THAN_MAX_LOAN_SIZE_STABLE = '14';
+519	 string public constant VL_NO_DEBT_OF_SELECTED_TYPE = '15';
+520	 string public constant VL_NO_EXPLICIT_AMOUNT_TO_REPAY_ON_BEHALF = '16';
+521	 string public constant VL_NO_STABLE_RATE_LOAN_IN_RESERVE = '17';
+522	 string public constant VL_NO_VARIABLE_RATE_LOAN_IN_RESERVE = '18';
+523	 string public constant VL_UNDERLYING_BALANCE_NOT_GREATER_THAN_0 = '19';
+524	 string public constant VL_DEPOSIT_ALREADY_IN_USE = '20';
+525	 string public constant LP_NOT_ENOUGH_STABLE_BORROW_BALANCE = '21';
+526	 string public constant LP_INTEREST_RATE_REBALANCE_CONDITIONS_NOT_MET = '22';
+527	 string public constant LP_LIQUIDATION_CALL_FAILED = '23';
+528	 string public constant LP_NOT_ENOUGH_LIQUIDITY_TO_BORROW = '24';
+529	 string public constant LP_REQUESTED_AMOUNT_TOO_SMALL = '25';
+530	 string public constant LP_INCONSISTENT_PROTOCOL_ACTUAL_BALANCE = '26';
+531	 string public constant LP_CALLER_NOT_LENDING_POOL_CONFIGURATOR = '27';
+532	 string public constant LP_INCONSISTENT_FLASHLOAN_PARAMS = '28';
+533	 string public constant CT_CALLER_MUST_BE_LENDING_POOL = '29';
+534	 string public constant CT_CANNOT_GIVE_ALLOWANCE_TO_HIMSELF = '30';
+535	 string public constant CT_TRANSFER_AMOUNT_NOT_GT_0 = '31';
+536	 string public constant RL_RESERVE_ALREADY_INITIALIZED = '32';
+537	 string public constant LPC_RESERVE_LIQUIDITY_NOT_0 = '34';
+538	 string public constant LPC_INVALID_ATOKEN_POOL_ADDRESS = '35';
+539	 string public constant LPC_INVALID_STABLE_DEBT_TOKEN_POOL_ADDRESS = '36';
+540	 string public constant LPC_INVALID_VARIABLE_DEBT_TOKEN_POOL_ADDRESS = '37';
+541	 string public constant LPC_INVALID_STABLE_DEBT_TOKEN_UNDERLYING_ADDRESS = '38';
+542	 string public constant LPC_INVALID_VARIABLE_DEBT_TOKEN_UNDERLYING_ADDRESS = '39';
+543	 string public constant LPC_INVALID_ADDRESSES_PROVIDER_ID = '40';
+544	 string public constant LPC_INVALID_CONFIGURATION = '75';
+545	 string public constant LPC_CALLER_NOT_EMERGENCY_ADMIN = '76';
+546	 string public constant LPAPR_PROVIDER_NOT_REGISTERED = '41';
+547	 string public constant LPCM_HEALTH_FACTOR_NOT_BELOW_THRESHOLD = '42';
+548	 string public constant LPCM_COLLATERAL_CANNOT_BE_LIQUIDATED = '43';
+549	 string public constant LPCM_SPECIFIED_CURRENCY_NOT_BORROWED_BY_USER = '44';
+550	 string public constant LPCM_NOT_ENOUGH_LIQUIDITY_TO_LIQUIDATE = '45';
+551	 string public constant LPCM_NO_ERRORS = '46';
+552	 string public constant LP_INVALID_FLASHLOAN_MODE = '47';
+553	 string public constant MATH_MULTIPLICATION_OVERFLOW = '48';
+554	 string public constant MATH_ADDITION_OVERFLOW = '49';
+555	 string public constant MATH_DIVISION_BY_ZERO = '50';
+556	 string public constant RL_LIQUIDITY_INDEX_OVERFLOW = '51';
+557	 string public constant RL_VARIABLE_BORROW_INDEX_OVERFLOW = '52';
+558	 string public constant RL_LIQUIDITY_RATE_OVERFLOW = '53';
+559	 string public constant RL_VARIABLE_BORROW_RATE_OVERFLOW = '54';
+560	 string public constant RL_STABLE_BORROW_RATE_OVERFLOW = '55';
+561	 string public constant CT_INVALID_MINT_AMOUNT = '56';
+562	 string public constant LP_FAILED_REPAY_WITH_COLLATERAL = '57';
+563	 string public constant CT_INVALID_BURN_AMOUNT = '58';
+564	 string public constant LP_FAILED_COLLATERAL_SWAP = '60';
+565	 string public constant LP_INVALID_EQUAL_ASSETS_TO_SWAP = '61';
+566	 string public constant LP_REENTRANCY_NOT_ALLOWED = '62';
+567	 string public constant LP_CALLER_MUST_BE_AN_ATOKEN = '63';
+568	 string public constant LP_IS_PAUSED = '64';
+569	 string public constant LP_NO_MORE_RESERVES_ALLOWED = '65';
+570	 string public constant LP_INVALID_FLASH_LOAN_EXECUTOR_RETURN = '66';
+571	 string public constant RC_INVALID_LTV = '67';
+572	 string public constant RC_INVALID_LIQ_THRESHOLD = '68';
+573	 string public constant RC_INVALID_LIQ_BONUS = '69';
+574	 string public constant RC_INVALID_DECIMALS = '70';
+575	 string public constant RC_INVALID_RESERVE_FACTOR = '71';
+576	 string public constant LPAPR_INVALID_ADDRESSES_PROVIDER_ID = '72';
+577	 string public constant VL_INCONSISTENT_FLASHLOAN_PARAMS = '73';
+578	 string public constant LP_INCONSISTENT_PARAMS_LENGTH = '74';
+579	 string public constant UL_INVALID_INDEX = '77';
+580	 string public constant LP_NOT_CONTRACT = '78';
+581	 string public constant SDT_STABLE_DEBT_OVERFLOW = '79';
+582	 string public constant SDT_BURN_EXCEEDS_BALANCE = '80';
+583	 enum CollateralManagerErrors {
+584	 NO_ERROR, NO_COLLATERAL_AVAILABLE, COLLATERAL_CANNOT_BE_LIQUIDATED, CURRRENCY_NOT_BORROWED, HEALTH_FACTOR_ABOVE_THRESHOLD, NOT_ENOUGH_LIQUIDITY, NO_ACTIVE_RESERVE, HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD, INVALID_EQUAL_ASSETS_TO_SWAP, FROZEN_RESERVE }
+585	 }
+586	 pragma solidity 0.6.12;
+587	 library DataTypes {
+588	 struct ReserveData {
+589	 ReserveConfigurationMap configuration;
+590	 uint128 liquidityIndex;
+591	 uint128 variableBorrowIndex;
+592	 uint128 currentLiquidityRate;
+593	 uint128 currentVariableBorrowRate;
+594	 uint128 currentStableBorrowRate;
+595	 uint40 lastUpdateTimestamp;
+596	 address aTokenAddress;
+597	 address stableDebtTokenAddress;
+598	 address variableDebtTokenAddress;
+599	 address interestRateStrategyAddress;
+600	 uint8 id;
+601	 }
+602	 struct ReserveConfigurationMap {
+603	 uint256 data;
+604	 }
+605	 struct UserConfigurationMap {
+606	 uint256 data;
+607	 }
+608	 enum InterestRateMode {
+609	 NONE, STABLE, VARIABLE}
+610	 }
+611	 pragma solidity 0.6.12;
+612	 interface ILendingPoolAddressesProvider {
+613	 event MarketIdSet(string newMarketId);
+614	 event LendingPoolUpdated(address indexed newAddress);
+615	 event ConfigurationAdminUpdated(address indexed newAddress);
+616	 event EmergencyAdminUpdated(address indexed newAddress);
+617	 event LendingPoolConfiguratorUpdated(address indexed newAddress);
+618	 event LendingPoolCollateralManagerUpdated(address indexed newAddress);
+619	 event PriceOracleUpdated(address indexed newAddress);
+620	 event LendingRateOracleUpdated(address indexed newAddress);
+621	 event ProxyCreated(bytes32 id, address indexed newAddress);
+622	 event AddressSet(bytes32 id, address indexed newAddress, bool hasProxy);
+623	 function getMarketId() external view returns (string memory);
+624	 function setMarketId(string calldata marketId) external;
+625	 function setAddress(bytes32 id, address newAddress) external;
+626	 function setAddressAsProxy(bytes32 id, address impl) external;
+627	 function getAddress(bytes32 id) external view returns (address);
+628	 function getLendingPool() external view returns (address);
+629	 function setLendingPoolImpl(address pool) external;
+630	 function getLendingPoolConfigurator() external view returns (address);
+631	 function setLendingPoolConfiguratorImpl(address configurator) external;
+632	 function getLendingPoolCollateralManager() external view returns (address);
+633	 function setLendingPoolCollateralManager(address manager) external;
+634	 function getPoolAdmin() external view returns (address);
+635	 function setPoolAdmin(address admin) external;
+636	 function getEmergencyAdmin() external view returns (address);
+637	 function setEmergencyAdmin(address admin) external;
+638	 function getPriceOracle() external view returns (address);
+639	 function setPriceOracle(address priceOracle) external;
+640	 function getLendingRateOracle() external view returns (address);
+641	 function setLendingRateOracle(address lendingRateOracle) external;
+642	 }
+643	 pragma solidity 0.6.12;
+644	 interface ILendingPool {
+645	 event Deposit( address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint16 indexed referral );
+646	 event Withdraw(address indexed reserve, address indexed user, address indexed to, uint256 amount);
+647	 event Borrow( address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint256 borrowRateMode, uint256 borrowRate, uint16 indexed referral );
+648	 event Repay( address indexed reserve, address indexed user, address indexed repayer, uint256 amount );
+649	 event Swap(address indexed reserve, address indexed user, uint256 rateMode);
+650	 event ReserveUsedAsCollateralEnabled(address indexed reserve, address indexed user);
+651	 event ReserveUsedAsCollateralDisabled(address indexed reserve, address indexed user);
+652	 event RebalanceStableBorrowRate(address indexed reserve, address indexed user);
+653	 event FlashLoan( address indexed target, address indexed initiator, address indexed asset, uint256 amount, uint256 premium, uint16 referralCode );
+654	 event Paused();
+655	 event Unpaused();
+656	 event LiquidationCall( address indexed collateralAsset, address indexed debtAsset, address indexed user, uint256 debtToCover, uint256 liquidatedCollateralAmount, address liquidator, bool receiveAToken );
+657	 event ReserveDataUpdated( address indexed reserve, uint256 liquidityRate, uint256 stableBorrowRate, uint256 variableBorrowRate, uint256 liquidityIndex, uint256 variableBorrowIndex );
+658	 function deposit( address asset, uint256 amount, address onBehalfOf, uint16 referralCode ) external;
+659	 function withdraw( address asset, uint256 amount, address to ) external returns (uint256);
+660	 function borrow( address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf ) external;
+661	 function repay( address asset, uint256 amount, uint256 rateMode, address onBehalfOf ) external returns (uint256);
+662	 function swapBorrowRateMode(address asset, uint256 rateMode) external;
+663	 function rebalanceStableBorrowRate(address asset, address user) external;
+664	 function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external;
+665	 function liquidationCall( address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken ) external;
+666	 function flashLoan( address receiverAddress, address[] calldata assets, uint256[] calldata amounts, uint256[] calldata modes, address onBehalfOf, bytes calldata params, uint16 referralCode ) external;
+667	 function getUserAccountData(address user) external view returns ( uint256 totalCollateralETH, uint256 totalDebtETH, uint256 availableBorrowsETH, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor );
+668	 function initReserve( address reserve, address aTokenAddress, address stableDebtAddress, address variableDebtAddress, address interestRateStrategyAddress ) external;
+669	 function setReserveInterestRateStrategyAddress(address reserve, address rateStrategyAddress) external;
+670	 function setConfiguration(address reserve, uint256 configuration) external;
+671	 function getConfiguration(address asset) external view returns (DataTypes.ReserveConfigurationMap memory);
+672	 function getUserConfiguration(address user) external view returns (DataTypes.UserConfigurationMap memory);
+673	 function getReserveNormalizedIncome(address asset) external view returns (uint256);
+674	 function getReserveNormalizedVariableDebt(address asset) external view returns (uint256);
+675	 function getReserveData(address asset) external view returns (DataTypes.ReserveData memory);
+676	 function finalizeTransfer( address asset, address from, address to, uint256 amount, uint256 balanceFromAfter, uint256 balanceToBefore ) external;
+677	 function getReservesList() external view returns (address[] memory);
+678	 function getAddressesProvider() external view returns (ILendingPoolAddressesProvider);
+679	 function setPause(bool val) external;
+680	 function paused() external view returns (bool);
+681	 }
+682	 pragma solidity 0.6.12;
+683	 interface IERC20Detailed is IERC20 {
+684	 function name() external view returns (string memory);
+685	 function symbol() external view returns (string memory);
+686	 function decimals() external view returns (uint8);
+687	 }
+688	 pragma solidity 0.6.12;
+689	 library PercentageMath {
+690	 uint256 constant PERCENTAGE_FACTOR = 1e4;
+691	 uint256 constant HALF_PERCENT = PERCENTAGE_FACTOR / 2;
+692	 function percentMul(uint256 value, uint256 percentage) internal pure returns (uint256) {
+693	 if (value == 0 || percentage == 0) {
+694	 return 0;
+695	 }
+696	 require( value <= (type(uint256).max - HALF_PERCENT) / percentage, Errors.MATH_MULTIPLICATION_OVERFLOW );
+697	 return (value * percentage + HALF_PERCENT) / PERCENTAGE_FACTOR;
+698	 }
+699	 function percentDiv(uint256 value, uint256 percentage) internal pure returns (uint256) {
+700	 require(percentage != 0, Errors.MATH_DIVISION_BY_ZERO);
+701	 uint256 halfPercentage = percentage / 2;
+702	 require( value <= (type(uint256).max - halfPercentage) / PERCENTAGE_FACTOR, Errors.MATH_MULTIPLICATION_OVERFLOW );
+703	 return (value * PERCENTAGE_FACTOR + halfPercentage) / percentage;
+704	 }
+705	 }
+706	 pragma solidity 0.6.12;
+707	 interface IInitializableDebtToken {
+708	 event Initialized( address indexed underlyingAsset, address indexed pool, address incentivesController, uint8 debtTokenDecimals, string debtTokenName, string debtTokenSymbol, bytes params );
+709	 function initialize( ILendingPool pool, address underlyingAsset, IEaveIncentivesController incentivesController, uint8 debtTokenDecimals, string memory debtTokenName, string memory debtTokenSymbol, bytes calldata params ) external;
+710	 }
+711	 pragma solidity 0.6.12;
+712	 interface IEaveIncentivesController {
+713	 function handleAction( address user, uint256 userBalance, uint256 totalSupply ) external;
+714	 }
+715	 pragma solidity 0.6.12;
+716	 interface IInitializableEToken {
+717	 event Initialized( address indexed underlyingAsset, address indexed pool, address treasury, address incentivesController, uint8 eTokenDecimals, string eTokenName, string eTokenSymbol, bytes params );
+718	 function initialize( ILendingPool pool, address treasury, address underlyingAsset, IEaveIncentivesController incentivesController, uint8 eTokenDecimals, string calldata eTokenName, string calldata eTokenSymbol, bytes calldata params ) external;
+719	 }

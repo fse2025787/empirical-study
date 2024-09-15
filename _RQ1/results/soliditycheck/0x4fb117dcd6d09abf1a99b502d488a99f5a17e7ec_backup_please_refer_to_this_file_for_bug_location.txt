@@ -1,0 +1,2189 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.7.0;
+3	 library AddressUtil {
+4	 using AddressUtil for *;
+5	 function isContract( address addr ) internal view returns (bool) {
+6	 bytes32 codehash;
+7	 assembly {
+8	 codehash := extcodehash(addr) }
+9	 return (codehash != 0x0 && codehash != 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470);
+10	 }
+11	 function toPayable( address addr ) internal pure returns (address payable) {
+12	 return payable(addr);
+13	 }
+14	 function sendETH( address to, uint amount, uint gasLimit ) internal returns (bool success) {
+15	 if (amount == 0) {
+16	 return true;
+17	 }
+18	 address payable recipient = to.toPayable();
+19	 (success, ) = recipient.call{
+20	 value: amount, gas: gasLimit}
+21	 ("");
+22	 }
+23	 function sendETHAndVerify( address to, uint amount, uint gasLimit ) internal returns (bool success) {
+24	 success = to.sendETH(amount, gasLimit);
+25	 require(success, "TRANSFER_FAILURE");
+26	 }
+27	 function fastCall( address to, uint gasLimit, uint value, bytes memory data ) internal returns (bool success, bytes memory returnData) {
+28	 if (to != address(0)) {
+29	 assembly {
+30	 success := call(gasLimit, to, value, add(data, 32), mload(data), 0, 0) let size := returndatasize() returnData := mload(0x40) mstore(returnData, size) returndatacopy(add(returnData, 32), 0, size) mstore(0x40, add(returnData, add(32, size))) }
+31	 }
+32	 }
+33	 function fastCallAndVerify( address to, uint gasLimit, uint value, bytes memory data ) internal returns (bytes memory returnData) {
+34	 bool success;
+35	 (success, returnData) = fastCall(to, gasLimit, value, data);
+36	 if (!success) {
+37	 assembly {
+38	 revert(add(returnData, 32), mload(returnData)) }
+39	 }
+40	 }
+41	 }
+42	 library EIP712 {
+43	 struct Domain {
+44	 string name;
+45	 string version;
+46	 address verifyingContract;
+47	 }
+48	 bytes32 constant internal EIP712_DOMAIN_TYPEHASH = keccak256( "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)" );
+49	 string constant internal EIP191_HEADER = "\x19\x01";
+50	 function hash(Domain memory domain) internal pure returns (bytes32) {
+51	 uint _chainid;
+52	 assembly {
+53	 _chainid := chainid() }
+54	 return keccak256( abi.encode( EIP712_DOMAIN_TYPEHASH, keccak256(bytes(domain.name)), keccak256(bytes(domain.version)), _chainid, domain.verifyingContract ) );
+55	 }
+56	 function hashPacked( bytes32 domainHash, bytes32 dataHash ) internal pure returns (bytes32) {
+57	 return keccak256( abi.encodePacked( EIP191_HEADER, domainHash, dataHash ) );
+58	 }
+59	 }
+60	 library ERC20SafeTransfer {
+61	 function safeTransferAndVerify( address token, address to, uint value ) internal {
+62	 safeTransferWithGasLimitAndVerify( token, to, value, gasleft() );
+63	 }
+64	 function safeTransfer( address token, address to, uint value ) internal returns (bool) {
+65	 return safeTransferWithGasLimit( token, to, value, gasleft() );
+66	 }
+67	 function safeTransferWithGasLimitAndVerify( address token, address to, uint value, uint gasLimit ) internal {
+68	 require( safeTransferWithGasLimit(token, to, value, gasLimit), "TRANSFER_FAILURE" );
+69	 }
+70	 function safeTransferWithGasLimit( address token, address to, uint value, uint gasLimit ) internal returns (bool) {
+71	 bytes memory callData = abi.encodeWithSelector( bytes4(0xa9059cbb), to, value );
+72	 (bool success, ) = token.call{
+73	 gas: gasLimit}
+74	 (callData);
+75	 return checkReturnValue(success);
+76	 }
+77	 function safeTransferFromAndVerify( address token, address from, address to, uint value ) internal {
+78	 safeTransferFromWithGasLimitAndVerify( token, from, to, value, gasleft() );
+79	 }
+80	 function safeTransferFrom( address token, address from, address to, uint value ) internal returns (bool) {
+81	 return safeTransferFromWithGasLimit( token, from, to, value, gasleft() );
+82	 }
+83	 function safeTransferFromWithGasLimitAndVerify( address token, address from, address to, uint value, uint gasLimit ) internal {
+84	 bool result = safeTransferFromWithGasLimit( token, from, to, value, gasLimit );
+85	 require(result, "TRANSFER_FAILURE");
+86	 }
+87	 function safeTransferFromWithGasLimit( address token, address from, address to, uint value, uint gasLimit ) internal returns (bool) {
+88	 bytes memory callData = abi.encodeWithSelector( bytes4(0x23b872dd), from, to, value );
+89	 (bool success, ) = token.call{
+90	 gas: gasLimit}
+91	 (callData);
+92	 return checkReturnValue(success);
+93	 }
+94	 function checkReturnValue( bool success ) internal pure returns (bool) {
+95	 if (success) {
+96	 assembly {
+97	 switch returndatasize() case 0 {
+98	 success := 1 }
+99	 case 32 {
+100	 returndatacopy(0, 0, 32) success := mload(0) }
+101	 default {
+102	 success := 0 }
+103	 }
+104	 }
+105	 return success;
+106	 }
+107	 }
+108	 library MathUint {
+109	 using MathUint for uint;
+110	 function mul( uint a, uint b ) internal pure returns (uint c) {
+111	 c = a * b;
+112	 require(a == 0 || c / a == b, "MUL_OVERFLOW");
+113	 }
+114	 function sub( uint a, uint b ) internal pure returns (uint) {
+115	 require(b <= a, "SUB_UNDERFLOW");
+116	 return a - b;
+117	 }
+118	 function add( uint a, uint b ) internal pure returns (uint c) {
+119	 c = a + b;
+120	 require(c >= a, "ADD_OVERFLOW");
+121	 }
+122	 function add64( uint64 a, uint64 b ) internal pure returns (uint64 c) {
+123	 c = a + b;
+124	 require(c >= a, "ADD_OVERFLOW");
+125	 }
+126	 }
+127	 contract ReentrancyGuard {
+128	 uint private _guardValue;
+129	 modifier nonReentrant() {
+130	 require(_guardValue == 0, "REENTRANCY");
+131	 _guardValue = 1;
+132	 _;
+133	 _guardValue = 0;
+134	 }
+135	 }
+136	 abstract contract Proxy {
+137	 function implementation() public view virtual returns (address impl);
+138	 receive() payable external {
+139	 _fallback();
+140	 }
+141	 fallback() payable external {
+142	 _fallback();
+143	 }
+144	 function _fallback() private {
+145	 address _impl = implementation();
+146	 require(_impl != address(0));
+147	 assembly {
+148	 let ptr := mload(0x40) calldatacopy(ptr, 0, calldatasize()) let result := delegatecall(gas(), _impl, ptr, calldatasize(), 0, 0) let size := returndatasize() returndatacopy(ptr, 0, size) switch result case 0 {
+149	 revert(ptr, size) }
+150	 default {
+151	 return(ptr, size) }
+152	 }
+153	 }
+154	 }
+155	 contract UpgradeabilityProxy is Proxy {
+156	 event Upgraded(address indexed implementation);
+157	 bytes32 private constant implementationPosition = keccak256("org.zeppelinos.proxy.implementation");
+158	 constructor() {
+159	 }
+160	 function implementation() public view override returns (address impl) {
+161	 bytes32 position = implementationPosition;
+162	 assembly {
+163	 impl := sload(position) }
+164	 }
+165	 function setImplementation(address newImplementation) internal {
+166	 bytes32 position = implementationPosition;
+167	 assembly {
+168	 sstore(position, newImplementation) }
+169	 }
+170	 function _upgradeTo(address newImplementation) internal {
+171	 address currentImplementation = implementation();
+172	 require(currentImplementation != newImplementation);
+173	 setImplementation(newImplementation);
+174	 emit Upgraded(newImplementation);
+175	 }
+176	 }
+177	 contract OwnedUpgradabilityProxy is UpgradeabilityProxy {
+178	 event ProxyOwnershipTransferred(address previousOwner, address newOwner);
+179	 bytes32 private constant proxyOwnerPosition = keccak256("org.zeppelinos.proxy.owner");
+180	 constructor() {
+181	 setUpgradabilityOwner(msg.sender);
+182	 }
+183	 modifier onlyProxyOwner() {
+184	 require(msg.sender == proxyOwner());
+185	 _;
+186	 }
+187	 function proxyOwner() public view returns (address owner) {
+188	 bytes32 position = proxyOwnerPosition;
+189	 assembly {
+190	 owner := sload(position) }
+191	 }
+192	 function setUpgradabilityOwner(address newProxyOwner) internal {
+193	 bytes32 position = proxyOwnerPosition;
+194	 assembly {
+195	 sstore(position, newProxyOwner) }
+196	 }
+197	 function transferProxyOwnership(address newOwner) public onlyProxyOwner {
+198	 require(newOwner != address(0));
+199	 emit ProxyOwnershipTransferred(proxyOwner(), newOwner);
+200	 setUpgradabilityOwner(newOwner);
+201	 }
+202	 function upgradeTo(address implementation) public onlyProxyOwner {
+203	 _upgradeTo(implementation);
+204	 }
+205	 function upgradeToAndCall(address implementation, bytes memory data) payable public onlyProxyOwner {
+206	 upgradeTo(implementation);
+207	 (bool success, ) = address(this).call{
+208	 value: msg.value}
+209	 (data);
+210	 require(success);
+211	 }
+212	 }
+213	 interface IAgent{
+214	 }
+215	 abstract contract IAgentRegistry {
+216	 function isAgent( address owner, address agent ) external virtual view returns (bool);
+217	 function isAgent( address[] calldata owners, address agent ) external virtual view returns (bool);
+218	 function isUniversalAgent(address agent) public virtual view returns (bool);
+219	 }
+220	 contract Ownable {
+221	 address public owner;
+222	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+223	 constructor() {
+224	 owner = msg.sender;
+225	 }
+226	 modifier onlyOwner() {
+227	 require(msg.sender == owner, "UNAUTHORIZED");
+228	 _;
+229	 }
+230	 function transferOwnership( address newOwner ) public virtual onlyOwner {
+231	 require(newOwner != address(0), "ZERO_ADDRESS");
+232	 emit OwnershipTransferred(owner, newOwner);
+233	 owner = newOwner;
+234	 }
+235	 function renounceOwnership() public onlyOwner {
+236	 emit OwnershipTransferred(owner, address(0));
+237	 owner = address(0);
+238	 }
+239	 }
+240	 contract Claimable is Ownable {
+241	 address public pendingOwner;
+242	 modifier onlyPendingOwner() {
+243	 require(msg.sender == pendingOwner, "UNAUTHORIZED");
+244	 _;
+245	 }
+246	 function transferOwnership( address newOwner ) public override onlyOwner {
+247	 require(newOwner != address(0) && newOwner != owner, "INVALID_ADDRESS");
+248	 pendingOwner = newOwner;
+249	 }
+250	 function claimOwnership() public onlyPendingOwner {
+251	 emit OwnershipTransferred(owner, pendingOwner);
+252	 owner = pendingOwner;
+253	 pendingOwner = address(0);
+254	 }
+255	 }
+256	 abstract contract IBlockVerifier is Claimable {
+257	 event CircuitRegistered( uint8 indexed blockType, uint16 blockSize, uint8 blockVersion );
+258	 event CircuitDisabled( uint8 indexed blockType, uint16 blockSize, uint8 blockVersion );
+259	 function registerCircuit( uint8 blockType, uint16 blockSize, uint8 blockVersion, uint[18] calldata vk ) external virtual;
+260	 function disableCircuit( uint8 blockType, uint16 blockSize, uint8 blockVersion ) external virtual;
+261	 function verifyProofs( uint8 blockType, uint16 blockSize, uint8 blockVersion, uint[] calldata publicInputs, uint[] calldata proofs ) external virtual view returns (bool);
+262	 function isCircuitRegistered( uint8 blockType, uint16 blockSize, uint8 blockVersion ) external virtual view returns (bool);
+263	 function isCircuitEnabled( uint8 blockType, uint16 blockSize, uint8 blockVersion ) external virtual view returns (bool);
+264	 }
+265	 interface IDepositContract {
+266	 function isTokenSupported(address token) external view returns (bool);
+267	 function deposit( address from, address token, uint96 amount, bytes calldata extraData ) external payable returns (uint96 amountReceived);
+268	 function withdraw( address from, address to, address token, uint amount, bytes calldata extraData ) external payable;
+269	 function transfer( address from, address to, address token, uint amount ) external payable;
+270	 function isETH(address addr) external view returns (bool);
+271	 }
+272	 abstract contract ILoopringV3 is Claimable {
+273	 event ExchangeStakeDeposited(address exchangeAddr, uint amount);
+274	 event ExchangeStakeWithdrawn(address exchangeAddr, uint amount);
+275	 event ExchangeStakeBurned(address exchangeAddr, uint amount);
+276	 event SettingsUpdated(uint time);
+277	 mapping (address => uint) internal exchangeStake;
+278	 uint public totalStake;
+279	 address public blockVerifierAddress;
+280	 uint public forcedWithdrawalFee;
+281	 uint public tokenRegistrationFeeLRCBase;
+282	 uint public tokenRegistrationFeeLRCDelta;
+283	 uint8 public protocolTakerFeeBips;
+284	 uint8 public protocolMakerFeeBips;
+285	 address payable public protocolFeeVault;
+286	 function lrcAddress() external view virtual returns (address);
+287	 function updateSettings( address payable _protocolFeeVault, address _blockVerifierAddress, uint _forcedWithdrawalFee ) external virtual;
+288	 function updateProtocolFeeSettings( uint8 _protocolTakerFeeBips, uint8 _protocolMakerFeeBips ) external virtual;
+289	 function getExchangeStake( address exchangeAddr ) public virtual view returns (uint stakedLRC);
+290	 function burnExchangeStake( uint amount ) external virtual returns (uint burnedLRC);
+291	 function depositExchangeStake( address exchangeAddr, uint amountLRC ) external virtual returns (uint stakedLRC);
+292	 function withdrawExchangeStake( address recipient, uint requestedAmount ) external virtual returns (uint amountLRC);
+293	 function getProtocolFeeValues( ) public virtual view returns ( uint8 takerFeeBips, uint8 makerFeeBips );
+294	 }
+295	 library ExchangeData {
+296	 enum TransactionType {
+297	 NOOP, DEPOSIT, WITHDRAWAL, TRANSFER, SPOT_TRADE, ACCOUNT_UPDATE, AMM_UPDATE, SIGNATURE_VERIFICATION }
+298	 struct Token {
+299	 address token;
+300	 }
+301	 struct ProtocolFeeData {
+302	 uint32 syncedAt;
+303	 uint8 takerFeeBips;
+304	 uint8 makerFeeBips;
+305	 uint8 previousTakerFeeBips;
+306	 uint8 previousMakerFeeBips;
+307	 }
+308	 struct AuxiliaryData {
+309	 uint txIndex;
+310	 bool approved;
+311	 bytes data;
+312	 }
+313	 struct Block {
+314	 uint8 blockType;
+315	 uint16 blockSize;
+316	 uint8 blockVersion;
+317	 bytes data;
+318	 uint256[8] proof;
+319	 bool storeBlockInfoOnchain;
+320	 bytes auxiliaryData;
+321	 bytes offchainData;
+322	 }
+323	 struct BlockInfo {
+324	 uint32 timestamp;
+325	 bytes28 blockDataHash;
+326	 }
+327	 struct Deposit {
+328	 uint96 amount;
+329	 uint64 timestamp;
+330	 }
+331	 struct ForcedWithdrawal {
+332	 address owner;
+333	 uint64 timestamp;
+334	 }
+335	 struct Constants {
+336	 uint SNARK_SCALAR_FIELD;
+337	 uint MAX_OPEN_FORCED_REQUESTS;
+338	 uint MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE;
+339	 uint TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS;
+340	 uint MAX_NUM_ACCOUNTS;
+341	 uint MAX_NUM_TOKENS;
+342	 uint MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED;
+343	 uint MIN_TIME_IN_SHUTDOWN;
+344	 uint TX_DATA_AVAILABILITY_SIZE;
+345	 uint MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND;
+346	 }
+347	 uint public constant SNARK_SCALAR_FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+348	 uint public constant MAX_OPEN_FORCED_REQUESTS = 4096;
+349	 uint public constant MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE = 15 days;
+350	 uint public constant TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS = 7 days;
+351	 uint public constant MAX_NUM_ACCOUNTS = 2 ** 32;
+352	 uint public constant MAX_NUM_TOKENS = 2 ** 16;
+353	 uint public constant MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED = 7 days;
+354	 uint public constant MIN_TIME_IN_SHUTDOWN = 30 days;
+355	 uint32 public constant MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND = 15 days;
+356	 uint32 public constant ACCOUNTID_PROTOCOLFEE = 0;
+357	 uint public constant TX_DATA_AVAILABILITY_SIZE = 68;
+358	 uint public constant TX_DATA_AVAILABILITY_SIZE_PART_1 = 29;
+359	 uint public constant TX_DATA_AVAILABILITY_SIZE_PART_2 = 39;
+360	 struct AccountLeaf {
+361	 uint32 accountID;
+362	 address owner;
+363	 uint pubKeyX;
+364	 uint pubKeyY;
+365	 uint32 nonce;
+366	 uint feeBipsAMM;
+367	 }
+368	 struct BalanceLeaf {
+369	 uint16 tokenID;
+370	 uint96 balance;
+371	 uint96 weightAMM;
+372	 uint storageRoot;
+373	 }
+374	 struct MerkleProof {
+375	 ExchangeData.AccountLeaf accountLeaf;
+376	 ExchangeData.BalanceLeaf balanceLeaf;
+377	 uint[48] accountMerkleProof;
+378	 uint[24] balanceMerkleProof;
+379	 }
+380	 struct BlockContext {
+381	 bytes32 DOMAIN_SEPARATOR;
+382	 uint32 timestamp;
+383	 }
+384	 struct State {
+385	 uint32 maxAgeDepositUntilWithdrawable;
+386	 bytes32 DOMAIN_SEPARATOR;
+387	 ILoopringV3 loopring;
+388	 IBlockVerifier blockVerifier;
+389	 IAgentRegistry agentRegistry;
+390	 IDepositContract depositContract;
+391	 bytes32 merkleRoot;
+392	 mapping(uint => BlockInfo) blocks;
+393	 uint numBlocks;
+394	 Token[] tokens;
+395	 mapping (address => uint16) tokenToTokenId;
+396	 mapping (uint32 => mapping (uint16 => bool)) withdrawnInWithdrawMode;
+397	 mapping (address => mapping (uint16 => uint)) amountWithdrawable;
+398	 mapping (uint32 => mapping (uint16 => ForcedWithdrawal)) pendingForcedWithdrawals;
+399	 mapping (address => mapping (uint16 => Deposit)) pendingDeposits;
+400	 mapping (address => mapping (bytes32 => bool)) approvedTx;
+401	 mapping (address => mapping (address => mapping (uint16 => mapping (uint => mapping (uint32 => address))))) withdrawalRecipient;
+402	 uint32 numPendingForcedTransactions;
+403	 ProtocolFeeData protocolFeeData;
+404	 uint shutdownModeStartTime;
+405	 uint withdrawalModeStartTime;
+406	 mapping (address => uint) protocolFeeLastWithdrawnTime;
+407	 }
+408	 }
+409	 abstract contract IExchangeV3 is Claimable {
+410	 event ExchangeCloned( address exchangeAddress, address owner, bytes32 genesisMerkleRoot );
+411	 event TokenRegistered( address token, uint16 tokenId );
+412	 event Shutdown( uint timestamp );
+413	 event WithdrawalModeActivated( uint timestamp );
+414	 event BlockSubmitted( uint indexed blockIdx, bytes32 merkleRoot, bytes32 publicDataHash );
+415	 event DepositRequested( address from, address to, address token, uint16 tokenId, uint96 amount );
+416	 event ForcedWithdrawalRequested( address owner, address token, uint32 accountID );
+417	 event WithdrawalCompleted( uint8 category, address from, address to, address token, uint amount );
+418	 event WithdrawalFailed( uint8 category, address from, address to, address token, uint amount );
+419	 event ProtocolFeesUpdated( uint8 takerFeeBips, uint8 makerFeeBips, uint8 previousTakerFeeBips, uint8 previousMakerFeeBips );
+420	 event TransactionApproved( address owner, bytes32 transactionHash );
+421	 function initialize( address loopring, address owner, bytes32 genesisMerkleRoot ) virtual external;
+422	 function setAgentRegistry(address agentRegistry) external virtual;
+423	 function getAgentRegistry() external virtual view returns (IAgentRegistry);
+424	 function setDepositContract(address depositContract) external virtual;
+425	 function refreshBlockVerifier() external virtual;
+426	 function getDepositContract() external virtual view returns (IDepositContract);
+427	 function withdrawExchangeFees( address token, address feeRecipient ) external virtual;
+428	 function getConstants() external virtual pure returns(ExchangeData.Constants memory);
+429	 function isInWithdrawalMode() external virtual view returns (bool);
+430	 function isShutdown() external virtual view returns (bool);
+431	 function registerToken( address tokenAddress ) external virtual returns (uint16 tokenID);
+432	 function getTokenID( address tokenAddress ) external virtual view returns (uint16 tokenID);
+433	 function getTokenAddress( uint16 tokenID ) external virtual view returns (address tokenAddress);
+434	 function getExchangeStake() external virtual view returns (uint);
+435	 function withdrawExchangeStake( address recipient ) external virtual returns (uint amountLRC);
+436	 function burnExchangeStake() external virtual;
+437	 function getMerkleRoot() external virtual view returns (bytes32);
+438	 function getBlockHeight() external virtual view returns (uint);
+439	 function getBlockInfo(uint blockIdx) external virtual view returns (ExchangeData.BlockInfo memory);
+440	 function submitBlocks(ExchangeData.Block[] calldata blocks) external virtual;
+441	 function getNumAvailableForcedSlots() external virtual view returns (uint);
+442	 function deposit( address from, address to, address tokenAddress, uint96 amount, bytes calldata auxiliaryData ) external virtual payable;
+443	 function getPendingDepositAmount( address owner, address tokenAddress ) external virtual view returns (uint96);
+444	 function forceWithdraw( address owner, address tokenAddress, uint32 accountID ) external virtual payable;
+445	 function isForcedWithdrawalPending( uint32 accountID, address token ) external virtual view returns (bool);
+446	 function withdrawProtocolFees( address tokenAddress ) external virtual payable;
+447	 function getProtocolFeeLastWithdrawnTime( address tokenAddress ) external virtual view returns (uint);
+448	 function withdrawFromMerkleTree( ExchangeData.MerkleProof calldata merkleProof ) external virtual;
+449	 function isWithdrawnInWithdrawalMode( uint32 accountID, address token ) external virtual view returns (bool);
+450	 function withdrawFromDepositRequest( address owner, address token ) external virtual;
+451	 function withdrawFromApprovedWithdrawals( address[] calldata owners, address[] calldata tokens ) external virtual;
+452	 function getAmountWithdrawable( address owner, address token ) external virtual view returns (uint);
+453	 function notifyForcedRequestTooOld( uint32 accountID, address token ) external virtual;
+454	 function setWithdrawalRecipient( address from, address to, address token, uint96 amount, uint32 storageID, address newRecipient ) external virtual;
+455	 function getWithdrawalRecipient( address from, address to, address token, uint96 amount, uint32 storageID ) external virtual view returns (address);
+456	 function onchainTransferFrom( address from, address to, address token, uint amount ) external virtual;
+457	 function approveTransaction( address owner, bytes32 txHash ) external virtual;
+458	 function approveTransactions( address[] calldata owners, bytes32[] calldata txHashes ) external virtual;
+459	 function isTransactionApproved( address owner, bytes32 txHash ) external virtual view returns (bool);
+460	 function setMaxAgeDepositUntilWithdrawable( uint32 newValue ) external virtual returns (uint32);
+461	 function getMaxAgeDepositUntilWithdrawable() external virtual view returns (uint32);
+462	 function shutdown() external virtual returns (bool success);
+463	 function getProtocolFeeValues() external virtual view returns ( uint32 syncedAt, uint8 takerFeeBips, uint8 makerFeeBips, uint8 previousTakerFeeBips, uint8 previousMakerFeeBips );
+464	 function getDomainSeparator() external virtual view returns (bytes32);
+465	 function setAmmFeeBips(uint8 _feeBips) external virtual;
+466	 function getAmmFeeBips() external virtual view returns (uint8);
+467	 }
+468	 abstract contract ERC20 {
+469	 function totalSupply() public virtual view returns (uint);
+470	 function balanceOf( address who ) public virtual view returns (uint);
+471	 function allowance( address owner, address spender ) public virtual view returns (uint);
+472	 function transfer( address to, uint value ) public virtual returns (bool);
+473	 function transferFrom( address from, address to, uint value ) public virtual returns (bool);
+474	 function approve( address spender, uint value ) public virtual returns (bool);
+475	 }
+476	 library ExchangeMode {
+477	 using MathUint for uint;
+478	 function isInWithdrawalMode( ExchangeData.State storage S ) internal view returns (bool result) {
+479	 result = S.withdrawalModeStartTime > 0;
+480	 }
+481	 function isShutdown( ExchangeData.State storage S ) internal view returns (bool) {
+482	 return S.shutdownModeStartTime > 0;
+483	 }
+484	 function getNumAvailableForcedSlots( ExchangeData.State storage S ) internal view returns (uint) {
+485	 return ExchangeData.MAX_OPEN_FORCED_REQUESTS - S.numPendingForcedTransactions;
+486	 }
+487	 }
+488	 library ExchangeAdmins {
+489	 using ERC20SafeTransfer for address;
+490	 using ExchangeMode for ExchangeData.State;
+491	 using MathUint for uint;
+492	 event MaxAgeDepositUntilWithdrawableChanged( address indexed exchangeAddr, uint32 oldValue, uint32 newValue );
+493	 function setMaxAgeDepositUntilWithdrawable( ExchangeData.State storage S, uint32 newValue ) public returns (uint32 oldValue) {
+494	 require(!S.isInWithdrawalMode(), "INVALID_MODE");
+495	 require( newValue > 0 && newValue <= ExchangeData.MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND, "INVALID_VALUE" );
+496	 oldValue = S.maxAgeDepositUntilWithdrawable;
+497	 S.maxAgeDepositUntilWithdrawable = newValue;
+498	 emit MaxAgeDepositUntilWithdrawableChanged( address(this), oldValue, newValue );
+499	 }
+500	 function withdrawExchangeStake( ExchangeData.State storage S, address recipient ) public returns (uint) {
+501	 require(S.isShutdown(), "EXCHANGE_NOT_SHUTDOWN");
+502	 require(!S.isInWithdrawalMode(), "CANNOT_BE_IN_WITHDRAWAL_MODE");
+503	 require(block.timestamp >= S.shutdownModeStartTime + ExchangeData.MIN_TIME_IN_SHUTDOWN, "TOO_EARLY");
+504	 uint amount = S.loopring.getExchangeStake(address(this));
+505	 return S.loopring.withdrawExchangeStake(recipient, amount);
+506	 }
+507	 }
+508	 library Poseidon {
+509	 struct HashInputs5 {
+510	 uint t0;
+511	 uint t1;
+512	 uint t2;
+513	 uint t3;
+514	 uint t4;
+515	 }
+516	 function hash_t5f6p52_internal( uint t0, uint t1, uint t2, uint t3, uint t4, uint q ) internal pure returns (uint) {
+517	 assembly {
+518	 function mix(_t0, _t1, _t2, _t3, _t4, _q) -> nt0, nt1, nt2, nt3, nt4 {
+519	 nt0 := mulmod(_t0, 4977258759536702998522229302103997878600602264560359702680165243908162277980, _q) nt0 := addmod(nt0, mulmod(_t1, 19167410339349846567561662441069598364702008768579734801591448511131028229281, _q), _q) nt0 := addmod(nt0, mulmod(_t2, 14183033936038168803360723133013092560869148726790180682363054735190196956789, _q), _q) nt0 := addmod(nt0, mulmod(_t3, 9067734253445064890734144122526450279189023719890032859456830213166173619761, _q), _q) nt0 := addmod(nt0, mulmod(_t4, 16378664841697311562845443097199265623838619398287411428110917414833007677155, _q), _q) nt1 := mulmod(_t0, 107933704346764130067829474107909495889716688591997879426350582457782826785, _q) nt1 := addmod(nt1, mulmod(_t1, 17034139127218860091985397764514160131253018178110701196935786874261236172431, _q), _q) nt1 := addmod(nt1, mulmod(_t2, 2799255644797227968811798608332314218966179365168250111693473252876996230317, _q), _q) nt1 := addmod(nt1, mulmod(_t3, 2482058150180648511543788012634934806465808146786082148795902594096349483974, _q), _q) nt1 := addmod(nt1, mulmod(_t4, 16563522740626180338295201738437974404892092704059676533096069531044355099628, _q), _q) nt2 := mulmod(_t0, 13596762909635538739079656925495736900379091964739248298531655823337482778123, _q) nt2 := addmod(nt2, mulmod(_t1, 18985203040268814769637347880759846911264240088034262814847924884273017355969, _q), _q) nt2 := addmod(nt2, mulmod(_t2, 8652975463545710606098548415650457376967119951977109072274595329619335974180, _q), _q) nt2 := addmod(nt2, mulmod(_t3, 970943815872417895015626519859542525373809485973005165410533315057253476903, _q), _q) nt2 := addmod(nt2, mulmod(_t4, 19406667490568134101658669326517700199745817783746545889094238643063688871948, _q), _q) nt3 := mulmod(_t0, 2953507793609469112222895633455544691298656192015062835263784675891831794974, _q) nt3 := addmod(nt3, mulmod(_t1, 19025623051770008118343718096455821045904242602531062247152770448380880817517, _q), _q) nt3 := addmod(nt3, mulmod(_t2, 9077319817220936628089890431129759976815127354480867310384708941479362824016, _q), _q) nt3 := addmod(nt3, mulmod(_t3, 4770370314098695913091200576539533727214143013236894216582648993741910829490, _q), _q) nt3 := addmod(nt3, mulmod(_t4, 4298564056297802123194408918029088169104276109138370115401819933600955259473, _q), _q) nt4 := mulmod(_t0, 8336710468787894148066071988103915091676109272951895469087957569358494947747, _q) nt4 := addmod(nt4, mulmod(_t1, 16205238342129310687768799056463408647672389183328001070715567975181364448609, _q), _q) nt4 := addmod(nt4, mulmod(_t2, 8303849270045876854140023508764676765932043944545416856530551331270859502246, _q), _q) nt4 := addmod(nt4, mulmod(_t3, 20218246699596954048529384569730026273241102596326201163062133863539137060414, _q), _q) nt4 := addmod(nt4, mulmod(_t4, 1712845821388089905746651754894206522004527237615042226559791118162382909269, _q), _q) }
+520	 function ark(_t0, _t1, _t2, _t3, _t4, _q, c) -> nt0, nt1, nt2, nt3, nt4 {
+521	 nt0 := addmod(_t0, c, _q) nt1 := addmod(_t1, c, _q) nt2 := addmod(_t2, c, _q) nt3 := addmod(_t3, c, _q) nt4 := addmod(_t4, c, _q) }
+522	 function sbox_full(_t0, _t1, _t2, _t3, _t4, _q) -> nt0, nt1, nt2, nt3, nt4 {
+523	 nt0 := mulmod(_t0, _t0, _q) nt0 := mulmod(nt0, nt0, _q) nt0 := mulmod(_t0, nt0, _q) nt1 := mulmod(_t1, _t1, _q) nt1 := mulmod(nt1, nt1, _q) nt1 := mulmod(_t1, nt1, _q) nt2 := mulmod(_t2, _t2, _q) nt2 := mulmod(nt2, nt2, _q) nt2 := mulmod(_t2, nt2, _q) nt3 := mulmod(_t3, _t3, _q) nt3 := mulmod(nt3, nt3, _q) nt3 := mulmod(_t3, nt3, _q) nt4 := mulmod(_t4, _t4, _q) nt4 := mulmod(nt4, nt4, _q) nt4 := mulmod(_t4, nt4, _q) }
+524	 function sbox_partial(_t, _q) -> nt {
+525	 nt := mulmod(_t, _t, _q) nt := mulmod(nt, nt, _q) nt := mulmod(_t, nt, _q) }
+526	 t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 14397397413755236225575615486459253198602422701513067526754101844196324375522) t0, t1, t2, t3, t4 := sbox_full(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 10405129301473404666785234951972711717481302463898292859783056520670200613128) t0, t1, t2, t3, t4 := sbox_full(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 5179144822360023508491245509308555580251733042407187134628755730783052214509) t0, t1, t2, t3, t4 := sbox_full(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 9132640374240188374542843306219594180154739721841249568925550236430986592615) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 20360807315276763881209958738450444293273549928693737723235350358403012458514) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 17933600965499023212689924809448543050840131883187652471064418452962948061619) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 3636213416533737411392076250708419981662897009810345015164671602334517041153) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 2008540005368330234524962342006691994500273283000229509835662097352946198608) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 16018407964853379535338740313053768402596521780991140819786560130595652651567) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 20653139667070586705378398435856186172195806027708437373983929336015162186471) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 17887713874711369695406927657694993484804203950786446055999405564652412116765) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 4852706232225925756777361208698488277369799648067343227630786518486608711772) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 8969172011633935669771678412400911310465619639756845342775631896478908389850) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 20570199545627577691240476121888846460936245025392381957866134167601058684375) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 16442329894745639881165035015179028112772410105963688121820543219662832524136) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 20060625627350485876280451423010593928172611031611836167979515653463693899374) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 16637282689940520290130302519163090147511023430395200895953984829546679599107) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 15599196921909732993082127725908821049411366914683565306060493533569088698214) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 16894591341213863947423904025624185991098788054337051624251730868231322135455) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 1197934381747032348421303489683932612752526046745577259575778515005162320212) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 6172482022646932735745595886795230725225293469762393889050804649558459236626) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 21004037394166516054140386756510609698837211370585899203851827276330669555417) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 15262034989144652068456967541137853724140836132717012646544737680069032573006) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 15017690682054366744270630371095785995296470601172793770224691982518041139766) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 15159744167842240513848638419303545693472533086570469712794583342699782519832) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 11178069035565459212220861899558526502477231302924961773582350246646450941231) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 21154888769130549957415912997229564077486639529994598560737238811887296922114) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 20162517328110570500010831422938033120419484532231241180224283481905744633719) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 2777362604871784250419758188173029886707024739806641263170345377816177052018) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 15732290486829619144634131656503993123618032247178179298922551820261215487562) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 6024433414579583476444635447152826813568595303270846875177844482142230009826) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 17677827682004946431939402157761289497221048154630238117709539216286149983245) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 10716307389353583413755237303156291454109852751296156900963208377067748518748) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 14925386988604173087143546225719076187055229908444910452781922028996524347508) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 8940878636401797005293482068100797531020505636124892198091491586778667442523) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 18911747154199663060505302806894425160044925686870165583944475880789706164410) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 8821532432394939099312235292271438180996556457308429936910969094255825456935) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 20632576502437623790366878538516326728436616723089049415538037018093616927643) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 71447649211767888770311304010816315780740050029903404046389165015534756512) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 2781996465394730190470582631099299305677291329609718650018200531245670229393) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 12441376330954323535872906380510501637773629931719508864016287320488688345525) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 2558302139544901035700544058046419714227464650146159803703499681139469546006) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 10087036781939179132584550273563255199577525914374285705149349445480649057058) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 4267692623754666261749551533667592242661271409704769363166965280715887854739) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 4945579503584457514844595640661884835097077318604083061152997449742124905548) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 17742335354489274412669987990603079185096280484072783973732137326144230832311) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 6266270088302506215402996795500854910256503071464802875821837403486057988208) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 2716062168542520412498610856550519519760063668165561277991771577403400784706) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 19118392018538203167410421493487769944462015419023083813301166096764262134232) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 9386595745626044000666050847309903206827901310677406022353307960932745699524) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 9121640807890366356465620448383131419933298563527245687958865317869840082266) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 3078975275808111706229899605611544294904276390490742680006005661017864583210) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 7157404299437167354719786626667769956233708887934477609633504801472827442743) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 14056248655941725362944552761799461694550787028230120190862133165195793034373) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 14124396743304355958915937804966111851843703158171757752158388556919187839849) t0 := sbox_partial(t0, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 11851254356749068692552943732920045260402277343008629727465773766468466181076) t0, t1, t2, t3, t4 := sbox_full(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 9799099446406796696742256539758943483211846559715874347178722060519817626047) t0, t1, t2, t3, t4 := sbox_full(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := ark(t0, t1, t2, t3, t4, q, 10156146186214948683880719664738535455146137901666656566575307300522957959544) t0, t1, t2, t3, t4 := sbox_full(t0, t1, t2, t3, t4, q) t0, t1, t2, t3, t4 := mix(t0, t1, t2, t3, t4, q) }
+527	 return t0;
+528	 }
+529	 function hash_t5f6p52(HashInputs5 memory i, uint q) internal pure returns (uint) {
+530	 require(i.t0 < q, "INVALID_INPUT");
+531	 require(i.t1 < q, "INVALID_INPUT");
+532	 require(i.t2 < q, "INVALID_INPUT");
+533	 require(i.t3 < q, "INVALID_INPUT");
+534	 require(i.t4 < q, "INVALID_INPUT");
+535	 return hash_t5f6p52_internal(i.t0, i.t1, i.t2, i.t3, i.t4, q);
+536	 }
+537	 struct HashInputs7 {
+538	 uint t0;
+539	 uint t1;
+540	 uint t2;
+541	 uint t3;
+542	 uint t4;
+543	 uint t5;
+544	 uint t6;
+545	 }
+546	 function mix(HashInputs7 memory i, uint q) internal pure {
+547	 HashInputs7 memory o;
+548	 o.t0 = mulmod(i.t0, 14183033936038168803360723133013092560869148726790180682363054735190196956789, q);
+549	 o.t0 = addmod(o.t0, mulmod(i.t1, 9067734253445064890734144122526450279189023719890032859456830213166173619761, q), q);
+550	 o.t0 = addmod(o.t0, mulmod(i.t2, 16378664841697311562845443097199265623838619398287411428110917414833007677155, q), q);
+551	 o.t0 = addmod(o.t0, mulmod(i.t3, 12968540216479938138647596899147650021419273189336843725176422194136033835172, q), q);
+552	 o.t0 = addmod(o.t0, mulmod(i.t4, 3636162562566338420490575570584278737093584021456168183289112789616069756675, q), q);
+553	 o.t0 = addmod(o.t0, mulmod(i.t5, 8949952361235797771659501126471156178804092479420606597426318793013844305422, q), q);
+554	 o.t0 = addmod(o.t0, mulmod(i.t6, 13586657904816433080148729258697725609063090799921401830545410130405357110367, q), q);
+555	 o.t1 = mulmod(i.t0, 2799255644797227968811798608332314218966179365168250111693473252876996230317, q);
+556	 o.t1 = addmod(o.t1, mulmod(i.t1, 2482058150180648511543788012634934806465808146786082148795902594096349483974, q), q);
+557	 o.t1 = addmod(o.t1, mulmod(i.t2, 16563522740626180338295201738437974404892092704059676533096069531044355099628, q), q);
+558	 o.t1 = addmod(o.t1, mulmod(i.t3, 10468644849657689537028565510142839489302836569811003546969773105463051947124, q), q);
+559	 o.t1 = addmod(o.t1, mulmod(i.t4, 3328913364598498171733622353010907641674136720305714432354138807013088636408, q), q);
+560	 o.t1 = addmod(o.t1, mulmod(i.t5, 8642889650254799419576843603477253661899356105675006557919250564400804756641, q), q);
+561	 o.t1 = addmod(o.t1, mulmod(i.t6, 14300697791556510113764686242794463641010174685800128469053974698256194076125, q), q);
+562	 o.t2 = mulmod(i.t0, 8652975463545710606098548415650457376967119951977109072274595329619335974180, q);
+563	 o.t2 = addmod(o.t2, mulmod(i.t1, 970943815872417895015626519859542525373809485973005165410533315057253476903, q), q);
+564	 o.t2 = addmod(o.t2, mulmod(i.t2, 19406667490568134101658669326517700199745817783746545889094238643063688871948, q), q);
+565	 o.t2 = addmod(o.t2, mulmod(i.t3, 17049854690034965250221386317058877242629221002521630573756355118745574274967, q), q);
+566	 o.t2 = addmod(o.t2, mulmod(i.t4, 4964394613021008685803675656098849539153699842663541444414978877928878266244, q), q);
+567	 o.t2 = addmod(o.t2, mulmod(i.t5, 15474947305445649466370538888925567099067120578851553103424183520405650587995, q), q);
+568	 o.t2 = addmod(o.t2, mulmod(i.t6, 1016119095639665978105768933448186152078842964810837543326777554729232767846, q), q);
+569	 o.t3 = mulmod(i.t0, 9077319817220936628089890431129759976815127354480867310384708941479362824016, q);
+570	 o.t3 = addmod(o.t3, mulmod(i.t1, 4770370314098695913091200576539533727214143013236894216582648993741910829490, q), q);
+571	 o.t3 = addmod(o.t3, mulmod(i.t2, 4298564056297802123194408918029088169104276109138370115401819933600955259473, q), q);
+572	 o.t3 = addmod(o.t3, mulmod(i.t3, 6905514380186323693285869145872115273350947784558995755916362330070690839131, q), q);
+573	 o.t3 = addmod(o.t3, mulmod(i.t4, 4783343257810358393326889022942241108539824540285247795235499223017138301952, q), q);
+574	 o.t3 = addmod(o.t3, mulmod(i.t5, 1420772902128122367335354247676760257656541121773854204774788519230732373317, q), q);
+575	 o.t3 = addmod(o.t3, mulmod(i.t6, 14172871439045259377975734198064051992755748777535789572469924335100006948373, q), q);
+576	 o.t4 = mulmod(i.t0, 8303849270045876854140023508764676765932043944545416856530551331270859502246, q);
+577	 o.t4 = addmod(o.t4, mulmod(i.t1, 20218246699596954048529384569730026273241102596326201163062133863539137060414, q), q);
+578	 o.t4 = addmod(o.t4, mulmod(i.t2, 1712845821388089905746651754894206522004527237615042226559791118162382909269, q), q);
+579	 o.t4 = addmod(o.t4, mulmod(i.t3, 13001155522144542028910638547179410124467185319212645031214919884423841839406, q), q);
+580	 o.t4 = addmod(o.t4, mulmod(i.t4, 16037892369576300958623292723740289861626299352695838577330319504984091062115, q), q);
+581	 o.t4 = addmod(o.t4, mulmod(i.t5, 19189494548480259335554606182055502469831573298885662881571444557262020106898, q), q);
+582	 o.t4 = addmod(o.t4, mulmod(i.t6, 19032687447778391106390582750185144485341165205399984747451318330476859342654, q), q);
+583	 o.t5 = mulmod(i.t0, 13272957914179340594010910867091459756043436017766464331915862093201960540910, q);
+584	 o.t5 = addmod(o.t5, mulmod(i.t1, 9416416589114508529880440146952102328470363729880726115521103179442988482948, q), q);
+585	 o.t5 = addmod(o.t5, mulmod(i.t2, 8035240799672199706102747147502951589635001418759394863664434079699838251138, q), q);
+586	 o.t5 = addmod(o.t5, mulmod(i.t3, 21642389080762222565487157652540372010968704000567605990102641816691459811717, q), q);
+587	 o.t5 = addmod(o.t5, mulmod(i.t4, 20261355950827657195644012399234591122288573679402601053407151083849785332516, q), q);
+588	 o.t5 = addmod(o.t5, mulmod(i.t5, 14514189384576734449268559374569145463190040567900950075547616936149781403109, q), q);
+589	 o.t5 = addmod(o.t5, mulmod(i.t6, 19038036134886073991945204537416211699632292792787812530208911676638479944765, q), q);
+590	 o.t6 = mulmod(i.t0, 15627836782263662543041758927100784213807648787083018234961118439434298020664, q);
+591	 o.t6 = addmod(o.t6, mulmod(i.t1, 5655785191024506056588710805596292231240948371113351452712848652644610823632, q), q);
+592	 o.t6 = addmod(o.t6, mulmod(i.t2, 8265264721707292643644260517162050867559314081394556886644673791575065394002, q), q);
+593	 o.t6 = addmod(o.t6, mulmod(i.t3, 17151144681903609082202835646026478898625761142991787335302962548605510241586, q), q);
+594	 o.t6 = addmod(o.t6, mulmod(i.t4, 18731644709777529787185361516475509623264209648904603914668024590231177708831, q), q);
+595	 o.t6 = addmod(o.t6, mulmod(i.t5, 20697789991623248954020701081488146717484139720322034504511115160686216223641, q), q);
+596	 o.t6 = addmod(o.t6, mulmod(i.t6, 6200020095464686209289974437830528853749866001482481427982839122465470640886, q), q);
+597	 i.t0 = o.t0;
+598	 i.t1 = o.t1;
+599	 i.t2 = o.t2;
+600	 i.t3 = o.t3;
+601	 i.t4 = o.t4;
+602	 i.t5 = o.t5;
+603	 i.t6 = o.t6;
+604	 }
+605	 function ark(HashInputs7 memory i, uint q, uint c) internal pure {
+606	 HashInputs7 memory o;
+607	 o.t0 = addmod(i.t0, c, q);
+608	 o.t1 = addmod(i.t1, c, q);
+609	 o.t2 = addmod(i.t2, c, q);
+610	 o.t3 = addmod(i.t3, c, q);
+611	 o.t4 = addmod(i.t4, c, q);
+612	 o.t5 = addmod(i.t5, c, q);
+613	 o.t6 = addmod(i.t6, c, q);
+614	 i.t0 = o.t0;
+615	 i.t1 = o.t1;
+616	 i.t2 = o.t2;
+617	 i.t3 = o.t3;
+618	 i.t4 = o.t4;
+619	 i.t5 = o.t5;
+620	 i.t6 = o.t6;
+621	 }
+622	 function sbox_full(HashInputs7 memory i, uint q) internal pure {
+623	 HashInputs7 memory o;
+624	 o.t0 = mulmod(i.t0, i.t0, q);
+625	 o.t0 = mulmod(o.t0, o.t0, q);
+626	 o.t0 = mulmod(i.t0, o.t0, q);
+627	 o.t1 = mulmod(i.t1, i.t1, q);
+628	 o.t1 = mulmod(o.t1, o.t1, q);
+629	 o.t1 = mulmod(i.t1, o.t1, q);
+630	 o.t2 = mulmod(i.t2, i.t2, q);
+631	 o.t2 = mulmod(o.t2, o.t2, q);
+632	 o.t2 = mulmod(i.t2, o.t2, q);
+633	 o.t3 = mulmod(i.t3, i.t3, q);
+634	 o.t3 = mulmod(o.t3, o.t3, q);
+635	 o.t3 = mulmod(i.t3, o.t3, q);
+636	 o.t4 = mulmod(i.t4, i.t4, q);
+637	 o.t4 = mulmod(o.t4, o.t4, q);
+638	 o.t4 = mulmod(i.t4, o.t4, q);
+639	 o.t5 = mulmod(i.t5, i.t5, q);
+640	 o.t5 = mulmod(o.t5, o.t5, q);
+641	 o.t5 = mulmod(i.t5, o.t5, q);
+642	 o.t6 = mulmod(i.t6, i.t6, q);
+643	 o.t6 = mulmod(o.t6, o.t6, q);
+644	 o.t6 = mulmod(i.t6, o.t6, q);
+645	 i.t0 = o.t0;
+646	 i.t1 = o.t1;
+647	 i.t2 = o.t2;
+648	 i.t3 = o.t3;
+649	 i.t4 = o.t4;
+650	 i.t5 = o.t5;
+651	 i.t6 = o.t6;
+652	 }
+653	 function sbox_partial(HashInputs7 memory i, uint q) internal pure {
+654	 HashInputs7 memory o;
+655	 o.t0 = mulmod(i.t0, i.t0, q);
+656	 o.t0 = mulmod(o.t0, o.t0, q);
+657	 o.t0 = mulmod(i.t0, o.t0, q);
+658	 i.t0 = o.t0;
+659	 }
+660	 function hash_t7f6p52(HashInputs7 memory i, uint q) internal pure returns (uint) {
+661	 require(i.t0 < q, "INVALID_INPUT");
+662	 require(i.t1 < q, "INVALID_INPUT");
+663	 require(i.t2 < q, "INVALID_INPUT");
+664	 require(i.t3 < q, "INVALID_INPUT");
+665	 require(i.t4 < q, "INVALID_INPUT");
+666	 require(i.t5 < q, "INVALID_INPUT");
+667	 require(i.t6 < q, "INVALID_INPUT");
+668	 ark(i, q, 14397397413755236225575615486459253198602422701513067526754101844196324375522);
+669	 sbox_full(i, q);
+670	 mix(i, q);
+671	 ark(i, q, 10405129301473404666785234951972711717481302463898292859783056520670200613128);
+672	 sbox_full(i, q);
+673	 mix(i, q);
+674	 ark(i, q, 5179144822360023508491245509308555580251733042407187134628755730783052214509);
+675	 sbox_full(i, q);
+676	 mix(i, q);
+677	 ark(i, q, 9132640374240188374542843306219594180154739721841249568925550236430986592615);
+678	 sbox_partial(i, q);
+679	 mix(i, q);
+680	 ark(i, q, 20360807315276763881209958738450444293273549928693737723235350358403012458514);
+681	 sbox_partial(i, q);
+682	 mix(i, q);
+683	 ark(i, q, 17933600965499023212689924809448543050840131883187652471064418452962948061619);
+684	 sbox_partial(i, q);
+685	 mix(i, q);
+686	 ark(i, q, 3636213416533737411392076250708419981662897009810345015164671602334517041153);
+687	 sbox_partial(i, q);
+688	 mix(i, q);
+689	 ark(i, q, 2008540005368330234524962342006691994500273283000229509835662097352946198608);
+690	 sbox_partial(i, q);
+691	 mix(i, q);
+692	 ark(i, q, 16018407964853379535338740313053768402596521780991140819786560130595652651567);
+693	 sbox_partial(i, q);
+694	 mix(i, q);
+695	 ark(i, q, 20653139667070586705378398435856186172195806027708437373983929336015162186471);
+696	 sbox_partial(i, q);
+697	 mix(i, q);
+698	 ark(i, q, 17887713874711369695406927657694993484804203950786446055999405564652412116765);
+699	 sbox_partial(i, q);
+700	 mix(i, q);
+701	 ark(i, q, 4852706232225925756777361208698488277369799648067343227630786518486608711772);
+702	 sbox_partial(i, q);
+703	 mix(i, q);
+704	 ark(i, q, 8969172011633935669771678412400911310465619639756845342775631896478908389850);
+705	 sbox_partial(i, q);
+706	 mix(i, q);
+707	 ark(i, q, 20570199545627577691240476121888846460936245025392381957866134167601058684375);
+708	 sbox_partial(i, q);
+709	 mix(i, q);
+710	 ark(i, q, 16442329894745639881165035015179028112772410105963688121820543219662832524136);
+711	 sbox_partial(i, q);
+712	 mix(i, q);
+713	 ark(i, q, 20060625627350485876280451423010593928172611031611836167979515653463693899374);
+714	 sbox_partial(i, q);
+715	 mix(i, q);
+716	 ark(i, q, 16637282689940520290130302519163090147511023430395200895953984829546679599107);
+717	 sbox_partial(i, q);
+718	 mix(i, q);
+719	 ark(i, q, 15599196921909732993082127725908821049411366914683565306060493533569088698214);
+720	 sbox_partial(i, q);
+721	 mix(i, q);
+722	 ark(i, q, 16894591341213863947423904025624185991098788054337051624251730868231322135455);
+723	 sbox_partial(i, q);
+724	 mix(i, q);
+725	 ark(i, q, 1197934381747032348421303489683932612752526046745577259575778515005162320212);
+726	 sbox_partial(i, q);
+727	 mix(i, q);
+728	 ark(i, q, 6172482022646932735745595886795230725225293469762393889050804649558459236626);
+729	 sbox_partial(i, q);
+730	 mix(i, q);
+731	 ark(i, q, 21004037394166516054140386756510609698837211370585899203851827276330669555417);
+732	 sbox_partial(i, q);
+733	 mix(i, q);
+734	 ark(i, q, 15262034989144652068456967541137853724140836132717012646544737680069032573006);
+735	 sbox_partial(i, q);
+736	 mix(i, q);
+737	 ark(i, q, 15017690682054366744270630371095785995296470601172793770224691982518041139766);
+738	 sbox_partial(i, q);
+739	 mix(i, q);
+740	 ark(i, q, 15159744167842240513848638419303545693472533086570469712794583342699782519832);
+741	 sbox_partial(i, q);
+742	 mix(i, q);
+743	 ark(i, q, 11178069035565459212220861899558526502477231302924961773582350246646450941231);
+744	 sbox_partial(i, q);
+745	 mix(i, q);
+746	 ark(i, q, 21154888769130549957415912997229564077486639529994598560737238811887296922114);
+747	 sbox_partial(i, q);
+748	 mix(i, q);
+749	 ark(i, q, 20162517328110570500010831422938033120419484532231241180224283481905744633719);
+750	 sbox_partial(i, q);
+751	 mix(i, q);
+752	 ark(i, q, 2777362604871784250419758188173029886707024739806641263170345377816177052018);
+753	 sbox_partial(i, q);
+754	 mix(i, q);
+755	 ark(i, q, 15732290486829619144634131656503993123618032247178179298922551820261215487562);
+756	 sbox_partial(i, q);
+757	 mix(i, q);
+758	 ark(i, q, 6024433414579583476444635447152826813568595303270846875177844482142230009826);
+759	 sbox_partial(i, q);
+760	 mix(i, q);
+761	 ark(i, q, 17677827682004946431939402157761289497221048154630238117709539216286149983245);
+762	 sbox_partial(i, q);
+763	 mix(i, q);
+764	 ark(i, q, 10716307389353583413755237303156291454109852751296156900963208377067748518748);
+765	 sbox_partial(i, q);
+766	 mix(i, q);
+767	 ark(i, q, 14925386988604173087143546225719076187055229908444910452781922028996524347508);
+768	 sbox_partial(i, q);
+769	 mix(i, q);
+770	 ark(i, q, 8940878636401797005293482068100797531020505636124892198091491586778667442523);
+771	 sbox_partial(i, q);
+772	 mix(i, q);
+773	 ark(i, q, 18911747154199663060505302806894425160044925686870165583944475880789706164410);
+774	 sbox_partial(i, q);
+775	 mix(i, q);
+776	 ark(i, q, 8821532432394939099312235292271438180996556457308429936910969094255825456935);
+777	 sbox_partial(i, q);
+778	 mix(i, q);
+779	 ark(i, q, 20632576502437623790366878538516326728436616723089049415538037018093616927643);
+780	 sbox_partial(i, q);
+781	 mix(i, q);
+782	 ark(i, q, 71447649211767888770311304010816315780740050029903404046389165015534756512);
+783	 sbox_partial(i, q);
+784	 mix(i, q);
+785	 ark(i, q, 2781996465394730190470582631099299305677291329609718650018200531245670229393);
+786	 sbox_partial(i, q);
+787	 mix(i, q);
+788	 ark(i, q, 12441376330954323535872906380510501637773629931719508864016287320488688345525);
+789	 sbox_partial(i, q);
+790	 mix(i, q);
+791	 ark(i, q, 2558302139544901035700544058046419714227464650146159803703499681139469546006);
+792	 sbox_partial(i, q);
+793	 mix(i, q);
+794	 ark(i, q, 10087036781939179132584550273563255199577525914374285705149349445480649057058);
+795	 sbox_partial(i, q);
+796	 mix(i, q);
+797	 ark(i, q, 4267692623754666261749551533667592242661271409704769363166965280715887854739);
+798	 sbox_partial(i, q);
+799	 mix(i, q);
+800	 ark(i, q, 4945579503584457514844595640661884835097077318604083061152997449742124905548);
+801	 sbox_partial(i, q);
+802	 mix(i, q);
+803	 ark(i, q, 17742335354489274412669987990603079185096280484072783973732137326144230832311);
+804	 sbox_partial(i, q);
+805	 mix(i, q);
+806	 ark(i, q, 6266270088302506215402996795500854910256503071464802875821837403486057988208);
+807	 sbox_partial(i, q);
+808	 mix(i, q);
+809	 ark(i, q, 2716062168542520412498610856550519519760063668165561277991771577403400784706);
+810	 sbox_partial(i, q);
+811	 mix(i, q);
+812	 ark(i, q, 19118392018538203167410421493487769944462015419023083813301166096764262134232);
+813	 sbox_partial(i, q);
+814	 mix(i, q);
+815	 ark(i, q, 9386595745626044000666050847309903206827901310677406022353307960932745699524);
+816	 sbox_partial(i, q);
+817	 mix(i, q);
+818	 ark(i, q, 9121640807890366356465620448383131419933298563527245687958865317869840082266);
+819	 sbox_partial(i, q);
+820	 mix(i, q);
+821	 ark(i, q, 3078975275808111706229899605611544294904276390490742680006005661017864583210);
+822	 sbox_partial(i, q);
+823	 mix(i, q);
+824	 ark(i, q, 7157404299437167354719786626667769956233708887934477609633504801472827442743);
+825	 sbox_partial(i, q);
+826	 mix(i, q);
+827	 ark(i, q, 14056248655941725362944552761799461694550787028230120190862133165195793034373);
+828	 sbox_partial(i, q);
+829	 mix(i, q);
+830	 ark(i, q, 14124396743304355958915937804966111851843703158171757752158388556919187839849);
+831	 sbox_partial(i, q);
+832	 mix(i, q);
+833	 ark(i, q, 11851254356749068692552943732920045260402277343008629727465773766468466181076);
+834	 sbox_full(i, q);
+835	 mix(i, q);
+836	 ark(i, q, 9799099446406796696742256539758943483211846559715874347178722060519817626047);
+837	 sbox_full(i, q);
+838	 mix(i, q);
+839	 ark(i, q, 10156146186214948683880719664738535455146137901666656566575307300522957959544);
+840	 sbox_full(i, q);
+841	 mix(i, q);
+842	 return i.t0;
+843	 }
+844	 }
+845	 library ExchangeBalances {
+846	 using MathUint for uint;
+847	 function verifyAccountBalance( uint merkleRoot, ExchangeData.MerkleProof calldata merkleProof ) public pure {
+848	 require( isAccountBalanceCorrect(merkleRoot, merkleProof), "INVALID_MERKLE_TREE_DATA" );
+849	 }
+850	 function isAccountBalanceCorrect( uint merkleRoot, ExchangeData.MerkleProof memory merkleProof ) public pure returns (bool) {
+851	 uint calculatedRoot = getBalancesRoot( merkleProof.balanceLeaf.tokenID, merkleProof.balanceLeaf.balance, merkleProof.balanceLeaf.weightAMM, merkleProof.balanceLeaf.storageRoot, merkleProof.balanceMerkleProof );
+852	 calculatedRoot = getAccountInternalsRoot( merkleProof.accountLeaf.accountID, merkleProof.accountLeaf.owner, merkleProof.accountLeaf.pubKeyX, merkleProof.accountLeaf.pubKeyY, merkleProof.accountLeaf.nonce, merkleProof.accountLeaf.feeBipsAMM, calculatedRoot, merkleProof.accountMerkleProof );
+853	 return (calculatedRoot == merkleRoot);
+854	 }
+855	 function getBalancesRoot( uint16 tokenID, uint balance, uint weightAMM, uint storageRoot, uint[24] memory balanceMerkleProof ) private pure returns (uint) {
+856	 uint balanceItem = hashImpl(balance, weightAMM, storageRoot, 0);
+857	 uint _id = tokenID;
+858	 for (uint depth = 0; depth < 8; depth++) {
+859	 uint base = depth * 3;
+860	 if (_id & 3 == 0) {
+861	 balanceItem = hashImpl( balanceItem, balanceMerkleProof[base], balanceMerkleProof[base + 1], balanceMerkleProof[base + 2] );
+862	 }
+863	 else if (_id & 3 == 1) {
+864	 balanceItem = hashImpl( balanceMerkleProof[base], balanceItem, balanceMerkleProof[base + 1], balanceMerkleProof[base + 2] );
+865	 }
+866	 else if (_id & 3 == 2) {
+867	 balanceItem = hashImpl( balanceMerkleProof[base], balanceMerkleProof[base + 1], balanceItem, balanceMerkleProof[base + 2] );
+868	 }
+869	 else if (_id & 3 == 3) {
+870	 balanceItem = hashImpl( balanceMerkleProof[base], balanceMerkleProof[base + 1], balanceMerkleProof[base + 2], balanceItem );
+871	 }
+872	 _id = _id >> 2;
+873	 }
+874	 return balanceItem;
+875	 }
+876	 function getAccountInternalsRoot( uint32 accountID, address owner, uint pubKeyX, uint pubKeyY, uint nonce, uint feeBipsAMM, uint balancesRoot, uint[48] memory accountMerkleProof ) private pure returns (uint) {
+877	 uint accountItem = hashAccountLeaf(uint(owner), pubKeyX, pubKeyY, nonce, feeBipsAMM, balancesRoot);
+878	 uint _id = accountID;
+879	 for (uint depth = 0; depth < 16; depth++) {
+880	 uint base = depth * 3;
+881	 if (_id & 3 == 0) {
+882	 accountItem = hashImpl( accountItem, accountMerkleProof[base], accountMerkleProof[base + 1], accountMerkleProof[base + 2] );
+883	 }
+884	 else if (_id & 3 == 1) {
+885	 accountItem = hashImpl( accountMerkleProof[base], accountItem, accountMerkleProof[base + 1], accountMerkleProof[base + 2] );
+886	 }
+887	 else if (_id & 3 == 2) {
+888	 accountItem = hashImpl( accountMerkleProof[base], accountMerkleProof[base + 1], accountItem, accountMerkleProof[base + 2] );
+889	 }
+890	 else if (_id & 3 == 3) {
+891	 accountItem = hashImpl( accountMerkleProof[base], accountMerkleProof[base + 1], accountMerkleProof[base + 2], accountItem );
+892	 }
+893	 _id = _id >> 2;
+894	 }
+895	 return accountItem;
+896	 }
+897	 function hashAccountLeaf( uint t0, uint t1, uint t2, uint t3, uint t4, uint t5 ) public pure returns (uint) {
+898	 Poseidon.HashInputs7 memory inputs = Poseidon.HashInputs7(t0, t1, t2, t3, t4, t5, 0);
+899	 return Poseidon.hash_t7f6p52(inputs, ExchangeData.SNARK_SCALAR_FIELD);
+900	 }
+901	 function hashImpl( uint t0, uint t1, uint t2, uint t3 ) private pure returns (uint) {
+902	 Poseidon.HashInputs5 memory inputs = Poseidon.HashInputs5(t0, t1, t2, t3, 0);
+903	 return Poseidon.hash_t5f6p52(inputs, ExchangeData.SNARK_SCALAR_FIELD);
+904	 }
+905	 }
+906	 library BytesUtil {
+907	 function concat( bytes memory _preBytes, bytes memory _postBytes ) internal pure returns (bytes memory) {
+908	 bytes memory tempBytes;
+909	 assembly {
+910	 tempBytes := mload(0x40) let length := mload(_preBytes) mstore(tempBytes, length) let mc := add(tempBytes, 0x20) let end := add(mc, length) for {
+911	 let cc := add(_preBytes, 0x20) }
+912	 lt(mc, end) {
+913	 mc := add(mc, 0x20) cc := add(cc, 0x20) }
+914	 {
+915	 mstore(mc, mload(cc)) }
+916	 length := mload(_postBytes) mstore(tempBytes, add(length, mload(tempBytes))) mc := end end := add(mc, length) for {
+917	 let cc := add(_postBytes, 0x20) }
+918	 lt(mc, end) {
+919	 mc := add(mc, 0x20) cc := add(cc, 0x20) }
+920	 {
+921	 mstore(mc, mload(cc)) }
+922	 mstore(0x40, and( add(add(end, iszero(add(length, mload(_preBytes)))), 31), not(31) )) }
+923	 return tempBytes;
+924	 }
+925	 function slice( bytes memory _bytes, uint _start, uint _length ) internal pure returns (bytes memory) {
+926	 require(_bytes.length >= (_start + _length));
+927	 bytes memory tempBytes;
+928	 assembly {
+929	 switch iszero(_length) case 0 {
+930	 tempBytes := mload(0x40) let lengthmod := and(_length, 31) let mc := add(add(tempBytes, lengthmod), mul(0x20, iszero(lengthmod))) let end := add(mc, _length) for {
+931	 let cc := add(add(add(_bytes, lengthmod), mul(0x20, iszero(lengthmod))), _start) }
+932	 lt(mc, end) {
+933	 mc := add(mc, 0x20) cc := add(cc, 0x20) }
+934	 {
+935	 mstore(mc, mload(cc)) }
+936	 mstore(tempBytes, _length) mstore(0x40, and(add(mc, 31), not(31))) }
+937	 default {
+938	 tempBytes := mload(0x40) mstore(0x40, add(tempBytes, 0x20)) }
+939	 }
+940	 return tempBytes;
+941	 }
+942	 function toAddress(bytes memory _bytes, uint _start) internal pure returns (address) {
+943	 require(_bytes.length >= (_start + 20));
+944	 address tempAddress;
+945	 assembly {
+946	 tempAddress := div(mload(add(add(_bytes, 0x20), _start)), 0x1000000000000000000000000) }
+947	 return tempAddress;
+948	 }
+949	 function toUint8(bytes memory _bytes, uint _start) internal pure returns (uint8) {
+950	 require(_bytes.length >= (_start + 1));
+951	 uint8 tempUint;
+952	 assembly {
+953	 tempUint := mload(add(add(_bytes, 0x1), _start)) }
+954	 return tempUint;
+955	 }
+956	 function toUint16(bytes memory _bytes, uint _start) internal pure returns (uint16) {
+957	 require(_bytes.length >= (_start + 2));
+958	 uint16 tempUint;
+959	 assembly {
+960	 tempUint := mload(add(add(_bytes, 0x2), _start)) }
+961	 return tempUint;
+962	 }
+963	 function toUint24(bytes memory _bytes, uint _start) internal pure returns (uint24) {
+964	 require(_bytes.length >= (_start + 3));
+965	 uint24 tempUint;
+966	 assembly {
+967	 tempUint := mload(add(add(_bytes, 0x3), _start)) }
+968	 return tempUint;
+969	 }
+970	 function toUint32(bytes memory _bytes, uint _start) internal pure returns (uint32) {
+971	 require(_bytes.length >= (_start + 4));
+972	 uint32 tempUint;
+973	 assembly {
+974	 tempUint := mload(add(add(_bytes, 0x4), _start)) }
+975	 return tempUint;
+976	 }
+977	 function toUint64(bytes memory _bytes, uint _start) internal pure returns (uint64) {
+978	 require(_bytes.length >= (_start + 8));
+979	 uint64 tempUint;
+980	 assembly {
+981	 tempUint := mload(add(add(_bytes, 0x8), _start)) }
+982	 return tempUint;
+983	 }
+984	 function toUint96(bytes memory _bytes, uint _start) internal pure returns (uint96) {
+985	 require(_bytes.length >= (_start + 12));
+986	 uint96 tempUint;
+987	 assembly {
+988	 tempUint := mload(add(add(_bytes, 0xc), _start)) }
+989	 return tempUint;
+990	 }
+991	 function toUint128(bytes memory _bytes, uint _start) internal pure returns (uint128) {
+992	 require(_bytes.length >= (_start + 16));
+993	 uint128 tempUint;
+994	 assembly {
+995	 tempUint := mload(add(add(_bytes, 0x10), _start)) }
+996	 return tempUint;
+997	 }
+998	 function toUint(bytes memory _bytes, uint _start) internal pure returns (uint256) {
+999	 require(_bytes.length >= (_start + 32));
+1000	 uint256 tempUint;
+1001	 assembly {
+1002	 tempUint := mload(add(add(_bytes, 0x20), _start)) }
+1003	 return tempUint;
+1004	 }
+1005	 function toBytes4(bytes memory _bytes, uint _start) internal pure returns (bytes4) {
+1006	 require(_bytes.length >= (_start + 4));
+1007	 bytes4 tempBytes4;
+1008	 assembly {
+1009	 tempBytes4 := mload(add(add(_bytes, 0x20), _start)) }
+1010	 return tempBytes4;
+1011	 }
+1012	 function toBytes20(bytes memory _bytes, uint _start) internal pure returns (bytes20) {
+1013	 require(_bytes.length >= (_start + 20));
+1014	 bytes20 tempBytes20;
+1015	 assembly {
+1016	 tempBytes20 := mload(add(add(_bytes, 0x20), _start)) }
+1017	 return tempBytes20;
+1018	 }
+1019	 function toBytes32(bytes memory _bytes, uint _start) internal pure returns (bytes32) {
+1020	 require(_bytes.length >= (_start + 32));
+1021	 bytes32 tempBytes32;
+1022	 assembly {
+1023	 tempBytes32 := mload(add(add(_bytes, 0x20), _start)) }
+1024	 return tempBytes32;
+1025	 }
+1026	 function toAddressUnsafe(bytes memory _bytes, uint _start) internal pure returns (address) {
+1027	 address tempAddress;
+1028	 assembly {
+1029	 tempAddress := div(mload(add(add(_bytes, 0x20), _start)), 0x1000000000000000000000000) }
+1030	 return tempAddress;
+1031	 }
+1032	 function toUint8Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint8) {
+1033	 uint8 tempUint;
+1034	 assembly {
+1035	 tempUint := mload(add(add(_bytes, 0x1), _start)) }
+1036	 return tempUint;
+1037	 }
+1038	 function toUint16Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint16) {
+1039	 uint16 tempUint;
+1040	 assembly {
+1041	 tempUint := mload(add(add(_bytes, 0x2), _start)) }
+1042	 return tempUint;
+1043	 }
+1044	 function toUint24Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint24) {
+1045	 uint24 tempUint;
+1046	 assembly {
+1047	 tempUint := mload(add(add(_bytes, 0x3), _start)) }
+1048	 return tempUint;
+1049	 }
+1050	 function toUint32Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint32) {
+1051	 uint32 tempUint;
+1052	 assembly {
+1053	 tempUint := mload(add(add(_bytes, 0x4), _start)) }
+1054	 return tempUint;
+1055	 }
+1056	 function toUint64Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint64) {
+1057	 uint64 tempUint;
+1058	 assembly {
+1059	 tempUint := mload(add(add(_bytes, 0x8), _start)) }
+1060	 return tempUint;
+1061	 }
+1062	 function toUint96Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint96) {
+1063	 uint96 tempUint;
+1064	 assembly {
+1065	 tempUint := mload(add(add(_bytes, 0xc), _start)) }
+1066	 return tempUint;
+1067	 }
+1068	 function toUint128Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint128) {
+1069	 uint128 tempUint;
+1070	 assembly {
+1071	 tempUint := mload(add(add(_bytes, 0x10), _start)) }
+1072	 return tempUint;
+1073	 }
+1074	 function toUintUnsafe(bytes memory _bytes, uint _start) internal pure returns (uint256) {
+1075	 uint256 tempUint;
+1076	 assembly {
+1077	 tempUint := mload(add(add(_bytes, 0x20), _start)) }
+1078	 return tempUint;
+1079	 }
+1080	 function toBytes4Unsafe(bytes memory _bytes, uint _start) internal pure returns (bytes4) {
+1081	 bytes4 tempBytes4;
+1082	 assembly {
+1083	 tempBytes4 := mload(add(add(_bytes, 0x20), _start)) }
+1084	 return tempBytes4;
+1085	 }
+1086	 function toBytes20Unsafe(bytes memory _bytes, uint _start) internal pure returns (bytes20) {
+1087	 bytes20 tempBytes20;
+1088	 assembly {
+1089	 tempBytes20 := mload(add(add(_bytes, 0x20), _start)) }
+1090	 return tempBytes20;
+1091	 }
+1092	 function toBytes32Unsafe(bytes memory _bytes, uint _start) internal pure returns (bytes32) {
+1093	 bytes32 tempBytes32;
+1094	 assembly {
+1095	 tempBytes32 := mload(add(add(_bytes, 0x20), _start)) }
+1096	 return tempBytes32;
+1097	 }
+1098	 function fastSHA256( bytes memory data ) internal view returns (bytes32) {
+1099	 bytes32[] memory result = new bytes32[](1);
+1100	 bool success;
+1101	 assembly {
+1102	 let ptr := add(data, 32) success := staticcall(sub(gas(), 2000), 2, ptr, mload(data), add(result, 32), 32) }
+1103	 require(success, "SHA256_FAILED");
+1104	 return result[0];
+1105	 }
+1106	 }
+1107	 library BlockReader {
+1108	 using BlockReader for ExchangeData.Block;
+1109	 using BytesUtil for bytes;
+1110	 uint public constant OFFSET_TO_TRANSACTIONS = 20 + 32 + 32 + 4 + 1 + 1 + 4 + 4;
+1111	 struct BlockHeader {
+1112	 address exchange;
+1113	 bytes32 merkleRootBefore;
+1114	 bytes32 merkleRootAfter;
+1115	 uint32 timestamp;
+1116	 uint8 protocolTakerFeeBips;
+1117	 uint8 protocolMakerFeeBips;
+1118	 uint32 numConditionalTransactions;
+1119	 uint32 operatorAccountID;
+1120	 }
+1121	 function readHeader( bytes memory _blockData ) internal pure returns (BlockHeader memory header) {
+1122	 uint offset = 0;
+1123	 header.exchange = _blockData.toAddress(offset);
+1124	 offset += 20;
+1125	 header.merkleRootBefore = _blockData.toBytes32(offset);
+1126	 offset += 32;
+1127	 header.merkleRootAfter = _blockData.toBytes32(offset);
+1128	 offset += 32;
+1129	 header.timestamp = _blockData.toUint32(offset);
+1130	 offset += 4;
+1131	 header.protocolTakerFeeBips = _blockData.toUint8(offset);
+1132	 offset += 1;
+1133	 header.protocolMakerFeeBips = _blockData.toUint8(offset);
+1134	 offset += 1;
+1135	 header.numConditionalTransactions = _blockData.toUint32(offset);
+1136	 offset += 4;
+1137	 header.operatorAccountID = _blockData.toUint32(offset);
+1138	 offset += 4;
+1139	 assert(offset == OFFSET_TO_TRANSACTIONS);
+1140	 }
+1141	 function readTransactionData( bytes memory data, uint txIdx, uint blockSize, bytes memory txData ) internal pure {
+1142	 require(txIdx < blockSize, "INVALID_TX_IDX");
+1143	 uint txDataOffset = OFFSET_TO_TRANSACTIONS + txIdx * ExchangeData.TX_DATA_AVAILABILITY_SIZE_PART_1;
+1144	 assembly {
+1145	 mstore(add(txData, 32), mload(add(data, add(txDataOffset, 32)))) }
+1146	 txDataOffset = OFFSET_TO_TRANSACTIONS + blockSize * ExchangeData.TX_DATA_AVAILABILITY_SIZE_PART_1 + txIdx * ExchangeData.TX_DATA_AVAILABILITY_SIZE_PART_2;
+1147	 assembly {
+1148	 mstore(add(txData, 61 ), mload(add(data, add(txDataOffset, 32)))) mstore(add(txData, 68 ), mload(add(data, add(txDataOffset, 39)))) }
+1149	 }
+1150	 }
+1151	 library SafeCast {
+1152	 function toUint128(uint256 value) internal pure returns (uint128) {
+1153	 require(value < 2**128, "SafeCast: value doesn\'t fit in 128 bits");
+1154	 return uint128(value);
+1155	 }
+1156	 function toUint96(uint256 value) internal pure returns (uint96) {
+1157	 require(value < 2**96, "SafeCast: value doesn\'t fit in 96 bits");
+1158	 return uint96(value);
+1159	 }
+1160	 function toUint64(uint256 value) internal pure returns (uint64) {
+1161	 require(value < 2**64, "SafeCast: value doesn\'t fit in 64 bits");
+1162	 return uint64(value);
+1163	 }
+1164	 function toUint32(uint256 value) internal pure returns (uint32) {
+1165	 require(value < 2**32, "SafeCast: value doesn\'t fit in 32 bits");
+1166	 return uint32(value);
+1167	 }
+1168	 function toUint40(uint256 value) internal pure returns (uint40) {
+1169	 require(value < 2**40, "SafeCast: value doesn\'t fit in 40 bits");
+1170	 return uint40(value);
+1171	 }
+1172	 function toUint16(uint256 value) internal pure returns (uint16) {
+1173	 require(value < 2**16, "SafeCast: value doesn\'t fit in 16 bits");
+1174	 return uint16(value);
+1175	 }
+1176	 function toUint8(uint256 value) internal pure returns (uint8) {
+1177	 require(value < 2**8, "SafeCast: value doesn\'t fit in 8 bits");
+1178	 return uint8(value);
+1179	 }
+1180	 function toUint256(int256 value) internal pure returns (uint256) {
+1181	 require(value >= 0, "SafeCast: value must be positive");
+1182	 return uint256(value);
+1183	 }
+1184	 function toInt128(int256 value) internal pure returns (int128) {
+1185	 require(value >= -2**127 && value < 2**127, "SafeCast: value doesn\'t fit in 128 bits");
+1186	 return int128(value);
+1187	 }
+1188	 function toInt64(int256 value) internal pure returns (int64) {
+1189	 require(value >= -2**63 && value < 2**63, "SafeCast: value doesn\'t fit in 64 bits");
+1190	 return int64(value);
+1191	 }
+1192	 function toInt32(int256 value) internal pure returns (int32) {
+1193	 require(value >= -2**31 && value < 2**31, "SafeCast: value doesn\'t fit in 32 bits");
+1194	 return int32(value);
+1195	 }
+1196	 function toInt16(int256 value) internal pure returns (int16) {
+1197	 require(value >= -2**15 && value < 2**15, "SafeCast: value doesn\'t fit in 16 bits");
+1198	 return int16(value);
+1199	 }
+1200	 function toInt8(int256 value) internal pure returns (int8) {
+1201	 require(value >= -2**7 && value < 2**7, "SafeCast: value doesn\'t fit in 8 bits");
+1202	 return int8(value);
+1203	 }
+1204	 function toInt256(uint256 value) internal pure returns (int256) {
+1205	 require(value < 2**255, "SafeCast: value doesn't fit in an int256");
+1206	 return int256(value);
+1207	 }
+1208	 }
+1209	 library FloatUtil {
+1210	 using MathUint for uint;
+1211	 using SafeCast for uint;
+1212	 function decodeFloat( uint f, uint numBits ) internal pure returns (uint96 value) {
+1213	 if (f == 0) {
+1214	 return 0;
+1215	 }
+1216	 uint numBitsMantissa = numBits.sub(5);
+1217	 uint exponent = f >> numBitsMantissa;
+1218	 require(exponent <= 77, "EXPONENT_TOO_LARGE");
+1219	 uint mantissa = f & ((1 << numBitsMantissa) - 1);
+1220	 value = mantissa.mul(10 ** exponent).toUint96();
+1221	 }
+1222	 function decodeFloat16( uint16 f ) internal pure returns (uint96) {
+1223	 uint value = ((uint(f) & 2047) * (10 ** (uint(f) >> 11)));
+1224	 require(value < 2**96, "SafeCast: value doesn\'t fit in 96 bits");
+1225	 return uint96(value);
+1226	 }
+1227	 function decodeFloat24( uint24 f ) internal pure returns (uint96) {
+1228	 uint value = ((uint(f) & 524287) * (10 ** (uint(f) >> 19)));
+1229	 require(value < 2**96, "SafeCast: value doesn\'t fit in 96 bits");
+1230	 return uint96(value);
+1231	 }
+1232	 }
+1233	 abstract contract ERC1271 {
+1234	 bytes4 constant internal ERC1271_MAGICVALUE = 0x1626ba7e;
+1235	 function isValidSignature( bytes32 _hash, bytes memory _signature) public view virtual returns (bytes4 magicValueB32);
+1236	 }
+1237	 library SignatureUtil {
+1238	 using BytesUtil for bytes;
+1239	 using MathUint for uint;
+1240	 using AddressUtil for address;
+1241	 enum SignatureType {
+1242	 ILLEGAL, INVALID, EIP_712, ETH_SIGN, WALLET }
+1243	 bytes4 constant internal ERC1271_MAGICVALUE = 0x1626ba7e;
+1244	 function verifySignatures( bytes32 signHash, address[] memory signers, bytes[] memory signatures ) internal view returns (bool) {
+1245	 require(signers.length == signatures.length, "BAD_SIGNATURE_DATA");
+1246	 address lastSigner;
+1247	 for (uint i = 0; i < signers.length; i++) {
+1248	 require(signers[i] > lastSigner, "INVALID_SIGNERS_ORDER");
+1249	 lastSigner = signers[i];
+1250	 if (!verifySignature(signHash, signers[i], signatures[i])) {
+1251	 return false;
+1252	 }
+1253	 }
+1254	 return true;
+1255	 }
+1256	 function verifySignature( bytes32 signHash, address signer, bytes memory signature ) internal view returns (bool) {
+1257	 if (signer == address(0)) {
+1258	 return false;
+1259	 }
+1260	 return signer.isContract()? verifyERC1271Signature(signHash, signer, signature): verifyEOASignature(signHash, signer, signature);
+1261	 }
+1262	 function recoverECDSASigner( bytes32 signHash, bytes memory signature ) internal pure returns (address) {
+1263	 if (signature.length != 65) {
+1264	 return address(0);
+1265	 }
+1266	 bytes32 r;
+1267	 bytes32 s;
+1268	 uint8 v;
+1269	 assembly {
+1270	 r := mload(add(signature, 0x20)) s := mload(add(signature, 0x40)) v := and(mload(add(signature, 0x41)), 0xff) }
+1271	 if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+1272	 return address(0);
+1273	 }
+1274	 if (v == 27 || v == 28) {
+1275	 return ecrecover(signHash, v, r, s);
+1276	 }
+1277	 else {
+1278	 return address(0);
+1279	 }
+1280	 }
+1281	 function verifyEOASignature( bytes32 signHash, address signer, bytes memory signature ) private pure returns (bool success) {
+1282	 if (signer == address(0)) {
+1283	 return false;
+1284	 }
+1285	 uint signatureTypeOffset = signature.length.sub(1);
+1286	 SignatureType signatureType = SignatureType(signature.toUint8(signatureTypeOffset));
+1287	 assembly {
+1288	 mstore(signature, signatureTypeOffset) }
+1289	 if (signatureType == SignatureType.EIP_712) {
+1290	 success = (signer == recoverECDSASigner(signHash, signature));
+1291	 }
+1292	 else if (signatureType == SignatureType.ETH_SIGN) {
+1293	 bytes32 hash = keccak256( abi.encodePacked("\x19Ethereum Signed Message:\n32", signHash) );
+1294	 success = (signer == recoverECDSASigner(hash, signature));
+1295	 }
+1296	 else {
+1297	 success = false;
+1298	 }
+1299	 assembly {
+1300	 mstore(signature, add(signatureTypeOffset, 1)) }
+1301	 return success;
+1302	 }
+1303	 function verifyERC1271Signature( bytes32 signHash, address signer, bytes memory signature ) private view returns (bool) {
+1304	 bytes memory callData = abi.encodeWithSelector( ERC1271.isValidSignature.selector, signHash, signature );
+1305	 (bool success, bytes memory result) = signer.staticcall(callData);
+1306	 return ( success && result.length == 32 && result.toBytes4(0) == ERC1271_MAGICVALUE );
+1307	 }
+1308	 }
+1309	 library ExchangeSignatures {
+1310	 using SignatureUtil for bytes32;
+1311	 function requireAuthorizedTx( ExchangeData.State storage S, address signer, bytes memory signature, bytes32 txHash ) internal {
+1312	 require(signer != address(0), "INVALID_SIGNER");
+1313	 if (signature.length > 0) {
+1314	 require(txHash.verifySignature(signer, signature), "INVALID_SIGNATURE");
+1315	 }
+1316	 else {
+1317	 require(S.approvedTx[signer][txHash], "TX_NOT_APPROVED");
+1318	 delete S.approvedTx[signer][txHash];
+1319	 }
+1320	 }
+1321	 }
+1322	 library AccountUpdateTransaction {
+1323	 using BytesUtil for bytes;
+1324	 using FloatUtil for uint16;
+1325	 using ExchangeSignatures for ExchangeData.State;
+1326	 bytes32 constant public ACCOUNTUPDATE_TYPEHASH = keccak256( "AccountUpdate(address owner,uint32 accountID,uint16 feeTokenID,uint96 maxFee,uint256 publicKey,uint32 validUntil,uint32 nonce)" );
+1327	 struct AccountUpdate {
+1328	 address owner;
+1329	 uint32 accountID;
+1330	 uint16 feeTokenID;
+1331	 uint96 maxFee;
+1332	 uint96 fee;
+1333	 uint publicKey;
+1334	 uint32 validUntil;
+1335	 uint32 nonce;
+1336	 }
+1337	 struct AccountUpdateAuxiliaryData {
+1338	 bytes signature;
+1339	 uint96 maxFee;
+1340	 uint32 validUntil;
+1341	 }
+1342	 function process( ExchangeData.State storage S, ExchangeData.BlockContext memory ctx, bytes memory data, uint offset, bytes memory auxiliaryData ) internal {
+1343	 AccountUpdate memory accountUpdate;
+1344	 readTx(data, offset, accountUpdate);
+1345	 AccountUpdateAuxiliaryData memory auxData = abi.decode(auxiliaryData, (AccountUpdateAuxiliaryData));
+1346	 accountUpdate.validUntil = auxData.validUntil;
+1347	 accountUpdate.maxFee = auxData.maxFee == 0 ? accountUpdate.fee : auxData.maxFee;
+1348	 require(ctx.timestamp < accountUpdate.validUntil, "ACCOUNT_UPDATE_EXPIRED");
+1349	 require(accountUpdate.fee <= accountUpdate.maxFee, "ACCOUNT_UPDATE_FEE_TOO_HIGH");
+1350	 bytes32 txHash = hashTx(ctx.DOMAIN_SEPARATOR, accountUpdate);
+1351	 S.requireAuthorizedTx(accountUpdate.owner, auxData.signature, txHash);
+1352	 }
+1353	 function readTx( bytes memory data, uint offset, AccountUpdate memory accountUpdate ) internal pure {
+1354	 uint _offset = offset;
+1355	 require(data.toUint8Unsafe(_offset) == uint8(ExchangeData.TransactionType.ACCOUNT_UPDATE), "INVALID_TX_TYPE");
+1356	 _offset += 1;
+1357	 require(data.toUint8Unsafe(_offset) == 1, "INVALID_AUXILIARYDATA_DATA");
+1358	 _offset += 1;
+1359	 accountUpdate.owner = data.toAddressUnsafe(_offset);
+1360	 _offset += 20;
+1361	 accountUpdate.accountID = data.toUint32Unsafe(_offset);
+1362	 _offset += 4;
+1363	 accountUpdate.feeTokenID = data.toUint16Unsafe(_offset);
+1364	 _offset += 2;
+1365	 accountUpdate.fee = data.toUint16Unsafe(_offset).decodeFloat16();
+1366	 _offset += 2;
+1367	 accountUpdate.publicKey = data.toUintUnsafe(_offset);
+1368	 _offset += 32;
+1369	 accountUpdate.nonce = data.toUint32Unsafe(_offset);
+1370	 _offset += 4;
+1371	 }
+1372	 function hashTx( bytes32 DOMAIN_SEPARATOR, AccountUpdate memory accountUpdate ) internal pure returns (bytes32) {
+1373	 return EIP712.hashPacked( DOMAIN_SEPARATOR, keccak256( abi.encode( ACCOUNTUPDATE_TYPEHASH, accountUpdate.owner, accountUpdate.accountID, accountUpdate.feeTokenID, accountUpdate.maxFee, accountUpdate.publicKey, accountUpdate.validUntil, accountUpdate.nonce ) ) );
+1374	 }
+1375	 }
+1376	 library AmmUpdateTransaction {
+1377	 using BytesUtil for bytes;
+1378	 using MathUint for uint;
+1379	 using ExchangeSignatures for ExchangeData.State;
+1380	 bytes32 constant public AMMUPDATE_TYPEHASH = keccak256( "AmmUpdate(address owner,uint32 accountID,uint16 tokenID,uint8 feeBips,uint96 tokenWeight,uint32 validUntil,uint32 nonce)" );
+1381	 struct AmmUpdate {
+1382	 address owner;
+1383	 uint32 accountID;
+1384	 uint16 tokenID;
+1385	 uint8 feeBips;
+1386	 uint96 tokenWeight;
+1387	 uint32 validUntil;
+1388	 uint32 nonce;
+1389	 uint96 balance;
+1390	 }
+1391	 struct AmmUpdateAuxiliaryData {
+1392	 bytes signature;
+1393	 uint32 validUntil;
+1394	 }
+1395	 function process( ExchangeData.State storage S, ExchangeData.BlockContext memory ctx, bytes memory data, uint offset, bytes memory auxiliaryData ) internal {
+1396	 AmmUpdate memory update;
+1397	 readTx(data, offset, update);
+1398	 AmmUpdateAuxiliaryData memory auxData = abi.decode(auxiliaryData, (AmmUpdateAuxiliaryData));
+1399	 require(ctx.timestamp < auxData.validUntil, "AMM_UPDATE_EXPIRED");
+1400	 update.validUntil = auxData.validUntil;
+1401	 bytes32 txHash = hashTx(ctx.DOMAIN_SEPARATOR, update);
+1402	 S.requireAuthorizedTx(update.owner, auxData.signature, txHash);
+1403	 }
+1404	 function readTx( bytes memory data, uint offset, AmmUpdate memory update ) internal pure {
+1405	 uint _offset = offset;
+1406	 require(data.toUint8Unsafe(_offset) == uint8(ExchangeData.TransactionType.AMM_UPDATE), "INVALID_TX_TYPE");
+1407	 _offset += 1;
+1408	 update.owner = data.toAddressUnsafe(_offset);
+1409	 _offset += 20;
+1410	 update.accountID = data.toUint32Unsafe(_offset);
+1411	 _offset += 4;
+1412	 update.tokenID = data.toUint16Unsafe(_offset);
+1413	 _offset += 2;
+1414	 update.feeBips = data.toUint8Unsafe(_offset);
+1415	 _offset += 1;
+1416	 update.tokenWeight = data.toUint96Unsafe(_offset);
+1417	 _offset += 12;
+1418	 update.nonce = data.toUint32Unsafe(_offset);
+1419	 _offset += 4;
+1420	 update.balance = data.toUint96Unsafe(_offset);
+1421	 _offset += 12;
+1422	 }
+1423	 function hashTx( bytes32 DOMAIN_SEPARATOR, AmmUpdate memory update ) internal pure returns (bytes32) {
+1424	 return EIP712.hashPacked( DOMAIN_SEPARATOR, keccak256( abi.encode( AMMUPDATE_TYPEHASH, update.owner, update.accountID, update.tokenID, update.feeBips, update.tokenWeight, update.validUntil, update.nonce ) ) );
+1425	 }
+1426	 }
+1427	 library MathUint96 {
+1428	 function add( uint96 a, uint96 b ) internal pure returns (uint96 c) {
+1429	 c = a + b;
+1430	 require(c >= a, "ADD_OVERFLOW");
+1431	 }
+1432	 function sub( uint96 a, uint96 b ) internal pure returns (uint96 c) {
+1433	 require(b <= a, "SUB_UNDERFLOW");
+1434	 return a - b;
+1435	 }
+1436	 }
+1437	 library DepositTransaction {
+1438	 using BytesUtil for bytes;
+1439	 using MathUint96 for uint96;
+1440	 struct Deposit {
+1441	 address to;
+1442	 uint32 toAccountID;
+1443	 uint16 tokenID;
+1444	 uint96 amount;
+1445	 }
+1446	 function process( ExchangeData.State storage S, ExchangeData.BlockContext memory , bytes memory data, uint offset, bytes memory ) internal {
+1447	 Deposit memory deposit;
+1448	 readTx(data, offset, deposit);
+1449	 if (deposit.amount == 0) {
+1450	 return;
+1451	 }
+1452	 ExchangeData.Deposit memory pendingDeposit = S.pendingDeposits[deposit.to][deposit.tokenID];
+1453	 require(pendingDeposit.timestamp > 0, "DEPOSIT_DOESNT_EXIST");
+1454	 require(pendingDeposit.amount >= deposit.amount, "INVALID_AMOUNT");
+1455	 pendingDeposit.amount = pendingDeposit.amount.sub(deposit.amount);
+1456	 if (pendingDeposit.amount == 0) {
+1457	 delete S.pendingDeposits[deposit.to][deposit.tokenID];
+1458	 }
+1459	 else {
+1460	 S.pendingDeposits[deposit.to][deposit.tokenID] = pendingDeposit;
+1461	 }
+1462	 }
+1463	 function readTx( bytes memory data, uint offset, Deposit memory deposit ) internal pure {
+1464	 uint _offset = offset;
+1465	 require(data.toUint8Unsafe(_offset) == uint8(ExchangeData.TransactionType.DEPOSIT), "INVALID_TX_TYPE");
+1466	 _offset += 1;
+1467	 deposit.to = data.toAddressUnsafe(_offset);
+1468	 _offset += 20;
+1469	 deposit.toAccountID = data.toUint32Unsafe(_offset);
+1470	 _offset += 4;
+1471	 deposit.tokenID = data.toUint16Unsafe(_offset);
+1472	 _offset += 2;
+1473	 deposit.amount = data.toUint96Unsafe(_offset);
+1474	 _offset += 12;
+1475	 }
+1476	 }
+1477	 library TransferTransaction {
+1478	 using BytesUtil for bytes;
+1479	 using FloatUtil for uint24;
+1480	 using FloatUtil for uint16;
+1481	 using MathUint for uint;
+1482	 using ExchangeSignatures for ExchangeData.State;
+1483	 bytes32 constant public TRANSFER_TYPEHASH = keccak256( "Transfer(address from,address to,uint16 tokenID,uint96 amount,uint16 feeTokenID,uint96 maxFee,uint32 validUntil,uint32 storageID)" );
+1484	 struct Transfer {
+1485	 uint32 fromAccountID;
+1486	 uint32 toAccountID;
+1487	 address from;
+1488	 address to;
+1489	 uint16 tokenID;
+1490	 uint96 amount;
+1491	 uint16 feeTokenID;
+1492	 uint96 maxFee;
+1493	 uint96 fee;
+1494	 uint32 validUntil;
+1495	 uint32 storageID;
+1496	 }
+1497	 struct TransferAuxiliaryData {
+1498	 bytes signature;
+1499	 uint96 maxFee;
+1500	 uint32 validUntil;
+1501	 }
+1502	 function process( ExchangeData.State storage S, ExchangeData.BlockContext memory ctx, bytes memory data, uint offset, bytes memory auxiliaryData ) internal {
+1503	 Transfer memory transfer;
+1504	 readTx(data, offset, transfer);
+1505	 TransferAuxiliaryData memory auxData = abi.decode(auxiliaryData, (TransferAuxiliaryData));
+1506	 transfer.validUntil = auxData.validUntil;
+1507	 transfer.maxFee = auxData.maxFee == 0 ? transfer.fee : auxData.maxFee;
+1508	 require(ctx.timestamp < transfer.validUntil, "TRANSFER_EXPIRED");
+1509	 require(transfer.fee <= transfer.maxFee, "TRANSFER_FEE_TOO_HIGH");
+1510	 bytes32 txHash = hashTx(ctx.DOMAIN_SEPARATOR, transfer);
+1511	 S.requireAuthorizedTx(transfer.from, auxData.signature, txHash);
+1512	 }
+1513	 function readTx( bytes memory data, uint offset, Transfer memory transfer ) internal pure {
+1514	 uint _offset = offset;
+1515	 require(data.toUint8Unsafe(_offset) == uint8(ExchangeData.TransactionType.TRANSFER), "INVALID_TX_TYPE");
+1516	 _offset += 1;
+1517	 require(data.toUint8Unsafe(_offset) == 1, "INVALID_AUXILIARYDATA_DATA");
+1518	 _offset += 1;
+1519	 transfer.fromAccountID = data.toUint32Unsafe(_offset);
+1520	 _offset += 4;
+1521	 transfer.toAccountID = data.toUint32Unsafe(_offset);
+1522	 _offset += 4;
+1523	 transfer.tokenID = data.toUint16Unsafe(_offset);
+1524	 _offset += 2;
+1525	 transfer.amount = data.toUint24Unsafe(_offset).decodeFloat24();
+1526	 _offset += 3;
+1527	 transfer.feeTokenID = data.toUint16Unsafe(_offset);
+1528	 _offset += 2;
+1529	 transfer.fee = data.toUint16Unsafe(_offset).decodeFloat16();
+1530	 _offset += 2;
+1531	 transfer.storageID = data.toUint32Unsafe(_offset);
+1532	 _offset += 4;
+1533	 transfer.to = data.toAddressUnsafe(_offset);
+1534	 _offset += 20;
+1535	 transfer.from = data.toAddressUnsafe(_offset);
+1536	 _offset += 20;
+1537	 }
+1538	 function hashTx( bytes32 DOMAIN_SEPARATOR, Transfer memory transfer ) internal pure returns (bytes32) {
+1539	 return EIP712.hashPacked( DOMAIN_SEPARATOR, keccak256( abi.encode( TRANSFER_TYPEHASH, transfer.from, transfer.to, transfer.tokenID, transfer.amount, transfer.feeTokenID, transfer.maxFee, transfer.validUntil, transfer.storageID ) ) );
+1540	 }
+1541	 }
+1542	 library ExchangeTokens {
+1543	 using MathUint for uint;
+1544	 using ERC20SafeTransfer for address;
+1545	 using ExchangeMode for ExchangeData.State;
+1546	 event TokenRegistered( address token, uint16 tokenId );
+1547	 function getTokenAddress( ExchangeData.State storage S, uint16 tokenID ) public view returns (address) {
+1548	 require(tokenID < S.tokens.length, "INVALID_TOKEN_ID");
+1549	 return S.tokens[tokenID].token;
+1550	 }
+1551	 function registerToken( ExchangeData.State storage S, address tokenAddress ) public returns (uint16 tokenID) {
+1552	 require(!S.isInWithdrawalMode(), "INVALID_MODE");
+1553	 require(S.tokenToTokenId[tokenAddress] == 0, "TOKEN_ALREADY_EXIST");
+1554	 require(S.tokens.length < ExchangeData.MAX_NUM_TOKENS, "TOKEN_REGISTRY_FULL");
+1555	 if (S.depositContract != IDepositContract(0)) {
+1556	 require( S.depositContract.isTokenSupported(tokenAddress), "UNSUPPORTED_TOKEN" );
+1557	 }
+1558	 ExchangeData.Token memory token = ExchangeData.Token( tokenAddress );
+1559	 tokenID = uint16(S.tokens.length);
+1560	 S.tokens.push(token);
+1561	 S.tokenToTokenId[tokenAddress] = tokenID + 1;
+1562	 emit TokenRegistered(tokenAddress, tokenID);
+1563	 }
+1564	 function getTokenID( ExchangeData.State storage S, address tokenAddress ) internal view returns (uint16 tokenID) {
+1565	 tokenID = S.tokenToTokenId[tokenAddress];
+1566	 require(tokenID != 0, "TOKEN_NOT_FOUND");
+1567	 tokenID = tokenID - 1;
+1568	 }
+1569	 }
+1570	 library ExchangeWithdrawals {
+1571	 enum WithdrawalCategory {
+1572	 DISTRIBUTION, FROM_MERKLE_TREE, FROM_DEPOSIT_REQUEST, FROM_APPROVED_WITHDRAWAL }
+1573	 using AddressUtil for address;
+1574	 using AddressUtil for address payable;
+1575	 using BytesUtil for bytes;
+1576	 using MathUint for uint;
+1577	 using ExchangeBalances for ExchangeData.State;
+1578	 using ExchangeMode for ExchangeData.State;
+1579	 using ExchangeTokens for ExchangeData.State;
+1580	 event ForcedWithdrawalRequested( address owner, address token, uint32 accountID );
+1581	 event WithdrawalCompleted( uint8 category, address from, address to, address token, uint amount );
+1582	 event WithdrawalFailed( uint8 category, address from, address to, address token, uint amount );
+1583	 function forceWithdraw( ExchangeData.State storage S, address owner, address token, uint32 accountID ) public {
+1584	 require(!S.isInWithdrawalMode(), "INVALID_MODE");
+1585	 require(S.getNumAvailableForcedSlots() > 0, "TOO_MANY_REQUESTS_OPEN");
+1586	 require(accountID < ExchangeData.MAX_NUM_ACCOUNTS, "INVALID_ACCOUNTID");
+1587	 uint16 tokenID = S.getTokenID(token);
+1588	 uint withdrawalFeeETH = S.loopring.forcedWithdrawalFee();
+1589	 require(msg.value >= withdrawalFeeETH, "INSUFFICIENT_FEE");
+1590	 uint feeSurplus = msg.value.sub(withdrawalFeeETH);
+1591	 if (feeSurplus > 0) {
+1592	 msg.sender.sendETHAndVerify(feeSurplus, gasleft());
+1593	 }
+1594	 require( S.pendingForcedWithdrawals[accountID][tokenID].timestamp == 0, "WITHDRAWAL_ALREADY_PENDING" );
+1595	 S.pendingForcedWithdrawals[accountID][tokenID] = ExchangeData.ForcedWithdrawal({
+1596	 owner: owner, timestamp: uint64(block.timestamp) }
+1597	 );
+1598	 S.numPendingForcedTransactions++;
+1599	 emit ForcedWithdrawalRequested( owner, token, accountID );
+1600	 }
+1601	 function withdrawFromMerkleTree( ExchangeData.State storage S, ExchangeData.MerkleProof calldata merkleProof ) public {
+1602	 require(S.isInWithdrawalMode(), "NOT_IN_WITHDRAW_MODE");
+1603	 address owner = merkleProof.accountLeaf.owner;
+1604	 uint32 accountID = merkleProof.accountLeaf.accountID;
+1605	 uint16 tokenID = merkleProof.balanceLeaf.tokenID;
+1606	 uint96 balance = merkleProof.balanceLeaf.balance;
+1607	 require(S.withdrawnInWithdrawMode[accountID][tokenID] == false, "WITHDRAWN_ALREADY");
+1608	 ExchangeBalances.verifyAccountBalance( uint(S.merkleRoot), merkleProof );
+1609	 S.withdrawnInWithdrawMode[accountID][tokenID] = true;
+1610	 transferTokens( S, uint8(WithdrawalCategory.FROM_MERKLE_TREE), owner, owner, tokenID, balance, new bytes(0), gasleft(), false );
+1611	 }
+1612	 function withdrawFromDepositRequest( ExchangeData.State storage S, address owner, address token ) public {
+1613	 uint16 tokenID = S.getTokenID(token);
+1614	 ExchangeData.Deposit storage deposit = S.pendingDeposits[owner][tokenID];
+1615	 require(deposit.timestamp != 0, "DEPOSIT_NOT_WITHDRAWABLE_YET");
+1616	 require( block.timestamp >= deposit.timestamp + S.maxAgeDepositUntilWithdrawable || S.isInWithdrawalMode(), "DEPOSIT_NOT_WITHDRAWABLE_YET" );
+1617	 uint amount = deposit.amount;
+1618	 delete S.pendingDeposits[owner][tokenID];
+1619	 transferTokens( S, uint8(WithdrawalCategory.FROM_DEPOSIT_REQUEST), owner, owner, tokenID, amount, new bytes(0), gasleft(), false );
+1620	 }
+1621	 function withdrawFromApprovedWithdrawals( ExchangeData.State storage S, address[] memory owners, address[] memory tokens ) public {
+1622	 require(owners.length == tokens.length, "INVALID_INPUT_DATA");
+1623	 for (uint i = 0; i < owners.length; i++) {
+1624	 address owner = owners[i];
+1625	 uint16 tokenID = S.getTokenID(tokens[i]);
+1626	 uint amount = S.amountWithdrawable[owner][tokenID];
+1627	 delete S.amountWithdrawable[owner][tokenID];
+1628	 transferTokens( S, uint8(WithdrawalCategory.FROM_APPROVED_WITHDRAWAL), owner, owner, tokenID, amount, new bytes(0), gasleft(), false );
+1629	 }
+1630	 }
+1631	 function distributeWithdrawal( ExchangeData.State storage S, address from, address to, uint16 tokenID, uint amount, bytes memory extraData, uint gasLimit ) public {
+1632	 bool success = transferTokens( S, uint8(WithdrawalCategory.DISTRIBUTION), from, to, tokenID, amount, extraData, gasLimit, true );
+1633	 if (!success) {
+1634	 S.amountWithdrawable[to][tokenID] = S.amountWithdrawable[to][tokenID].add(amount);
+1635	 }
+1636	 }
+1637	 function transferTokens( ExchangeData.State storage S, uint8 category, address from, address to, uint16 tokenID, uint amount, bytes memory extraData, uint gasLimit, bool allowFailure ) private returns (bool success) {
+1638	 if (to == address(0)) {
+1639	 to = S.loopring.protocolFeeVault();
+1640	 }
+1641	 address token = S.getTokenAddress(tokenID);
+1642	 if (gasLimit > 0) {
+1643	 try S.depositContract.withdraw{
+1644	 gas: gasLimit}
+1645	 (from, to, token, amount, extraData) {
+1646	 success = true;
+1647	 }
+1648	 catch {
+1649	 success = false;
+1650	 }
+1651	 }
+1652	 else {
+1653	 success = false;
+1654	 }
+1655	 require(allowFailure || success, "TRANSFER_FAILURE");
+1656	 if (success) {
+1657	 emit WithdrawalCompleted(category, from, to, token, amount);
+1658	 if (from == address(0)) {
+1659	 S.protocolFeeLastWithdrawnTime[token] = block.timestamp;
+1660	 }
+1661	 }
+1662	 else {
+1663	 emit WithdrawalFailed(category, from, to, token, amount);
+1664	 }
+1665	 }
+1666	 }
+1667	 library WithdrawTransaction {
+1668	 using BytesUtil for bytes;
+1669	 using FloatUtil for uint16;
+1670	 using MathUint for uint;
+1671	 using ExchangeMode for ExchangeData.State;
+1672	 using ExchangeSignatures for ExchangeData.State;
+1673	 using ExchangeWithdrawals for ExchangeData.State;
+1674	 bytes32 constant public WITHDRAWAL_TYPEHASH = keccak256( "Withdrawal(address owner,uint32 accountID,uint16 tokenID,uint96 amount,uint16 feeTokenID,uint96 maxFee,address to,bytes extraData,uint256 minGas,uint32 validUntil,uint32 storageID)" );
+1675	 struct Withdrawal {
+1676	 uint withdrawalType;
+1677	 address from;
+1678	 uint32 fromAccountID;
+1679	 uint16 tokenID;
+1680	 uint96 amount;
+1681	 uint16 feeTokenID;
+1682	 uint96 maxFee;
+1683	 uint96 fee;
+1684	 address to;
+1685	 bytes extraData;
+1686	 uint minGas;
+1687	 uint32 validUntil;
+1688	 uint32 storageID;
+1689	 bytes20 onchainDataHash;
+1690	 }
+1691	 struct WithdrawalAuxiliaryData {
+1692	 bool storeRecipient;
+1693	 uint gasLimit;
+1694	 bytes signature;
+1695	 uint minGas;
+1696	 address to;
+1697	 bytes extraData;
+1698	 uint96 maxFee;
+1699	 uint32 validUntil;
+1700	 }
+1701	 function process( ExchangeData.State storage S, ExchangeData.BlockContext memory ctx, bytes memory data, uint offset, bytes memory auxiliaryData ) internal {
+1702	 Withdrawal memory withdrawal;
+1703	 readTx(data, offset, withdrawal);
+1704	 WithdrawalAuxiliaryData memory auxData = abi.decode(auxiliaryData, (WithdrawalAuxiliaryData));
+1705	 bytes20 onchainDataHash = hashOnchainData( auxData.minGas, auxData.to, auxData.extraData );
+1706	 require(withdrawal.onchainDataHash == onchainDataHash, "INVALID_WITHDRAWAL_DATA");
+1707	 withdrawal.to = auxData.to;
+1708	 withdrawal.minGas = auxData.minGas;
+1709	 withdrawal.extraData = auxData.extraData;
+1710	 withdrawal.maxFee = auxData.maxFee == 0 ? withdrawal.fee : auxData.maxFee;
+1711	 withdrawal.validUntil = auxData.validUntil;
+1712	 require(withdrawal.from == address(0) || withdrawal.to != address(0), "INVALID_WITHDRAWAL_RECIPIENT");
+1713	 if (withdrawal.withdrawalType == 0) {
+1714	 }
+1715	 else if (withdrawal.withdrawalType == 1) {
+1716	 require(ctx.timestamp < withdrawal.validUntil, "WITHDRAWAL_EXPIRED");
+1717	 require(withdrawal.fee <= withdrawal.maxFee, "WITHDRAWAL_FEE_TOO_HIGH");
+1718	 bytes32 txHash = hashTx(ctx.DOMAIN_SEPARATOR, withdrawal);
+1719	 S.requireAuthorizedTx(withdrawal.from, auxData.signature, txHash);
+1720	 }
+1721	 else if (withdrawal.withdrawalType == 2 || withdrawal.withdrawalType == 3) {
+1722	 require(withdrawal.from == withdrawal.to, "INVALID_WITHDRAWAL_ADDRESS");
+1723	 require(withdrawal.fee == 0, "FEE_NOT_ZERO");
+1724	 require(withdrawal.extraData.length == 0, "AUXILIARY_DATA_NOT_ALLOWED");
+1725	 ExchangeData.ForcedWithdrawal memory forcedWithdrawal = S.pendingForcedWithdrawals[withdrawal.fromAccountID][withdrawal.tokenID];
+1726	 if (forcedWithdrawal.timestamp != 0) {
+1727	 if (withdrawal.withdrawalType == 2) {
+1728	 require(withdrawal.from == forcedWithdrawal.owner, "INCONSISENT_OWNER");
+1729	 }
+1730	 else {
+1731	 require(withdrawal.from != forcedWithdrawal.owner, "INCONSISENT_OWNER");
+1732	 require(withdrawal.amount == 0, "UNAUTHORIZED_WITHDRAWAL");
+1733	 }
+1734	 delete S.pendingForcedWithdrawals[withdrawal.fromAccountID][withdrawal.tokenID];
+1735	 S.numPendingForcedTransactions--;
+1736	 }
+1737	 else {
+1738	 require( withdrawal.fromAccountID == ExchangeData.ACCOUNTID_PROTOCOLFEE || S.isShutdown(), "FULL_WITHDRAWAL_UNAUTHORIZED" );
+1739	 }
+1740	 }
+1741	 else {
+1742	 revert("INVALID_WITHDRAWAL_TYPE");
+1743	 }
+1744	 address recipient = S.withdrawalRecipient[withdrawal.from][withdrawal.to][withdrawal.tokenID][withdrawal.amount][withdrawal.storageID];
+1745	 if (recipient != address(0)) {
+1746	 require (withdrawal.extraData.length == 0, "AUXILIARY_DATA_NOT_ALLOWED");
+1747	 withdrawal.to = recipient;
+1748	 withdrawal.minGas = 0;
+1749	 }
+1750	 else if (auxData.storeRecipient) {
+1751	 require(withdrawal.to != address(0), "INVALID_DESTINATION_ADDRESS");
+1752	 S.withdrawalRecipient[withdrawal.from][withdrawal.to][withdrawal.tokenID][withdrawal.amount][withdrawal.storageID] = withdrawal.to;
+1753	 }
+1754	 require(auxData.gasLimit >= withdrawal.minGas, "OUT_OF_GAS_FOR_WITHDRAWAL");
+1755	 S.distributeWithdrawal( withdrawal.from, withdrawal.to, withdrawal.tokenID, withdrawal.amount, withdrawal.extraData, auxData.gasLimit );
+1756	 }
+1757	 function readTx( bytes memory data, uint offset, Withdrawal memory withdrawal ) internal pure {
+1758	 uint _offset = offset;
+1759	 require(data.toUint8Unsafe(_offset) == uint8(ExchangeData.TransactionType.WITHDRAWAL), "INVALID_TX_TYPE");
+1760	 _offset += 1;
+1761	 withdrawal.withdrawalType = data.toUint8Unsafe(_offset);
+1762	 _offset += 1;
+1763	 withdrawal.from = data.toAddressUnsafe(_offset);
+1764	 _offset += 20;
+1765	 withdrawal.fromAccountID = data.toUint32Unsafe(_offset);
+1766	 _offset += 4;
+1767	 withdrawal.tokenID = data.toUint16Unsafe(_offset);
+1768	 _offset += 2;
+1769	 withdrawal.amount = data.toUint96Unsafe(_offset);
+1770	 _offset += 12;
+1771	 withdrawal.feeTokenID = data.toUint16Unsafe(_offset);
+1772	 _offset += 2;
+1773	 withdrawal.fee = data.toUint16Unsafe(_offset).decodeFloat16();
+1774	 _offset += 2;
+1775	 withdrawal.storageID = data.toUint32Unsafe(_offset);
+1776	 _offset += 4;
+1777	 withdrawal.onchainDataHash = data.toBytes20Unsafe(_offset);
+1778	 _offset += 20;
+1779	 }
+1780	 function hashTx( bytes32 DOMAIN_SEPARATOR, Withdrawal memory withdrawal ) internal pure returns (bytes32) {
+1781	 return EIP712.hashPacked( DOMAIN_SEPARATOR, keccak256( abi.encode( WITHDRAWAL_TYPEHASH, withdrawal.from, withdrawal.fromAccountID, withdrawal.tokenID, withdrawal.amount, withdrawal.feeTokenID, withdrawal.maxFee, withdrawal.to, keccak256(withdrawal.extraData), withdrawal.minGas, withdrawal.validUntil, withdrawal.storageID ) ) );
+1782	 }
+1783	 function hashOnchainData( uint minGas, address to, bytes memory extraData ) internal pure returns (bytes20) {
+1784	 return bytes20(keccak256( abi.encodePacked( minGas, to, extraData ) ));
+1785	 }
+1786	 }
+1787	 library ExchangeBlocks {
+1788	 using AddressUtil for address;
+1789	 using AddressUtil for address payable;
+1790	 using BlockReader for bytes;
+1791	 using BytesUtil for bytes;
+1792	 using MathUint for uint;
+1793	 using ExchangeMode for ExchangeData.State;
+1794	 using ExchangeWithdrawals for ExchangeData.State;
+1795	 using SignatureUtil for bytes32;
+1796	 event BlockSubmitted( uint indexed blockIdx, bytes32 merkleRoot, bytes32 publicDataHash );
+1797	 event ProtocolFeesUpdated( uint8 takerFeeBips, uint8 makerFeeBips, uint8 previousTakerFeeBips, uint8 previousMakerFeeBips );
+1798	 function submitBlocks( ExchangeData.State storage S, ExchangeData.Block[] memory blocks ) public {
+1799	 require(!S.isInWithdrawalMode(), "INVALID_MODE");
+1800	 bytes32[] memory publicDataHashes = new bytes32[](blocks.length);
+1801	 for (uint i = 0; i < blocks.length; i++) {
+1802	 publicDataHashes[i] = blocks[i].data.fastSHA256();
+1803	 commitBlock(S, blocks[i], publicDataHashes[i]);
+1804	 }
+1805	 verifyBlocks(S, blocks, publicDataHashes);
+1806	 }
+1807	 function commitBlock( ExchangeData.State storage S, ExchangeData.Block memory _block, bytes32 _publicDataHash ) private {
+1808	 BlockReader.BlockHeader memory header = _block.data.readHeader();
+1809	 require(header.exchange == address(this), "INVALID_EXCHANGE");
+1810	 require(header.merkleRootBefore == S.merkleRoot, "INVALID_MERKLE_ROOT");
+1811	 require(header.merkleRootAfter != header.merkleRootBefore, "EMPTY_BLOCK_DISABLED");
+1812	 require(uint(header.merkleRootAfter) < ExchangeData.SNARK_SCALAR_FIELD, "INVALID_MERKLE_ROOT");
+1813	 require( header.timestamp > block.timestamp - ExchangeData.TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS && header.timestamp < block.timestamp + ExchangeData.TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS, "INVALID_TIMESTAMP" );
+1814	 require( validateAndSyncProtocolFees(S, header.protocolTakerFeeBips, header.protocolMakerFeeBips), "INVALID_PROTOCOL_FEES" );
+1815	 processConditionalTransactions( S, _block, header );
+1816	 uint numBlocks = S.numBlocks;
+1817	 emit BlockSubmitted(numBlocks, header.merkleRootAfter, _publicDataHash);
+1818	 S.merkleRoot = header.merkleRootAfter;
+1819	 if (_block.storeBlockInfoOnchain) {
+1820	 S.blocks[numBlocks] = ExchangeData.BlockInfo( uint32(block.timestamp), bytes28(_publicDataHash) );
+1821	 }
+1822	 S.numBlocks = numBlocks + 1;
+1823	 }
+1824	 function verifyBlocks( ExchangeData.State storage S, ExchangeData.Block[] memory blocks, bytes32[] memory publicDataHashes ) private view {
+1825	 IBlockVerifier blockVerifier = S.blockVerifier;
+1826	 uint numBlocksVerified = 0;
+1827	 bool[] memory blockVerified = new bool[](blocks.length);
+1828	 ExchangeData.Block memory firstBlock;
+1829	 uint[] memory batch = new uint[](blocks.length);
+1830	 while (numBlocksVerified < blocks.length) {
+1831	 uint batchLength = 0;
+1832	 for (uint i = 0; i < blocks.length; i++) {
+1833	 if (blockVerified[i] == false) {
+1834	 if (batchLength == 0) {
+1835	 firstBlock = blocks[i];
+1836	 batch[batchLength++] = i;
+1837	 }
+1838	 else {
+1839	 ExchangeData.Block memory _block = blocks[i];
+1840	 if (_block.blockType == firstBlock.blockType && _block.blockSize == firstBlock.blockSize && _block.blockVersion == firstBlock.blockVersion) {
+1841	 batch[batchLength++] = i;
+1842	 }
+1843	 }
+1844	 }
+1845	 }
+1846	 uint[] memory publicInputs = new uint[](batchLength);
+1847	 uint[] memory proofs = new uint[](batchLength * 8);
+1848	 for (uint i = 0; i < batchLength; i++) {
+1849	 uint blockIdx = batch[i];
+1850	 blockVerified[blockIdx] = true;
+1851	 publicInputs[i] = uint(publicDataHashes[blockIdx]) >> 3;
+1852	 ExchangeData.Block memory _block = blocks[blockIdx];
+1853	 for (uint j = 0; j < 8; j++) {
+1854	 proofs[i*8 + j] = _block.proof[j];
+1855	 }
+1856	 }
+1857	 require( blockVerifier.verifyProofs( uint8(firstBlock.blockType), firstBlock.blockSize, firstBlock.blockVersion, publicInputs, proofs ), "INVALID_PROOF" );
+1858	 numBlocksVerified += batchLength;
+1859	 }
+1860	 }
+1861	 function processConditionalTransactions( ExchangeData.State storage S, ExchangeData.Block memory _block, BlockReader.BlockHeader memory header ) private {
+1862	 if (header.numConditionalTransactions > 0) {
+1863	 ExchangeData.BlockContext memory ctx = ExchangeData.BlockContext({
+1864	 DOMAIN_SEPARATOR: S.DOMAIN_SEPARATOR, timestamp: header.timestamp }
+1865	 );
+1866	 ExchangeData.AuxiliaryData[] memory block_auxiliaryData;
+1867	 bytes memory blockAuxData = _block.auxiliaryData;
+1868	 assembly {
+1869	 block_auxiliaryData := add(blockAuxData, 64) }
+1870	 require( block_auxiliaryData.length == header.numConditionalTransactions, "AUXILIARYDATA_INVALID_LENGTH" );
+1871	 uint minTxIndex = 0;
+1872	 bytes memory txData = new bytes(ExchangeData.TX_DATA_AVAILABILITY_SIZE);
+1873	 for (uint i = 0; i < block_auxiliaryData.length; i++) {
+1874	 uint txIndex;
+1875	 bool approved;
+1876	 bytes memory auxData;
+1877	 assembly {
+1878	 let auxOffset := mload(add(block_auxiliaryData, add(32, mul(32, i)))) txIndex := mload(add(add(32, block_auxiliaryData), auxOffset)) approved := mload(add(add(64, block_auxiliaryData), auxOffset)) let auxDataOffset := mload(add(add(96, block_auxiliaryData), auxOffset)) auxData := add(add(32, block_auxiliaryData), add(auxOffset, auxDataOffset)) }
+1879	 require(txIndex >= minTxIndex, "AUXILIARYDATA_INVALID_ORDER");
+1880	 minTxIndex = txIndex + 1;
+1881	 if (approved) {
+1882	 continue;
+1883	 }
+1884	 _block.data.readTransactionData(txIndex, _block.blockSize, txData);
+1885	 ExchangeData.TransactionType txType = ExchangeData.TransactionType( txData.toUint8(0) );
+1886	 uint txDataOffset = 0;
+1887	 if (txType == ExchangeData.TransactionType.DEPOSIT) {
+1888	 DepositTransaction.process( S, ctx, txData, txDataOffset, auxData );
+1889	 }
+1890	 else if (txType == ExchangeData.TransactionType.WITHDRAWAL) {
+1891	 WithdrawTransaction.process( S, ctx, txData, txDataOffset, auxData );
+1892	 }
+1893	 else if (txType == ExchangeData.TransactionType.TRANSFER) {
+1894	 TransferTransaction.process( S, ctx, txData, txDataOffset, auxData );
+1895	 }
+1896	 else if (txType == ExchangeData.TransactionType.ACCOUNT_UPDATE) {
+1897	 AccountUpdateTransaction.process( S, ctx, txData, txDataOffset, auxData );
+1898	 }
+1899	 else if (txType == ExchangeData.TransactionType.AMM_UPDATE) {
+1900	 AmmUpdateTransaction.process( S, ctx, txData, txDataOffset, auxData );
+1901	 }
+1902	 else {
+1903	 revert("UNSUPPORTED_TX_TYPE");
+1904	 }
+1905	 }
+1906	 }
+1907	 }
+1908	 function validateAndSyncProtocolFees( ExchangeData.State storage S, uint8 takerFeeBips, uint8 makerFeeBips ) private returns (bool) {
+1909	 ExchangeData.ProtocolFeeData memory data = S.protocolFeeData;
+1910	 if (block.timestamp > data.syncedAt + ExchangeData.MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED) {
+1911	 data.previousTakerFeeBips = data.takerFeeBips;
+1912	 data.previousMakerFeeBips = data.makerFeeBips;
+1913	 (data.takerFeeBips, data.makerFeeBips) = S.loopring.getProtocolFeeValues();
+1914	 data.syncedAt = uint32(block.timestamp);
+1915	 if (data.takerFeeBips != data.previousTakerFeeBips || data.makerFeeBips != data.previousMakerFeeBips) {
+1916	 emit ProtocolFeesUpdated( data.takerFeeBips, data.makerFeeBips, data.previousTakerFeeBips, data.previousMakerFeeBips );
+1917	 }
+1918	 S.protocolFeeData = data;
+1919	 }
+1920	 return (takerFeeBips == data.takerFeeBips && makerFeeBips == data.makerFeeBips) || (takerFeeBips == data.previousTakerFeeBips && makerFeeBips == data.previousMakerFeeBips);
+1921	 }
+1922	 }
+1923	 library ExchangeDeposits {
+1924	 using AddressUtil for address payable;
+1925	 using MathUint96 for uint96;
+1926	 using ExchangeMode for ExchangeData.State;
+1927	 using ExchangeTokens for ExchangeData.State;
+1928	 event DepositRequested( address from, address to, address token, uint16 tokenId, uint96 amount );
+1929	 function deposit( ExchangeData.State storage S, address from, address to, address tokenAddress, uint96 amount, bytes memory extraData ) internal {
+1930	 require(to != address(0), "ZERO_ADDRESS");
+1931	 uint16 tokenID = S.getTokenID(tokenAddress);
+1932	 uint96 amountDeposited = S.depositContract.deposit{
+1933	 value: msg.value}
+1934	 ( from, tokenAddress, amount, extraData );
+1935	 ExchangeData.Deposit memory _deposit = S.pendingDeposits[to][tokenID];
+1936	 _deposit.timestamp = uint64(block.timestamp);
+1937	 _deposit.amount = _deposit.amount.add(amountDeposited);
+1938	 S.pendingDeposits[to][tokenID] = _deposit;
+1939	 emit DepositRequested( from, to, tokenAddress, tokenID, amountDeposited );
+1940	 }
+1941	 }
+1942	 library ExchangeGenesis {
+1943	 using ExchangeTokens for ExchangeData.State;
+1944	 function initializeGenesisBlock( ExchangeData.State storage S, address _loopringAddr, bytes32 _genesisMerkleRoot, bytes32 _domainSeparator ) public {
+1945	 require(address(0) != _loopringAddr, "INVALID_LOOPRING_ADDRESS");
+1946	 require(_genesisMerkleRoot != 0, "INVALID_GENESIS_MERKLE_ROOT");
+1947	 S.maxAgeDepositUntilWithdrawable = ExchangeData.MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND;
+1948	 S.DOMAIN_SEPARATOR = _domainSeparator;
+1949	 ILoopringV3 loopring = ILoopringV3(_loopringAddr);
+1950	 S.loopring = loopring;
+1951	 S.blockVerifier = IBlockVerifier(loopring.blockVerifierAddress());
+1952	 S.merkleRoot = _genesisMerkleRoot;
+1953	 S.blocks[0] = ExchangeData.BlockInfo(uint32(block.timestamp), bytes28(0));
+1954	 S.numBlocks = 1;
+1955	 S.protocolFeeData.syncedAt = uint32(0);
+1956	 S.protocolFeeData.takerFeeBips = S.loopring.protocolTakerFeeBips();
+1957	 S.protocolFeeData.makerFeeBips = S.loopring.protocolMakerFeeBips();
+1958	 S.protocolFeeData.previousTakerFeeBips = S.protocolFeeData.takerFeeBips;
+1959	 S.protocolFeeData.previousMakerFeeBips = S.protocolFeeData.makerFeeBips;
+1960	 S.registerToken(address(0));
+1961	 S.registerToken(loopring.lrcAddress());
+1962	 }
+1963	 }
+1964	 contract ExchangeV3 is IExchangeV3, ReentrancyGuard {
+1965	 using AddressUtil for address;
+1966	 using ERC20SafeTransfer for address;
+1967	 using MathUint for uint;
+1968	 using ExchangeAdmins for ExchangeData.State;
+1969	 using ExchangeBalances for ExchangeData.State;
+1970	 using ExchangeBlocks for ExchangeData.State;
+1971	 using ExchangeDeposits for ExchangeData.State;
+1972	 using ExchangeGenesis for ExchangeData.State;
+1973	 using ExchangeMode for ExchangeData.State;
+1974	 using ExchangeTokens for ExchangeData.State;
+1975	 using ExchangeWithdrawals for ExchangeData.State;
+1976	 ExchangeData.State public state;
+1977	 address public loopringAddr;
+1978	 uint8 private ammFeeBips = 20;
+1979	 bool public allowOnchainTransferFrom = false;
+1980	 modifier onlyWhenUninitialized() {
+1981	 require( loopringAddr == address(0) && state.merkleRoot == bytes32(0), "INITIALIZED" );
+1982	 _;
+1983	 }
+1984	 modifier onlyFromUserOrAgent(address owner) {
+1985	 require(isUserOrAgent(owner), "UNAUTHORIZED");
+1986	 _;
+1987	 }
+1988	 constructor() {
+1989	 }
+1990	 function version() public pure returns (string memory) {
+1991	 return "3.6.0";
+1992	 }
+1993	 function domainSeparator() public view returns (bytes32) {
+1994	 return state.DOMAIN_SEPARATOR;
+1995	 }
+1996	 function initialize( address _loopring, address _owner, bytes32 _genesisMerkleRoot ) external override nonReentrant onlyWhenUninitialized {
+1997	 require(address(0) != _owner, "ZERO_ADDRESS");
+1998	 owner = _owner;
+1999	 loopringAddr = _loopring;
+2000	 state.initializeGenesisBlock( _loopring, _genesisMerkleRoot, EIP712.hash(EIP712.Domain("Loopring Protocol", version(), address(this))) );
+2001	 }
+2002	 function setAgentRegistry(address _agentRegistry) external override nonReentrant onlyOwner {
+2003	 require(_agentRegistry != address(0), "ZERO_ADDRESS");
+2004	 require(state.agentRegistry == IAgentRegistry(0), "ALREADY_SET");
+2005	 state.agentRegistry = IAgentRegistry(_agentRegistry);
+2006	 }
+2007	 function refreshBlockVerifier() external override nonReentrant onlyOwner {
+2008	 require(state.loopring.blockVerifierAddress() != address(0), "ZERO_ADDRESS");
+2009	 state.blockVerifier = IBlockVerifier(state.loopring.blockVerifierAddress());
+2010	 }
+2011	 function getAgentRegistry() external override view returns (IAgentRegistry) {
+2012	 return state.agentRegistry;
+2013	 }
+2014	 function setDepositContract(address _depositContract) external override nonReentrant onlyOwner {
+2015	 require(_depositContract != address(0), "ZERO_ADDRESS");
+2016	 require(state.depositContract == IDepositContract(0), "ALREADY_SET");
+2017	 state.depositContract = IDepositContract(_depositContract);
+2018	 }
+2019	 function getDepositContract() external override view returns (IDepositContract) {
+2020	 return state.depositContract;
+2021	 }
+2022	 function withdrawExchangeFees( address token, address recipient ) external override nonReentrant onlyOwner {
+2023	 require(recipient != address(0), "INVALID_ADDRESS");
+2024	 if (token == address(0)) {
+2025	 uint amount = address(this).balance;
+2026	 recipient.sendETHAndVerify(amount, gasleft());
+2027	 }
+2028	 else {
+2029	 uint amount = ERC20(token).balanceOf(address(this));
+2030	 token.safeTransferAndVerify(recipient, amount);
+2031	 }
+2032	 }
+2033	 function isUserOrAgent(address owner) public view returns (bool) {
+2034	 return owner == msg.sender || state.agentRegistry != IAgentRegistry(address(0)) && state.agentRegistry.isAgent(owner, msg.sender);
+2035	 }
+2036	 function getConstants() external override pure returns(ExchangeData.Constants memory) {
+2037	 return ExchangeData.Constants( uint(ExchangeData.SNARK_SCALAR_FIELD), uint(ExchangeData.MAX_OPEN_FORCED_REQUESTS), uint(ExchangeData.MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE), uint(ExchangeData.TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS), uint(ExchangeData.MAX_NUM_ACCOUNTS), uint(ExchangeData.MAX_NUM_TOKENS), uint(ExchangeData.MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED), uint(ExchangeData.MIN_TIME_IN_SHUTDOWN), uint(ExchangeData.TX_DATA_AVAILABILITY_SIZE), uint(ExchangeData.MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND) );
+2038	 }
+2039	 function isInWithdrawalMode() external override view returns (bool) {
+2040	 return state.isInWithdrawalMode();
+2041	 }
+2042	 function isShutdown() external override view returns (bool) {
+2043	 return state.isShutdown();
+2044	 }
+2045	 function registerToken( address tokenAddress ) external override nonReentrant onlyOwner returns (uint16) {
+2046	 return state.registerToken(tokenAddress);
+2047	 }
+2048	 function getTokenID( address tokenAddress ) external override view returns (uint16) {
+2049	 return state.getTokenID(tokenAddress);
+2050	 }
+2051	 function getTokenAddress( uint16 tokenID ) external override view returns (address) {
+2052	 return state.getTokenAddress(tokenID);
+2053	 }
+2054	 function getExchangeStake() external override view returns (uint) {
+2055	 return state.loopring.getExchangeStake(address(this));
+2056	 }
+2057	 function withdrawExchangeStake( address recipient ) external override nonReentrant onlyOwner returns (uint) {
+2058	 return state.withdrawExchangeStake(recipient);
+2059	 }
+2060	 function getProtocolFeeLastWithdrawnTime( address tokenAddress ) external override view returns (uint) {
+2061	 return state.protocolFeeLastWithdrawnTime[tokenAddress];
+2062	 }
+2063	 function burnExchangeStake() external override nonReentrant {
+2064	 if (state.isInWithdrawalMode()) {
+2065	 uint stake = state.loopring.getExchangeStake(address(this));
+2066	 state.loopring.burnExchangeStake(stake);
+2067	 }
+2068	 }
+2069	 function getMerkleRoot() external override view returns (bytes32) {
+2070	 return state.merkleRoot;
+2071	 }
+2072	 function getBlockHeight() external override view returns (uint) {
+2073	 return state.numBlocks;
+2074	 }
+2075	 function getBlockInfo(uint blockIdx) external override view returns (ExchangeData.BlockInfo memory) {
+2076	 return state.blocks[blockIdx];
+2077	 }
+2078	 function submitBlocks(ExchangeData.Block[] calldata blocks) external override nonReentrant onlyOwner {
+2079	 state.submitBlocks(blocks);
+2080	 }
+2081	 function getNumAvailableForcedSlots() external override view returns (uint) {
+2082	 return state.getNumAvailableForcedSlots();
+2083	 }
+2084	 function deposit( address from, address to, address tokenAddress, uint96 amount, bytes calldata extraData ) external payable override nonReentrant onlyFromUserOrAgent(from) {
+2085	 state.deposit(from, to, tokenAddress, amount, extraData);
+2086	 }
+2087	 function getPendingDepositAmount( address owner, address tokenAddress ) external override view returns (uint96) {
+2088	 uint16 tokenID = state.getTokenID(tokenAddress);
+2089	 return state.pendingDeposits[owner][tokenID].amount;
+2090	 }
+2091	 function forceWithdraw( address owner, address token, uint32 accountID ) external override nonReentrant payable onlyFromUserOrAgent(owner) {
+2092	 state.forceWithdraw(owner, token, accountID);
+2093	 }
+2094	 function isForcedWithdrawalPending( uint32 accountID, address token ) external override view returns (bool) {
+2095	 uint16 tokenID = state.getTokenID(token);
+2096	 return state.pendingForcedWithdrawals[accountID][tokenID].timestamp != 0;
+2097	 }
+2098	 function withdrawProtocolFees( address token ) external override nonReentrant payable {
+2099	 state.forceWithdraw(address(0), token, ExchangeData.ACCOUNTID_PROTOCOLFEE);
+2100	 }
+2101	 function withdrawFromMerkleTree( ExchangeData.MerkleProof calldata merkleProof ) external override nonReentrant {
+2102	 state.withdrawFromMerkleTree(merkleProof);
+2103	 }
+2104	 function isWithdrawnInWithdrawalMode( uint32 accountID, address token ) external override view returns (bool) {
+2105	 uint16 tokenID = state.getTokenID(token);
+2106	 return state.withdrawnInWithdrawMode[accountID][tokenID];
+2107	 }
+2108	 function withdrawFromDepositRequest( address owner, address token ) external override nonReentrant {
+2109	 state.withdrawFromDepositRequest( owner, token );
+2110	 }
+2111	 function withdrawFromApprovedWithdrawals( address[] calldata owners, address[] calldata tokens ) external override nonReentrant {
+2112	 state.withdrawFromApprovedWithdrawals( owners, tokens );
+2113	 }
+2114	 function getAmountWithdrawable( address owner, address token ) external override view returns (uint) {
+2115	 uint16 tokenID = state.getTokenID(token);
+2116	 return state.amountWithdrawable[owner][tokenID];
+2117	 }
+2118	 function notifyForcedRequestTooOld( uint32 accountID, address token ) external override nonReentrant {
+2119	 uint16 tokenID = state.getTokenID(token);
+2120	 ExchangeData.ForcedWithdrawal storage withdrawal = state.pendingForcedWithdrawals[accountID][tokenID];
+2121	 require(withdrawal.timestamp != 0, "WITHDRAWAL_NOT_TOO_OLD");
+2122	 require(block.timestamp >= withdrawal.timestamp + ExchangeData.MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE, "WITHDRAWAL_NOT_TOO_OLD");
+2123	 state.withdrawalModeStartTime = block.timestamp;
+2124	 emit WithdrawalModeActivated(state.withdrawalModeStartTime);
+2125	 }
+2126	 function setWithdrawalRecipient( address from, address to, address token, uint96 amount, uint32 storageID, address newRecipient ) external override nonReentrant onlyFromUserOrAgent(from) {
+2127	 require(newRecipient != address(0), "INVALID_DATA");
+2128	 uint16 tokenID = state.getTokenID(token);
+2129	 require(state.withdrawalRecipient[from][to][tokenID][amount][storageID] == address(0), "CANNOT_OVERRIDE_RECIPIENT_ADDRESS");
+2130	 state.withdrawalRecipient[from][to][tokenID][amount][storageID] = newRecipient;
+2131	 }
+2132	 function getWithdrawalRecipient( address from, address to, address token, uint96 amount, uint32 storageID ) external override view returns (address) {
+2133	 uint16 tokenID = state.getTokenID(token);
+2134	 return state.withdrawalRecipient[from][to][tokenID][amount][storageID];
+2135	 }
+2136	 function onchainTransferFrom( address from, address to, address token, uint amount ) external override nonReentrant onlyFromUserOrAgent(from) {
+2137	 require(allowOnchainTransferFrom, "NOT_ALLOWED");
+2138	 state.depositContract.transfer(from, to, token, amount);
+2139	 }
+2140	 function approveTransaction( address owner, bytes32 transactionHash ) external override nonReentrant onlyFromUserOrAgent(owner) {
+2141	 state.approvedTx[owner][transactionHash] = true;
+2142	 emit TransactionApproved(owner, transactionHash);
+2143	 }
+2144	 function approveTransactions( address[] calldata owners, bytes32[] calldata transactionHashes ) external override nonReentrant {
+2145	 require(owners.length == transactionHashes.length, "INVALID_DATA");
+2146	 require(state.agentRegistry.isAgent(owners, msg.sender), "UNAUTHORIZED");
+2147	 for (uint i = 0; i < owners.length; i++) {
+2148	 state.approvedTx[owners[i]][transactionHashes[i]] = true;
+2149	 }
+2150	 }
+2151	 function isTransactionApproved( address owner, bytes32 transactionHash ) external override view returns (bool) {
+2152	 return state.approvedTx[owner][transactionHash];
+2153	 }
+2154	 function getDomainSeparator() external override view returns (bytes32) {
+2155	 return state.DOMAIN_SEPARATOR;
+2156	 }
+2157	 function setMaxAgeDepositUntilWithdrawable( uint32 newValue ) external override nonReentrant onlyOwner returns (uint32) {
+2158	 return state.setMaxAgeDepositUntilWithdrawable(newValue);
+2159	 }
+2160	 function getMaxAgeDepositUntilWithdrawable() external override view returns (uint32) {
+2161	 return state.maxAgeDepositUntilWithdrawable;
+2162	 }
+2163	 function shutdown() external override nonReentrant onlyOwner returns (bool success) {
+2164	 require(!state.isInWithdrawalMode(), "INVALID_MODE");
+2165	 require(!state.isShutdown(), "ALREADY_SHUTDOWN");
+2166	 state.shutdownModeStartTime = block.timestamp;
+2167	 emit Shutdown(state.shutdownModeStartTime);
+2168	 return true;
+2169	 }
+2170	 function getProtocolFeeValues() external override view returns ( uint32 syncedAt, uint8 takerFeeBips, uint8 makerFeeBips, uint8 previousTakerFeeBips, uint8 previousMakerFeeBips ) {
+2171	 syncedAt = state.protocolFeeData.syncedAt;
+2172	 takerFeeBips = state.protocolFeeData.takerFeeBips;
+2173	 makerFeeBips = state.protocolFeeData.makerFeeBips;
+2174	 previousTakerFeeBips = state.protocolFeeData.previousTakerFeeBips;
+2175	 previousMakerFeeBips = state.protocolFeeData.previousMakerFeeBips;
+2176	 }
+2177	 function setAmmFeeBips(uint8 _feeBips) external override nonReentrant onlyOwner {
+2178	 require(_feeBips <= 200, "INVALID_VALUE");
+2179	 ammFeeBips = _feeBips;
+2180	 }
+2181	 function getAmmFeeBips() external override view returns (uint8) {
+2182	 return ammFeeBips;
+2183	 }
+2184	 function setAllowOnchainTransferFrom(bool value) external nonReentrant onlyOwner {
+2185	 require(allowOnchainTransferFrom != value, "SAME_VALUE");
+2186	 allowOnchainTransferFrom = value;
+2187	 }
+2188	 }

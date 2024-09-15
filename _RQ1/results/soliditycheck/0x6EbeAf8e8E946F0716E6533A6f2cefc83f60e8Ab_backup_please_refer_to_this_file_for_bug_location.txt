@@ -1,0 +1,634 @@
+row number 
+1	   pragma solidity 0.4.24;
+2	 interface ERC165 {
+3	 function supportsInterface(bytes4 _interfaceId) external view returns (bool);
+4	 }
+5	 contract ERC721Basic is ERC165 {
+6	 event Transfer( address indexed _from, address indexed _to, uint256 indexed _tokenId );
+7	 event Approval( address indexed _owner, address indexed _approved, uint256 indexed _tokenId );
+8	 event ApprovalForAll( address indexed _owner, address indexed _operator, bool _approved );
+9	 function balanceOf(address _owner) public view returns (uint256 _balance);
+10	 function ownerOf(uint256 _tokenId) public view returns (address _owner);
+11	 function exists(uint256 _tokenId) public view returns (bool _exists);
+12	 function approve(address _to, uint256 _tokenId) public;
+13	 function getApproved(uint256 _tokenId) public view returns (address _operator);
+14	 function setApprovalForAll(address _operator, bool _approved) public;
+15	 function isApprovedForAll(address _owner, address _operator) public view returns (bool);
+16	 function transferFrom(address _from, address _to, uint256 _tokenId) public;
+17	 function safeTransferFrom(address _from, address _to, uint256 _tokenId) public;
+18	 function safeTransferFrom( address _from, address _to, uint256 _tokenId, bytes _data ) public;
+19	 }
+20	 contract SupportsInterfaceWithLookup is ERC165 {
+21	 bytes4 public constant InterfaceId_ERC165 = 0x01ffc9a7;
+22	 mapping(bytes4 => bool) internal supportedInterfaces;
+23	 constructor() public {
+24	 _registerInterface(InterfaceId_ERC165);
+25	 }
+26	 function supportsInterface(bytes4 _interfaceId) external view returns (bool) {
+27	 return supportedInterfaces[_interfaceId];
+28	 }
+29	 function _registerInterface(bytes4 _interfaceId) internal {
+30	 require(_interfaceId != 0xffffffff);
+31	 supportedInterfaces[_interfaceId] = true;
+32	 }
+33	 }
+34	 contract Governable {
+35	 event Pause();
+36	 event Unpause();
+37	 address public governor;
+38	 bool public paused = false;
+39	 constructor() public {
+40	 governor = msg.sender;
+41	 }
+42	 function setGovernor(address _gov) public onlyGovernor {
+43	 governor = _gov;
+44	 }
+45	 modifier onlyGovernor {
+46	 require(msg.sender == governor);
+47	 _;
+48	 }
+49	 modifier whenNotPaused() {
+50	 require(!paused);
+51	 _;
+52	 }
+53	 modifier whenPaused() {
+54	 require(paused);
+55	 _;
+56	 }
+57	 function pause() onlyGovernor whenNotPaused public {
+58	 paused = true;
+59	 emit Pause();
+60	 }
+61	 function unpause() onlyGovernor whenPaused public {
+62	 paused = false;
+63	 emit Unpause();
+64	 }
+65	 }
+66	 contract CardBase is Governable {
+67	 struct Card {
+68	 uint16 proto;
+69	 uint16 purity;
+70	 }
+71	 function getCard(uint id) public view returns (uint16 proto, uint16 purity) {
+72	 Card memory card = cards[id];
+73	 return (card.proto, card.purity);
+74	 }
+75	 function getShine(uint16 purity) public pure returns (uint8) {
+76	 return uint8(purity / 1000);
+77	 }
+78	 Card[] public cards;
+79	 }
+80	 contract CardProto is CardBase {
+81	 event NewProtoCard( uint16 id, uint8 season, uint8 god, Rarity rarity, uint8 mana, uint8 attack, uint8 health, uint8 cardType, uint8 tribe, bool packable );
+82	 struct Limit {
+83	 uint64 limit;
+84	 bool exists;
+85	 }
+86	 mapping(uint16 => Limit) public limits;
+87	 function setLimit(uint16 id, uint64 limit) public onlyGovernor {
+88	 Limit memory l = limits[id];
+89	 require(!l.exists);
+90	 limits[id] = Limit({
+91	 limit: limit, exists: true }
+92	 );
+93	 }
+94	 function getLimit(uint16 id) public view returns (uint64 limit, bool set) {
+95	 Limit memory l = limits[id];
+96	 return (l.limit, l.exists);
+97	 }
+98	 mapping(uint8 => bool) public seasonTradable;
+99	 mapping(uint8 => bool) public seasonTradabilityLocked;
+100	 uint8 public currentSeason;
+101	 function makeTradable(uint8 season) public onlyGovernor {
+102	 seasonTradable[season] = true;
+103	 }
+104	 function makeUntradable(uint8 season) public onlyGovernor {
+105	 require(!seasonTradabilityLocked[season]);
+106	 seasonTradable[season] = false;
+107	 }
+108	 function makePermanantlyTradable(uint8 season) public onlyGovernor {
+109	 require(seasonTradable[season]);
+110	 seasonTradabilityLocked[season] = true;
+111	 }
+112	 function isTradable(uint16 proto) public view returns (bool) {
+113	 return seasonTradable[protos[proto].season];
+114	 }
+115	 function nextSeason() public onlyGovernor {
+116	 require(currentSeason <= 255);
+117	 currentSeason++;
+118	 mythic.length = 0;
+119	 legendary.length = 0;
+120	 epic.length = 0;
+121	 rare.length = 0;
+122	 common.length = 0;
+123	 }
+124	 enum Rarity {
+125	 Common, Rare, Epic, Legendary, Mythic }
+126	 uint8 constant SPELL = 1;
+127	 uint8 constant MINION = 2;
+128	 uint8 constant WEAPON = 3;
+129	 uint8 constant HERO = 4;
+130	 struct ProtoCard {
+131	 bool exists;
+132	 uint8 god;
+133	 uint8 season;
+134	 uint8 cardType;
+135	 Rarity rarity;
+136	 uint8 mana;
+137	 uint8 attack;
+138	 uint8 health;
+139	 uint8 tribe;
+140	 }
+141	 uint16 public protoCount;
+142	 mapping(uint16 => ProtoCard) protos;
+143	 uint16[] public mythic;
+144	 uint16[] public legendary;
+145	 uint16[] public epic;
+146	 uint16[] public rare;
+147	 uint16[] public common;
+148	 function addProtos( uint16[] externalIDs, uint8[] gods, Rarity[] rarities, uint8[] manas, uint8[] attacks, uint8[] healths, uint8[] cardTypes, uint8[] tribes, bool[] packable ) public onlyGovernor returns(uint16) {
+149	 for (uint i = 0; i < externalIDs.length; i++) {
+150	 ProtoCard memory card = ProtoCard({
+151	 exists: true, god: gods[i], season: currentSeason, cardType: cardTypes[i], rarity: rarities[i], mana: manas[i], attack: attacks[i], health: healths[i], tribe: tribes[i] }
+152	 );
+153	 _addProto(externalIDs[i], card, packable[i]);
+154	 }
+155	 }
+156	 function addProto( uint16 externalID, uint8 god, Rarity rarity, uint8 mana, uint8 attack, uint8 health, uint8 cardType, uint8 tribe, bool packable ) public onlyGovernor returns(uint16) {
+157	 ProtoCard memory card = ProtoCard({
+158	 exists: true, god: god, season: currentSeason, cardType: cardType, rarity: rarity, mana: mana, attack: attack, health: health, tribe: tribe }
+159	 );
+160	 _addProto(externalID, card, packable);
+161	 }
+162	 function addWeapon( uint16 externalID, uint8 god, Rarity rarity, uint8 mana, uint8 attack, uint8 durability, bool packable ) public onlyGovernor returns(uint16) {
+163	 ProtoCard memory card = ProtoCard({
+164	 exists: true, god: god, season: currentSeason, cardType: WEAPON, rarity: rarity, mana: mana, attack: attack, health: durability, tribe: 0 }
+165	 );
+166	 _addProto(externalID, card, packable);
+167	 }
+168	 function addSpell(uint16 externalID, uint8 god, Rarity rarity, uint8 mana, bool packable) public onlyGovernor returns(uint16) {
+169	 ProtoCard memory card = ProtoCard({
+170	 exists: true, god: god, season: currentSeason, cardType: SPELL, rarity: rarity, mana: mana, attack: 0, health: 0, tribe: 0 }
+171	 );
+172	 _addProto(externalID, card, packable);
+173	 }
+174	 function addMinion( uint16 externalID, uint8 god, Rarity rarity, uint8 mana, uint8 attack, uint8 health, uint8 tribe, bool packable ) public onlyGovernor returns(uint16) {
+175	 ProtoCard memory card = ProtoCard({
+176	 exists: true, god: god, season: currentSeason, cardType: MINION, rarity: rarity, mana: mana, attack: attack, health: health, tribe: tribe }
+177	 );
+178	 _addProto(externalID, card, packable);
+179	 }
+180	 function _addProto(uint16 externalID, ProtoCard memory card, bool packable) internal {
+181	 require(!protos[externalID].exists);
+182	 card.exists = true;
+183	 protos[externalID] = card;
+184	 protoCount++;
+185	 emit NewProtoCard( externalID, currentSeason, card.god, card.rarity, card.mana, card.attack, card.health, card.cardType, card.tribe, packable );
+186	 if (packable) {
+187	 Rarity rarity = card.rarity;
+188	 if (rarity == Rarity.Common) {
+189	 common.push(externalID);
+190	 }
+191	 else if (rarity == Rarity.Rare) {
+192	 rare.push(externalID);
+193	 }
+194	 else if (rarity == Rarity.Epic) {
+195	 epic.push(externalID);
+196	 }
+197	 else if (rarity == Rarity.Legendary) {
+198	 legendary.push(externalID);
+199	 }
+200	 else if (rarity == Rarity.Mythic) {
+201	 mythic.push(externalID);
+202	 }
+203	 else {
+204	 require(false);
+205	 }
+206	 }
+207	 }
+208	 function getProto(uint16 id) public view returns( bool exists, uint8 god, uint8 season, uint8 cardType, Rarity rarity, uint8 mana, uint8 attack, uint8 health, uint8 tribe ) {
+209	 ProtoCard memory proto = protos[id];
+210	 return ( proto.exists, proto.god, proto.season, proto.cardType, proto.rarity, proto.mana, proto.attack, proto.health, proto.tribe );
+211	 }
+212	 function getRandomCard(Rarity rarity, uint16 random) public view returns (uint16) {
+213	 if (rarity == Rarity.Common) {
+214	 return common[random % common.length];
+215	 }
+216	 else if (rarity == Rarity.Rare) {
+217	 return rare[random % rare.length];
+218	 }
+219	 else if (rarity == Rarity.Epic) {
+220	 return epic[random % epic.length];
+221	 }
+222	 else if (rarity == Rarity.Legendary) {
+223	 return legendary[random % legendary.length];
+224	 }
+225	 else if (rarity == Rarity.Mythic) {
+226	 uint16 id;
+227	 uint64 limit;
+228	 bool set;
+229	 for (uint i = 0; i < mythic.length; i++) {
+230	 id = mythic[(random + i) % mythic.length];
+231	 (limit, set) = getLimit(id);
+232	 if (set && limit > 0){
+233	 return id;
+234	 }
+235	 }
+236	 return legendary[random % legendary.length];
+237	 }
+238	 require(false);
+239	 return 0;
+240	 }
+241	 function replaceProto( uint16 index, uint8 god, uint8 cardType, uint8 mana, uint8 attack, uint8 health, uint8 tribe ) public onlyGovernor {
+242	 ProtoCard memory pc = protos[index];
+243	 require(!seasonTradable[pc.season]);
+244	 protos[index] = ProtoCard({
+245	 exists: true, god: god, season: pc.season, cardType: cardType, rarity: pc.rarity, mana: mana, attack: attack, health: health, tribe: tribe }
+246	 );
+247	 }
+248	 }
+249	 contract ERC721Receiver {
+250	 bytes4 internal constant ERC721_RECEIVED = 0x150b7a02;
+251	 function onERC721Received( address _operator, address _from, uint256 _tokenId, bytes _data ) public returns(bytes4);
+252	 }
+253	 library AddressUtils {
+254	 function isContract(address addr) internal view returns (bool) {
+255	 uint256 size;
+256	 assembly {
+257	 size := extcodesize(addr) }
+258	 return size > 0;
+259	 }
+260	 }
+261	 library SafeMath {
+262	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+263	 if (a == 0) {
+264	 return 0;
+265	 }
+266	 c = a * b;
+267	 assert(c / a == b);
+268	 return c;
+269	 }
+270	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+271	 return a / b;
+272	 }
+273	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+274	 assert(b <= a);
+275	 return a - b;
+276	 }
+277	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+278	 c = a + b;
+279	 assert(c >= a);
+280	 return c;
+281	 }
+282	 }
+283	 contract ERC721BasicToken is CardProto, SupportsInterfaceWithLookup, ERC721Basic {
+284	 bytes4 private constant InterfaceId_ERC721 = 0x80ac58cd;
+285	 bytes4 private constant InterfaceId_ERC721Exists = 0x4f558e79;
+286	 using SafeMath for uint256;
+287	 using AddressUtils for address;
+288	 bytes4 private constant ERC721_RECEIVED = 0x150b7a02;
+289	 mapping (uint256 => address) internal tokenOwner;
+290	 mapping (uint256 => address) internal tokenApprovals;
+291	 mapping (address => mapping (address => bool)) internal operatorApprovals;
+292	 modifier onlyOwnerOf(uint256 _tokenId) {
+293	 require(ownerOf(_tokenId) == msg.sender);
+294	 _;
+295	 }
+296	 modifier canTransfer(uint256 _tokenId) {
+297	 require(isApprovedOrOwner(msg.sender, _tokenId));
+298	 _;
+299	 }
+300	 constructor() public {
+301	 _registerInterface(InterfaceId_ERC721);
+302	 _registerInterface(InterfaceId_ERC721Exists);
+303	 }
+304	 function balanceOf(address _owner) public view returns (uint256);
+305	 function ownerOf(uint256 _tokenId) public view returns (address) {
+306	 address owner = tokenOwner[_tokenId];
+307	 require(owner != address(0));
+308	 return owner;
+309	 }
+310	 function exists(uint256 _tokenId) public view returns (bool) {
+311	 address owner = tokenOwner[_tokenId];
+312	 return owner != address(0);
+313	 }
+314	 function approve(address _to, uint256 _tokenId) public {
+315	 address owner = ownerOf(_tokenId);
+316	 require(_to != owner);
+317	 require(msg.sender == owner || isApprovedForAll(owner, msg.sender));
+318	 tokenApprovals[_tokenId] = _to;
+319	 emit Approval(owner, _to, _tokenId);
+320	 }
+321	 function getApproved(uint256 _tokenId) public view returns (address) {
+322	 return tokenApprovals[_tokenId];
+323	 }
+324	 function setApprovalForAll(address _to, bool _approved) public {
+325	 require(_to != msg.sender);
+326	 operatorApprovals[msg.sender][_to] = _approved;
+327	 emit ApprovalForAll(msg.sender, _to, _approved);
+328	 }
+329	 function isApprovedForAll( address _owner, address _operator ) public view returns (bool) {
+330	 return operatorApprovals[_owner][_operator];
+331	 }
+332	 function transferFrom( address _from, address _to, uint256 _tokenId ) public canTransfer(_tokenId) {
+333	 require(_from != address(0));
+334	 require(_to != address(0));
+335	 clearApproval(_from, _tokenId);
+336	 removeTokenFrom(_from, _tokenId);
+337	 addTokenTo(_to, _tokenId);
+338	 emit Transfer(_from, _to, _tokenId);
+339	 }
+340	 function safeTransferFrom( address _from, address _to, uint256 _tokenId ) public canTransfer(_tokenId) {
+341	 safeTransferFrom(_from, _to, _tokenId, "");
+342	 }
+343	 function safeTransferFrom( address _from, address _to, uint256 _tokenId, bytes _data ) public canTransfer(_tokenId) {
+344	 transferFrom(_from, _to, _tokenId);
+345	 require(checkAndCallSafeTransfer(_from, _to, _tokenId, _data));
+346	 }
+347	 function isApprovedOrOwner( address _spender, uint256 _tokenId ) internal view returns (bool) {
+348	 address owner = ownerOf(_tokenId);
+349	 return ( _spender == owner || getApproved(_tokenId) == _spender || isApprovedForAll(owner, _spender) );
+350	 }
+351	 function clearApproval(address _owner, uint256 _tokenId) internal {
+352	 require(ownerOf(_tokenId) == _owner);
+353	 if (tokenApprovals[_tokenId] != address(0)) {
+354	 tokenApprovals[_tokenId] = address(0);
+355	 }
+356	 }
+357	 function _mint(address _to, uint256 _tokenId) internal {
+358	 require(_to != address(0));
+359	 addNewTokenTo(_to, _tokenId);
+360	 emit Transfer(address(0), _to, _tokenId);
+361	 }
+362	 function _burn(address _owner, uint256 _tokenId) internal {
+363	 clearApproval(_owner, _tokenId);
+364	 removeTokenFrom(_owner, _tokenId);
+365	 emit Transfer(_owner, address(0), _tokenId);
+366	 }
+367	 function addNewTokenTo(address _to, uint256 _tokenId) internal {
+368	 require(tokenOwner[_tokenId] == address(0));
+369	 tokenOwner[_tokenId] = _to;
+370	 }
+371	 function addTokenTo(address _to, uint256 _tokenId) internal {
+372	 require(tokenOwner[_tokenId] == address(0));
+373	 tokenOwner[_tokenId] = _to;
+374	 }
+375	 function removeTokenFrom(address _from, uint256 _tokenId) internal {
+376	 require(ownerOf(_tokenId) == _from);
+377	 tokenOwner[_tokenId] = address(0);
+378	 }
+379	 function checkAndCallSafeTransfer( address _from, address _to, uint256 _tokenId, bytes _data ) internal returns (bool) {
+380	 if (!_to.isContract()) {
+381	 return true;
+382	 }
+383	 bytes4 retval = ERC721Receiver(_to).onERC721Received( msg.sender, _from, _tokenId, _data);
+384	 return (retval == ERC721_RECEIVED);
+385	 }
+386	 }
+387	 contract ERC721Enumerable is ERC721Basic {
+388	 function totalSupply() public view returns (uint256);
+389	 function tokenOfOwnerByIndex( address _owner, uint256 _index ) public view returns (uint256 _tokenId);
+390	 function tokenByIndex(uint256 _index) public view returns (uint256);
+391	 }
+392	 contract ERC721Metadata is ERC721Basic {
+393	 function name() external view returns (string _name);
+394	 function symbol() external view returns (string _symbol);
+395	 function tokenURI(uint256 _tokenId) public view returns (string);
+396	 }
+397	 contract ERC721 is ERC721Basic, ERC721Enumerable, ERC721Metadata {
+398	 }
+399	 library Strings {
+400	 function strConcat(string _a, string _b, string _c, string _d, string _e) internal pure returns (string) {
+401	 bytes memory _ba = bytes(_a);
+402	 bytes memory _bb = bytes(_b);
+403	 bytes memory _bc = bytes(_c);
+404	 bytes memory _bd = bytes(_d);
+405	 bytes memory _be = bytes(_e);
+406	 string memory abcde = new string(_ba.length + _bb.length + _bc.length + _bd.length + _be.length);
+407	 bytes memory babcde = bytes(abcde);
+408	 uint k = 0;
+409	 for (uint i = 0; i < _ba.length; i++) babcde[k++] = _ba[i];
+410	 for (i = 0; i < _bb.length; i++) babcde[k++] = _bb[i];
+411	 for (i = 0; i < _bc.length; i++) babcde[k++] = _bc[i];
+412	 for (i = 0; i < _bd.length; i++) babcde[k++] = _bd[i];
+413	 for (i = 0; i < _be.length; i++) babcde[k++] = _be[i];
+414	 return string(babcde);
+415	 }
+416	 function strConcat(string _a, string _b, string _c, string _d) internal pure returns (string) {
+417	 return strConcat(_a, _b, _c, _d, "");
+418	 }
+419	 function strConcat(string _a, string _b, string _c) internal pure returns (string) {
+420	 return strConcat(_a, _b, _c, "", "");
+421	 }
+422	 function strConcat(string _a, string _b) internal pure returns (string) {
+423	 return strConcat(_a, _b, "", "", "");
+424	 }
+425	 function uint2str(uint i) internal pure returns (string) {
+426	 if (i == 0) return "0";
+427	 uint j = i;
+428	 uint len;
+429	 while (j != 0){
+430	 len++;
+431	 j /= 10;
+432	 }
+433	 bytes memory bstr = new bytes(len);
+434	 uint k = len - 1;
+435	 while (i != 0){
+436	 bstr[k--] = byte(48 + i % 10);
+437	 i /= 10;
+438	 }
+439	 return string(bstr);
+440	 }
+441	 }
+442	 contract ERC721Token is SupportsInterfaceWithLookup, ERC721BasicToken, ERC721 {
+443	 using Strings for string;
+444	 bytes4 private constant InterfaceId_ERC721Enumerable = 0x780e9d63;
+445	 bytes4 private constant InterfaceId_ERC721Metadata = 0x5b5e139f;
+446	 string public constant NAME = "Gods Unchained";
+447	 string public constant SYMBOL = "GODS";
+448	 string public tokenMetadataBaseURI = "https: mapping(address => uint40[]) internal ownedTokens;
+449	 uint32[] ownedTokensIndex;
+450	 constructor() public {
+451	 _registerInterface(InterfaceId_ERC721Enumerable);
+452	 _registerInterface(InterfaceId_ERC721Metadata);
+453	 }
+454	 function name() external view returns (string) {
+455	 return NAME;
+456	 }
+457	 function symbol() external view returns (string) {
+458	 return SYMBOL;
+459	 }
+460	 function tokenURI(uint256 _tokenId) public view returns (string) {
+461	 return Strings.strConcat( tokenMetadataBaseURI, Strings.uint2str(_tokenId) );
+462	 }
+463	 function tokenOfOwnerByIndex( address _owner, uint256 _index ) public view returns (uint256) {
+464	 require(_index < balanceOf(_owner));
+465	 return ownedTokens[_owner][_index];
+466	 }
+467	 function totalSupply() public view returns (uint256) {
+468	 return cards.length;
+469	 }
+470	 function tokenByIndex(uint256 _index) public view returns (uint256) {
+471	 require(_index < totalSupply());
+472	 return _index;
+473	 }
+474	 function addTokenTo(address _to, uint256 _tokenId) internal {
+475	 super.addTokenTo(_to, _tokenId);
+476	 uint256 length = ownedTokens[_to].length;
+477	 require(length == uint32(length));
+478	 ownedTokens[_to].push(uint40(_tokenId));
+479	 ownedTokensIndex[_tokenId] = uint32(length);
+480	 }
+481	 function addNewTokenTo(address _to, uint256 _tokenId) internal {
+482	 super.addNewTokenTo(_to, _tokenId);
+483	 uint256 length = ownedTokens[_to].length;
+484	 require(length == uint32(length));
+485	 ownedTokens[_to].push(uint40(_tokenId));
+486	 ownedTokensIndex.push(uint32(length));
+487	 }
+488	 function removeTokenFrom(address _from, uint256 _tokenId) internal {
+489	 super.removeTokenFrom(_from, _tokenId);
+490	 uint32 tokenIndex = ownedTokensIndex[_tokenId];
+491	 uint256 lastTokenIndex = ownedTokens[_from].length.sub(1);
+492	 uint40 lastToken = ownedTokens[_from][lastTokenIndex];
+493	 ownedTokens[_from][tokenIndex] = lastToken;
+494	 ownedTokens[_from][lastTokenIndex] = 0;
+495	 ownedTokens[_from].length--;
+496	 ownedTokensIndex[_tokenId] = 0;
+497	 ownedTokensIndex[lastToken] = tokenIndex;
+498	 }
+499	 function balanceOf(address _owner) public view returns (uint256) {
+500	 return ownedTokens[_owner].length;
+501	 }
+502	 }
+503	 contract CardOwnershipTwo is ERC721Token {
+504	 uint public burnCount;
+505	 function getActiveCards() public view returns (uint) {
+506	 return totalSupply() - burnCount;
+507	 }
+508	 function transfer(address to, uint id) public payable onlyOwnerOf(id) {
+509	 require(isTradable(cards[id].proto));
+510	 require(to != address(0));
+511	 _transfer(msg.sender, to, id);
+512	 }
+513	 function _transfer(address from, address to, uint id) internal {
+514	 clearApproval(from, id);
+515	 removeTokenFrom(from, id);
+516	 addTokenTo(to, id);
+517	 emit Transfer(from, to, id);
+518	 }
+519	 function transferAll(address to, uint[] ids) public payable {
+520	 for (uint i = 0; i < ids.length; i++) {
+521	 transfer(to, ids[i]);
+522	 }
+523	 }
+524	 function ownsAll(address proposed, uint[] ids) public view returns (bool) {
+525	 require(ids.length > 0);
+526	 for (uint i = 0; i < ids.length; i++) {
+527	 if (!owns(proposed, ids[i])) {
+528	 return false;
+529	 }
+530	 }
+531	 return true;
+532	 }
+533	 function owns(address proposed, uint id) public view returns (bool) {
+534	 return ownerOf(id) == proposed;
+535	 }
+536	 function burn(uint id) public onlyOwnerOf(id) {
+537	 burnCount++;
+538	 _burn(msg.sender, id);
+539	 }
+540	 function burnAll(uint[] ids) public {
+541	 for (uint i = 0; i < ids.length; i++){
+542	 burn(ids[i]);
+543	 }
+544	 }
+545	 function approve(address to, uint id) public {
+546	 require(isTradable(cards[id].proto));
+547	 super.approve(to, id);
+548	 }
+549	 function approveAll(address to, uint[] ids) public {
+550	 for (uint i = 0; i < ids.length; i++) {
+551	 approve(to, ids[i]);
+552	 }
+553	 }
+554	 function transferFrom(address from, address to, uint id) public {
+555	 require(isTradable(cards[id].proto));
+556	 super.transferFrom(from, to, id);
+557	 }
+558	 function transferAllFrom(address from, address to, uint[] ids) public {
+559	 for (uint i = 0; i < ids.length; i++) {
+560	 transferFrom(from, to, ids[i]);
+561	 }
+562	 }
+563	 function getBurnCount() public view returns (uint) {
+564	 return burnCount;
+565	 }
+566	 }
+567	 contract CardIntegrationTwo is CardOwnershipTwo {
+568	 address[] public packs;
+569	 event CardCreated(uint indexed id, uint16 proto, uint16 purity, address owner);
+570	 function addPack(address approved) public onlyGovernor {
+571	 packs.push(approved);
+572	 }
+573	 modifier onlyApprovedPacks {
+574	 require(_isApprovedPack());
+575	 _;
+576	 }
+577	 function _isApprovedPack() private view returns (bool) {
+578	 for (uint i = 0; i < packs.length; i++) {
+579	 if (msg.sender == address(packs[i])) {
+580	 return true;
+581	 }
+582	 }
+583	 return false;
+584	 }
+585	 function createCard(address owner, uint16 proto, uint16 purity) public whenNotPaused onlyApprovedPacks returns (uint) {
+586	 ProtoCard memory card = protos[proto];
+587	 require(card.season == currentSeason);
+588	 if (card.rarity == Rarity.Mythic) {
+589	 uint64 limit;
+590	 bool exists;
+591	 (limit, exists) = getLimit(proto);
+592	 require(!exists || limit > 0);
+593	 limits[proto].limit--;
+594	 }
+595	 return _createCard(owner, proto, purity);
+596	 }
+597	 function _createCard(address owner, uint16 proto, uint16 purity) internal returns (uint) {
+598	 Card memory card = Card({
+599	 proto: proto, purity: purity }
+600	 );
+601	 uint id = cards.push(card) - 1;
+602	 _mint(owner, id);
+603	 emit CardCreated(id, proto, purity, owner);
+604	 return id;
+605	 }
+606	 }
+607	 contract PreviousInterface {
+608	 function ownerOf(uint id) public view returns (address);
+609	 function getCard(uint id) public view returns (uint16, uint16);
+610	 function totalSupply() public view returns (uint);
+611	 function burnCount() public view returns (uint);
+612	 }
+613	 contract CardMigration is CardIntegrationTwo {
+614	 constructor(PreviousInterface previous) public {
+615	 old = previous;
+616	 }
+617	 PreviousInterface old;
+618	 mapping(uint => bool) public migrated;
+619	 function migrate(uint id) public {
+620	 require(!migrated[id]);
+621	 migrated[id] = true;
+622	 address owner = old.ownerOf(id);
+623	 uint16 proto;
+624	 uint16 purity;
+625	 (proto, purity) = old.getCard(id);
+626	 _createCard(owner, proto, purity);
+627	 }
+628	 function migrateAll(uint[] ids) public {
+629	 for (uint i = 0; i < ids.length; i++){
+630	 migrate(ids[i]);
+631	 }
+632	 }
+633	 }

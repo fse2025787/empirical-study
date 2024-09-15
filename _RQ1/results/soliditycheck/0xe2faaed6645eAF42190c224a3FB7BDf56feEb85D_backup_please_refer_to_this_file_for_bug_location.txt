@@ -1,0 +1,471 @@
+row number 
+1	          pragma solidity >=0.4.24 <0.8.0;
+2	 abstract contract Initializable {
+3	 bool private _initialized;
+4	 bool private _initializing;
+5	 modifier initializer() {
+6	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+7	 bool isTopLevelCall = !_initializing;
+8	 if (isTopLevelCall) {
+9	 _initializing = true;
+10	 _initialized = true;
+11	 }
+12	 _;
+13	 if (isTopLevelCall) {
+14	 _initializing = false;
+15	 }
+16	 }
+17	 function _isConstructor() private view returns (bool) {
+18	 return !AddressUpgradeable.isContract(address(this));
+19	 }
+20	 }
+21	 pragma solidity >=0.6.0 <0.8.0;
+22	 abstract contract ContextUpgradeable is Initializable {
+23	 function __Context_init() internal initializer {
+24	 __Context_init_unchained();
+25	 }
+26	 function __Context_init_unchained() internal initializer {
+27	 }
+28	 function _msgSender() internal view virtual returns (address payable) {
+29	 return msg.sender;
+30	 }
+31	 function _msgData() internal view virtual returns (bytes memory) {
+32	 this;
+33	 return msg.data;
+34	 }
+35	 uint256[50] private __gap;
+36	 }
+37	 pragma solidity 0.7.6;
+38	 interface IOrionGovernance {
+39	 function stake(uint56 adding_amount) external;
+40	 function withdraw(uint56 removing_amount) external;
+41	 function acceptNewLockAmount(address user, uint56 new_lock_amount) external;
+42	 function acceptLock(address user, uint56 lock_increase_amount) external;
+43	 function acceptUnlock(address user, uint56 lock_decrease_amount) external;
+44	 function lastTimeRewardApplicable() external view returns (uint256);
+45	 function rewardPerToken() external view returns (uint256);
+46	 function earned(address account) external view returns (uint256);
+47	 function getRewardForDuration() external view returns (uint256);
+48	 function getReward() external;
+49	 function exit() external;
+50	 }
+51	 pragma solidity >=0.6.0 <0.8.0;
+52	 abstract contract OwnableUpgradeable is Initializable, ContextUpgradeable {
+53	 address private _owner;
+54	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+55	 function __Ownable_init() internal initializer {
+56	 __Context_init_unchained();
+57	 __Ownable_init_unchained();
+58	 }
+59	 function __Ownable_init_unchained() internal initializer {
+60	 address msgSender = _msgSender();
+61	 _owner = msgSender;
+62	 emit OwnershipTransferred(address(0), msgSender);
+63	 }
+64	 function owner() public view virtual returns (address) {
+65	 return _owner;
+66	 }
+67	 modifier onlyOwner() {
+68	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+69	 _;
+70	 }
+71	 function renounceOwnership() public virtual onlyOwner {
+72	 emit OwnershipTransferred(_owner, address(0));
+73	 _owner = address(0);
+74	 }
+75	 function transferOwnership(address newOwner) public virtual onlyOwner {
+76	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+77	 emit OwnershipTransferred(_owner, newOwner);
+78	 _owner = newOwner;
+79	 }
+80	 uint256[49] private __gap;
+81	 }
+82	 pragma solidity >=0.6.0 <0.8.0;
+83	 abstract contract ReentrancyGuardUpgradeable is Initializable {
+84	 uint256 private constant _NOT_ENTERED = 1;
+85	 uint256 private constant _ENTERED = 2;
+86	 uint256 private _status;
+87	 function __ReentrancyGuard_init() internal initializer {
+88	 __ReentrancyGuard_init_unchained();
+89	 }
+90	 function __ReentrancyGuard_init_unchained() internal initializer {
+91	 _status = _NOT_ENTERED;
+92	 }
+93	 modifier nonReentrant() {
+94	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+95	 _status = _ENTERED;
+96	 _;
+97	 _status = _NOT_ENTERED;
+98	 }
+99	 uint256[49] private __gap;
+100	 }
+101	 pragma solidity 0.7.6;
+102	 contract OrionGovernance is IOrionGovernance, ReentrancyGuardUpgradeable, OwnableUpgradeable {
+103	 using SafeMath for uint256;
+104	 using SafeERC20 for IERC20;
+105	 struct UserData {
+106	 uint56 balance;
+107	 uint56 locked_balance;
+108	 }
+109	 IERC20 public staking_token_;
+110	 mapping(address => UserData) public balances_;
+111	 address public voting_contract_address_;
+112	 uint56 public total_balance_;
+113	 uint256 public periodFinish;
+114	 uint256 public rewardRate;
+115	 uint256 public rewardsDuration;
+116	 uint256 public lastUpdateTime;
+117	 uint256 public rewardPerTokenStored;
+118	 mapping(address => uint256) public userRewardPerTokenPaid;
+119	 mapping(address => uint256) public rewards;
+120	 function initialize(address staking_token) public initializer {
+121	 require(staking_token != address(0), "OGI0");
+122	 OwnableUpgradeable.__Ownable_init();
+123	 staking_token_ = IERC20(staking_token);
+124	 }
+125	 function setVotingContractAddress(address voting_contract_address) external onlyOwner {
+126	 voting_contract_address_ = voting_contract_address;
+127	 }
+128	 function lastTimeRewardApplicable() override public view returns (uint256) {
+129	 return block.timestamp < periodFinish ? block.timestamp : periodFinish;
+130	 }
+131	 function rewardPerToken() override public view returns (uint256) {
+132	 if (total_balance_ == 0) {
+133	 return rewardPerTokenStored;
+134	 }
+135	 return rewardPerTokenStored.add( lastTimeRewardApplicable().sub(lastUpdateTime).mul(rewardRate).mul(1e18).div(uint(total_balance_)) );
+136	 }
+137	 function earned(address account) override public view returns (uint256) {
+138	 return uint(balances_[account].balance).mul(rewardPerToken().sub(userRewardPerTokenPaid[account])).div(1e18).add(rewards[account]);
+139	 }
+140	 function getRewardForDuration() override external view returns (uint256) {
+141	 return rewardRate.mul(rewardsDuration);
+142	 }
+143	 function stake(uint56 adding_amount) override public nonReentrant updateReward(msg.sender) {
+144	 require(adding_amount > 0, "CNS0");
+145	 staking_token_.safeTransferFrom(msg.sender, address(this), adding_amount);
+146	 uint56 balance = balances_[msg.sender].balance;
+147	 balance += adding_amount;
+148	 require(balance >= adding_amount, "OF(1)");
+149	 balances_[msg.sender].balance = balance;
+150	 uint56 total_balance = total_balance_;
+151	 total_balance += adding_amount;
+152	 require(total_balance >= adding_amount, "OF(3)");
+153	 total_balance_ = total_balance;
+154	 emit Staked(msg.sender, uint256(adding_amount));
+155	 }
+156	 function withdraw(uint56 removing_amount) override public nonReentrant updateReward(msg.sender) {
+157	 require(removing_amount > 0, "CNW0");
+158	 uint56 balance = balances_[msg.sender].balance;
+159	 require(balance >= removing_amount, "CNW1");
+160	 balance -= removing_amount;
+161	 balances_[msg.sender].balance= balance;
+162	 uint56 total_balance = total_balance_;
+163	 require(total_balance >= removing_amount, "CNW2");
+164	 total_balance -= removing_amount;
+165	 total_balance_ = total_balance;
+166	 uint56 locked_balance = balances_[msg.sender].locked_balance;
+167	 require(locked_balance <= balance, "CNW3");
+168	 staking_token_.safeTransfer(msg.sender, removing_amount);
+169	 emit Withdrawn(msg.sender, uint256(removing_amount));
+170	 }
+171	 function getReward() virtual override public nonReentrant updateReward(msg.sender) {
+172	 uint256 reward = rewards[msg.sender];
+173	 if (reward > 0) {
+174	 rewards[msg.sender] = 0;
+175	 staking_token_.safeTransfer(msg.sender, reward);
+176	 emit RewardPaid(msg.sender, reward);
+177	 }
+178	 }
+179	 function exit() virtual override external {
+180	 withdraw(balances_[msg.sender].balance);
+181	 getReward();
+182	 }
+183	 function acceptNewLockAmount( address user, uint56 new_lock_amount ) external override onlyVotingContract {
+184	 uint56 balance = balances_[user].balance;
+185	 require(balance >= new_lock_amount, "Cannot lock");
+186	 balances_[user].locked_balance = new_lock_amount;
+187	 }
+188	 function acceptLock( address user, uint56 lock_increase_amount ) external override onlyVotingContract {
+189	 require(lock_increase_amount > 0, "Can't inc by 0");
+190	 uint56 balance = balances_[user].balance;
+191	 uint56 locked_balance = balances_[user].locked_balance;
+192	 locked_balance += lock_increase_amount;
+193	 require(locked_balance >= lock_increase_amount, "OF(4)");
+194	 require(locked_balance <= balance, "can't lock more");
+195	 balances_[user].locked_balance = locked_balance;
+196	 }
+197	 function acceptUnlock( address user, uint56 lock_decrease_amount ) external override onlyVotingContract {
+198	 require(lock_decrease_amount > 0, "Can't dec by 0");
+199	 uint56 locked_balance = balances_[user].locked_balance;
+200	 require(locked_balance >= lock_decrease_amount, "Can't unlock more");
+201	 locked_balance -= lock_decrease_amount;
+202	 balances_[user].locked_balance = locked_balance;
+203	 }
+204	 function getBalance(address user) public view returns(uint56) {
+205	 return balances_[user].balance;
+206	 }
+207	 function getLockedBalance(address user) public view returns(uint56) {
+208	 return balances_[user].locked_balance;
+209	 }
+210	 function getTotalBalance() public view returns(uint56) {
+211	 return total_balance_;
+212	 }
+213	 function notifyRewardAmount(uint256 reward, uint256 _rewardsDuration) external onlyOwner updateReward(address(0)) {
+214	 require((_rewardsDuration> 1 days) && (_rewardsDuration < 365 days), "Incorrect rewards duration");
+215	 rewardsDuration = _rewardsDuration;
+216	 if (block.timestamp >= periodFinish) {
+217	 rewardRate = reward.div(rewardsDuration);
+218	 }
+219	 else {
+220	 uint256 remaining = periodFinish.sub(block.timestamp);
+221	 uint256 leftover = remaining.mul(rewardRate);
+222	 rewardRate = reward.add(leftover).div(rewardsDuration);
+223	 }
+224	 uint balance = staking_token_.balanceOf(address(this));
+225	 require(rewardRate <= balance.div(rewardsDuration), "Provided reward too high");
+226	 lastUpdateTime = block.timestamp;
+227	 periodFinish = block.timestamp.add(rewardsDuration);
+228	 emit RewardAdded(reward);
+229	 }
+230	 function emergencyAssetWithdrawal(address asset) external onlyOwner {
+231	 IERC20 token = IERC20(asset);
+232	 token.safeTransfer(owner(), token.balanceOf(address(this)));
+233	 }
+234	 modifier onlyVotingContract() {
+235	 require(msg.sender == voting_contract_address_, "must be voting");
+236	 _;
+237	 }
+238	 modifier updateReward(address account) {
+239	 rewardPerTokenStored = rewardPerToken();
+240	 lastUpdateTime = lastTimeRewardApplicable();
+241	 if (account != address(0)) {
+242	 rewards[account] = earned(account);
+243	 userRewardPerTokenPaid[account] = rewardPerTokenStored;
+244	 }
+245	 _;
+246	 }
+247	 event RewardAdded(uint256 reward);
+248	 event Staked(address indexed user, uint256 amount);
+249	 event Withdrawn(address indexed user, uint256 amount);
+250	 event RewardPaid(address indexed user, uint256 reward);
+251	 }
+252	 pragma solidity >=0.6.2 <0.8.0;
+253	 library AddressUpgradeable {
+254	 function isContract(address account) internal view returns (bool) {
+255	 uint256 size;
+256	 assembly {
+257	 size := extcodesize(account) }
+258	 return size > 0;
+259	 }
+260	 function sendValue(address payable recipient, uint256 amount) internal {
+261	 require(address(this).balance >= amount, "Address: insufficient balance");
+262	 (bool success, ) = recipient.call{
+263	 value: amount }
+264	 ("");
+265	 require(success, "Address: unable to send value, recipient may have reverted");
+266	 }
+267	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+268	 return functionCall(target, data, "Address: low-level call failed");
+269	 }
+270	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+271	 return functionCallWithValue(target, data, 0, errorMessage);
+272	 }
+273	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+274	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+275	 }
+276	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+277	 require(address(this).balance >= value, "Address: insufficient balance for call");
+278	 require(isContract(target), "Address: call to non-contract");
+279	 (bool success, bytes memory returndata) = target.call{
+280	 value: value }
+281	 (data);
+282	 return _verifyCallResult(success, returndata, errorMessage);
+283	 }
+284	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+285	 return functionStaticCall(target, data, "Address: low-level static call failed");
+286	 }
+287	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+288	 require(isContract(target), "Address: static call to non-contract");
+289	 (bool success, bytes memory returndata) = target.staticcall(data);
+290	 return _verifyCallResult(success, returndata, errorMessage);
+291	 }
+292	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+293	 if (success) {
+294	 return returndata;
+295	 }
+296	 else {
+297	 if (returndata.length > 0) {
+298	 assembly {
+299	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+300	 }
+301	 else {
+302	 revert(errorMessage);
+303	 }
+304	 }
+305	 }
+306	 }
+307	 pragma solidity >=0.6.0 <0.8.0;
+308	 library SafeMath {
+309	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+310	 uint256 c = a + b;
+311	 if (c < a) return (false, 0);
+312	 return (true, c);
+313	 }
+314	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+315	 if (b > a) return (false, 0);
+316	 return (true, a - b);
+317	 }
+318	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+319	 if (a == 0) return (true, 0);
+320	 uint256 c = a * b;
+321	 if (c / a != b) return (false, 0);
+322	 return (true, c);
+323	 }
+324	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+325	 if (b == 0) return (false, 0);
+326	 return (true, a / b);
+327	 }
+328	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+329	 if (b == 0) return (false, 0);
+330	 return (true, a % b);
+331	 }
+332	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+333	 uint256 c = a + b;
+334	 require(c >= a, "SafeMath: addition overflow");
+335	 return c;
+336	 }
+337	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+338	 require(b <= a, "SafeMath: subtraction overflow");
+339	 return a - b;
+340	 }
+341	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+342	 if (a == 0) return 0;
+343	 uint256 c = a * b;
+344	 require(c / a == b, "SafeMath: multiplication overflow");
+345	 return c;
+346	 }
+347	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+348	 require(b > 0, "SafeMath: division by zero");
+349	 return a / b;
+350	 }
+351	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+352	 require(b > 0, "SafeMath: modulo by zero");
+353	 return a % b;
+354	 }
+355	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+356	 require(b <= a, errorMessage);
+357	 return a - b;
+358	 }
+359	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+360	 require(b > 0, errorMessage);
+361	 return a / b;
+362	 }
+363	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+364	 require(b > 0, errorMessage);
+365	 return a % b;
+366	 }
+367	 }
+368	 pragma solidity >=0.6.0 <0.8.0;
+369	 interface IERC20 {
+370	 function totalSupply() external view returns (uint256);
+371	 function balanceOf(address account) external view returns (uint256);
+372	 function transfer(address recipient, uint256 amount) external returns (bool);
+373	 function allowance(address owner, address spender) external view returns (uint256);
+374	 function approve(address spender, uint256 amount) external returns (bool);
+375	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+376	 event Transfer(address indexed from, address indexed to, uint256 value);
+377	 event Approval(address indexed owner, address indexed spender, uint256 value);
+378	 }
+379	 pragma solidity >=0.6.0 <0.8.0;
+380	 library SafeERC20 {
+381	 using SafeMath for uint256;
+382	 using Address for address;
+383	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+384	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+385	 }
+386	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+387	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+388	 }
+389	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+390	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+391	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+392	 }
+393	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+394	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+395	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+396	 }
+397	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+398	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+399	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+400	 }
+401	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+402	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+403	 if (returndata.length > 0) {
+404	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+405	 }
+406	 }
+407	 }
+408	 pragma solidity >=0.6.2 <0.8.0;
+409	 library Address {
+410	 function isContract(address account) internal view returns (bool) {
+411	 uint256 size;
+412	 assembly {
+413	 size := extcodesize(account) }
+414	 return size > 0;
+415	 }
+416	 function sendValue(address payable recipient, uint256 amount) internal {
+417	 require(address(this).balance >= amount, "Address: insufficient balance");
+418	 (bool success, ) = recipient.call{
+419	 value: amount }
+420	 ("");
+421	 require(success, "Address: unable to send value, recipient may have reverted");
+422	 }
+423	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+424	 return functionCall(target, data, "Address: low-level call failed");
+425	 }
+426	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+427	 return functionCallWithValue(target, data, 0, errorMessage);
+428	 }
+429	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+430	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+431	 }
+432	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+433	 require(address(this).balance >= value, "Address: insufficient balance for call");
+434	 require(isContract(target), "Address: call to non-contract");
+435	 (bool success, bytes memory returndata) = target.call{
+436	 value: value }
+437	 (data);
+438	 return _verifyCallResult(success, returndata, errorMessage);
+439	 }
+440	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+441	 return functionStaticCall(target, data, "Address: low-level static call failed");
+442	 }
+443	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+444	 require(isContract(target), "Address: static call to non-contract");
+445	 (bool success, bytes memory returndata) = target.staticcall(data);
+446	 return _verifyCallResult(success, returndata, errorMessage);
+447	 }
+448	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+449	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+450	 }
+451	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+452	 require(isContract(target), "Address: delegate call to non-contract");
+453	 (bool success, bytes memory returndata) = target.delegatecall(data);
+454	 return _verifyCallResult(success, returndata, errorMessage);
+455	 }
+456	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+457	 if (success) {
+458	 return returndata;
+459	 }
+460	 else {
+461	 if (returndata.length > 0) {
+462	 assembly {
+463	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+464	 }
+465	 else {
+466	 revert(errorMessage);
+467	 }
+468	 }
+469	 }
+470	 }

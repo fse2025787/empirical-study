@@ -1,0 +1,474 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity ^0.7.0;
+12	 contract ECDSAOffsetRecovery {
+13	 function getHashPacked(address user, uint256 amountWithFee, bytes32 originalTxHash) public pure returns (bytes32) {
+14	 return keccak256(abi.encodePacked(user, amountWithFee, originalTxHash));
+15	 }
+16	 function toEthSignedMessageHash(bytes32 hash) public pure returns (bytes32) {
+17	 return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+18	 }
+19	 function ecOffsetRecover(bytes32 hash, bytes memory signature, uint256 offset) public pure returns (address) {
+20	 bytes32 r;
+21	 bytes32 s;
+22	 uint8 v;
+23	 assembly {
+24	 r := mload(add(signature, add(offset, 0x20))) s := mload(add(signature, add(offset, 0x40))) v := byte(0, mload(add(signature, add(offset, 0x60)))) }
+25	 if (v < 27) {
+26	 v += 27;
+27	 }
+28	 if (v != 27 && v != 28) {
+29	 return (address(0));
+30	 }
+31	 return ecrecover(toEthSignedMessageHash(hash), v, r, s);
+32	 }
+33	 }
+34	 pragma solidity >=0.6.0 <0.8.0;
+35	 abstract contract AccessControl is Context {
+36	 using EnumerableSet for EnumerableSet.AddressSet;
+37	 using Address for address;
+38	 struct RoleData {
+39	 EnumerableSet.AddressSet members;
+40	 bytes32 adminRole;
+41	 }
+42	 mapping (bytes32 => RoleData) private _roles;
+43	 bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
+44	 event RoleAdminChanged(bytes32 indexed role, bytes32 indexed previousAdminRole, bytes32 indexed newAdminRole);
+45	 event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
+46	 event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+47	 function hasRole(bytes32 role, address account) public view returns (bool) {
+48	 return _roles[role].members.contains(account);
+49	 }
+50	 function getRoleMemberCount(bytes32 role) public view returns (uint256) {
+51	 return _roles[role].members.length();
+52	 }
+53	 function getRoleMember(bytes32 role, uint256 index) public view returns (address) {
+54	 return _roles[role].members.at(index);
+55	 }
+56	 function getRoleAdmin(bytes32 role) public view returns (bytes32) {
+57	 return _roles[role].adminRole;
+58	 }
+59	 function grantRole(bytes32 role, address account) public virtual {
+60	 require(hasRole(_roles[role].adminRole, _msgSender()), "AccessControl: sender must be an admin to grant");
+61	 _grantRole(role, account);
+62	 }
+63	 function revokeRole(bytes32 role, address account) public virtual {
+64	 require(hasRole(_roles[role].adminRole, _msgSender()), "AccessControl: sender must be an admin to revoke");
+65	 _revokeRole(role, account);
+66	 }
+67	 function renounceRole(bytes32 role, address account) public virtual {
+68	 require(account == _msgSender(), "AccessControl: can only renounce roles for self");
+69	 _revokeRole(role, account);
+70	 }
+71	 function _setupRole(bytes32 role, address account) internal virtual {
+72	 _grantRole(role, account);
+73	 }
+74	 function _setRoleAdmin(bytes32 role, bytes32 adminRole) internal virtual {
+75	 emit RoleAdminChanged(role, _roles[role].adminRole, adminRole);
+76	 _roles[role].adminRole = adminRole;
+77	 }
+78	 function _grantRole(bytes32 role, address account) private {
+79	 if (_roles[role].members.add(account)) {
+80	 emit RoleGranted(role, account, _msgSender());
+81	 }
+82	 }
+83	 function _revokeRole(bytes32 role, address account) private {
+84	 if (_roles[role].members.remove(account)) {
+85	 emit RoleRevoked(role, account, _msgSender());
+86	 }
+87	 }
+88	 }
+89	 pragma solidity >=0.6.0 <0.8.0;
+90	 abstract contract Pausable is Context {
+91	 event Paused(address account);
+92	 event Unpaused(address account);
+93	 bool private _paused;
+94	 constructor () internal {
+95	 _paused = false;
+96	 }
+97	 function paused() public view returns (bool) {
+98	 return _paused;
+99	 }
+100	 modifier whenNotPaused() {
+101	 require(!_paused, "Pausable: paused");
+102	 _;
+103	 }
+104	 modifier whenPaused() {
+105	 require(_paused, "Pausable: not paused");
+106	 _;
+107	 }
+108	 function _pause() internal virtual whenNotPaused {
+109	 _paused = true;
+110	 emit Paused(_msgSender());
+111	 }
+112	 function _unpause() internal virtual whenPaused {
+113	 _paused = false;
+114	 emit Unpaused(_msgSender());
+115	 }
+116	 }
+117	 pragma solidity ^0.7.0;
+118	 contract swapContract is AccessControl, Pausable, ECDSAOffsetRecovery {
+119	 using SafeMath for uint256;
+120	 bytes32 public constant OWNER_ROLE = keccak256("OWNER_ROLE");
+121	 bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+122	 bytes32 public constant RELAYER_ROLE = keccak256("RELAYER_ROLE");
+123	 bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+124	 IERC20 public tokenAddress;
+125	 address public feeAddress;
+126	 uint128 public numOfThisBlockchain;
+127	 mapping(uint128 => bool) public existingOtherBlockchain;
+128	 mapping(uint128 => uint128) public feeAmountOfBlockchain;
+129	 uint256 public constant SIGNATURE_LENGTH = 65;
+130	 mapping(bytes32 => bytes32) public processedTransactions;
+131	 uint256 public minConfirmationSignatures;
+132	 uint256 public minTokenAmount;
+133	 uint256 public maxGasPrice;
+134	 uint256 public minConfirmationBlocks;
+135	 event TransferFromOtherBlockchain(address user, uint256 amount, uint256 amountWithoutFee, bytes32 originalTxHash);
+136	 event TransferToOtherBlockchain(uint128 blockchain, address user, uint256 amount, string newAddress);
+137	 modifier onlyOwner() {
+138	 require( hasRole(OWNER_ROLE, _msgSender()), "Caller is not in owner role" );
+139	 _;
+140	 }
+141	 modifier onlyOwnerAndManager() {
+142	 require( hasRole(OWNER_ROLE, _msgSender()) || hasRole(MANAGER_ROLE, _msgSender()), "Caller is not in owner or manager role" );
+143	 _;
+144	 }
+145	 modifier onlyRelayer() {
+146	 require( hasRole(RELAYER_ROLE, _msgSender()), "swapContract: Caller is not in relayer role" );
+147	 _;
+148	 }
+149	 constructor( IERC20 _tokenAddress, address _feeAddress, uint128 _numOfThisBlockchain, uint128 [] memory _numsOfOtherBlockchains, uint128 _minConfirmationSignatures, uint256 _minTokenAmount, uint256 _maxGasPrice, uint256 _minConfirmationBlocks ) {
+150	 tokenAddress = _tokenAddress;
+151	 feeAddress = _feeAddress;
+152	 for (uint i = 0; i < _numsOfOtherBlockchains.length; i++ ) {
+153	 require( _numsOfOtherBlockchains[i] != _numOfThisBlockchain, "swapContract: Number of this blockchain is in array of other blockchains" );
+154	 existingOtherBlockchain[_numsOfOtherBlockchains[i]] = true;
+155	 }
+156	 require(_maxGasPrice > 0, "swapContract: Gas price cannot be zero");
+157	 numOfThisBlockchain = _numOfThisBlockchain;
+158	 minConfirmationSignatures = _minConfirmationSignatures;
+159	 minTokenAmount = _minTokenAmount;
+160	 maxGasPrice = _maxGasPrice;
+161	 minConfirmationBlocks = _minConfirmationBlocks;
+162	 _setupRole(DEFAULT_ADMIN_ROLE, _msgSender());
+163	 _setupRole(OWNER_ROLE, _msgSender());
+164	 }
+165	 function getOtherBlockchainAvailableByNum(uint128 blockchain) external view returns (bool) {
+166	 return existingOtherBlockchain[blockchain];
+167	 }
+168	 function transferToOtherBlockchain(uint128 blockchain, uint256 amount, string memory newAddress) external whenNotPaused {
+169	 require( bytes(newAddress).length > 0, "swapContract: No destination address provided" );
+170	 require( existingOtherBlockchain[blockchain] && blockchain != numOfThisBlockchain, "swapContract: Wrong choose of blockchain" );
+171	 require( amount >= feeAmountOfBlockchain[blockchain], "swapContract: Not enough amount of tokens" );
+172	 address sender = _msgSender();
+173	 require( tokenAddress.balanceOf(sender) >= amount, "swapContract: Not enough balance" );
+174	 tokenAddress.transferFrom(sender, address(this), amount);
+175	 emit TransferToOtherBlockchain(blockchain, sender, amount, newAddress);
+176	 }
+177	 function transferToUserWithFee( address user, uint256 amountWithFee, bytes32 originalTxHash, bytes memory concatSignatures ) external onlyRelayer whenNotPaused {
+178	 require( amountWithFee >= minTokenAmount, "swapContract: Amount must be greater than minimum" );
+179	 require( user != address(0), "swapContract: Address cannot be zero address" );
+180	 require( concatSignatures.length.mod(SIGNATURE_LENGTH) == 0, "swapContract: Signatures lengths must be divisible by 65" );
+181	 require( concatSignatures.length.div(SIGNATURE_LENGTH) >= minConfirmationSignatures, "swapContract: Not enough signatures passed" );
+182	 bytes32 hashedParams = getHashPacked(user, amountWithFee, originalTxHash);
+183	 (bool processed, bytes32 savedHash) = isProcessedTransaction(originalTxHash);
+184	 require(!processed && savedHash != hashedParams, "swapContract: Transaction already processed");
+185	 uint256 signaturesCount = concatSignatures.length.div(uint256(SIGNATURE_LENGTH));
+186	 address[] memory validatorAddresses = new address[](signaturesCount);
+187	 for (uint256 i = 0; i < signaturesCount; i++) {
+188	 address validatorAddress = ecOffsetRecover(hashedParams, concatSignatures, i * SIGNATURE_LENGTH);
+189	 require(isValidator(validatorAddress), "swapContract: Validator address not in whitelist");
+190	 for (uint256 j = 0; j < i; j++) {
+191	 require(validatorAddress != validatorAddresses[j], "swapContract: Validator address is duplicated");
+192	 }
+193	 validatorAddresses[i] = validatorAddress;
+194	 }
+195	 processedTransactions[originalTxHash] = hashedParams;
+196	 uint256 fee = feeAmountOfBlockchain[numOfThisBlockchain];
+197	 uint256 amountWithoutFee = amountWithFee.sub(fee);
+198	 tokenAddress.transfer(user, amountWithoutFee);
+199	 tokenAddress.transfer(feeAddress, fee);
+200	 emit TransferFromOtherBlockchain(user, amountWithFee, amountWithoutFee, originalTxHash);
+201	 }
+202	 function addOtherBlockchain( uint128 numOfOtherBlockchain ) external onlyOwner {
+203	 require( numOfOtherBlockchain != numOfThisBlockchain, "swapContract: Cannot add this blockchain to array of other blockchains" );
+204	 require( !existingOtherBlockchain[numOfOtherBlockchain], "swapContract: This blockchain is already added" );
+205	 existingOtherBlockchain[numOfOtherBlockchain] = true;
+206	 }
+207	 function removeOtherBlockchain( uint128 numOfOtherBlockchain ) external onlyOwner {
+208	 require( existingOtherBlockchain[numOfOtherBlockchain], "swapContract: This blockchain was not added" );
+209	 existingOtherBlockchain[numOfOtherBlockchain] = false;
+210	 }
+211	 function changeOtherBlockchain( uint128 oldNumOfOtherBlockchain, uint128 newNumOfOtherBlockchain ) external onlyOwner {
+212	 require( oldNumOfOtherBlockchain != newNumOfOtherBlockchain, "swapContract: Cannot change blockchains with same number" );
+213	 require( newNumOfOtherBlockchain != numOfThisBlockchain, "swapContract: Cannot add this blockchain to array of other blockchains" );
+214	 require( existingOtherBlockchain[oldNumOfOtherBlockchain], "swapContract: This blockchain was not added" );
+215	 require( !existingOtherBlockchain[newNumOfOtherBlockchain], "swapContract: This blockchain is already added" );
+216	 existingOtherBlockchain[oldNumOfOtherBlockchain] = false;
+217	 existingOtherBlockchain[newNumOfOtherBlockchain] = true;
+218	 }
+219	 function changeFeeAddress(address newFeeAddress) external onlyOwnerAndManager {
+220	 feeAddress = newFeeAddress;
+221	 }
+222	 function setFeeAmountOfBlockchain(uint128 blockchainNum, uint128 feeAmount) external onlyOwnerAndManager {
+223	 feeAmountOfBlockchain[blockchainNum] = feeAmount;
+224	 }
+225	 function setMinConfirmationSignatures(uint256 _minConfirmationSignatures) external onlyOwner {
+226	 require(_minConfirmationSignatures > 0, "swapContract: At least 1 confirmation can be set");
+227	 minConfirmationSignatures = _minConfirmationSignatures;
+228	 }
+229	 function setMinTokenAmount(uint256 _minTokenAmount) external onlyOwnerAndManager {
+230	 minTokenAmount = _minTokenAmount;
+231	 }
+232	 function setMaxGasPrice(uint256 _maxGasPrice) external onlyOwnerAndManager {
+233	 require(_maxGasPrice > 0, "swapContract: Gas price cannot be zero");
+234	 maxGasPrice = _maxGasPrice;
+235	 }
+236	 function setMinConfirmationBlocks(uint256 _minConfirmationBlocks) external onlyOwnerAndManager {
+237	 minConfirmationBlocks = _minConfirmationBlocks;
+238	 }
+239	 function transferOwnerAndSetManager(address newOwner, address newManager) external onlyOwner {
+240	 require(newOwner != _msgSender(), "swapContract: New owner must be different than current");
+241	 require(newOwner != address(0x0), "swapContract: Owner cannot be zero address");
+242	 require(newManager != address(0x0), "swapContract: Owner cannot be zero address");
+243	 _setupRole(DEFAULT_ADMIN_ROLE, newOwner);
+244	 _setupRole(OWNER_ROLE, newOwner);
+245	 _setupRole(MANAGER_ROLE, newManager);
+246	 renounceRole(OWNER_ROLE, _msgSender());
+247	 renounceRole(DEFAULT_ADMIN_ROLE, _msgSender());
+248	 }
+249	 function pauseExecution() external onlyOwner {
+250	 _pause();
+251	 }
+252	 function continueExecution() external onlyOwner {
+253	 _unpause();
+254	 }
+255	 function isOwner(address account) public view returns (bool) {
+256	 return hasRole(OWNER_ROLE, account);
+257	 }
+258	 function isManager(address account) public view returns (bool) {
+259	 return hasRole(MANAGER_ROLE, account);
+260	 }
+261	 function isRelayer(address account) public view returns (bool) {
+262	 return hasRole(RELAYER_ROLE, account);
+263	 }
+264	 function isValidator(address account) public view returns (bool) {
+265	 return hasRole(VALIDATOR_ROLE, account);
+266	 }
+267	 function isProcessedTransaction(bytes32 originalTxHash) public view returns (bool processed, bytes32 hashedParams) {
+268	 hashedParams = processedTransactions[originalTxHash];
+269	 processed = hashedParams != bytes32(0);
+270	 }
+271	 }
+272	 pragma solidity >=0.6.0 <0.8.0;
+273	 library SafeMath {
+274	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+275	 uint256 c = a + b;
+276	 require(c >= a, "SafeMath: addition overflow");
+277	 return c;
+278	 }
+279	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+280	 return sub(a, b, "SafeMath: subtraction overflow");
+281	 }
+282	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+283	 require(b <= a, errorMessage);
+284	 uint256 c = a - b;
+285	 return c;
+286	 }
+287	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+288	 if (a == 0) {
+289	 return 0;
+290	 }
+291	 uint256 c = a * b;
+292	 require(c / a == b, "SafeMath: multiplication overflow");
+293	 return c;
+294	 }
+295	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+296	 return div(a, b, "SafeMath: division by zero");
+297	 }
+298	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+299	 require(b > 0, errorMessage);
+300	 uint256 c = a / b;
+301	 return c;
+302	 }
+303	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+304	 return mod(a, b, "SafeMath: modulo by zero");
+305	 }
+306	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+307	 require(b != 0, errorMessage);
+308	 return a % b;
+309	 }
+310	 }
+311	 pragma solidity >=0.6.0 <0.8.0;
+312	 interface IERC20 {
+313	 function totalSupply() external view returns (uint256);
+314	 function balanceOf(address account) external view returns (uint256);
+315	 function transfer(address recipient, uint256 amount) external returns (bool);
+316	 function allowance(address owner, address spender) external view returns (uint256);
+317	 function approve(address spender, uint256 amount) external returns (bool);
+318	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+319	 event Transfer(address indexed from, address indexed to, uint256 value);
+320	 event Approval(address indexed owner, address indexed spender, uint256 value);
+321	 }
+322	 pragma solidity >=0.6.2 <0.8.0;
+323	 library Address {
+324	 function isContract(address account) internal view returns (bool) {
+325	 uint256 size;
+326	 assembly {
+327	 size := extcodesize(account) }
+328	 return size > 0;
+329	 }
+330	 function sendValue(address payable recipient, uint256 amount) internal {
+331	 require(address(this).balance >= amount, "Address: insufficient balance");
+332	 (bool success, ) = recipient.call{
+333	 value: amount }
+334	 ("");
+335	 require(success, "Address: unable to send value, recipient may have reverted");
+336	 }
+337	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+338	 return functionCall(target, data, "Address: low-level call failed");
+339	 }
+340	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+341	 return functionCallWithValue(target, data, 0, errorMessage);
+342	 }
+343	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+344	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+345	 }
+346	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+347	 require(address(this).balance >= value, "Address: insufficient balance for call");
+348	 require(isContract(target), "Address: call to non-contract");
+349	 (bool success, bytes memory returndata) = target.call{
+350	 value: value }
+351	 (data);
+352	 return _verifyCallResult(success, returndata, errorMessage);
+353	 }
+354	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+355	 return functionStaticCall(target, data, "Address: low-level static call failed");
+356	 }
+357	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+358	 require(isContract(target), "Address: static call to non-contract");
+359	 (bool success, bytes memory returndata) = target.staticcall(data);
+360	 return _verifyCallResult(success, returndata, errorMessage);
+361	 }
+362	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+363	 if (success) {
+364	 return returndata;
+365	 }
+366	 else {
+367	 if (returndata.length > 0) {
+368	 assembly {
+369	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+370	 }
+371	 else {
+372	 revert(errorMessage);
+373	 }
+374	 }
+375	 }
+376	 }
+377	 pragma solidity >=0.6.0 <0.8.0;
+378	 library EnumerableSet {
+379	 struct Set {
+380	 bytes32[] _values;
+381	 mapping (bytes32 => uint256) _indexes;
+382	 }
+383	 function _add(Set storage set, bytes32 value) private returns (bool) {
+384	 if (!_contains(set, value)) {
+385	 set._values.push(value);
+386	 set._indexes[value] = set._values.length;
+387	 return true;
+388	 }
+389	 else {
+390	 return false;
+391	 }
+392	 }
+393	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+394	 uint256 valueIndex = set._indexes[value];
+395	 if (valueIndex != 0) {
+396	 uint256 toDeleteIndex = valueIndex - 1;
+397	 uint256 lastIndex = set._values.length - 1;
+398	 bytes32 lastvalue = set._values[lastIndex];
+399	 set._values[toDeleteIndex] = lastvalue;
+400	 set._indexes[lastvalue] = toDeleteIndex + 1;
+401	 set._values.pop();
+402	 delete set._indexes[value];
+403	 return true;
+404	 }
+405	 else {
+406	 return false;
+407	 }
+408	 }
+409	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+410	 return set._indexes[value] != 0;
+411	 }
+412	 function _length(Set storage set) private view returns (uint256) {
+413	 return set._values.length;
+414	 }
+415	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+416	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+417	 return set._values[index];
+418	 }
+419	 struct Bytes32Set {
+420	 Set _inner;
+421	 }
+422	 function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+423	 return _add(set._inner, value);
+424	 }
+425	 function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+426	 return _remove(set._inner, value);
+427	 }
+428	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+429	 return _contains(set._inner, value);
+430	 }
+431	 function length(Bytes32Set storage set) internal view returns (uint256) {
+432	 return _length(set._inner);
+433	 }
+434	 function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+435	 return _at(set._inner, index);
+436	 }
+437	 struct AddressSet {
+438	 Set _inner;
+439	 }
+440	 function add(AddressSet storage set, address value) internal returns (bool) {
+441	 return _add(set._inner, bytes32(uint256(value)));
+442	 }
+443	 function remove(AddressSet storage set, address value) internal returns (bool) {
+444	 return _remove(set._inner, bytes32(uint256(value)));
+445	 }
+446	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+447	 return _contains(set._inner, bytes32(uint256(value)));
+448	 }
+449	 function length(AddressSet storage set) internal view returns (uint256) {
+450	 return _length(set._inner);
+451	 }
+452	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+453	 return address(uint256(_at(set._inner, index)));
+454	 }
+455	 struct UintSet {
+456	 Set _inner;
+457	 }
+458	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+459	 return _add(set._inner, bytes32(value));
+460	 }
+461	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+462	 return _remove(set._inner, bytes32(value));
+463	 }
+464	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+465	 return _contains(set._inner, bytes32(value));
+466	 }
+467	 function length(UintSet storage set) internal view returns (uint256) {
+468	 return _length(set._inner);
+469	 }
+470	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+471	 return uint256(_at(set._inner, index));
+472	 }
+473	 }

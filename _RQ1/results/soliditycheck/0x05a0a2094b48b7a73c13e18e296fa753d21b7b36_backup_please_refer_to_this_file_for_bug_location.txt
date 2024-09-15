@@ -1,0 +1,882 @@
+row number 
+1	   pragma solidity 0.4.24;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+4	 if (a == 0) {
+5	 return 0;
+6	 }
+7	 c = a * b;
+8	 assert(c / a == b);
+9	 return c;
+10	 }
+11	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+12	 return a / b;
+13	 }
+14	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+15	 assert(b <= a);
+16	 return a - b;
+17	 }
+18	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+19	 c = a + b;
+20	 assert(c >= a);
+21	 return c;
+22	 }
+23	 }
+24	 contract Ownable {
+25	 address public owner;
+26	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+27	 function Ownable() public {
+28	 owner = msg.sender;
+29	 }
+30	 modifier onlyOwner() {
+31	 require(msg.sender == owner);
+32	 _;
+33	 }
+34	 function transferOwnership(address newOwner) public onlyOwner {
+35	 require(newOwner != address(0));
+36	 emit OwnershipTransferred(owner, newOwner);
+37	 owner = newOwner;
+38	 }
+39	 }
+40	 contract Admin is Ownable {
+41	 using SafeMath for uint256;
+42	 struct Tier {
+43	 uint256 amountInCenter;
+44	 uint256 amountInOuter;
+45	 uint256 priceInCenter;
+46	 uint256 priceInOuter;
+47	 uint256 soldInCenter;
+48	 uint256 soldInOuter;
+49	 bool filledInCenter;
+50	 bool filledInOuter;
+51	 }
+52	 Tier[] public tiers;
+53	 bool public halted;
+54	 uint256 public logoPrice = 0;
+55	 uint256 public logoId;
+56	 address public platformWallet;
+57	 uint256 public feeForFirstArtWorkChangeRequest = 0 ether;
+58	 uint256 public feeForArtWorkChangeRequest = 0.2 ether;
+59	 uint256 public minResalePercentage = 15;
+60	 mapping(address => bool) public globalAdmins;
+61	 mapping(address => bool) public admins;
+62	 mapping(address => bool) public signers;
+63	 event Halted(bool _halted);
+64	 modifier onlyAdmin() {
+65	 require(true == admins[msg.sender] || true == globalAdmins[msg.sender]);
+66	 _;
+67	 }
+68	 modifier onlyGlobalAdmin() {
+69	 require(true == globalAdmins[msg.sender]);
+70	 _;
+71	 }
+72	 modifier notHalted() {
+73	 require(halted == false);
+74	 _;
+75	 }
+76	 function addGlobalAdmin(address _address) public onlyOwner() {
+77	 globalAdmins[_address] = true;
+78	 }
+79	 function removeGlobalAdmin(address _address) public onlyOwner() {
+80	 globalAdmins[_address] = false;
+81	 }
+82	 function addAdmin(address _address) public onlyGlobalAdmin() {
+83	 admins[_address] = true;
+84	 }
+85	 function removeAdmin(address _address) public onlyGlobalAdmin() {
+86	 admins[_address] = true;
+87	 }
+88	 function setSigner(address _address, bool status) public onlyGlobalAdmin() {
+89	 signers[_address] = status;
+90	 }
+91	 function setLogoPrice(uint256 _price) public onlyGlobalAdmin() {
+92	 logoPrice = _price;
+93	 }
+94	 function setFeeForFirstArtWorkChangeRequest(uint256 _fee) public onlyGlobalAdmin() {
+95	 feeForFirstArtWorkChangeRequest = _fee;
+96	 }
+97	 function setFeeForArtWorkChangeRequest(uint256 _fee) public onlyGlobalAdmin() {
+98	 feeForArtWorkChangeRequest = _fee;
+99	 }
+100	 function setTierData( uint256 _index, uint256 _priceInCenter, uint256 _priceInOuter) public onlyGlobalAdmin() {
+101	 Tier memory tier = tiers[_index];
+102	 tier.priceInCenter = _priceInCenter;
+103	 tier.priceInOuter = _priceInOuter;
+104	 tiers[_index] = tier;
+105	 }
+106	 function setMinResalePercentage(uint256 _minResalePercentage) public onlyGlobalAdmin() {
+107	 minResalePercentage = _minResalePercentage;
+108	 }
+109	 function isAdmin(address _address) public view returns (bool isAdmin_) {
+110	 return (true == admins[_address] || true == globalAdmins[_address]);
+111	 }
+112	 function setHalted(bool _halted) public onlyGlobalAdmin {
+113	 halted = _halted;
+114	 emit Halted(_halted);
+115	 }
+116	 function verify(bytes32 _hash, uint8 _v, bytes32 _r, bytes32 _s) public pure returns (address) {
+117	 bytes memory prefix = '\x19Ethereum Signed Message:\n32';
+118	 return ecrecover(keccak256(abi.encodePacked(prefix, _hash)), _v, _r, _s);
+119	 }
+120	 function isContract(address addr) public view returns (bool) {
+121	 uint size;
+122	 assembly {
+123	 size := extcodesize(addr) }
+124	 return size > 0;
+125	 }
+126	 function setPlatformWallet(address _addresss) public onlyGlobalAdmin() {
+127	 platformWallet = _addresss;
+128	 }
+129	 }
+130	 contract BigIoAdSpace is Ownable {
+131	 using SafeMath for uint256;
+132	 struct Token {
+133	 uint256 id;
+134	 uint256 x;
+135	 uint256 y;
+136	 uint256 sizeA;
+137	 uint256 sizeB;
+138	 uint256 soldPrice;
+139	 uint256 actualPrice;
+140	 uint256 timesSold;
+141	 uint256 timesUpdated;
+142	 uint256 soldAt;
+143	 uint256 inner;
+144	 uint256 outer;
+145	 uint256 soldNearby;
+146	 }
+147	 struct MetaData {
+148	 string meta;
+149	 }
+150	 struct InnerScope {
+151	 uint256 x1;
+152	 uint256 y1;
+153	 uint256 x2;
+154	 uint256 y2;
+155	 uint256 x3;
+156	 uint256 y3;
+157	 uint256 x4;
+158	 uint256 y4;
+159	 }
+160	 InnerScope public innerScope;
+161	 mapping(uint256 => MetaData) public metadata;
+162	 mapping(uint256 => address) public tokenOwner;
+163	 mapping(uint256 => mapping(uint256 => bool)) public neighbours;
+164	 mapping(uint256 => uint256[]) public neighboursArea;
+165	 Token[] public allMinedTokens;
+166	 mapping(uint256 => uint256) public allTokensIndex;
+167	 mapping(uint256 => mapping(uint256 => uint256)) public soldUnits;
+168	 address public platform;
+169	 event Transfer(address indexed _from, address indexed _to, uint256 _tokenId);
+170	 event TokenPriceIncreased(uint256 _tokenId, uint256 _newPrice, uint256 _boughtTokenId, uint256 time);
+171	 constructor () public {
+172	 innerScope = InnerScope( 12, 11, 67, 11, 12, 34, 67, 34 );
+173	 }
+174	 modifier onlyPlatform() {
+175	 require(msg.sender == platform);
+176	 _;
+177	 }
+178	 modifier exists(uint256 _tokenId) {
+179	 address owner = tokenOwner[_tokenId];
+180	 require(owner != address(0));
+181	 _;
+182	 }
+183	 function setPlatform(address _platform) public onlyOwner() {
+184	 platform = _platform;
+185	 }
+186	 function totalSupply() public view returns (uint256) {
+187	 return allMinedTokens.length;
+188	 }
+189	 function tokenExists(uint256 _tokenId) public view returns (bool) {
+190	 address owner = tokenOwner[_tokenId];
+191	 return owner != address(0);
+192	 }
+193	 function unitExists(uint x, uint y) public view returns (bool) {
+194	 return (soldUnits[x][y] != 0);
+195	 }
+196	 function getOwner(uint256 _tokenId) public view returns (address) {
+197	 return tokenOwner[_tokenId];
+198	 }
+199	 function getMetadata(uint256 _tokenId) public exists(_tokenId) view returns (string) {
+200	 return metadata[_tokenId].meta;
+201	 }
+202	 function setTokenMetadata(uint256 _tokenId, string meta) public onlyPlatform exists(_tokenId) {
+203	 metadata[_tokenId] = MetaData(meta);
+204	 }
+205	 function increaseUpdateMetadataCounter(uint256 _tokenId) public onlyPlatform {
+206	 allMinedTokens[allTokensIndex[_tokenId]].timesUpdated = allMinedTokens[allTokensIndex[_tokenId]].timesUpdated.add(1);
+207	 }
+208	 function removeTokenMetadata(uint256 _tokenId) public onlyPlatform exists(_tokenId) {
+209	 delete metadata[_tokenId];
+210	 }
+211	 function getCurrentPriceForToken(uint256 _tokenId) public exists(_tokenId) view returns (uint256) {
+212	 return allMinedTokens[allTokensIndex[_tokenId]].actualPrice;
+213	 }
+214	 function getTokenData(uint256 _tokenId) public exists(_tokenId) view returns(uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256) {
+215	 Token memory token = allMinedTokens[allTokensIndex[_tokenId]];
+216	 return (_tokenId, token.x, token.y, token.sizeA, token.sizeB, token.actualPrice, token.soldPrice, token.inner, token.outer);
+217	 }
+218	 function getTokenSoldPrice(uint256 _tokenId) public exists(_tokenId) view returns (uint256) {
+219	 Token memory token = allMinedTokens[allTokensIndex[_tokenId]];
+220	 return token.soldPrice;
+221	 }
+222	 function getTokenUpdatedCounter(uint256 _tokenId) public exists(_tokenId) view returns (uint256) {
+223	 return allMinedTokens[allTokensIndex[_tokenId]].timesUpdated;
+224	 }
+225	 function getTokenSizes(uint256 _tokenId) public exists(_tokenId) view returns (uint256, uint256) {
+226	 Token memory token = allMinedTokens[allTokensIndex[_tokenId]];
+227	 return (token.sizeA, token.sizeB);
+228	 }
+229	 function getTokenScope(uint256 _tokenId) public exists(_tokenId) view returns (bool, bool) {
+230	 Token memory token = allMinedTokens[allTokensIndex[_tokenId]];
+231	 return (token.inner > 0, token.outer > 0);
+232	 }
+233	 function getTokenCounters(uint256 _tokenId) public exists(_tokenId) view returns (uint256, uint256, uint256, uint256) {
+234	 Token memory token = allMinedTokens[allTokensIndex[_tokenId]];
+235	 return (token.inner, token.outer, token.timesSold, token.soldNearby);
+236	 }
+237	 function mint( address to, uint x, uint y, uint sizeA, uint sizeB, uint256 totalPrice, uint256 actualPrice ) public onlyPlatform() returns (uint256) {
+238	 require(to != address(0));
+239	 require(sizeA.mul(sizeB) <= 100);
+240	 uint256 inner;
+241	 uint256 total;
+242	 (total, inner) = calculateCounters(x, y, sizeA, sizeB);
+243	 uint256 tokenId = (allMinedTokens.length).add(1);
+244	 Token memory minted = Token(tokenId, x, y, sizeA, sizeB, totalPrice, actualPrice, 0, 0, 0, inner, total.sub(inner), 0);
+245	 copyToAllUnits(x, y, sizeA, sizeB, tokenId);
+246	 updateInternalState(minted, to);
+247	 return tokenId;
+248	 }
+249	 function updateTokensState(uint256 _tokenId, uint256 newPrice) public onlyPlatform exists(_tokenId) {
+250	 uint256 index = allTokensIndex[_tokenId];
+251	 allMinedTokens[index].timesSold += 1;
+252	 allMinedTokens[index].timesUpdated = 0;
+253	 allMinedTokens[index].soldNearby = 0;
+254	 allMinedTokens[index].soldPrice = newPrice;
+255	 allMinedTokens[index].actualPrice = newPrice;
+256	 allMinedTokens[index].soldAt = now;
+257	 }
+258	 function updateOwner(uint256 _tokenId, address newOwner, address prevOwner) public onlyPlatform exists(_tokenId) {
+259	 require(newOwner != address(0));
+260	 require(prevOwner != address(0));
+261	 require(prevOwner == tokenOwner[_tokenId]);
+262	 tokenOwner[_tokenId] = newOwner;
+263	 }
+264	 function inInnerScope(uint256 x, uint256 y) public view returns (bool) {
+265	 if ((x >= innerScope.x1) && (x <= innerScope.x2) && (y >= innerScope.y1) && (y <= innerScope.y3)) {
+266	 return true;
+267	 }
+268	 return false;
+269	 }
+270	 function calculateCounters(uint256 x, uint256 y, uint256 sizeA, uint256 sizeB) public view returns (uint256 total, uint256 inner) {
+271	 uint256 upX = x.add(sizeA);
+272	 uint256 upY = y.add(sizeB);
+273	 require(x >= 1);
+274	 require(y >= 1);
+275	 require(upX <= 79);
+276	 require(upY <= 45);
+277	 require(sizeA > 0);
+278	 require(sizeB > 0);
+279	 uint256 i;
+280	 uint256 j;
+281	 for (i = x; i < upX; i++) {
+282	 for (j = y; j < upY; j++) {
+283	 require(soldUnits[i][j] == 0);
+284	 if (inInnerScope(i, j)) {
+285	 inner = inner.add(1);
+286	 }
+287	 total = total.add(1);
+288	 }
+289	 }
+290	 }
+291	 function increasePriceForNeighbours(uint256 tokenId) public onlyPlatform {
+292	 Token memory token = allMinedTokens[allTokensIndex[tokenId]];
+293	 uint256 upX = token.x.add(token.sizeA);
+294	 uint256 upY = token.y.add(token.sizeB);
+295	 uint256 i;
+296	 uint256 j;
+297	 uint256 k;
+298	 uint256 _tokenId;
+299	 if (neighboursArea[tokenId].length == 0) {
+300	 for (i = token.x; i < upX; i++) {
+301	 _tokenId = soldUnits[i][token.y - 1];
+302	 if (_tokenId != 0) {
+303	 if (!neighbours[tokenId][_tokenId]) {
+304	 neighbours[tokenId][_tokenId] = true;
+305	 neighboursArea[tokenId].push(_tokenId);
+306	 }
+307	 if (!neighbours[_tokenId][tokenId]) {
+308	 neighbours[_tokenId][tokenId] = true;
+309	 neighboursArea[_tokenId].push(tokenId);
+310	 }
+311	 }
+312	 _tokenId = soldUnits[i][upY];
+313	 if (_tokenId != 0) {
+314	 if (!neighbours[tokenId][_tokenId]) {
+315	 neighbours[tokenId][_tokenId] = true;
+316	 neighboursArea[tokenId].push(_tokenId);
+317	 }
+318	 if (!neighbours[_tokenId][tokenId]) {
+319	 neighbours[_tokenId][tokenId] = true;
+320	 neighboursArea[_tokenId].push(tokenId);
+321	 }
+322	 }
+323	 }
+324	 for (j = token.y; j < upY; j++) {
+325	 _tokenId = soldUnits[token.x - 1][j];
+326	 if (_tokenId != 0) {
+327	 if (!neighbours[tokenId][_tokenId]) {
+328	 neighbours[tokenId][_tokenId] = true;
+329	 neighboursArea[tokenId].push(_tokenId);
+330	 }
+331	 if (!neighbours[_tokenId][tokenId]) {
+332	 neighbours[_tokenId][tokenId] = true;
+333	 neighboursArea[_tokenId].push(tokenId);
+334	 }
+335	 }
+336	 _tokenId = soldUnits[upX][j];
+337	 if (_tokenId != 0) {
+338	 if (!neighbours[tokenId][_tokenId]) {
+339	 neighbours[tokenId][_tokenId] = true;
+340	 neighboursArea[tokenId].push(_tokenId);
+341	 }
+342	 if (!neighbours[_tokenId][tokenId]) {
+343	 neighbours[_tokenId][tokenId] = true;
+344	 neighboursArea[_tokenId].push(tokenId);
+345	 }
+346	 }
+347	 }
+348	 }
+349	 for (k = 0; k < neighboursArea[tokenId].length; k++) {
+350	 Token storage _token = allMinedTokens[allTokensIndex[neighboursArea[tokenId][k]]];
+351	 _token.soldNearby = _token.soldNearby.add(1);
+352	 _token.actualPrice = _token.actualPrice.add((_token.actualPrice.div(100)));
+353	 emit TokenPriceIncreased(_token.id, _token.actualPrice, _tokenId, now);
+354	 }
+355	 }
+356	 function copyToAllUnits(uint256 x, uint256 y, uint256 width, uint256 height, uint256 tokenId) internal {
+357	 uint256 upX = x + width;
+358	 uint256 upY = y + height;
+359	 uint256 i;
+360	 uint256 j;
+361	 for (i = x; i < upX; i++) {
+362	 for (j = y; j < upY; j++) {
+363	 soldUnits[i][j] = tokenId;
+364	 }
+365	 }
+366	 }
+367	 function updateInternalState(Token minted, address _to) internal {
+368	 uint256 lengthT = allMinedTokens.length;
+369	 allMinedTokens.push(minted);
+370	 allTokensIndex[minted.id] = lengthT;
+371	 tokenOwner[minted.id] = _to;
+372	 }
+373	 }
+374	 contract ERC20Basic {
+375	 function totalSupply() public view returns (uint256);
+376	 function balanceOf(address who) public view returns (uint256);
+377	 function transfer(address to, uint256 value) public returns (bool);
+378	 event Transfer(address indexed from, address indexed to, uint256 value);
+379	 }
+380	 contract BasicToken is ERC20Basic {
+381	 using SafeMath for uint256;
+382	 mapping(address => uint256) balances;
+383	 uint256 totalSupply_;
+384	 function totalSupply() public view returns (uint256) {
+385	 return totalSupply_;
+386	 }
+387	 function transfer(address _to, uint256 _value) public returns (bool) {
+388	 require(_to != address(0));
+389	 require(_value <= balances[msg.sender]);
+390	 balances[msg.sender] = balances[msg.sender].sub(_value);
+391	 balances[_to] = balances[_to].add(_value);
+392	 emit Transfer(msg.sender, _to, _value);
+393	 return true;
+394	 }
+395	 function balanceOf(address _owner) public view returns (uint256) {
+396	 return balances[_owner];
+397	 }
+398	 }
+399	 contract ERC20 is ERC20Basic {
+400	 function allowance(address owner, address spender) public view returns (uint256);
+401	 function transferFrom(address from, address to, uint256 value) public returns (bool);
+402	 function approve(address spender, uint256 value) public returns (bool);
+403	 event Approval(address indexed owner, address indexed spender, uint256 value);
+404	 }
+405	 contract StandardToken is ERC20, BasicToken {
+406	 mapping (address => mapping (address => uint256)) internal allowed;
+407	 function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+408	 require(_to != address(0));
+409	 require(_value <= balances[_from]);
+410	 require(_value <= allowed[_from][msg.sender]);
+411	 balances[_from] = balances[_from].sub(_value);
+412	 balances[_to] = balances[_to].add(_value);
+413	 allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
+414	 emit Transfer(_from, _to, _value);
+415	 return true;
+416	 }
+417	 function approve(address _spender, uint256 _value) public returns (bool) {
+418	 allowed[msg.sender][_spender] = _value;
+419	 emit Approval(msg.sender, _spender, _value);
+420	 return true;
+421	 }
+422	 function allowance(address _owner, address _spender) public view returns (uint256) {
+423	 return allowed[_owner][_spender];
+424	 }
+425	 function increaseApproval(address _spender, uint _addedValue) public returns (bool) {
+426	 allowed[msg.sender][_spender] = allowed[msg.sender][_spender].add(_addedValue);
+427	 emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+428	 return true;
+429	 }
+430	 function decreaseApproval(address _spender, uint _subtractedValue) public returns (bool) {
+431	 uint oldValue = allowed[msg.sender][_spender];
+432	 if (_subtractedValue > oldValue) {
+433	 allowed[msg.sender][_spender] = 0;
+434	 }
+435	 else {
+436	 allowed[msg.sender][_spender] = oldValue.sub(_subtractedValue);
+437	 }
+438	 emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+439	 return true;
+440	 }
+441	 }
+442	 contract BigIOERC20token is StandardToken, Ownable {
+443	 using SafeMath for uint256;
+444	 string public name;
+445	 string public symbol;
+446	 uint8 public decimals;
+447	 uint256 public maxSupply;
+448	 bool public allowedMinting;
+449	 mapping(address => bool) public mintingAgents;
+450	 mapping(address => bool) public stateChangeAgents;
+451	 event MintERC20(address indexed _holder, uint256 _tokens);
+452	 event Transfer(address indexed _from, address indexed _to, uint256 _tokenId);
+453	 modifier onlyMintingAgents () {
+454	 require(mintingAgents[msg.sender]);
+455	 _;
+456	 }
+457	 constructor (string _name, string _symbol, uint8 _decimals, uint256 _maxSupply) public StandardToken() {
+458	 name = _name;
+459	 symbol = _symbol;
+460	 decimals = _decimals;
+461	 maxSupply = _maxSupply;
+462	 allowedMinting = true;
+463	 mintingAgents[msg.sender] = true;
+464	 }
+465	 function updateMintingAgent(address _agent, bool _status) public onlyOwner {
+466	 mintingAgents[_agent] = _status;
+467	 }
+468	 function mint(address _holder, uint256 _tokens) public onlyMintingAgents() {
+469	 require(allowedMinting == true && totalSupply_.add(_tokens) <= maxSupply);
+470	 totalSupply_ = totalSupply_.add(_tokens);
+471	 balances[_holder] = balanceOf(_holder).add(_tokens);
+472	 if (totalSupply_ == maxSupply) {
+473	 allowedMinting = false;
+474	 }
+475	 emit MintERC20(_holder, _tokens);
+476	 emit Transfer(0x0, _holder, _tokens);
+477	 }
+478	 }
+479	 contract PricingStrategy {
+480	 using SafeMath for uint256;
+481	 function calculateMinPriceForNextRound(uint256 _tokenPrice, uint256 _minResalePercentage) public pure returns (uint256) {
+482	 return _tokenPrice.add(_tokenPrice.div(100).mul(_minResalePercentage));
+483	 }
+484	 function calculateSharesInTheRevenue(uint256 _prevTokenPrice, uint256 _newTokenPrice) public pure returns (uint256, uint256) {
+485	 uint256 revenue = _newTokenPrice.sub(_prevTokenPrice);
+486	 uint256 platformShare = revenue.mul(40).div(100);
+487	 uint256 forPrevOwner = revenue.sub(platformShare);
+488	 return (platformShare, forPrevOwner);
+489	 }
+490	 }
+491	 contract Platform is Admin {
+492	 using SafeMath for uint256;
+493	 struct Offer {
+494	 uint256 tokenId;
+495	 uint256 offerId;
+496	 address from;
+497	 uint256 offeredPrice;
+498	 uint256 tokenPrice;
+499	 bool accepted;
+500	 uint256 timestamp;
+501	 }
+502	 struct ArtWorkChangeRequest {
+503	 address fromUser;
+504	 uint256 tokenId;
+505	 uint256 changeId;
+506	 string meta;
+507	 uint256 timestamp;
+508	 bool isReviewed;
+509	 }
+510	 BigIoAdSpace public token;
+511	 BigIOERC20token public erc20token;
+512	 PricingStrategy public pricingStrategy;
+513	 ArtWorkChangeRequest[] public artWorkChangeRequests;
+514	 bool public isLogoInitied;
+515	 uint256 public logoX = 35;
+516	 uint256 public logoY = 18;
+517	 Offer[] public offers;
+518	 mapping(address => uint256) public pendingReturns;
+519	 event Minted(address indexed _owner, uint256 _tokenId, uint256 _x, uint256 _y, uint256 _sizeA, uint256 _sizeB, uint256 _price, uint256 _platformTransfer, uint256 _timestamp);
+520	 event Purchased(address indexed _from, address indexed _to, uint256 _tokenId, uint256 _price, uint256 _prevPrice, uint256 _prevOwnerTransfer, uint256 _platformTransfer, uint256 _timestamp);
+521	 event OfferMade(address indexed _fromUser, uint256 _tokenId, uint256 _offerId, uint256 _offeredPrice, uint256 _timestamp);
+522	 event OfferApproved(address indexed _owner, uint256 _tokenId, uint256 _offerId, uint256 _offeredPrice, uint256 _timestamp);
+523	 event OfferDeclined(address indexed _fromUser, uint256 _tokenId, uint256 _offerId, uint256 _offeredPrice, uint256 _timestamp);
+524	 event ArtWorkChangeRequestMade( address indexed _fromUser, uint256 _tokenId, uint256 _changeId, string _meta, uint256 _platformTransfer, uint256 _timestamp);
+525	 event ArtWorkChangeRequestApproved( address indexed _fromUser, uint256 _tokenId, uint256 _changeId, string _meta, uint256 _timestamp);
+526	 event ArtWorkChangeRequestDeclined( address indexed _fromUser, uint256 _tokenId, uint256 _changeId, string _meta, uint256 _timestamp);
+527	 event RemovedMetaData(uint256 _tokenId, address _admin, string _meta, uint256 _timestamp);
+528	 event ChangedOwnership(uint256 _tokenId, address _prevOwner, address _newOwner, uint256 _timestamp);
+529	 constructor( address _platformWallet, address _token, address _erc20token, address _pricingStrategy, address _signer ) public {
+530	 token = BigIoAdSpace(_token);
+531	 erc20token = BigIOERC20token(_erc20token);
+532	 platformWallet = _platformWallet;
+533	 pricingStrategy = PricingStrategy(_pricingStrategy);
+534	 signers[_signer] = true;
+535	 tiers.push( Tier( 400, 600, 1 ether, 0.4 ether, 0, 0, false, false ) );
+536	 tiers.push( Tier( 400, 600, 1.2 ether, 0.6 ether, 0, 0, false, false ) );
+537	 tiers.push( Tier( 400, 600, 1.4 ether, 0.8 ether, 0, 0, false, false ) );
+538	 tiers.push( Tier( 144, 288, 1.6 ether, 1.0 ether, 0, 0, false, false ) );
+539	 }
+540	 function initLogo() public onlyOwner {
+541	 require(isLogoInitied == false);
+542	 isLogoInitied = true;
+543	 logoId = token.mint(platformWallet, logoX, logoY, 10, 10, 0 ether, 0 ether);
+544	 token.setTokenMetadata(logoId, "");
+545	 updateTierStatus(100, 0);
+546	 emit Minted(msg.sender, logoId, logoX, logoY, 10, 10, 0 ether, 0 ether, now);
+547	 }
+548	 function getPriceFor(uint256 x, uint256 y, uint256 sizeA, uint256 sizeB) public view returns(uint256 totalPrice, uint256 inner, uint256 outer) {
+549	 (inner, outer) = preMinting(x, y, sizeA, sizeB);
+550	 totalPrice = calculateTokenPrice(inner, outer);
+551	 return (totalPrice, inner, outer);
+552	 }
+553	 function buy( uint256 x, uint256 y, uint256 sizeA, uint256 sizeB, uint8 _v, bytes32 _r, bytes32 _s ) public notHalted() payable {
+554	 address recoveredSigner = verify(keccak256(msg.sender), _v, _r, _s);
+555	 require(signers[recoveredSigner] == true);
+556	 require(msg.value > 0);
+557	 internalBuy(x, y, sizeA, sizeB);
+558	 }
+559	 function internalBuy( uint256 x, uint256 y, uint256 sizeA, uint256 sizeB ) internal {
+560	 uint256 inner = 0;
+561	 uint256 outer = 0;
+562	 uint256 totalPrice = 0;
+563	 (inner, outer) = preMinting(x, y, sizeA, sizeB);
+564	 totalPrice = calculateTokenPrice(inner, outer);
+565	 require(totalPrice <= msg.value);
+566	 updateTierStatus(inner, outer);
+567	 uint256 actualPrice = inner.mul(tiers[3].priceInCenter).add(outer.mul(tiers[3].priceInOuter));
+568	 if (msg.value > actualPrice) {
+569	 actualPrice = msg.value;
+570	 }
+571	 uint256 tokenId = token.mint(msg.sender, x, y, sizeA, sizeB, msg.value, actualPrice);
+572	 erc20token.mint(msg.sender, inner.add(outer));
+573	 transferEthers(platformWallet, msg.value);
+574	 emit Minted(msg.sender, tokenId, x, y, sizeA, sizeB, msg.value, msg.value, now);
+575	 }
+576	 function makeOffer( uint256 _tokenId, uint8 _v, bytes32 _r, bytes32 _s ) public notHalted() payable {
+577	 address recoveredSigner = verify(keccak256(msg.sender), _v, _r, _s);
+578	 require(signers[recoveredSigner] == true);
+579	 require(msg.sender != address(0));
+580	 require(msg.value > 0);
+581	 uint256 currentPrice = getTokenPrice(_tokenId);
+582	 require(currentPrice > 0);
+583	 if (_tokenId == logoId && token.getCurrentPriceForToken(_tokenId) == 0) {
+584	 require(msg.value >= logoPrice);
+585	 token.updateTokensState(logoId, msg.value);
+586	 erc20token.mint(msg.sender, 100);
+587	 transferEthers(platformWallet, msg.value);
+588	 emit Purchased(0, msg.sender, _tokenId, msg.value, 0, 0, msg.value, now);
+589	 return;
+590	 }
+591	 uint256 minPrice = pricingStrategy.calculateMinPriceForNextRound(currentPrice, minResalePercentage);
+592	 require(msg.value >= minPrice);
+593	 uint256 offerCounter = offers.length;
+594	 offers.push(Offer(_tokenId, offerCounter, msg.sender, msg.value, currentPrice, false, now));
+595	 emit OfferMade(msg.sender, _tokenId, offerCounter, msg.value, now);
+596	 approve(offerCounter, _tokenId);
+597	 }
+598	 function getTokenPrice(uint256 _tokenId) public view returns (uint256 price) {
+599	 uint256 actualPrice = token.getCurrentPriceForToken(_tokenId);
+600	 if (_tokenId == logoId && actualPrice == 0) {
+601	 require(logoPrice > 0);
+602	 return logoPrice;
+603	 }
+604	 else {
+605	 uint256 indexInner = 0;
+606	 uint256 indexOuter = 0;
+607	 bool hasInner;
+608	 bool hasOuter;
+609	 (hasInner, hasOuter) = token.getTokenScope(_tokenId);
+610	 (indexInner, indexOuter) = getCurrentTierIndex();
+611	 if (_tokenId != logoId && hasInner) {
+612	 require(indexInner == 100000);
+613	 }
+614	 if (hasOuter) {
+615	 require(indexOuter == 100000);
+616	 }
+617	 return actualPrice;
+618	 }
+619	 }
+620	 function getArtWorkChangeFee(uint256 _tokenId) public view returns (uint256 fee) {
+621	 uint256 counter = token.getTokenUpdatedCounter(_tokenId);
+622	 if (counter > 0) {
+623	 return feeForArtWorkChangeRequest;
+624	 }
+625	 return feeForFirstArtWorkChangeRequest;
+626	 }
+627	 function artWorkChangeRequest(uint256 _tokenId, string _meta, uint8 _v, bytes32 _r, bytes32 _s) public payable returns (uint256) {
+628	 address recoveredSigner = verify(keccak256(_meta), _v, _r, _s);
+629	 require(signers[recoveredSigner] == true);
+630	 require(msg.sender == token.getOwner(_tokenId));
+631	 uint256 fee = getArtWorkChangeFee(_tokenId);
+632	 require(msg.value >= fee);
+633	 uint256 changeRequestCounter = artWorkChangeRequests.length;
+634	 artWorkChangeRequests.push( ArtWorkChangeRequest(msg.sender, _tokenId, changeRequestCounter, _meta, now, false) );
+635	 token.increaseUpdateMetadataCounter(_tokenId);
+636	 transferEthers(platformWallet, msg.value);
+637	 emit ArtWorkChangeRequestMade(msg.sender, _tokenId, changeRequestCounter, _meta, msg.value, now);
+638	 return changeRequestCounter;
+639	 }
+640	 function artWorkChangeApprove(uint256 _index, uint256 _tokenId, bool approve) public onlyAdmin {
+641	 ArtWorkChangeRequest storage request = artWorkChangeRequests[_index];
+642	 require(false == request.isReviewed);
+643	 require(_tokenId == request.tokenId);
+644	 request.isReviewed = true;
+645	 if (approve) {
+646	 token.setTokenMetadata(_tokenId, request.meta);
+647	 emit ArtWorkChangeRequestApproved( request.fromUser, request.tokenId, request.changeId, request.meta, now );
+648	 }
+649	 else {
+650	 emit ArtWorkChangeRequestDeclined( request.fromUser, request.tokenId, request.changeId, request.meta, now );
+651	 }
+652	 }
+653	 function artWorkChangeByAdmin(uint256 _tokenId, string _meta, uint256 _changeId) public onlyAdmin {
+654	 token.setTokenMetadata(_tokenId, _meta);
+655	 emit ArtWorkChangeRequestApproved( msg.sender, _tokenId, _changeId, _meta, now );
+656	 }
+657	 function changeTokenOwnerByAdmin(uint256 _tokenId, address _newOwner) public onlyAdmin {
+658	 address prevOwner = token.getOwner(_tokenId);
+659	 token.updateOwner(_tokenId, _newOwner, prevOwner);
+660	 emit ChangedOwnership(_tokenId, prevOwner, _newOwner, now);
+661	 string memory meta = token.getMetadata(_tokenId);
+662	 token.removeTokenMetadata(_tokenId);
+663	 emit RemovedMetaData(_tokenId, msg.sender, meta, now);
+664	 }
+665	 function getTokenData(uint256 _tokenId) public view returns(uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256) {
+666	 return token.getTokenData(_tokenId);
+667	 }
+668	 function getMetaData(uint256 _tokenId) public view returns(string) {
+669	 return token.getMetadata(_tokenId);
+670	 }
+671	 function claim() public returns (bool) {
+672	 return claimInternal(msg.sender);
+673	 }
+674	 function claimByAddress(address _address) public returns (bool) {
+675	 return claimInternal(_address);
+676	 }
+677	 function claimInternal(address _address) internal returns (bool) {
+678	 require(_address != address(0));
+679	 uint256 amount = pendingReturns[_address];
+680	 if (amount == 0) {
+681	 return;
+682	 }
+683	 pendingReturns[_address] = 0;
+684	 _address.transfer(amount);
+685	 return true;
+686	 }
+687	 function getCurrentTierIndex() public view returns (uint256, uint256) {
+688	 uint256 indexInner = 100000;
+689	 uint256 indexOuter = 100000;
+690	 for (uint256 i = 0; i < tiers.length; i++) {
+691	 if (!tiers[i].filledInCenter) {
+692	 indexInner = i;
+693	 break;
+694	 }
+695	 }
+696	 for (uint256 k = 0; k < tiers.length; k++) {
+697	 if (!tiers[k].filledInOuter) {
+698	 indexOuter = k;
+699	 break;
+700	 }
+701	 }
+702	 return (indexInner, indexOuter);
+703	 }
+704	 function getCurrentTierStats() public view returns (uint256 indexInner, uint256 indexOuter, uint256 availableInner, uint256 availableInOuter, uint256 priceInCenter, uint256 priceInOuter, uint256 nextPriceInCenter, uint256 nextPriceInOuter) {
+705	 indexInner = 100000;
+706	 indexOuter = 100000;
+707	 for (uint256 i = 0; i < tiers.length; i++) {
+708	 if (!tiers[i].filledInCenter) {
+709	 indexInner = i;
+710	 break;
+711	 }
+712	 }
+713	 for (uint256 k = 0; k < tiers.length; k++) {
+714	 if (!tiers[k].filledInOuter) {
+715	 indexOuter = k;
+716	 break;
+717	 }
+718	 }
+719	 Tier storage tier;
+720	 if (indexInner != 100000) {
+721	 tier = tiers[indexInner];
+722	 availableInner = tier.amountInCenter.sub(tier.soldInCenter);
+723	 priceInCenter = tier.priceInCenter;
+724	 if (indexInner < 3) {
+725	 nextPriceInCenter = tiers[indexInner + 1].priceInCenter;
+726	 }
+727	 }
+728	 if (indexOuter != 100000) {
+729	 tier = tiers[indexOuter];
+730	 availableInOuter = tier.amountInOuter.sub(tier.soldInOuter);
+731	 priceInOuter = tier.priceInOuter;
+732	 if (indexOuter < 3) {
+733	 nextPriceInOuter = tiers[indexOuter + 1].priceInOuter;
+734	 }
+735	 }
+736	 }
+737	 function calculateAmountOfUnits(uint256 sizeA, uint256 sizeB) public pure returns (uint256) {
+738	 return sizeA.mul(sizeB);
+739	 }
+740	 function approve(uint256 _index, uint256 _tokenId) internal {
+741	 Offer memory localOffer = offers[_index];
+742	 address newOwner = localOffer.from;
+743	 address prevOwner = token.getOwner(_tokenId);
+744	 uint256 platformShare;
+745	 uint256 forPrevOwner;
+746	 uint256 soldPrice = token.getTokenSoldPrice(_tokenId);
+747	 (platformShare, forPrevOwner) = pricingStrategy.calculateSharesInTheRevenue( soldPrice, localOffer.offeredPrice);
+748	 token.updateTokensState(_tokenId, localOffer.offeredPrice);
+749	 token.updateOwner(_tokenId, newOwner, prevOwner);
+750	 localOffer.accepted = true;
+751	 transferEthers(platformWallet, platformShare);
+752	 transferEthers(prevOwner, forPrevOwner.add(soldPrice));
+753	 emit OfferApproved(newOwner, _tokenId, localOffer.offerId, localOffer.offeredPrice, now);
+754	 emit Purchased(prevOwner, newOwner, _tokenId, localOffer.offeredPrice, soldPrice, forPrevOwner.add(soldPrice), platformShare, now);
+755	 afterApproveAction(_tokenId);
+756	 }
+757	 function transferEthers(address _address, uint256 _wei) internal {
+758	 if (isContract(_address)) {
+759	 pendingReturns[_address] = pendingReturns[_address].add(_wei);
+760	 }
+761	 else {
+762	 _address.transfer(_wei);
+763	 }
+764	 }
+765	 function preMinting(uint256 x, uint256 y, uint256 sizeA, uint256 sizeB) internal view returns (uint256, uint256) {
+766	 uint256 total = 0;
+767	 uint256 inner = 0;
+768	 uint256 outer = 0;
+769	 (total, inner) = token.calculateCounters(x, y, sizeA, sizeB);
+770	 outer = total.sub(inner);
+771	 require(total <= 100);
+772	 return (inner, outer);
+773	 }
+774	 function updateTierStatus(uint256 inner, uint256 outer) internal {
+775	 uint256 leftInner = inner;
+776	 uint256 leftOuter = outer;
+777	 for (uint256 i = 0; i < 4; i++) {
+778	 Tier storage tier = tiers[i];
+779	 if (leftInner > 0 && tier.filledInCenter == false) {
+780	 uint256 availableInner = tier.amountInCenter.sub(tier.soldInCenter);
+781	 if (availableInner > leftInner) {
+782	 tier.soldInCenter = tier.soldInCenter.add(leftInner);
+783	 leftInner = 0;
+784	 }
+785	 else {
+786	 tier.filledInCenter = true;
+787	 tier.soldInCenter = tier.amountInCenter;
+788	 leftInner = leftInner.sub(availableInner);
+789	 }
+790	 }
+791	 if (leftOuter > 0 && tier.filledInOuter == false) {
+792	 uint256 availableOuter = tier.amountInOuter.sub(tier.soldInOuter);
+793	 if (availableOuter > leftOuter) {
+794	 tier.soldInOuter = tier.soldInOuter.add(leftOuter);
+795	 leftOuter = 0;
+796	 }
+797	 else {
+798	 tier.filledInOuter = true;
+799	 tier.soldInOuter = tier.amountInOuter;
+800	 leftOuter = leftOuter.sub(availableOuter);
+801	 }
+802	 }
+803	 }
+804	 require(leftInner == 0 && leftOuter == 0);
+805	 }
+806	 function calculateTokenPrice(uint256 inner, uint256 outer) public view returns (uint256 price) {
+807	 uint256 leftInner = inner;
+808	 uint256 leftOuter = outer;
+809	 for (uint256 i = 0; i < 4; i++) {
+810	 Tier storage tier = tiers[i];
+811	 if (leftInner > 0 && tier.filledInCenter == false) {
+812	 uint256 availableInner = tier.amountInCenter.sub(tier.soldInCenter);
+813	 if (availableInner > leftInner) {
+814	 price = price.add(leftInner.mul(tier.priceInCenter));
+815	 leftInner = 0;
+816	 }
+817	 else {
+818	 price = price.add(availableInner.mul(tier.priceInCenter));
+819	 leftInner = leftInner.sub(availableInner);
+820	 }
+821	 }
+822	 if (leftOuter > 0 && tier.filledInOuter == false) {
+823	 uint256 availableOuter = tier.amountInOuter.sub(tier.soldInOuter);
+824	 if (availableOuter > leftOuter) {
+825	 price = price.add(leftOuter.mul(tier.priceInOuter));
+826	 leftOuter = 0;
+827	 }
+828	 else {
+829	 price = price.add(availableOuter.mul(tier.priceInOuter));
+830	 leftOuter = leftOuter.sub(availableOuter);
+831	 }
+832	 }
+833	 }
+834	 require(leftInner == 0 && leftOuter == 0);
+835	 }
+836	 function minPriceForNextRound(uint256 _tokenId) public view returns (uint256) {
+837	 if (_tokenId == logoId && token.getCurrentPriceForToken(_tokenId) == 0) {
+838	 return logoPrice;
+839	 }
+840	 else {
+841	 uint256 currentPrice = getTokenPrice(_tokenId);
+842	 uint256 minPrice = pricingStrategy.calculateMinPriceForNextRound(currentPrice, minResalePercentage);
+843	 return minPrice;
+844	 }
+845	 }
+846	 function afterApproveAction(uint256 _tokenId) internal {
+847	 uint256 indexInner = 100000;
+848	 uint256 indexOuter = 100000;
+849	 bool hasInner;
+850	 bool hasOuter;
+851	 (hasInner, hasOuter) = token.getTokenScope(_tokenId);
+852	 (indexInner, indexOuter) = getCurrentTierIndex();
+853	 if (hasInner && hasOuter && indexInner == 100000 && indexOuter == 100000) {
+854	 token.increasePriceForNeighbours(_tokenId);
+855	 }
+856	 else if (!hasInner && hasOuter && indexOuter == 100000) {
+857	 token.increasePriceForNeighbours(_tokenId);
+858	 }
+859	 else if (!hasOuter && hasInner && indexInner == 100000) {
+860	 token.increasePriceForNeighbours(_tokenId);
+861	 }
+862	 }
+863	 function canBuyExistentToken(uint256 _tokenId) public view returns (uint256 _allowed) {
+864	 uint256 indexInner = 0;
+865	 uint256 indexOuter = 0;
+866	 bool hasInner;
+867	 bool hasOuter;
+868	 (hasInner, hasOuter) = token.getTokenScope(_tokenId);
+869	 (indexInner, indexOuter) = getCurrentTierIndex();
+870	 if (token.getCurrentPriceForToken(_tokenId) == 0 && logoPrice == 0) {
+871	 return 4;
+872	 }
+873	 if (_tokenId != logoId && hasInner && indexInner != 100000) {
+874	 return 2;
+875	 }
+876	 if (hasOuter && indexOuter != 100000) {
+877	 return 3;
+878	 }
+879	 return 1;
+880	 }
+881	 }

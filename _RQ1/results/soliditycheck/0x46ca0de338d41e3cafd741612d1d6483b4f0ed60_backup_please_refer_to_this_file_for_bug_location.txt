@@ -1,0 +1,248 @@
+row number 
+1	   pragma solidity ^0.4.20;
+2	 contract ContractReceiver {
+3	 struct TKN {
+4	 address sender;
+5	 uint value;
+6	 bytes data;
+7	 bytes4 sig;
+8	 }
+9	 function tokenFallback(address _from, uint _value, bytes _data) public pure {
+10	 TKN memory tkn;
+11	 tkn.sender = _from;
+12	 tkn.value = _value;
+13	 tkn.data = _data;
+14	 uint32 u = uint32(_data[3]) + (uint32(_data[2]) << 8) + (uint32(_data[1]) << 16) + (uint32(_data[0]) << 24);
+15	 tkn.sig = bytes4(u);
+16	 }
+17	 }
+18	 contract Ownable {
+19	 address public owner;
+20	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+21	 function Ownable() public {
+22	 owner = msg.sender;
+23	 }
+24	 modifier onlyOwner() {
+25	 require(msg.sender == owner);
+26	 _;
+27	 }
+28	 function transferOwnership(address newOwner) public onlyOwner {
+29	 require(newOwner != address(0));
+30	 OwnershipTransferred(owner, newOwner);
+31	 owner = newOwner;
+32	 }
+33	 }
+34	 library SafeMath {
+35	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+36	 if (a == 0) {
+37	 return 0;
+38	 }
+39	 uint256 c = a * b;
+40	 assert(c / a == b);
+41	 return c;
+42	 }
+43	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+44	 uint256 c = a / b;
+45	 return c;
+46	 }
+47	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+48	 assert(b <= a);
+49	 return a - b;
+50	 }
+51	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+52	 uint256 c = a + b;
+53	 assert(c >= a);
+54	 return c;
+55	 }
+56	 }
+57	 contract ERC223 {
+58	 uint public totalSupply;
+59	 function name() public view returns (string _name);
+60	 function symbol() public view returns (string _symbol);
+61	 function decimals() public view returns (uint8 _decimals);
+62	 function totalSupply() public view returns (uint256 _supply);
+63	 function balanceOf(address who) public view returns (uint);
+64	 function transfer(address to, uint value) public returns (bool ok);
+65	 function transfer(address to, uint value, bytes data) public returns (bool ok);
+66	 function transfer(address to, uint value, bytes data, string custom_fallback) public returns (bool ok);
+67	 event Transfer(address indexed from, address indexed to, uint value, bytes indexed data);
+68	 event Transfer(address indexed _from, address indexed _to, uint256 _value);
+69	 }
+70	 contract ClipToken is ERC223, Ownable {
+71	 using SafeMath for uint256;
+72	 string public name = "ClipToken";
+73	 string public symbol = "CLIP";
+74	 uint8 public decimals = 8;
+75	 uint256 public initialSupply = 280e8 * 1e8;
+76	 uint256 public totalSupply;
+77	 uint256 public distributeAmount = 0;
+78	 bool public mintingFinished = false;
+79	 mapping (address => uint) balances;
+80	 mapping (address => bool) public frozenAccount;
+81	 mapping (address => uint256) public unlockUnixTime;
+82	 event FrozenFunds(address indexed target, bool frozen);
+83	 event LockedFunds(address indexed target, uint256 locked);
+84	 event Burn(address indexed burner, uint256 value);
+85	 event Mint(address indexed to, uint256 amount);
+86	 event MintFinished();
+87	 function Excalibur() public {
+88	 totalSupply = initialSupply;
+89	 balances[msg.sender] = totalSupply;
+90	 }
+91	 function name() public view returns (string _name) {
+92	 return name;
+93	 }
+94	 function symbol() public view returns (string _symbol) {
+95	 return symbol;
+96	 }
+97	 function decimals() public view returns (uint8 _decimals) {
+98	 return decimals;
+99	 }
+100	 function totalSupply() public view returns (uint256 _totalSupply) {
+101	 return totalSupply;
+102	 }
+103	 function balanceOf(address _owner) public view returns (uint balance) {
+104	 return balances[_owner];
+105	 }
+106	 modifier onlyPayloadSize(uint256 size){
+107	 assert(msg.data.length >= size + 4);
+108	 _;
+109	 }
+110	 function transfer(address _to, uint _value, bytes _data, string _custom_fallback) public returns (bool success) {
+111	 require(_value > 0 && frozenAccount[msg.sender] == false && frozenAccount[_to] == false && now > unlockUnixTime[msg.sender] && now > unlockUnixTime[_to]);
+112	 if(isContract(_to)) {
+113	 if (balanceOf(msg.sender) < _value) revert();
+114	 balances[msg.sender] = SafeMath.sub(balanceOf(msg.sender), _value);
+115	 balances[_to] = SafeMath.add(balanceOf(_to), _value);
+116	 assert(_to.call.value(0)(bytes4(keccak256(_custom_fallback)), msg.sender, _value, _data));
+117	 Transfer(msg.sender, _to, _value, _data);
+118	 Transfer(msg.sender, _to, _value);
+119	 return true;
+120	 }
+121	 else {
+122	 return transferToAddress(_to, _value, _data);
+123	 }
+124	 }
+125	 function transfer(address _to, uint _value, bytes _data) public returns (bool success) {
+126	 require(_value > 0 && frozenAccount[msg.sender] == false && frozenAccount[_to] == false && now > unlockUnixTime[msg.sender] && now > unlockUnixTime[_to]);
+127	 if(isContract(_to)) {
+128	 return transferToContract(_to, _value, _data);
+129	 }
+130	 else {
+131	 return transferToAddress(_to, _value, _data);
+132	 }
+133	 }
+134	 function transfer(address _to, uint _value) public returns (bool success) {
+135	 require(_value > 0 && frozenAccount[msg.sender] == false && frozenAccount[_to] == false && now > unlockUnixTime[msg.sender] && now > unlockUnixTime[_to]);
+136	 bytes memory empty;
+137	 if(isContract(_to)) {
+138	 return transferToContract(_to, _value, empty);
+139	 }
+140	 else {
+141	 return transferToAddress(_to, _value, empty);
+142	 }
+143	 }
+144	 function isContract(address _addr) private view returns (bool is_contract) {
+145	 uint length;
+146	 assembly {
+147	 length := extcodesize(_addr) }
+148	 return (length>0);
+149	 }
+150	 function transferToAddress(address _to, uint _value, bytes _data) private returns (bool success) {
+151	 if (balanceOf(msg.sender) < _value) revert();
+152	 balances[msg.sender] = SafeMath.sub(balanceOf(msg.sender), _value);
+153	 balances[_to] = SafeMath.add(balanceOf(_to), _value);
+154	 Transfer(msg.sender, _to, _value, _data);
+155	 Transfer(msg.sender, _to, _value);
+156	 return true;
+157	 }
+158	 function transferToContract(address _to, uint _value, bytes _data) private returns (bool success) {
+159	 if (balanceOf(msg.sender) < _value) revert();
+160	 balances[msg.sender] = SafeMath.sub(balanceOf(msg.sender), _value);
+161	 balances[_to] = SafeMath.add(balanceOf(_to), _value);
+162	 ContractReceiver receiver = ContractReceiver(_to);
+163	 receiver.tokenFallback(msg.sender, _value, _data);
+164	 Transfer(msg.sender, _to, _value, _data);
+165	 Transfer(msg.sender, _to, _value);
+166	 return true;
+167	 }
+168	 function freezeAccounts(address[] targets, bool isFrozen) onlyOwner public {
+169	 require(targets.length > 0);
+170	 for (uint i = 0; i < targets.length; i++) {
+171	 require(targets[i] != 0x0);
+172	 frozenAccount[targets[i]] = isFrozen;
+173	 FrozenFunds(targets[i], isFrozen);
+174	 }
+175	 }
+176	 function lockupAccounts(address[] targets, uint[] unixTimes) onlyOwner public {
+177	 require(targets.length > 0 && targets.length == unixTimes.length);
+178	 for(uint i = 0; i < targets.length; i++){
+179	 require(unlockUnixTime[targets[i]] < unixTimes[i]);
+180	 unlockUnixTime[targets[i]] = unixTimes[i];
+181	 LockedFunds(targets[i], unixTimes[i]);
+182	 }
+183	 }
+184	 function burn(address _from, uint256 _unitAmount) onlyOwner public {
+185	 require(_unitAmount > 0 && balanceOf(_from) >= _unitAmount);
+186	 balances[_from] = SafeMath.sub(balances[_from], _unitAmount);
+187	 totalSupply = SafeMath.sub(totalSupply, _unitAmount);
+188	 Burn(_from, _unitAmount);
+189	 }
+190	 modifier canMint() {
+191	 require(!mintingFinished);
+192	 _;
+193	 }
+194	 function mint(address _to, uint256 _unitAmount) onlyOwner canMint public returns (bool) {
+195	 require(_unitAmount > 0);
+196	 totalSupply = SafeMath.add(totalSupply, _unitAmount);
+197	 balances[_to] = SafeMath.add(balances[_to], _unitAmount);
+198	 Mint(_to, _unitAmount);
+199	 Transfer(address(0), _to, _unitAmount);
+200	 return true;
+201	 }
+202	 function finishMinting() onlyOwner canMint public returns (bool) {
+203	 mintingFinished = true;
+204	 MintFinished();
+205	 return true;
+206	 }
+207	 function distributeTokens(address[] addresses, uint256 amount) public returns (bool) {
+208	 require(amount > 0 && addresses.length > 0 && frozenAccount[msg.sender] == false && now > unlockUnixTime[msg.sender]);
+209	 amount = SafeMath.mul(amount, 1e8);
+210	 uint256 totalAmount = SafeMath.mul(amount, addresses.length);
+211	 require(balances[msg.sender] >= totalAmount);
+212	 for (uint i = 0; i < addresses.length; i++) {
+213	 require(addresses[i] != 0x0 && frozenAccount[addresses[i]] == false && now > unlockUnixTime[addresses[i]]);
+214	 balances[addresses[i]] = SafeMath.add(balances[addresses[i]], amount);
+215	 Transfer(msg.sender, addresses[i], amount);
+216	 }
+217	 balances[msg.sender] = SafeMath.sub(balances[msg.sender], totalAmount);
+218	 return true;
+219	 }
+220	 function collectTokens(address[] addresses, uint[] amounts) onlyOwner public returns (bool) {
+221	 require(addresses.length > 0 && addresses.length == amounts.length);
+222	 uint256 totalAmount = 0;
+223	 for (uint i = 0; i < addresses.length; i++) {
+224	 require(amounts[i] > 0 && addresses[i] != 0x0 && frozenAccount[addresses[i]] == false && now > unlockUnixTime[addresses[i]]);
+225	 amounts[i] = SafeMath.mul(amounts[i], 1e8);
+226	 require(balances[addresses[i]] >= amounts[i]);
+227	 balances[addresses[i]] = SafeMath.sub(balances[addresses[i]], amounts[i]);
+228	 totalAmount = SafeMath.add(totalAmount, amounts[i]);
+229	 Transfer(addresses[i], msg.sender, amounts[i]);
+230	 }
+231	 balances[msg.sender] = SafeMath.add(balances[msg.sender], totalAmount);
+232	 return true;
+233	 }
+234	 function setDistributeAmount(uint256 _unitAmount) onlyOwner public {
+235	 distributeAmount = _unitAmount;
+236	 }
+237	 function autoDistribute() payable public {
+238	 require(distributeAmount > 0 && balanceOf(owner) >= distributeAmount && frozenAccount[msg.sender] == false && now > unlockUnixTime[msg.sender]);
+239	 if (msg.value > 0) owner.transfer(msg.value);
+240	 balances[owner] = SafeMath.sub(balances[owner], distributeAmount);
+241	 balances[msg.sender] = SafeMath.add(balances[msg.sender], distributeAmount);
+242	 Transfer(owner, msg.sender, distributeAmount);
+243	 }
+244	 function() payable public {
+245	 autoDistribute();
+246	 }
+247	 }

@@ -1,0 +1,657 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity ^0.7.0;
+3	 interface IERC165 {
+4	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+5	 }
+6	 pragma solidity ^0.7.0;
+7	 interface IERC721 is IERC165 {
+8	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+9	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+10	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+11	 function balanceOf(address owner) external view returns (uint256 balance);
+12	 function ownerOf(uint256 tokenId) external view returns (address owner);
+13	 function safeTransferFrom(address from, address to, uint256 tokenId) external;
+14	 function transferFrom(address from, address to, uint256 tokenId) external;
+15	 function approve(address to, uint256 tokenId) external;
+16	 function getApproved(uint256 tokenId) external view returns (address operator);
+17	 function setApprovalForAll(address operator, bool _approved) external;
+18	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+19	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;
+20	 }
+21	 pragma solidity ^0.7.0;
+22	 interface IERC721Receiver {
+23	 function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) external returns (bytes4);
+24	 }
+25	 pragma solidity ^0.7.0;
+26	 abstract contract ReentrancyGuard {
+27	 uint256 private constant _NOT_ENTERED = 1;
+28	 uint256 private constant _ENTERED = 2;
+29	 uint256 private _status;
+30	 constructor () {
+31	 _status = _NOT_ENTERED;
+32	 }
+33	 modifier nonReentrant() {
+34	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+35	 _status = _ENTERED;
+36	 _;
+37	 _status = _NOT_ENTERED;
+38	 }
+39	 }
+40	 pragma solidity >=0.5.0;
+41	 interface IUniswapV3SwapCallback {
+42	 function uniswapV3SwapCallback( int256 amount0Delta, int256 amount1Delta, bytes calldata data ) external;
+43	 }
+44	 pragma solidity ^0.7.0;
+45	 interface IERC20 {
+46	 function totalSupply() external view returns (uint256);
+47	 function balanceOf(address account) external view returns (uint256);
+48	 function transfer(address recipient, uint256 amount) external returns (bool);
+49	 function allowance(address owner, address spender) external view returns (uint256);
+50	 function approve(address spender, uint256 amount) external returns (bool);
+51	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+52	 event Transfer(address indexed from, address indexed to, uint256 value);
+53	 event Approval(address indexed owner, address indexed spender, uint256 value);
+54	 }
+55	 pragma solidity ^0.7.0;
+56	 interface IERC721Metadata is IERC721 {
+57	 function name() external view returns (string memory);
+58	 function symbol() external view returns (string memory);
+59	 function tokenURI(uint256 tokenId) external view returns (string memory);
+60	 }
+61	 pragma solidity ^0.7.0;
+62	 interface IERC721Enumerable is IERC721 {
+63	 function totalSupply() external view returns (uint256);
+64	 function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256 tokenId);
+65	 function tokenByIndex(uint256 index) external view returns (uint256);
+66	 }
+67	 pragma solidity >=0.7.5;
+68	 interface IPoolInitializer {
+69	 function createAndInitializePoolIfNecessary( address token0, address token1, uint24 fee, uint160 sqrtPriceX96 ) external payable returns (address pool);
+70	 }
+71	 pragma solidity >=0.7.5;
+72	 interface IERC721Permit is IERC721 {
+73	 function PERMIT_TYPEHASH() external pure returns (bytes32);
+74	 function DOMAIN_SEPARATOR() external view returns (bytes32);
+75	 function permit( address spender, uint256 tokenId, uint256 deadline, uint8 v, bytes32 r, bytes32 s ) external payable;
+76	 }
+77	 pragma solidity >=0.7.5;
+78	 interface IPeripheryPayments {
+79	 function unwrapWETH9(uint256 amountMinimum, address recipient) external payable;
+80	 function refundETH() external payable;
+81	 function sweepToken( address token, uint256 amountMinimum, address recipient ) external payable;
+82	 }
+83	 pragma solidity >=0.5.0;
+84	 interface IPeripheryImmutableState {
+85	 function factory() external view returns (address);
+86	 function WETH9() external view returns (address);
+87	 }
+88	 pragma solidity =0.7.6;
+89	 contract ShortHelper is IERC721Receiver, ReentrancyGuard {
+90	 using SafeMath for uint256;
+91	 using Address for address payable;
+92	 IController public immutable controller;
+93	 ISwapRouter public immutable router;
+94	 IWETH9 public immutable weth;
+95	 IShortPowerPerp public immutable shortPowerPerp;
+96	 address public immutable wPowerPerp;
+97	 constructor( address _controllerAddr, address _swapRouter, address _wethAddr ) {
+98	 require(_controllerAddr != address(0), "Invalid controller address");
+99	 require(_swapRouter != address(0), "Invalid swap router address");
+100	 require(_wethAddr != address(0), "Invalid weth address");
+101	 IController _controller = IController(_controllerAddr);
+102	 router = ISwapRouter(_swapRouter);
+103	 wPowerPerp = _controller.wPowerPerp();
+104	 IWPowerPerp _wPowerPerp = IWPowerPerp(_controller.wPowerPerp());
+105	 IWETH9 _weth = IWETH9(_wethAddr);
+106	 _wPowerPerp.approve(_swapRouter, type(uint256).max);
+107	 _weth.approve(_swapRouter, type(uint256).max);
+108	 shortPowerPerp = IShortPowerPerp(_controller.shortPowerPerp());
+109	 weth = _weth;
+110	 controller = _controller;
+111	 }
+112	 function openShort( uint256 _vaultId, uint256 _powerPerpAmount, uint256 _uniNftId, ISwapRouter.ExactInputSingleParams memory _exactInputParams ) external payable nonReentrant {
+113	 if (_vaultId != 0) require(shortPowerPerp.ownerOf(_vaultId) == msg.sender, "Not allowed");
+114	 require( _exactInputParams.tokenOut == address(weth) && _exactInputParams.tokenIn == wPowerPerp, "Wrong swap tokens" );
+115	 (uint256 vaultId, uint256 wPowerPerpAmount) = controller.mintPowerPerpAmount{
+116	 value: msg.value}
+117	 ( _vaultId, _powerPerpAmount, _uniNftId );
+118	 _exactInputParams.amountIn = wPowerPerpAmount;
+119	 uint256 amountOut = router.exactInputSingle(_exactInputParams);
+120	 if (_exactInputParams.recipient == address(this)) {
+121	 weth.withdraw(amountOut);
+122	 payable(msg.sender).sendValue(amountOut);
+123	 }
+124	 if (_vaultId == 0) shortPowerPerp.safeTransferFrom(address(this), msg.sender, vaultId);
+125	 }
+126	 function closeShort( uint256 _vaultId, uint256 _wPowerPerpAmount, uint256 _withdrawAmount, ISwapRouter.ExactOutputSingleParams memory _exactOutputParams ) external payable nonReentrant {
+127	 require(shortPowerPerp.ownerOf(_vaultId) == msg.sender, "Not allowed");
+128	 require( _exactOutputParams.tokenOut == wPowerPerp && _exactOutputParams.tokenIn == address(weth), "Wrong swap tokens" );
+129	 weth.deposit{
+130	 value: msg.value}
+131	 ();
+132	 uint256 amountIn = router.exactOutputSingle(_exactOutputParams);
+133	 controller.burnWPowerPerpAmount(_vaultId, _wPowerPerpAmount, _withdrawAmount);
+134	 weth.withdraw(msg.value.sub(amountIn));
+135	 payable(msg.sender).sendValue(address(this).balance);
+136	 }
+137	 receive() external payable {
+138	 require(msg.sender == address(weth) || msg.sender == address(controller), "can't receive eth");
+139	 }
+140	 function onERC721Received( address, address, uint256, bytes memory ) public virtual override returns (bytes4) {
+141	 return this.onERC721Received.selector;
+142	 }
+143	 }
+144	 pragma solidity >=0.7.5;
+145	 interface ISwapRouter is IUniswapV3SwapCallback {
+146	 struct ExactInputSingleParams {
+147	 address tokenIn;
+148	 address tokenOut;
+149	 uint24 fee;
+150	 address recipient;
+151	 uint256 deadline;
+152	 uint256 amountIn;
+153	 uint256 amountOutMinimum;
+154	 uint160 sqrtPriceLimitX96;
+155	 }
+156	 function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+157	 struct ExactInputParams {
+158	 bytes path;
+159	 address recipient;
+160	 uint256 deadline;
+161	 uint256 amountIn;
+162	 uint256 amountOutMinimum;
+163	 }
+164	 function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
+165	 struct ExactOutputSingleParams {
+166	 address tokenIn;
+167	 address tokenOut;
+168	 uint24 fee;
+169	 address recipient;
+170	 uint256 deadline;
+171	 uint256 amountOut;
+172	 uint256 amountInMaximum;
+173	 uint160 sqrtPriceLimitX96;
+174	 }
+175	 function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
+176	 struct ExactOutputParams {
+177	 bytes path;
+178	 address recipient;
+179	 uint256 deadline;
+180	 uint256 amountOut;
+181	 uint256 amountInMaximum;
+182	 }
+183	 function exactOutput(ExactOutputParams calldata params) external payable returns (uint256 amountIn);
+184	 }
+185	 pragma solidity =0.7.6;
+186	 interface IWPowerPerp is IERC20 {
+187	 function mint(address _account, uint256 _amount) external;
+188	 function burn(address _account, uint256 _amount) external;
+189	 }
+190	 pragma solidity =0.7.6;
+191	 interface IWETH9 is IERC20 {
+192	 function deposit() external payable;
+193	 function withdraw(uint256 wad) external;
+194	 }
+195	 pragma solidity =0.7.6;
+196	 interface IShortPowerPerp is IERC721 {
+197	 function nextId() external view returns (uint256);
+198	 function mintNFT(address recipient) external returns (uint256 _newId);
+199	 }
+200	 pragma solidity =0.7.6;
+201	 interface IController {
+202	 function ethQuoteCurrencyPool() external view returns (address);
+203	 function feeRate() external view returns (uint256);
+204	 function getFee( uint256 _vaultId, uint256 _wPowerPerpAmount, uint256 _collateralAmount ) external view returns (uint256);
+205	 function quoteCurrency() external view returns (address);
+206	 function vaults(uint256 _vaultId) external view returns (VaultLib.Vault memory);
+207	 function shortPowerPerp() external view returns (address);
+208	 function wPowerPerp() external view returns (address);
+209	 function getExpectedNormalizationFactor() external view returns (uint256);
+210	 function mintPowerPerpAmount( uint256 _vaultId, uint256 _powerPerpAmount, uint256 _uniTokenId ) external payable returns (uint256 vaultId, uint256 wPowerPerpAmount);
+211	 function mintWPowerPerpAmount( uint256 _vaultId, uint256 _wPowerPerpAmount, uint256 _uniTokenId ) external payable returns (uint256 vaultId);
+212	 function deposit(uint256 _vaultId) external payable;
+213	 function withdraw(uint256 _vaultId, uint256 _amount) external payable;
+214	 function burnWPowerPerpAmount( uint256 _vaultId, uint256 _wPowerPerpAmount, uint256 _withdrawAmount ) external;
+215	 function burnOnPowerPerpAmount( uint256 _vaultId, uint256 _powerPerpAmount, uint256 _withdrawAmount ) external returns (uint256 wPowerPerpAmount);
+216	 function liquidate(uint256 _vaultId, uint256 _maxDebtAmount) external returns (uint256);
+217	 function updateOperator(uint256 _vaultId, address _operator) external;
+218	 function applyFunding() external;
+219	 function redeemShort(uint256 _vaultId) external;
+220	 function reduceDebtShutdown(uint256 _vaultId) external;
+221	 function isShutDown() external returns (bool);
+222	 }
+223	 pragma solidity ^0.7.0;
+224	 library Address {
+225	 function isContract(address account) internal view returns (bool) {
+226	 uint256 size;
+227	 assembly {
+228	 size := extcodesize(account) }
+229	 return size > 0;
+230	 }
+231	 function sendValue(address payable recipient, uint256 amount) internal {
+232	 require(address(this).balance >= amount, "Address: insufficient balance");
+233	 (bool success, ) = recipient.call{
+234	 value: amount }
+235	 ("");
+236	 require(success, "Address: unable to send value, recipient may have reverted");
+237	 }
+238	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+239	 return functionCall(target, data, "Address: low-level call failed");
+240	 }
+241	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+242	 return functionCallWithValue(target, data, 0, errorMessage);
+243	 }
+244	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+245	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+246	 }
+247	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+248	 require(address(this).balance >= value, "Address: insufficient balance for call");
+249	 require(isContract(target), "Address: call to non-contract");
+250	 (bool success, bytes memory returndata) = target.call{
+251	 value: value }
+252	 (data);
+253	 return _verifyCallResult(success, returndata, errorMessage);
+254	 }
+255	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+256	 return functionStaticCall(target, data, "Address: low-level static call failed");
+257	 }
+258	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+259	 require(isContract(target), "Address: static call to non-contract");
+260	 (bool success, bytes memory returndata) = target.staticcall(data);
+261	 return _verifyCallResult(success, returndata, errorMessage);
+262	 }
+263	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+264	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+265	 }
+266	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+267	 require(isContract(target), "Address: delegate call to non-contract");
+268	 (bool success, bytes memory returndata) = target.delegatecall(data);
+269	 return _verifyCallResult(success, returndata, errorMessage);
+270	 }
+271	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+272	 if (success) {
+273	 return returndata;
+274	 }
+275	 else {
+276	 if (returndata.length > 0) {
+277	 assembly {
+278	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+279	 }
+280	 else {
+281	 revert(errorMessage);
+282	 }
+283	 }
+284	 }
+285	 }
+286	 pragma solidity ^0.7.0;
+287	 library SafeMath {
+288	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+289	 uint256 c = a + b;
+290	 if (c < a) return (false, 0);
+291	 return (true, c);
+292	 }
+293	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+294	 if (b > a) return (false, 0);
+295	 return (true, a - b);
+296	 }
+297	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+298	 if (a == 0) return (true, 0);
+299	 uint256 c = a * b;
+300	 if (c / a != b) return (false, 0);
+301	 return (true, c);
+302	 }
+303	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+304	 if (b == 0) return (false, 0);
+305	 return (true, a / b);
+306	 }
+307	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+308	 if (b == 0) return (false, 0);
+309	 return (true, a % b);
+310	 }
+311	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+312	 uint256 c = a + b;
+313	 require(c >= a, "SafeMath: addition overflow");
+314	 return c;
+315	 }
+316	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+317	 require(b <= a, "SafeMath: subtraction overflow");
+318	 return a - b;
+319	 }
+320	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+321	 if (a == 0) return 0;
+322	 uint256 c = a * b;
+323	 require(c / a == b, "SafeMath: multiplication overflow");
+324	 return c;
+325	 }
+326	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+327	 require(b > 0, "SafeMath: division by zero");
+328	 return a / b;
+329	 }
+330	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+331	 require(b > 0, "SafeMath: modulo by zero");
+332	 return a % b;
+333	 }
+334	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+335	 require(b <= a, errorMessage);
+336	 return a - b;
+337	 }
+338	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+339	 require(b > 0, errorMessage);
+340	 return a / b;
+341	 }
+342	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+343	 require(b > 0, errorMessage);
+344	 return a % b;
+345	 }
+346	 }
+347	 pragma solidity =0.7.6;
+348	 library VaultLib {
+349	 using SafeMath for uint256;
+350	 using Uint256Casting for uint256;
+351	 uint256 constant ONE_ONE = 1e36;
+352	 uint256 public constant CR_NUMERATOR = 3;
+353	 uint256 public constant CR_DENOMINATOR = 2;
+354	 struct Vault {
+355	 address operator;
+356	 uint32 NftCollateralId;
+357	 uint96 collateralAmount;
+358	 uint128 shortAmount;
+359	 }
+360	 function addEthCollateral(Vault memory _vault, uint256 _amount) internal pure {
+361	 _vault.collateralAmount = uint256(_vault.collateralAmount).add(_amount).toUint96();
+362	 }
+363	 function addUniNftCollateral(Vault memory _vault, uint256 _tokenId) internal pure {
+364	 require(_vault.NftCollateralId == 0, "V1");
+365	 require(_tokenId != 0, "C23");
+366	 _vault.NftCollateralId = _tokenId.toUint32();
+367	 }
+368	 function removeEthCollateral(Vault memory _vault, uint256 _amount) internal pure {
+369	 _vault.collateralAmount = uint256(_vault.collateralAmount).sub(_amount).toUint96();
+370	 }
+371	 function removeUniNftCollateral(Vault memory _vault) internal pure {
+372	 require(_vault.NftCollateralId != 0, "V2");
+373	 _vault.NftCollateralId = 0;
+374	 }
+375	 function addShort(Vault memory _vault, uint256 _amount) internal pure {
+376	 _vault.shortAmount = uint256(_vault.shortAmount).add(_amount).toUint128();
+377	 }
+378	 function removeShort(Vault memory _vault, uint256 _amount) internal pure {
+379	 _vault.shortAmount = uint256(_vault.shortAmount).sub(_amount).toUint128();
+380	 }
+381	 function getVaultStatus( Vault memory _vault, address _positionManager, uint256 _normalizationFactor, uint256 _ethQuoteCurrencyPrice, uint256 _minCollateral, int24 _wsqueethPoolTick, bool _isWethToken0 ) internal view returns (bool, bool) {
+382	 if (_vault.shortAmount == 0) return (true, false);
+383	 uint256 debtValueInETH = uint256(_vault.shortAmount).mul(_normalizationFactor).mul(_ethQuoteCurrencyPrice).div( ONE_ONE );
+384	 uint256 totalCollateral = _getEffectiveCollateral( _vault, _positionManager, _normalizationFactor, _ethQuoteCurrencyPrice, _wsqueethPoolTick, _isWethToken0 );
+385	 bool isDust = totalCollateral < _minCollateral;
+386	 bool isAboveWater = totalCollateral.mul(CR_DENOMINATOR) >= debtValueInETH.mul(CR_NUMERATOR);
+387	 return (isAboveWater, isDust);
+388	 }
+389	 function _getEffectiveCollateral( Vault memory _vault, address _positionManager, uint256 _normalizationFactor, uint256 _ethQuoteCurrencyPrice, int24 _wsqueethPoolTick, bool _isWethToken0 ) internal view returns (uint256) {
+390	 if (_vault.NftCollateralId == 0) return _vault.collateralAmount;
+391	 (uint256 nftEthAmount, uint256 nftWsqueethAmount) = _getUniPositionBalances( _positionManager, _vault.NftCollateralId, _wsqueethPoolTick, _isWethToken0 );
+392	 uint256 wSqueethIndexValueInEth = nftWsqueethAmount.mul(_normalizationFactor).mul(_ethQuoteCurrencyPrice).div( ONE_ONE );
+393	 return nftEthAmount.add(wSqueethIndexValueInEth).add(_vault.collateralAmount);
+394	 }
+395	 function _getUniPositionBalances( address _positionManager, uint256 _tokenId, int24 _wPowerPerpPoolTick, bool _isWethToken0 ) internal view returns (uint256 ethAmount, uint256 wPowerPerpAmount) {
+396	 ( int24 tickLower, int24 tickUpper, uint128 liquidity, uint128 tokensOwed0, uint128 tokensOwed1 ) = _getUniswapPositionInfo(_positionManager, _tokenId);
+397	 (uint256 amount0, uint256 amount1) = _getToken0Token1Balances( tickLower, tickUpper, _wPowerPerpPoolTick, liquidity );
+398	 return _isWethToken0 ? (amount0 + tokensOwed0, amount1 + tokensOwed1) : (amount1 + tokensOwed1, amount0 + tokensOwed0);
+399	 }
+400	 function _getUniswapPositionInfo(address _positionManager, uint256 _tokenId) internal view returns ( int24, int24, uint128, uint128, uint128 ) {
+401	 INonfungiblePositionManager positionManager = INonfungiblePositionManager(_positionManager);
+402	 ( , , , , , int24 tickLower, int24 tickUpper, uint128 liquidity, , , uint128 tokensOwed0, uint128 tokensOwed1 ) = positionManager.positions(_tokenId);
+403	 return (tickLower, tickUpper, liquidity, tokensOwed0, tokensOwed1);
+404	 }
+405	 function _getToken0Token1Balances( int24 _tickLower, int24 _tickUpper, int24 _tick, uint128 _liquidity ) internal pure returns (uint256 amount0, uint256 amount1) {
+406	 uint160 sqrtPriceX96 = TickMathExternal.getSqrtRatioAtTick(_tick);
+407	 if (_tick < _tickLower) {
+408	 amount0 = SqrtPriceMathPartial.getAmount0Delta( TickMathExternal.getSqrtRatioAtTick(_tickLower), TickMathExternal.getSqrtRatioAtTick(_tickUpper), _liquidity, true );
+409	 }
+410	 else if (_tick < _tickUpper) {
+411	 amount0 = SqrtPriceMathPartial.getAmount0Delta( sqrtPriceX96, TickMathExternal.getSqrtRatioAtTick(_tickUpper), _liquidity, true );
+412	 amount1 = SqrtPriceMathPartial.getAmount1Delta( TickMathExternal.getSqrtRatioAtTick(_tickLower), sqrtPriceX96, _liquidity, true );
+413	 }
+414	 else {
+415	 amount1 = SqrtPriceMathPartial.getAmount1Delta( TickMathExternal.getSqrtRatioAtTick(_tickLower), TickMathExternal.getSqrtRatioAtTick(_tickUpper), _liquidity, true );
+416	 }
+417	 }
+418	 }
+419	 pragma solidity >=0.7.5;
+420	 interface INonfungiblePositionManager is IPoolInitializer, IPeripheryPayments, IPeripheryImmutableState, IERC721Metadata, IERC721Enumerable, IERC721Permit {
+421	 event IncreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
+422	 event DecreaseLiquidity(uint256 indexed tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
+423	 event Collect(uint256 indexed tokenId, address recipient, uint256 amount0, uint256 amount1);
+424	 function positions(uint256 tokenId) external view returns ( uint96 nonce, address operator, address token0, address token1, uint24 fee, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1 );
+425	 struct MintParams {
+426	 address token0;
+427	 address token1;
+428	 uint24 fee;
+429	 int24 tickLower;
+430	 int24 tickUpper;
+431	 uint256 amount0Desired;
+432	 uint256 amount1Desired;
+433	 uint256 amount0Min;
+434	 uint256 amount1Min;
+435	 address recipient;
+436	 uint256 deadline;
+437	 }
+438	 function mint(MintParams calldata params) external payable returns ( uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1 );
+439	 struct IncreaseLiquidityParams {
+440	 uint256 tokenId;
+441	 uint256 amount0Desired;
+442	 uint256 amount1Desired;
+443	 uint256 amount0Min;
+444	 uint256 amount1Min;
+445	 uint256 deadline;
+446	 }
+447	 function increaseLiquidity(IncreaseLiquidityParams calldata params) external payable returns ( uint128 liquidity, uint256 amount0, uint256 amount1 );
+448	 struct DecreaseLiquidityParams {
+449	 uint256 tokenId;
+450	 uint128 liquidity;
+451	 uint256 amount0Min;
+452	 uint256 amount1Min;
+453	 uint256 deadline;
+454	 }
+455	 function decreaseLiquidity(DecreaseLiquidityParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
+456	 struct CollectParams {
+457	 uint256 tokenId;
+458	 address recipient;
+459	 uint128 amount0Max;
+460	 uint128 amount1Max;
+461	 }
+462	 function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
+463	 function burn(uint256 tokenId) external payable;
+464	 }
+465	 pragma solidity >=0.5.0;
+466	 library TickMathExternal {
+467	 int24 internal constant MIN_TICK = -887272;
+468	 int24 internal constant MAX_TICK = -MIN_TICK;
+469	 uint160 internal constant MIN_SQRT_RATIO = 4295128739;
+470	 uint160 internal constant MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342;
+471	 function getSqrtRatioAtTick(int24 tick) public pure returns (uint160 sqrtPriceX96) {
+472	 uint256 absTick = tick < 0 ? uint256(-int256(tick)) : uint256(int256(tick));
+473	 require(absTick <= uint256(MAX_TICK), "T");
+474	 uint256 ratio = absTick & 0x1 != 0 ? 0xfffcb933bd6fad37aa2d162d1a594001 : 0x100000000000000000000000000000000;
+475	 if (absTick & 0x2 != 0) ratio = (ratio * 0xfff97272373d413259a46990580e213a) >> 128;
+476	 if (absTick & 0x4 != 0) ratio = (ratio * 0xfff2e50f5f656932ef12357cf3c7fdcc) >> 128;
+477	 if (absTick & 0x8 != 0) ratio = (ratio * 0xffe5caca7e10e4e61c3624eaa0941cd0) >> 128;
+478	 if (absTick & 0x10 != 0) ratio = (ratio * 0xffcb9843d60f6159c9db58835c926644) >> 128;
+479	 if (absTick & 0x20 != 0) ratio = (ratio * 0xff973b41fa98c081472e6896dfb254c0) >> 128;
+480	 if (absTick & 0x40 != 0) ratio = (ratio * 0xff2ea16466c96a3843ec78b326b52861) >> 128;
+481	 if (absTick & 0x80 != 0) ratio = (ratio * 0xfe5dee046a99a2a811c461f1969c3053) >> 128;
+482	 if (absTick & 0x100 != 0) ratio = (ratio * 0xfcbe86c7900a88aedcffc83b479aa3a4) >> 128;
+483	 if (absTick & 0x200 != 0) ratio = (ratio * 0xf987a7253ac413176f2b074cf7815e54) >> 128;
+484	 if (absTick & 0x400 != 0) ratio = (ratio * 0xf3392b0822b70005940c7a398e4b70f3) >> 128;
+485	 if (absTick & 0x800 != 0) ratio = (ratio * 0xe7159475a2c29b7443b29c7fa6e889d9) >> 128;
+486	 if (absTick & 0x1000 != 0) ratio = (ratio * 0xd097f3bdfd2022b8845ad8f792aa5825) >> 128;
+487	 if (absTick & 0x2000 != 0) ratio = (ratio * 0xa9f746462d870fdf8a65dc1f90e061e5) >> 128;
+488	 if (absTick & 0x4000 != 0) ratio = (ratio * 0x70d869a156d2a1b890bb3df62baf32f7) >> 128;
+489	 if (absTick & 0x8000 != 0) ratio = (ratio * 0x31be135f97d08fd981231505542fcfa6) >> 128;
+490	 if (absTick & 0x10000 != 0) ratio = (ratio * 0x9aa508b5b7a84e1c677de54f3e99bc9) >> 128;
+491	 if (absTick & 0x20000 != 0) ratio = (ratio * 0x5d6af8dedb81196699c329225ee604) >> 128;
+492	 if (absTick & 0x40000 != 0) ratio = (ratio * 0x2216e584f5fa1ea926041bedfe98) >> 128;
+493	 if (absTick & 0x80000 != 0) ratio = (ratio * 0x48a170391f7dc42444e8fa2) >> 128;
+494	 if (tick > 0) ratio = type(uint256).max / ratio;
+495	 sqrtPriceX96 = uint160((ratio >> 32) + (ratio % (1 << 32) == 0 ? 0 : 1));
+496	 }
+497	 function getTickAtSqrtRatio(uint160 sqrtPriceX96) external pure returns (int24 tick) {
+498	 require(sqrtPriceX96 >= MIN_SQRT_RATIO && sqrtPriceX96 < MAX_SQRT_RATIO, "R");
+499	 uint256 ratio = uint256(sqrtPriceX96) << 32;
+500	 uint256 r = ratio;
+501	 uint256 msb = 0;
+502	 assembly {
+503	 let f := shl(7, gt(r, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+504	 assembly {
+505	 let f := shl(6, gt(r, 0xFFFFFFFFFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+506	 assembly {
+507	 let f := shl(5, gt(r, 0xFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+508	 assembly {
+509	 let f := shl(4, gt(r, 0xFFFF)) msb := or(msb, f) r := shr(f, r) }
+510	 assembly {
+511	 let f := shl(3, gt(r, 0xFF)) msb := or(msb, f) r := shr(f, r) }
+512	 assembly {
+513	 let f := shl(2, gt(r, 0xF)) msb := or(msb, f) r := shr(f, r) }
+514	 assembly {
+515	 let f := shl(1, gt(r, 0x3)) msb := or(msb, f) r := shr(f, r) }
+516	 assembly {
+517	 let f := gt(r, 0x1) msb := or(msb, f) }
+518	 if (msb >= 128) r = ratio >> (msb - 127);
+519	 else r = ratio << (127 - msb);
+520	 int256 log_2 = (int256(msb) - 128) << 64;
+521	 assembly {
+522	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(63, f)) r := shr(f, r) }
+523	 assembly {
+524	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(62, f)) r := shr(f, r) }
+525	 assembly {
+526	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(61, f)) r := shr(f, r) }
+527	 assembly {
+528	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(60, f)) r := shr(f, r) }
+529	 assembly {
+530	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(59, f)) r := shr(f, r) }
+531	 assembly {
+532	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(58, f)) r := shr(f, r) }
+533	 assembly {
+534	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(57, f)) r := shr(f, r) }
+535	 assembly {
+536	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(56, f)) r := shr(f, r) }
+537	 assembly {
+538	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(55, f)) r := shr(f, r) }
+539	 assembly {
+540	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(54, f)) r := shr(f, r) }
+541	 assembly {
+542	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(53, f)) r := shr(f, r) }
+543	 assembly {
+544	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(52, f)) r := shr(f, r) }
+545	 assembly {
+546	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(51, f)) r := shr(f, r) }
+547	 assembly {
+548	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(50, f)) }
+549	 int256 log_sqrt10001 = log_2 * 255738958999603826347141;
+550	 int24 tickLow = int24((log_sqrt10001 - 3402992956809132418596140100660247210) >> 128);
+551	 int24 tickHi = int24((log_sqrt10001 + 291339464771989622907027621153398088495) >> 128);
+552	 tick = tickLow == tickHi ? tickLow : getSqrtRatioAtTick(tickHi) <= sqrtPriceX96 ? tickHi : tickLow;
+553	 }
+554	 }
+555	 pragma solidity >=0.5.0;
+556	 library SqrtPriceMathPartial {
+557	 function getAmount0Delta( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity, bool roundUp ) external pure returns (uint256 amount0) {
+558	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+559	 uint256 numerator1 = uint256(liquidity) << FixedPoint96.RESOLUTION;
+560	 uint256 numerator2 = sqrtRatioBX96 - sqrtRatioAX96;
+561	 require(sqrtRatioAX96 > 0);
+562	 return roundUp ? UnsafeMath.divRoundingUp( FullMath.mulDivRoundingUp(numerator1, numerator2, sqrtRatioBX96), sqrtRatioAX96 ) : FullMath.mulDiv(numerator1, numerator2, sqrtRatioBX96) / sqrtRatioAX96;
+563	 }
+564	 function getAmount1Delta( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity, bool roundUp ) external pure returns (uint256 amount1) {
+565	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+566	 return roundUp ? FullMath.mulDivRoundingUp(liquidity, sqrtRatioBX96 - sqrtRatioAX96, FixedPoint96.Q96) : FullMath.mulDiv(liquidity, sqrtRatioBX96 - sqrtRatioAX96, FixedPoint96.Q96);
+567	 }
+568	 }
+569	 pragma solidity =0.7.6;
+570	 library Uint256Casting {
+571	 function toUint128(uint256 y) internal pure returns (uint128 z) {
+572	 require((z = uint128(y)) == y, "OF128");
+573	 }
+574	 function toUint96(uint256 y) internal pure returns (uint96 z) {
+575	 require((z = uint96(y)) == y, "OF96");
+576	 }
+577	 function toUint32(uint256 y) internal pure returns (uint32 z) {
+578	 require((z = uint32(y)) == y, "OF32");
+579	 }
+580	 }
+581	 pragma solidity >=0.5.0;
+582	 library PoolAddress {
+583	 bytes32 internal constant POOL_INIT_CODE_HASH = 0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54;
+584	 struct PoolKey {
+585	 address token0;
+586	 address token1;
+587	 uint24 fee;
+588	 }
+589	 function getPoolKey( address tokenA, address tokenB, uint24 fee ) internal pure returns (PoolKey memory) {
+590	 if (tokenA > tokenB) (tokenA, tokenB) = (tokenB, tokenA);
+591	 return PoolKey({
+592	 token0: tokenA, token1: tokenB, fee: fee}
+593	 );
+594	 }
+595	 function computeAddress(address factory, PoolKey memory key) internal pure returns (address pool) {
+596	 require(key.token0 < key.token1);
+597	 pool = address( uint256( keccak256( abi.encodePacked( hex'ff', factory, keccak256(abi.encode(key.token0, key.token1, key.fee)), POOL_INIT_CODE_HASH ) ) ) );
+598	 }
+599	 }
+600	 pragma solidity >=0.4.0;
+601	 library FullMath {
+602	 function mulDiv( uint256 a, uint256 b, uint256 denominator ) internal pure returns (uint256 result) {
+603	 uint256 prod0;
+604	 uint256 prod1;
+605	 assembly {
+606	 let mm := mulmod(a, b, not(0)) prod0 := mul(a, b) prod1 := sub(sub(mm, prod0), lt(mm, prod0)) }
+607	 if (prod1 == 0) {
+608	 require(denominator > 0);
+609	 assembly {
+610	 result := div(prod0, denominator) }
+611	 return result;
+612	 }
+613	 require(denominator > prod1);
+614	 uint256 remainder;
+615	 assembly {
+616	 remainder := mulmod(a, b, denominator) }
+617	 assembly {
+618	 prod1 := sub(prod1, gt(remainder, prod0)) prod0 := sub(prod0, remainder) }
+619	 uint256 twos = -denominator & denominator;
+620	 assembly {
+621	 denominator := div(denominator, twos) }
+622	 assembly {
+623	 prod0 := div(prod0, twos) }
+624	 assembly {
+625	 twos := add(div(sub(0, twos), twos), 1) }
+626	 prod0 |= prod1 * twos;
+627	 uint256 inv = (3 * denominator) ^ 2;
+628	 inv *= 2 - denominator * inv;
+629	 inv *= 2 - denominator * inv;
+630	 inv *= 2 - denominator * inv;
+631	 inv *= 2 - denominator * inv;
+632	 inv *= 2 - denominator * inv;
+633	 inv *= 2 - denominator * inv;
+634	 result = prod0 * inv;
+635	 return result;
+636	 }
+637	 function mulDivRoundingUp( uint256 a, uint256 b, uint256 denominator ) internal pure returns (uint256 result) {
+638	 result = mulDiv(a, b, denominator);
+639	 if (mulmod(a, b, denominator) > 0) {
+640	 require(result < type(uint256).max);
+641	 result++;
+642	 }
+643	 }
+644	 }
+645	 pragma solidity >=0.5.0;
+646	 library UnsafeMath {
+647	 function divRoundingUp(uint256 x, uint256 y) internal pure returns (uint256 z) {
+648	 assembly {
+649	 z := add(div(x, y), gt(mod(x, y), 0)) }
+650	 }
+651	 }
+652	 pragma solidity >=0.4.0;
+653	 library FixedPoint96 {
+654	 uint8 internal constant RESOLUTION = 96;
+655	 uint256 internal constant Q96 = 0x1000000000000000000000000;
+656	 }

@@ -1,0 +1,219 @@
+row number 
+1	         pragma solidity ^0.7.0;
+2	 interface IERC20 {
+3	 function totalSupply() external view returns (uint256);
+4	 function balanceOf(address account) external view returns (uint256);
+5	 function transfer(address recipient, uint256 amount) external returns (bool);
+6	 function allowance(address owner, address spender) external view returns (uint256);
+7	 function approve(address spender, uint256 amount) external returns (bool);
+8	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+9	 event Transfer(address indexed from, address indexed to, uint256 value);
+10	 event Approval(address indexed owner, address indexed spender, uint256 value);
+11	 }
+12	 pragma solidity 0.7.6;
+13	 interface IOracle {
+14	 function getRate(IERC20 srcToken, IERC20 dstToken, IERC20 connector) external view returns (uint256 rate, uint256 weight);
+15	 }
+16	 pragma solidity >=0.6.0 <0.8.0;
+17	 abstract contract Context {
+18	 function _msgSender() internal view virtual returns (address payable) {
+19	 return msg.sender;
+20	 }
+21	 function _msgData() internal view virtual returns (bytes memory) {
+22	 this;
+23	 return msg.data;
+24	 }
+25	 }
+26	 pragma solidity 0.7.6;
+27	 contract SynthetixOracle is IOracle {
+28	 using SafeMath for uint256;
+29	 ISynthetixProxy public immutable proxy;
+30	 IERC20 private constant _ETH = IERC20(0x0000000000000000000000000000000000000000);
+31	 IERC20 private constant _NONE = IERC20(0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF);
+32	 uint256 private constant _RATE_TTL = 1 days;
+33	 bytes32 private constant _EXCHANGE_RATES_KEY = 0x45786368616e6765526174657300000000000000000000000000000000000000;
+34	 bytes32 private constant _SETH_KEY = 0x7345544800000000000000000000000000000000000000000000000000000000;
+35	 constructor(ISynthetixProxy _proxy) {
+36	 proxy = _proxy;
+37	 }
+38	 function getRate(IERC20 srcToken, IERC20 dstToken, IERC20 connector) external view override returns (uint256 rate, uint256 weight) {
+39	 require(connector == _NONE, "SO: connector should be None");
+40	 ISynthetixAddressResolver resolver = ISynthetixAddressResolver(proxy.target());
+41	 ISynthetixExchangeRates exchangeRates = ISynthetixExchangeRates(resolver.getAddress(_EXCHANGE_RATES_KEY));
+42	 uint256 srcAnswer = srcToken != _ETH ? _getRate(address(srcToken), resolver, exchangeRates) : _getRate(resolver.getSynth(_SETH_KEY), resolver, exchangeRates);
+43	 uint256 dstAnswer = dstToken != _ETH ? _getRate(address(dstToken), resolver, exchangeRates) : _getRate(resolver.getSynth(_SETH_KEY), resolver, exchangeRates);
+44	 rate = srcAnswer.mul(1e18).div(dstAnswer);
+45	 weight = 1e24;
+46	 }
+47	 function _getRate(address token, ISynthetixAddressResolver resolver, ISynthetixExchangeRates exchangeRates) private view returns(uint256) {
+48	 string memory dstSymbol = ERC20(token).symbol();
+49	 bytes32 dstCurrencyKey;
+50	 assembly {
+51	 dstCurrencyKey := mload(add(dstSymbol, 32)) }
+52	 require(resolver.getSynth(dstCurrencyKey) == token, "SO: key is diff from token");
+53	 (uint256 answer, uint256 dstUpdatedAt) = exchangeRates.rateAndUpdatedTime(dstCurrencyKey);
+54	 require(block.timestamp < dstUpdatedAt + _RATE_TTL, "SO: dst rate too old");
+55	 return answer;
+56	 }
+57	 }
+58	 pragma solidity ^0.7.0;
+59	 library SafeMath {
+60	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+61	 uint256 c = a + b;
+62	 if (c < a) return (false, 0);
+63	 return (true, c);
+64	 }
+65	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+66	 if (b > a) return (false, 0);
+67	 return (true, a - b);
+68	 }
+69	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+70	 if (a == 0) return (true, 0);
+71	 uint256 c = a * b;
+72	 if (c / a != b) return (false, 0);
+73	 return (true, c);
+74	 }
+75	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+76	 if (b == 0) return (false, 0);
+77	 return (true, a / b);
+78	 }
+79	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+80	 if (b == 0) return (false, 0);
+81	 return (true, a % b);
+82	 }
+83	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+84	 uint256 c = a + b;
+85	 require(c >= a, "SafeMath: addition overflow");
+86	 return c;
+87	 }
+88	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+89	 require(b <= a, "SafeMath: subtraction overflow");
+90	 return a - b;
+91	 }
+92	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+93	 if (a == 0) return 0;
+94	 uint256 c = a * b;
+95	 require(c / a == b, "SafeMath: multiplication overflow");
+96	 return c;
+97	 }
+98	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+99	 require(b > 0, "SafeMath: division by zero");
+100	 return a / b;
+101	 }
+102	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+103	 require(b > 0, "SafeMath: modulo by zero");
+104	 return a % b;
+105	 }
+106	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+107	 require(b <= a, errorMessage);
+108	 return a - b;
+109	 }
+110	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+111	 require(b > 0, errorMessage);
+112	 return a / b;
+113	 }
+114	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+115	 require(b > 0, errorMessage);
+116	 return a % b;
+117	 }
+118	 }
+119	 pragma solidity ^0.7.0;
+120	 contract ERC20 is Context, IERC20 {
+121	 using SafeMath for uint256;
+122	 mapping (address => uint256) private _balances;
+123	 mapping (address => mapping (address => uint256)) private _allowances;
+124	 uint256 private _totalSupply;
+125	 string private _name;
+126	 string private _symbol;
+127	 uint8 private _decimals;
+128	 constructor (string memory name_, string memory symbol_) {
+129	 _name = name_;
+130	 _symbol = symbol_;
+131	 _decimals = 18;
+132	 }
+133	 function name() public view virtual returns (string memory) {
+134	 return _name;
+135	 }
+136	 function symbol() public view virtual returns (string memory) {
+137	 return _symbol;
+138	 }
+139	 function decimals() public view virtual returns (uint8) {
+140	 return _decimals;
+141	 }
+142	 function totalSupply() public view virtual override returns (uint256) {
+143	 return _totalSupply;
+144	 }
+145	 function balanceOf(address account) public view virtual override returns (uint256) {
+146	 return _balances[account];
+147	 }
+148	 function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+149	 _transfer(_msgSender(), recipient, amount);
+150	 return true;
+151	 }
+152	 function allowance(address owner, address spender) public view virtual override returns (uint256) {
+153	 return _allowances[owner][spender];
+154	 }
+155	 function approve(address spender, uint256 amount) public virtual override returns (bool) {
+156	 _approve(_msgSender(), spender, amount);
+157	 return true;
+158	 }
+159	 function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+160	 _transfer(sender, recipient, amount);
+161	 _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+162	 return true;
+163	 }
+164	 function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+165	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+166	 return true;
+167	 }
+168	 function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+169	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+170	 return true;
+171	 }
+172	 function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+173	 require(sender != address(0), "ERC20: transfer from the zero address");
+174	 require(recipient != address(0), "ERC20: transfer to the zero address");
+175	 _beforeTokenTransfer(sender, recipient, amount);
+176	 _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+177	 _balances[recipient] = _balances[recipient].add(amount);
+178	 emit Transfer(sender, recipient, amount);
+179	 }
+180	 function _mint(address account, uint256 amount) internal virtual {
+181	 require(account != address(0), "ERC20: mint to the zero address");
+182	 _beforeTokenTransfer(address(0), account, amount);
+183	 _totalSupply = _totalSupply.add(amount);
+184	 _balances[account] = _balances[account].add(amount);
+185	 emit Transfer(address(0), account, amount);
+186	 }
+187	 function _burn(address account, uint256 amount) internal virtual {
+188	 require(account != address(0), "ERC20: burn from the zero address");
+189	 _beforeTokenTransfer(account, address(0), amount);
+190	 _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+191	 _totalSupply = _totalSupply.sub(amount);
+192	 emit Transfer(account, address(0), amount);
+193	 }
+194	 function _approve(address owner, address spender, uint256 amount) internal virtual {
+195	 require(owner != address(0), "ERC20: approve from the zero address");
+196	 require(spender != address(0), "ERC20: approve to the zero address");
+197	 _allowances[owner][spender] = amount;
+198	 emit Approval(owner, spender, amount);
+199	 }
+200	 function _setupDecimals(uint8 decimals_) internal virtual {
+201	 _decimals = decimals_;
+202	 }
+203	 function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual {
+204	 }
+205	 }
+206	 pragma solidity ^0.7.6;
+207	 interface ISynthetixExchangeRates {
+208	 function rateAndUpdatedTime(bytes32 currencyKey) external view returns (uint256 rate, uint256 time);
+209	 }
+210	 pragma solidity ^0.7.6;
+211	 interface ISynthetixProxy {
+212	 function target() external view returns (address);
+213	 }
+214	 pragma solidity ^0.7.6;
+215	 interface ISynthetixAddressResolver {
+216	 function getSynth(bytes32 key) external view returns (address);
+217	 function getAddress(bytes32 key) external view returns (address);
+218	 }

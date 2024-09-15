@@ -1,0 +1,133 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract owned {
+3	 address public owner;
+4	 address public ownerCandidate;
+5	 event OwnerTransfer(address originalOwner, address currentOwner);
+6	 function owned() public {
+7	 owner = msg.sender;
+8	 }
+9	 modifier onlyOwner {
+10	 require(msg.sender == owner);
+11	 _;
+12	 }
+13	 function transferOwnership(address newOwner) onlyOwner public {
+14	 owner = newOwner;
+15	 }
+16	 function proposeNewOwner(address newOwner) public onlyOwner {
+17	 require(newOwner != address(0) && newOwner != owner);
+18	 ownerCandidate = newOwner;
+19	 }
+20	 function acceptOwnerTransfer() public {
+21	 require(msg.sender == ownerCandidate);
+22	 OwnerTransfer(owner, ownerCandidate);
+23	 owner = ownerCandidate;
+24	 }
+25	 }
+26	 interface tokenRecipient {
+27	 function receiveApproval(address _from, uint256 _value, address _token, bytes _extraData) public;
+28	 }
+29	 contract TokenERC20 {
+30	 string public name;
+31	 string public symbol;
+32	 uint8 public decimals = 18;
+33	 uint256 initialSupply=1000000000;
+34	 uint256 public totalSupply;
+35	 mapping (address => uint256) public balanceOf;
+36	 mapping (address => mapping (address => uint256)) public allowance;
+37	 event Transfer(address indexed from, address indexed to, uint256 value);
+38	 event Burn(address indexed from, uint256 value);
+39	 function TokenERC20() public {
+40	 totalSupply = initialSupply * 10 ** uint256(decimals);
+41	 balanceOf[msg.sender] = totalSupply;
+42	 name = "HVB";
+43	 symbol = "HVB";
+44	 }
+45	 function _transfer(address _from, address _to, uint _value) internal {
+46	 require(_to != 0x0);
+47	 require(balanceOf[_from] >= _value);
+48	 require(balanceOf[_to] + _value > balanceOf[_to]);
+49	 uint previousBalances = balanceOf[_from] + balanceOf[_to];
+50	 balanceOf[_from] -= _value;
+51	 balanceOf[_to] += _value;
+52	 Transfer(_from, _to, _value);
+53	 assert(balanceOf[_from] + balanceOf[_to] == previousBalances);
+54	 }
+55	 function transfer(address _to, uint256 _value) public {
+56	 _transfer(msg.sender, _to, _value);
+57	 }
+58	 function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+59	 require(_value <= allowance[_from][msg.sender]);
+60	 allowance[_from][msg.sender] -= _value;
+61	 _transfer(_from, _to, _value);
+62	 return true;
+63	 }
+64	 function approve(address _spender, uint256 _value) public returns (bool success) {
+65	 allowance[msg.sender][_spender] = _value;
+66	 return true;
+67	 }
+68	 function approveAndCall(address _spender, uint256 _value, bytes _extraData) public returns (bool success) {
+69	 tokenRecipient spender = tokenRecipient(_spender);
+70	 if (approve(_spender, _value)) {
+71	 spender.receiveApproval(msg.sender, _value, this, _extraData);
+72	 return true;
+73	 }
+74	 }
+75	 function burn(uint256 _value) public returns (bool success) {
+76	 require(balanceOf[msg.sender] >= _value);
+77	 balanceOf[msg.sender] -= _value;
+78	 totalSupply -= _value;
+79	 Burn(msg.sender, _value);
+80	 return true;
+81	 }
+82	 function burnFrom(address _from, uint256 _value) public returns (bool success) {
+83	 require(balanceOf[_from] >= _value);
+84	 require(_value <= allowance[_from][msg.sender]);
+85	 balanceOf[_from] -= _value;
+86	 allowance[_from][msg.sender] -= _value;
+87	 totalSupply -= _value;
+88	 Burn(_from, _value);
+89	 return true;
+90	 }
+91	 }
+92	 contract HVB is owned, TokenERC20 {
+93	 uint256 public sellPrice;
+94	 uint256 public buyPrice;
+95	 mapping (address => bool) public frozenAccount;
+96	 event FrozenFunds(address target, bool frozen);
+97	 function HVB() TokenERC20() public {
+98	 }
+99	 function _transfer(address _from, address _to, uint _value) internal {
+100	 require (_to != 0x0);
+101	 require (balanceOf[_from] >= _value);
+102	 require (balanceOf[_to] + _value > balanceOf[_to]);
+103	 require(!frozenAccount[_from]);
+104	 require(!frozenAccount[_to]);
+105	 balanceOf[_from] -= _value;
+106	 balanceOf[_to] += _value;
+107	 Transfer(_from, _to, _value);
+108	 }
+109	 function mintToken(address target, uint256 mintedAmount) onlyOwner public {
+110	 balanceOf[target] += mintedAmount;
+111	 totalSupply += mintedAmount;
+112	 Transfer(0, this, mintedAmount);
+113	 Transfer(this, target, mintedAmount);
+114	 }
+115	 function freezeAccount(address target, bool freeze) onlyOwner public {
+116	 frozenAccount[target] = freeze;
+117	 FrozenFunds(target, freeze);
+118	 }
+119	 function setPrices(uint256 newSellPrice, uint256 newBuyPrice) onlyOwner public {
+120	 sellPrice = newSellPrice;
+121	 buyPrice = newBuyPrice;
+122	 }
+123	 function buy() payable public {
+124	 uint amount = msg.value / buyPrice;
+125	 _transfer(this, msg.sender, amount);
+126	 }
+127	 function sell(uint256 amount) public {
+128	 require(this.balance >= amount * sellPrice);
+129	 _transfer(msg.sender, this, amount);
+130	 msg.sender.transfer(amount * sellPrice);
+131	 }
+132	 }

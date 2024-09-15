@@ -1,0 +1,420 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity 0.6.12;
+12	 interface IMarketplaceSettings {
+13	 function getMarketplaceMaxValue() external view returns (uint256);
+14	 function getMarketplaceMinValue() external view returns (uint256);
+15	 function getMarketplaceFeePercentage() external view returns (uint8);
+16	 function calculateMarketplaceFee(uint256 _amount) external view returns (uint256);
+17	 function getERC1155ContractPrimarySaleFeePercentage() external view returns (uint8);
+18	 function calculatePrimarySaleFee(uint256 _amount) external view returns (uint256);
+19	 function hasTokenSold(uint256 _tokenId) external view returns (bool);
+20	 function markERC1155Token( uint256 _tokenId, bool _hasSold ) external;
+21	 }
+22	 pragma solidity >=0.6.0 <0.8.0;
+23	 abstract contract AccessControl is Context {
+24	 using EnumerableSet for EnumerableSet.AddressSet;
+25	 using Address for address;
+26	 struct RoleData {
+27	 EnumerableSet.AddressSet members;
+28	 bytes32 adminRole;
+29	 }
+30	 mapping (bytes32 => RoleData) private _roles;
+31	 bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
+32	 event RoleAdminChanged(bytes32 indexed role, bytes32 indexed previousAdminRole, bytes32 indexed newAdminRole);
+33	 event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
+34	 event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+35	 function hasRole(bytes32 role, address account) public view returns (bool) {
+36	 return _roles[role].members.contains(account);
+37	 }
+38	 function getRoleMemberCount(bytes32 role) public view returns (uint256) {
+39	 return _roles[role].members.length();
+40	 }
+41	 function getRoleMember(bytes32 role, uint256 index) public view returns (address) {
+42	 return _roles[role].members.at(index);
+43	 }
+44	 function getRoleAdmin(bytes32 role) public view returns (bytes32) {
+45	 return _roles[role].adminRole;
+46	 }
+47	 function grantRole(bytes32 role, address account) public virtual {
+48	 require(hasRole(_roles[role].adminRole, _msgSender()), "AccessControl: sender must be an admin to grant");
+49	 _grantRole(role, account);
+50	 }
+51	 function revokeRole(bytes32 role, address account) public virtual {
+52	 require(hasRole(_roles[role].adminRole, _msgSender()), "AccessControl: sender must be an admin to revoke");
+53	 _revokeRole(role, account);
+54	 }
+55	 function renounceRole(bytes32 role, address account) public virtual {
+56	 require(account == _msgSender(), "AccessControl: can only renounce roles for self");
+57	 _revokeRole(role, account);
+58	 }
+59	 function _setupRole(bytes32 role, address account) internal virtual {
+60	 _grantRole(role, account);
+61	 }
+62	 function _setRoleAdmin(bytes32 role, bytes32 adminRole) internal virtual {
+63	 emit RoleAdminChanged(role, _roles[role].adminRole, adminRole);
+64	 _roles[role].adminRole = adminRole;
+65	 }
+66	 function _grantRole(bytes32 role, address account) private {
+67	 if (_roles[role].members.add(account)) {
+68	 emit RoleGranted(role, account, _msgSender());
+69	 }
+70	 }
+71	 function _revokeRole(bytes32 role, address account) private {
+72	 if (_roles[role].members.remove(account)) {
+73	 emit RoleRevoked(role, account, _msgSender());
+74	 }
+75	 }
+76	 }
+77	 pragma solidity >=0.6.0 <0.8.0;
+78	 abstract contract Ownable is Context {
+79	 address private _owner;
+80	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+81	 constructor () internal {
+82	 address msgSender = _msgSender();
+83	 _owner = msgSender;
+84	 emit OwnershipTransferred(address(0), msgSender);
+85	 }
+86	 function owner() public view virtual returns (address) {
+87	 return _owner;
+88	 }
+89	 modifier onlyOwner() {
+90	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+91	 _;
+92	 }
+93	 function renounceOwnership() public virtual onlyOwner {
+94	 emit OwnershipTransferred(_owner, address(0));
+95	 _owner = address(0);
+96	 }
+97	 function transferOwnership(address newOwner) public virtual onlyOwner {
+98	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+99	 emit OwnershipTransferred(_owner, newOwner);
+100	 _owner = newOwner;
+101	 }
+102	 }
+103	 pragma solidity 0.6.12;
+104	 interface INifter {
+105	 function creatorOfToken(uint256 _tokenId) external view returns (address payable);
+106	 function getServiceFee(uint256 _tokenId) external view returns (uint8);
+107	 function getPriceType(uint256 _tokenId, address _owner) external view returns (uint8);
+108	 function setPrice(uint256 _price, uint256 _tokenId, address _owner) external;
+109	 function setBid(uint256 _bid, address _bidder, uint256 _tokenId, address _owner) external;
+110	 function removeFromSale(uint256 _tokenId, address _owner) external;
+111	 function getTokenIdsLength() external view returns (uint256);
+112	 function getTokenId(uint256 _index) external view returns (uint256);
+113	 function getOwners(uint256 _tokenId) external view returns (address[] memory owners);
+114	 function getIsForSale(uint256 _tokenId, address _owner) external view returns (bool);
+115	 }
+116	 pragma solidity 0.6.12;
+117	 contract MarketplaceSettings is Ownable, AccessControl, IMarketplaceSettings {
+118	 using SafeMath for uint256;
+119	 bytes32 public constant TOKEN_MARK_ROLE = "TOKEN_MARK_ROLE";
+120	 uint256 private maxValue;
+121	 uint256 private minValue;
+122	 uint8 private marketplaceFeePercentage;
+123	 uint8 private primarySaleFees;
+124	 mapping(uint256 => bool) private soldTokens;
+125	 address public wallet;
+126	 constructor() public {
+127	 maxValue = 2 ** 254;
+128	 minValue = 1000;
+129	 marketplaceFeePercentage = 3;
+130	 _setupRole(AccessControl.DEFAULT_ADMIN_ROLE, owner());
+131	 grantRole(TOKEN_MARK_ROLE, owner());
+132	 }
+133	 function grantMarketplaceAccess(address _account) external {
+134	 require( hasRole(AccessControl.DEFAULT_ADMIN_ROLE, msg.sender), "grantMarketplaceAccess::Must be admin to call method" );
+135	 grantRole(TOKEN_MARK_ROLE, _account);
+136	 }
+137	 function getMarketplaceMaxValue() external view override returns (uint256) {
+138	 return maxValue;
+139	 }
+140	 function setMarketplaceMaxValue(uint256 _maxValue) external onlyOwner {
+141	 maxValue = _maxValue;
+142	 }
+143	 function getMarketplaceMinValue() external view override returns (uint256) {
+144	 return minValue;
+145	 }
+146	 function setMarketplaceMinValue(uint256 _minValue) external onlyOwner {
+147	 minValue = _minValue;
+148	 }
+149	 function getMarketplaceFeePercentage() external view override returns (uint8) {
+150	 return marketplaceFeePercentage;
+151	 }
+152	 function setMarketplaceFeePercentage(uint8 _percentage) external onlyOwner {
+153	 require( _percentage <= 100, "setMarketplaceFeePercentage::_percentage must be <= 100" );
+154	 marketplaceFeePercentage = _percentage;
+155	 }
+156	 function calculateMarketplaceFee(uint256 _amount) external view override returns (uint256) {
+157	 return _amount.mul(marketplaceFeePercentage).div(100);
+158	 }
+159	 function getERC1155ContractPrimarySaleFeePercentage() external view override returns (uint8) {
+160	 return primarySaleFees;
+161	 }
+162	 function restore(address _oldAddress, address _oldNifterAddress, uint256 _startIndex, uint256 _endIndex) external onlyOwner {
+163	 MarketplaceSettings oldContract = MarketplaceSettings(_oldAddress);
+164	 INifter oldNifterContract = INifter(_oldNifterAddress);
+165	 uint256 length = oldNifterContract.getTokenIdsLength();
+166	 require(_startIndex < length, "wrong start index");
+167	 require(_endIndex <= length, "wrong end index");
+168	 for (uint i = _startIndex; i < _endIndex; i++) {
+169	 uint256 tokenId = oldNifterContract.getTokenId(i);
+170	 soldTokens[tokenId] = oldContract.hasTokenSold(tokenId);
+171	 }
+172	 maxValue = oldContract.getMarketplaceMaxValue();
+173	 minValue = oldContract.getMarketplaceMinValue();
+174	 marketplaceFeePercentage = oldContract.getMarketplaceFeePercentage();
+175	 primarySaleFees = oldContract.getERC1155ContractPrimarySaleFeePercentage();
+176	 }
+177	 function setERC1155ContractPrimarySaleFeePercentage( uint8 _percentage ) external onlyOwner {
+178	 require( _percentage <= 100, "setERC1155ContractPrimarySaleFeePercentage::_percentage must be <= 100" );
+179	 primarySaleFees = _percentage;
+180	 }
+181	 function calculatePrimarySaleFee(uint256 _amount) external view override returns (uint256) {
+182	 return _amount.mul(primarySaleFees).div(100);
+183	 }
+184	 function hasTokenSold(uint256 _tokenId) external view override returns (bool) {
+185	 return soldTokens[_tokenId];
+186	 }
+187	 function markERC1155Token( uint256 _tokenId, bool _hasSold ) external override {
+188	 require( hasRole(TOKEN_MARK_ROLE, msg.sender), "markERC1155Token::Must have TOKEN_MARK_ROLE role to call method" );
+189	 soldTokens[_tokenId] = _hasSold;
+190	 }
+191	 function markTokensAsSold( uint256[] calldata _tokenIds ) external {
+192	 require( hasRole(TOKEN_MARK_ROLE, msg.sender), "markERC1155Token::Must have TOKEN_MARK_ROLE role to call method" );
+193	 require( _tokenIds.length <= 2000, "markTokensAsSold::Attempted to mark more than 2000 tokens as sold" );
+194	 for (uint256 i = 0; i < _tokenIds.length; i++) {
+195	 soldTokens[_tokenIds[i]] = true;
+196	 }
+197	 }
+198	 }
+199	 pragma solidity >=0.6.0 <0.8.0;
+200	 library SafeMath {
+201	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+202	 uint256 c = a + b;
+203	 if (c < a) return (false, 0);
+204	 return (true, c);
+205	 }
+206	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+207	 if (b > a) return (false, 0);
+208	 return (true, a - b);
+209	 }
+210	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+211	 if (a == 0) return (true, 0);
+212	 uint256 c = a * b;
+213	 if (c / a != b) return (false, 0);
+214	 return (true, c);
+215	 }
+216	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+217	 if (b == 0) return (false, 0);
+218	 return (true, a / b);
+219	 }
+220	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+221	 if (b == 0) return (false, 0);
+222	 return (true, a % b);
+223	 }
+224	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+225	 uint256 c = a + b;
+226	 require(c >= a, "SafeMath: addition overflow");
+227	 return c;
+228	 }
+229	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+230	 require(b <= a, "SafeMath: subtraction overflow");
+231	 return a - b;
+232	 }
+233	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+234	 if (a == 0) return 0;
+235	 uint256 c = a * b;
+236	 require(c / a == b, "SafeMath: multiplication overflow");
+237	 return c;
+238	 }
+239	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+240	 require(b > 0, "SafeMath: division by zero");
+241	 return a / b;
+242	 }
+243	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+244	 require(b > 0, "SafeMath: modulo by zero");
+245	 return a % b;
+246	 }
+247	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+248	 require(b <= a, errorMessage);
+249	 return a - b;
+250	 }
+251	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+252	 require(b > 0, errorMessage);
+253	 return a / b;
+254	 }
+255	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+256	 require(b > 0, errorMessage);
+257	 return a % b;
+258	 }
+259	 }
+260	 pragma solidity >=0.6.2 <0.8.0;
+261	 library Address {
+262	 function isContract(address account) internal view returns (bool) {
+263	 uint256 size;
+264	 assembly {
+265	 size := extcodesize(account) }
+266	 return size > 0;
+267	 }
+268	 function sendValue(address payable recipient, uint256 amount) internal {
+269	 require(address(this).balance >= amount, "Address: insufficient balance");
+270	 (bool success, ) = recipient.call{
+271	 value: amount }
+272	 ("");
+273	 require(success, "Address: unable to send value, recipient may have reverted");
+274	 }
+275	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+276	 return functionCall(target, data, "Address: low-level call failed");
+277	 }
+278	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+279	 return functionCallWithValue(target, data, 0, errorMessage);
+280	 }
+281	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+282	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+283	 }
+284	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+285	 require(address(this).balance >= value, "Address: insufficient balance for call");
+286	 require(isContract(target), "Address: call to non-contract");
+287	 (bool success, bytes memory returndata) = target.call{
+288	 value: value }
+289	 (data);
+290	 return _verifyCallResult(success, returndata, errorMessage);
+291	 }
+292	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+293	 return functionStaticCall(target, data, "Address: low-level static call failed");
+294	 }
+295	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+296	 require(isContract(target), "Address: static call to non-contract");
+297	 (bool success, bytes memory returndata) = target.staticcall(data);
+298	 return _verifyCallResult(success, returndata, errorMessage);
+299	 }
+300	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+301	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+302	 }
+303	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+304	 require(isContract(target), "Address: delegate call to non-contract");
+305	 (bool success, bytes memory returndata) = target.delegatecall(data);
+306	 return _verifyCallResult(success, returndata, errorMessage);
+307	 }
+308	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+309	 if (success) {
+310	 return returndata;
+311	 }
+312	 else {
+313	 if (returndata.length > 0) {
+314	 assembly {
+315	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+316	 }
+317	 else {
+318	 revert(errorMessage);
+319	 }
+320	 }
+321	 }
+322	 }
+323	 pragma solidity >=0.6.0 <0.8.0;
+324	 library EnumerableSet {
+325	 struct Set {
+326	 bytes32[] _values;
+327	 mapping (bytes32 => uint256) _indexes;
+328	 }
+329	 function _add(Set storage set, bytes32 value) private returns (bool) {
+330	 if (!_contains(set, value)) {
+331	 set._values.push(value);
+332	 set._indexes[value] = set._values.length;
+333	 return true;
+334	 }
+335	 else {
+336	 return false;
+337	 }
+338	 }
+339	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+340	 uint256 valueIndex = set._indexes[value];
+341	 if (valueIndex != 0) {
+342	 uint256 toDeleteIndex = valueIndex - 1;
+343	 uint256 lastIndex = set._values.length - 1;
+344	 bytes32 lastvalue = set._values[lastIndex];
+345	 set._values[toDeleteIndex] = lastvalue;
+346	 set._indexes[lastvalue] = toDeleteIndex + 1;
+347	 set._values.pop();
+348	 delete set._indexes[value];
+349	 return true;
+350	 }
+351	 else {
+352	 return false;
+353	 }
+354	 }
+355	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+356	 return set._indexes[value] != 0;
+357	 }
+358	 function _length(Set storage set) private view returns (uint256) {
+359	 return set._values.length;
+360	 }
+361	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+362	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+363	 return set._values[index];
+364	 }
+365	 struct Bytes32Set {
+366	 Set _inner;
+367	 }
+368	 function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+369	 return _add(set._inner, value);
+370	 }
+371	 function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+372	 return _remove(set._inner, value);
+373	 }
+374	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+375	 return _contains(set._inner, value);
+376	 }
+377	 function length(Bytes32Set storage set) internal view returns (uint256) {
+378	 return _length(set._inner);
+379	 }
+380	 function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+381	 return _at(set._inner, index);
+382	 }
+383	 struct AddressSet {
+384	 Set _inner;
+385	 }
+386	 function add(AddressSet storage set, address value) internal returns (bool) {
+387	 return _add(set._inner, bytes32(uint256(uint160(value))));
+388	 }
+389	 function remove(AddressSet storage set, address value) internal returns (bool) {
+390	 return _remove(set._inner, bytes32(uint256(uint160(value))));
+391	 }
+392	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+393	 return _contains(set._inner, bytes32(uint256(uint160(value))));
+394	 }
+395	 function length(AddressSet storage set) internal view returns (uint256) {
+396	 return _length(set._inner);
+397	 }
+398	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+399	 return address(uint160(uint256(_at(set._inner, index))));
+400	 }
+401	 struct UintSet {
+402	 Set _inner;
+403	 }
+404	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+405	 return _add(set._inner, bytes32(value));
+406	 }
+407	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+408	 return _remove(set._inner, bytes32(value));
+409	 }
+410	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+411	 return _contains(set._inner, bytes32(value));
+412	 }
+413	 function length(UintSet storage set) internal view returns (uint256) {
+414	 return _length(set._inner);
+415	 }
+416	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+417	 return uint256(_at(set._inner, index));
+418	 }
+419	 }

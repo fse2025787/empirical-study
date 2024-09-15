@@ -1,0 +1,359 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+4	 if (a == 0) {
+5	 return 0;
+6	 }
+7	 c = a * b;
+8	 assert(c / a == b);
+9	 return c;
+10	 }
+11	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+12	 return a / b;
+13	 }
+14	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+15	 assert(b <= a);
+16	 return a - b;
+17	 }
+18	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+19	 c = a + b;
+20	 assert(c >= a);
+21	 return c;
+22	 }
+23	 }
+24	 contract Ownable {
+25	 address public owner;
+26	 address public pendingOwner;
+27	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+28	 constructor() public {
+29	 owner = msg.sender;
+30	 pendingOwner = address(0);
+31	 }
+32	 modifier onlyOwner() {
+33	 require(msg.sender == owner);
+34	 _;
+35	 }
+36	 modifier onlyPendingOwner() {
+37	 require(msg.sender == pendingOwner);
+38	 _;
+39	 }
+40	 function transferOwnership(address _newOwner) public onlyOwner {
+41	 require(_newOwner != address(0));
+42	 pendingOwner = _newOwner;
+43	 }
+44	 function claimOwnership() onlyPendingOwner public {
+45	 emit OwnershipTransferred(owner, pendingOwner);
+46	 owner = pendingOwner;
+47	 pendingOwner = address(0);
+48	 }
+49	 }
+50	 library AddressUtils {
+51	 function isContract(address addr) internal view returns (bool) {
+52	 uint256 size;
+53	 assembly {
+54	 size := extcodesize(addr) }
+55	 return size > 0;
+56	 }
+57	 }
+58	 contract PermissionedTokenStorage is Ownable {
+59	 using SafeMath for uint256;
+60	 mapping (address => mapping (address => uint256)) public allowances;
+61	 mapping (address => uint256) public balances;
+62	 uint256 public totalSupply;
+63	 function addAllowance(address _tokenHolder, address _spender, uint256 _value) public onlyOwner {
+64	 allowances[_tokenHolder][_spender] = allowances[_tokenHolder][_spender].add(_value);
+65	 }
+66	 function subAllowance(address _tokenHolder, address _spender, uint256 _value) public onlyOwner {
+67	 allowances[_tokenHolder][_spender] = allowances[_tokenHolder][_spender].sub(_value);
+68	 }
+69	 function setAllowance(address _tokenHolder, address _spender, uint256 _value) public onlyOwner {
+70	 allowances[_tokenHolder][_spender] = _value;
+71	 }
+72	 function addBalance(address _addr, uint256 _value) public onlyOwner {
+73	 balances[_addr] = balances[_addr].add(_value);
+74	 }
+75	 function subBalance(address _addr, uint256 _value) public onlyOwner {
+76	 balances[_addr] = balances[_addr].sub(_value);
+77	 }
+78	 function setBalance(address _addr, uint256 _value) public onlyOwner {
+79	 balances[_addr] = _value;
+80	 }
+81	 function addTotalSupply(uint256 _value) public onlyOwner {
+82	 totalSupply = totalSupply.add(_value);
+83	 }
+84	 function subTotalSupply(uint256 _value) public onlyOwner {
+85	 totalSupply = totalSupply.sub(_value);
+86	 }
+87	 function setTotalSupply(uint256 _value) public onlyOwner {
+88	 totalSupply = _value;
+89	 }
+90	 }
+91	 contract Proxy {
+92	 function () payable external {
+93	 _fallback();
+94	 }
+95	 function _implementation() internal view returns (address);
+96	 function _delegate(address implementation) internal {
+97	 assembly {
+98	 calldatacopy(0, 0, calldatasize) let result := delegatecall(gas, implementation, 0, calldatasize, 0, 0) returndatacopy(0, 0, returndatasize) switch result case 0 {
+99	 revert(0, returndatasize) }
+100	 default {
+101	 return(0, returndatasize) }
+102	 }
+103	 }
+104	 function _willFallback() internal {
+105	 }
+106	 function _fallback() internal {
+107	 _willFallback();
+108	 _delegate(_implementation());
+109	 }
+110	 }
+111	 contract UpgradeabilityProxy is Proxy {
+112	 event Upgraded(address implementation);
+113	 bytes32 private constant IMPLEMENTATION_SLOT = 0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3;
+114	 constructor(address _implementation) public {
+115	 assert(IMPLEMENTATION_SLOT == keccak256("org.zeppelinos.proxy.implementation"));
+116	 _setImplementation(_implementation);
+117	 }
+118	 function _implementation() internal view returns (address impl) {
+119	 bytes32 slot = IMPLEMENTATION_SLOT;
+120	 assembly {
+121	 impl := sload(slot) }
+122	 }
+123	 function _upgradeTo(address newImplementation) internal {
+124	 _setImplementation(newImplementation);
+125	 emit Upgraded(newImplementation);
+126	 }
+127	 function _setImplementation(address newImplementation) private {
+128	 require(AddressUtils.isContract(newImplementation), "Cannot set a proxy implementation to a non-contract address");
+129	 bytes32 slot = IMPLEMENTATION_SLOT;
+130	 assembly {
+131	 sstore(slot, newImplementation) }
+132	 }
+133	 }
+134	 contract RegulatorStorage is Ownable {
+135	 struct Permission {
+136	 string name;
+137	 string description;
+138	 string contract_name;
+139	 bool active;
+140	 }
+141	 bytes4 public constant MINT_SIG = bytes4(keccak256("mint(address,uint256)"));
+142	 bytes4 public constant MINT_CUSD_SIG = bytes4(keccak256("mintCUSD(address,uint256)"));
+143	 bytes4 public constant CONVERT_WT_SIG = bytes4(keccak256("convertWT(uint256)"));
+144	 bytes4 public constant BURN_SIG = bytes4(keccak256("burn(uint256)"));
+145	 bytes4 public constant CONVERT_CARBON_DOLLAR_SIG = bytes4(keccak256("convertCarbonDollar(address,uint256)"));
+146	 bytes4 public constant BURN_CARBON_DOLLAR_SIG = bytes4(keccak256("burnCarbonDollar(address,uint256)"));
+147	 bytes4 public constant DESTROY_BLACKLISTED_TOKENS_SIG = bytes4(keccak256("destroyBlacklistedTokens(address,uint256)"));
+148	 bytes4 public constant APPROVE_BLACKLISTED_ADDRESS_SPENDER_SIG = bytes4(keccak256("approveBlacklistedAddressSpender(address)"));
+149	 bytes4 public constant BLACKLISTED_SIG = bytes4(keccak256("blacklisted()"));
+150	 mapping (bytes4 => Permission) public permissions;
+151	 mapping (address => bool) public validators;
+152	 mapping (address => mapping (bytes4 => bool)) public userPermissions;
+153	 event PermissionAdded(bytes4 methodsignature);
+154	 event PermissionRemoved(bytes4 methodsignature);
+155	 event ValidatorAdded(address indexed validator);
+156	 event ValidatorRemoved(address indexed validator);
+157	 modifier onlyValidator() {
+158	 require (isValidator(msg.sender), "Sender must be validator");
+159	 _;
+160	 }
+161	 function addPermission( bytes4 _methodsignature, string _permissionName, string _permissionDescription, string _contractName) public onlyValidator {
+162	 Permission memory p = Permission(_permissionName, _permissionDescription, _contractName, true);
+163	 permissions[_methodsignature] = p;
+164	 emit PermissionAdded(_methodsignature);
+165	 }
+166	 function removePermission(bytes4 _methodsignature) public onlyValidator {
+167	 permissions[_methodsignature].active = false;
+168	 emit PermissionRemoved(_methodsignature);
+169	 }
+170	 function setUserPermission(address _who, bytes4 _methodsignature) public onlyValidator {
+171	 require(permissions[_methodsignature].active, "Permission being set must be for a valid method signature");
+172	 userPermissions[_who][_methodsignature] = true;
+173	 }
+174	 function removeUserPermission(address _who, bytes4 _methodsignature) public onlyValidator {
+175	 require(permissions[_methodsignature].active, "Permission being removed must be for a valid method signature");
+176	 userPermissions[_who][_methodsignature] = false;
+177	 }
+178	 function addValidator(address _validator) public onlyOwner {
+179	 validators[_validator] = true;
+180	 emit ValidatorAdded(_validator);
+181	 }
+182	 function removeValidator(address _validator) public onlyOwner {
+183	 validators[_validator] = false;
+184	 emit ValidatorRemoved(_validator);
+185	 }
+186	 function isValidator(address _validator) public view returns (bool) {
+187	 return validators[_validator];
+188	 }
+189	 function isPermission(bytes4 _methodsignature) public view returns (bool) {
+190	 return permissions[_methodsignature].active;
+191	 }
+192	 function getPermission(bytes4 _methodsignature) public view returns (string name, string description, string contract_name, bool active) {
+193	 return (permissions[_methodsignature].name, permissions[_methodsignature].description, permissions[_methodsignature].contract_name, permissions[_methodsignature].active);
+194	 }
+195	 function hasUserPermission(address _who, bytes4 _methodsignature) public view returns (bool) {
+196	 return userPermissions[_who][_methodsignature];
+197	 }
+198	 }
+199	 contract Regulator is RegulatorStorage {
+200	 modifier onlyValidator() {
+201	 require (isValidator(msg.sender), "Sender must be validator");
+202	 _;
+203	 }
+204	 event LogWhitelistedUser(address indexed who);
+205	 event LogBlacklistedUser(address indexed who);
+206	 event LogNonlistedUser(address indexed who);
+207	 event LogSetMinter(address indexed who);
+208	 event LogRemovedMinter(address indexed who);
+209	 event LogSetBlacklistDestroyer(address indexed who);
+210	 event LogRemovedBlacklistDestroyer(address indexed who);
+211	 event LogSetBlacklistSpender(address indexed who);
+212	 event LogRemovedBlacklistSpender(address indexed who);
+213	 function setMinter(address _who) public onlyValidator {
+214	 _setMinter(_who);
+215	 }
+216	 function removeMinter(address _who) public onlyValidator {
+217	 _removeMinter(_who);
+218	 }
+219	 function setBlacklistSpender(address _who) public onlyValidator {
+220	 require(isPermission(APPROVE_BLACKLISTED_ADDRESS_SPENDER_SIG), "Blacklist spending not supported by token");
+221	 setUserPermission(_who, APPROVE_BLACKLISTED_ADDRESS_SPENDER_SIG);
+222	 emit LogSetBlacklistSpender(_who);
+223	 }
+224	 function removeBlacklistSpender(address _who) public onlyValidator {
+225	 require(isPermission(APPROVE_BLACKLISTED_ADDRESS_SPENDER_SIG), "Blacklist spending not supported by token");
+226	 removeUserPermission(_who, APPROVE_BLACKLISTED_ADDRESS_SPENDER_SIG);
+227	 emit LogRemovedBlacklistSpender(_who);
+228	 }
+229	 function setBlacklistDestroyer(address _who) public onlyValidator {
+230	 require(isPermission(DESTROY_BLACKLISTED_TOKENS_SIG), "Blacklist token destruction not supported by token");
+231	 setUserPermission(_who, DESTROY_BLACKLISTED_TOKENS_SIG);
+232	 emit LogSetBlacklistDestroyer(_who);
+233	 }
+234	 function removeBlacklistDestroyer(address _who) public onlyValidator {
+235	 require(isPermission(DESTROY_BLACKLISTED_TOKENS_SIG), "Blacklist token destruction not supported by token");
+236	 removeUserPermission(_who, DESTROY_BLACKLISTED_TOKENS_SIG);
+237	 emit LogRemovedBlacklistDestroyer(_who);
+238	 }
+239	 function setWhitelistedUser(address _who) public onlyValidator {
+240	 _setWhitelistedUser(_who);
+241	 }
+242	 function setBlacklistedUser(address _who) public onlyValidator {
+243	 _setBlacklistedUser(_who);
+244	 }
+245	 function setNonlistedUser(address _who) public onlyValidator {
+246	 _setNonlistedUser(_who);
+247	 }
+248	 function isWhitelistedUser(address _who) public view returns (bool) {
+249	 return (hasUserPermission(_who, BURN_SIG) && !hasUserPermission(_who, BLACKLISTED_SIG));
+250	 }
+251	 function isBlacklistedUser(address _who) public view returns (bool) {
+252	 return (!hasUserPermission(_who, BURN_SIG) && hasUserPermission(_who, BLACKLISTED_SIG));
+253	 }
+254	 function isNonlistedUser(address _who) public view returns (bool) {
+255	 return (!hasUserPermission(_who, BURN_SIG) && !hasUserPermission(_who, BLACKLISTED_SIG));
+256	 }
+257	 function isBlacklistSpender(address _who) public view returns (bool) {
+258	 return hasUserPermission(_who, APPROVE_BLACKLISTED_ADDRESS_SPENDER_SIG);
+259	 }
+260	 function isBlacklistDestroyer(address _who) public view returns (bool) {
+261	 return hasUserPermission(_who, DESTROY_BLACKLISTED_TOKENS_SIG);
+262	 }
+263	 function isMinter(address _who) public view returns (bool) {
+264	 return hasUserPermission(_who, MINT_SIG);
+265	 }
+266	 function _setMinter(address _who) internal {
+267	 require(isPermission(MINT_SIG), "Minting not supported by token");
+268	 setUserPermission(_who, MINT_SIG);
+269	 emit LogSetMinter(_who);
+270	 }
+271	 function _removeMinter(address _who) internal {
+272	 require(isPermission(MINT_SIG), "Minting not supported by token");
+273	 removeUserPermission(_who, MINT_SIG);
+274	 emit LogRemovedMinter(_who);
+275	 }
+276	 function _setNonlistedUser(address _who) internal {
+277	 require(isPermission(BURN_SIG), "Burn method not supported by token");
+278	 require(isPermission(BLACKLISTED_SIG), "Self-destruct method not supported by token");
+279	 removeUserPermission(_who, BURN_SIG);
+280	 removeUserPermission(_who, BLACKLISTED_SIG);
+281	 emit LogNonlistedUser(_who);
+282	 }
+283	 function _setBlacklistedUser(address _who) internal {
+284	 require(isPermission(BURN_SIG), "Burn method not supported by token");
+285	 require(isPermission(BLACKLISTED_SIG), "Self-destruct method not supported by token");
+286	 removeUserPermission(_who, BURN_SIG);
+287	 setUserPermission(_who, BLACKLISTED_SIG);
+288	 emit LogBlacklistedUser(_who);
+289	 }
+290	 function _setWhitelistedUser(address _who) internal {
+291	 require(isPermission(BURN_SIG), "Burn method not supported by token");
+292	 require(isPermission(BLACKLISTED_SIG), "Self-destruct method not supported by token");
+293	 setUserPermission(_who, BURN_SIG);
+294	 removeUserPermission(_who, BLACKLISTED_SIG);
+295	 emit LogWhitelistedUser(_who);
+296	 }
+297	 }
+298	 contract PermissionedTokenProxy is UpgradeabilityProxy, Ownable {
+299	 PermissionedTokenStorage public tokenStorage;
+300	 Regulator public regulator;
+301	 event ChangedRegulator(address indexed oldRegulator, address indexed newRegulator );
+302	 constructor(address _implementation, address _regulator) UpgradeabilityProxy(_implementation) public {
+303	 regulator = Regulator(_regulator);
+304	 tokenStorage = new PermissionedTokenStorage();
+305	 }
+306	 function upgradeTo(address newImplementation) public onlyOwner {
+307	 _upgradeTo(newImplementation);
+308	 }
+309	 function implementation() public view returns (address) {
+310	 return _implementation();
+311	 }
+312	 }
+313	 contract WhitelistedTokenRegulator is Regulator {
+314	 function isMinter(address _who) public view returns (bool) {
+315	 return (super.isMinter(_who) && hasUserPermission(_who, MINT_CUSD_SIG));
+316	 }
+317	 function isWhitelistedUser(address _who) public view returns (bool) {
+318	 return (hasUserPermission(_who, CONVERT_WT_SIG) && super.isWhitelistedUser(_who));
+319	 }
+320	 function isBlacklistedUser(address _who) public view returns (bool) {
+321	 return (!hasUserPermission(_who, CONVERT_WT_SIG) && super.isBlacklistedUser(_who));
+322	 }
+323	 function isNonlistedUser(address _who) public view returns (bool) {
+324	 return (!hasUserPermission(_who, CONVERT_WT_SIG) && super.isNonlistedUser(_who));
+325	 }
+326	 function _setMinter(address _who) internal {
+327	 require(isPermission(MINT_CUSD_SIG), "Minting to CUSD not supported by token");
+328	 setUserPermission(_who, MINT_CUSD_SIG);
+329	 super._setMinter(_who);
+330	 }
+331	 function _removeMinter(address _who) internal {
+332	 require(isPermission(MINT_CUSD_SIG), "Minting to CUSD not supported by token");
+333	 removeUserPermission(_who, MINT_CUSD_SIG);
+334	 super._removeMinter(_who);
+335	 }
+336	 function _setWhitelistedUser(address _who) internal {
+337	 require(isPermission(CONVERT_WT_SIG), "Converting to CUSD not supported by token");
+338	 setUserPermission(_who, CONVERT_WT_SIG);
+339	 super._setWhitelistedUser(_who);
+340	 }
+341	 function _setBlacklistedUser(address _who) internal {
+342	 require(isPermission(CONVERT_WT_SIG), "Converting to CUSD not supported by token");
+343	 removeUserPermission(_who, CONVERT_WT_SIG);
+344	 super._setBlacklistedUser(_who);
+345	 }
+346	 function _setNonlistedUser(address _who) internal {
+347	 require(isPermission(CONVERT_WT_SIG), "Converting to CUSD not supported by token");
+348	 removeUserPermission(_who, CONVERT_WT_SIG);
+349	 super._setNonlistedUser(_who);
+350	 }
+351	 }
+352	 contract WhitelistedTokenProxy is PermissionedTokenProxy {
+353	 address public cusdAddress;
+354	 constructor(address _implementation, address _regulator, address _cusd) public PermissionedTokenProxy(_implementation, _regulator) {
+355	 regulator = WhitelistedTokenRegulator(_regulator);
+356	 cusdAddress = _cusd;
+357	 }
+358	 }

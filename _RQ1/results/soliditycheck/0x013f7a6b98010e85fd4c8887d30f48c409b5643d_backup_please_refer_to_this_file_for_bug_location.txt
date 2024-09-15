@@ -1,0 +1,922 @@
+row number 
+1	   pragma solidity ^0.4.13;
+2	 contract ContractReceiver {
+3	 function tokenFallback(address _from, uint _value, bytes _data) public;
+4	 }
+5	 contract PrivateSale is ContractReceiver {
+6	 using SafeMath for uint256;
+7	 Token tokContract;
+8	 TimedEscrow escrow;
+9	 address owner;
+10	 uint256 rate;
+11	 uint256 end;
+12	 uint256 lockend1;
+13	 uint256 lockend2;
+14	 uint256 mincontrib;
+15	 uint256 numerator;
+16	 uint256 denominator;
+17	 event Contribution(address from, uint256 eth, uint256 tokens);
+18	 constructor(address _tokContract, address _escrowContract, uint256 _end, uint256 _lockend1, uint256 _lockend2, uint256 _numerator, uint256 _denominator, uint256 _mincontrib, uint256 _rate) public {
+19	 tokContract = Token(_tokContract);
+20	 escrow = TimedEscrow(_escrowContract);
+21	 owner = msg.sender;
+22	 end = _end;
+23	 require(_rate > 0);
+24	 rate = _rate;
+25	 numerator = _numerator;
+26	 require(_denominator > 0);
+27	 denominator = _denominator;
+28	 lockend1 = _lockend1;
+29	 lockend2 = _lockend2;
+30	 mincontrib = _mincontrib;
+31	 }
+32	 function getMinContrib() public view returns (uint256){
+33	 return mincontrib;
+34	 }
+35	 function setMinContrib(uint256 _mincontrib){
+36	 require(msg.sender == owner);
+37	 mincontrib = _mincontrib;
+38	 }
+39	 function setLockend1(uint256 _lockend1){
+40	 require(msg.sender == owner);
+41	 require(_lockend1 <= lockend1);
+42	 lockend1 = _lockend1;
+43	 }
+44	 function setLockend2(uint256 _lockend2){
+45	 require(msg.sender == owner);
+46	 require(_lockend2 <= lockend2);
+47	 lockend2 = _lockend2;
+48	 }
+49	 function setLockRatio(uint256 _numerator, uint256 _denominator){
+50	 require(msg.sender == owner);
+51	 require(_denominator > 0);
+52	 numerator = _numerator;
+53	 denominator = _denominator;
+54	 }
+55	 function remaining() public view returns (uint) {
+56	 return tokContract.balanceOf(this);
+57	 }
+58	 function withdrawTokens() public {
+59	 require(now > end);
+60	 require(msg.sender == owner);
+61	 tokContract.transfer(owner, tokContract.balanceOf(this));
+62	 }
+63	 function tokenFallback(address _from, uint _value, bytes _data) public {
+64	 require(_from == owner, "Only owner can send tokens");
+65	 }
+66	 function() public payable {
+67	 require(now < end && msg.value >= mincontrib);
+68	 owner.transfer(msg.value);
+69	 uint256 toks = msg.value.mul(rate);
+70	 emit Contribution(msg.sender, msg.value, toks);
+71	 uint256 toks1 = toks.div(denominator).mul(numerator);
+72	 uint256 toks2 = toks - toks1;
+73	 bytes memory data = escrow.transactionRawToBytes(toks1, msg.sender, lockend1, true, false);
+74	 bytes memory data2 = escrow.transactionRawToBytes(toks2, msg.sender, lockend2, true, false);
+75	 tokContract.transfer( escrow, toks1, data );
+76	 tokContract.transfer( escrow, toks2, data2 );
+77	 }
+78	 }
+79	 contract ERC20Interface {
+80	 function allowance(address owner, address spender) public view returns (uint256);
+81	 function transferFrom(address from, address to, uint256 value) public returns (bool);
+82	 function approve(address spender, uint256 value) public returns (bool);
+83	 event Approval( address indexed owner, address indexed spender, uint256 value );
+84	 function totalSupply() public view returns (uint256);
+85	 function balanceOf(address who) public view returns (uint256);
+86	 function transfer(address to, uint256 value) public returns (bool);
+87	 event Transfer(address indexed from, address indexed to, uint256 value);
+88	 }
+89	 contract StandardERC20 is ERC20Interface {
+90	 using SafeMath for uint256;
+91	 mapping(address => uint256) balances;
+92	 uint256 totalSupply_;
+93	 function totalSupply() public view returns (uint256) {
+94	 return totalSupply_;
+95	 }
+96	 function transfer(address _to, uint256 _value) public returns (bool) {
+97	 require(_to != address(0));
+98	 require(_value <= balances[msg.sender]);
+99	 balances[msg.sender] = balances[msg.sender].sub(_value);
+100	 balances[_to] = balances[_to].add(_value);
+101	 emit Transfer(msg.sender, _to, _value);
+102	 return true;
+103	 }
+104	 function balanceOf(address _owner) public view returns (uint256) {
+105	 return balances[_owner];
+106	 }
+107	 mapping (address => mapping (address => uint256)) internal allowed;
+108	 function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+109	 require(_to != address(0));
+110	 require(_value <= balances[_from]);
+111	 require(_value <= allowed[_from][msg.sender]);
+112	 balances[_from] = balances[_from].sub(_value);
+113	 balances[_to] = balances[_to].add(_value);
+114	 allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
+115	 emit Transfer(_from, _to, _value);
+116	 return true;
+117	 }
+118	 function approve(address _spender, uint256 _value) public returns (bool) {
+119	 allowed[msg.sender][_spender] = _value;
+120	 emit Approval(msg.sender, _spender, _value);
+121	 return true;
+122	 }
+123	 function allowance(address _owner, address _spender) public view returns (uint256) {
+124	 return allowed[_owner][_spender];
+125	 }
+126	 function increaseApproval(address _spender, uint256 _addedValue) public returns (bool) {
+127	 allowed[msg.sender][_spender] = ( allowed[msg.sender][_spender].add(_addedValue));
+128	 emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+129	 return true;
+130	 }
+131	 function decreaseApproval(address _spender, uint256 _subtractedValue) public returns (bool) {
+132	 uint256 oldValue = allowed[msg.sender][_spender];
+133	 if (_subtractedValue > oldValue) {
+134	 allowed[msg.sender][_spender] = 0;
+135	 }
+136	 else {
+137	 allowed[msg.sender][_spender] = oldValue.sub(_subtractedValue);
+138	 }
+139	 emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+140	 return true;
+141	 }
+142	 }
+143	 contract Token is StandardERC20 {
+144	 string public name = "Genuine Token";
+145	 string public symbol = "GNU";
+146	 uint8 public decimals = 18;
+147	 address owner;
+148	 bool burnable;
+149	 event Transfer(address indexed from, address indexed to, uint value, bytes data);
+150	 event Burn(address indexed burner, uint256 value);
+151	 constructor() public {
+152	 balances[msg.sender] = 340000000 * (uint(10) ** decimals);
+153	 totalSupply_ = balances[msg.sender];
+154	 owner = msg.sender;
+155	 burnable = false;
+156	 }
+157	 function transferOwnership(address tbo) public {
+158	 require(msg.sender == owner, 'Unauthorized');
+159	 owner = tbo;
+160	 }
+161	 function name() public view returns (string _name) {
+162	 return name;
+163	 }
+164	 function symbol() public view returns (string _symbol) {
+165	 return symbol;
+166	 }
+167	 function decimals() public view returns (uint8 _decimals) {
+168	 return decimals;
+169	 }
+170	 function totalSupply() public view returns (uint256 _totalSupply) {
+171	 return totalSupply_;
+172	 }
+173	 function transfer(address _to, uint _value, bytes _data, string _custom_fallback) public returns (bool success) {
+174	 require(_to != address(0));
+175	 if (isContract(_to)) {
+176	 if (balanceOf(msg.sender) < _value) revert();
+177	 balances[msg.sender] = balanceOf(msg.sender).sub(_value);
+178	 balances[_to] = balanceOf(_to).add(_value);
+179	 assert(_to.call.value(0)(bytes4(sha3(_custom_fallback)), msg.sender, _value, _data));
+180	 emit Transfer(msg.sender, _to, _value, _data);
+181	 emit Transfer(msg.sender, _to, _value);
+182	 return true;
+183	 }
+184	 else {
+185	 return transferToAddress(_to, _value, _data);
+186	 }
+187	 }
+188	 function transfer(address _to, uint _value, bytes _data) public returns (bool success) {
+189	 require(_to != address(0));
+190	 if (isContract(_to)) {
+191	 return transferToContract(_to, _value, _data);
+192	 }
+193	 else {
+194	 return transferToAddress(_to, _value, _data);
+195	 }
+196	 }
+197	 function transfer(address _to, uint _value) public returns (bool success) {
+198	 require(_to != address(0));
+199	 bytes memory empty;
+200	 if (isContract(_to)) {
+201	 return transferToContract(_to, _value, empty);
+202	 }
+203	 else {
+204	 return transferToAddress(_to, _value, empty);
+205	 }
+206	 }
+207	 function isContract(address _addr) private view returns (bool is_contract) {
+208	 uint length;
+209	 assembly {
+210	 length := extcodesize(_addr) }
+211	 return (length > 0);
+212	 }
+213	 function transferToAddress(address _to, uint _value, bytes _data) private returns (bool success) {
+214	 if (balanceOf(msg.sender) < _value) revert("Insufficient balance");
+215	 balances[msg.sender] = balanceOf(msg.sender).sub(_value);
+216	 balances[_to] = balanceOf(_to).add(_value);
+217	 emit Transfer(msg.sender, _to, _value, _data);
+218	 emit Transfer(msg.sender, _to, _value);
+219	 return true;
+220	 }
+221	 function transferToContract(address _to, uint _value, bytes _data) private returns (bool success) {
+222	 if (balanceOf(msg.sender) < _value) revert("Insufficient balance");
+223	 balances[msg.sender] = balanceOf(msg.sender).sub(_value);
+224	 balances[_to] = balanceOf(_to).add(_value);
+225	 ContractReceiver receiver = ContractReceiver(_to);
+226	 receiver.tokenFallback(msg.sender, _value, _data);
+227	 emit Transfer(msg.sender, _to, _value, _data);
+228	 emit Transfer(msg.sender, _to, _value);
+229	 return true;
+230	 }
+231	 function setBurnable(bool _burnable) public {
+232	 require (msg.sender == owner);
+233	 burnable = _burnable;
+234	 }
+235	 function burn(uint256 _value) public {
+236	 _burn(msg.sender, _value);
+237	 }
+238	 function _burn(address _who, uint256 _value) internal {
+239	 require(burnable == true || _who == owner);
+240	 require(_value <= balances[_who]);
+241	 balances[_who] = balances[_who].sub(_value);
+242	 totalSupply_ = totalSupply_.sub(_value);
+243	 emit Burn(_who, _value);
+244	 emit Transfer(_who, address(0), _value);
+245	 }
+246	 }
+247	 library Array256Lib {
+248	 function sumElements(uint256[] storage self) public view returns(uint256 sum) {
+249	 assembly {
+250	 mstore(0x60,self_slot) for {
+251	 let i := 0 }
+252	 lt(i, sload(self_slot)) {
+253	 i := add(i, 1) }
+254	 {
+255	 sum := add(sload(add(sha3(0x60,0x20),i)),sum) }
+256	 }
+257	 }
+258	 function getMax(uint256[] storage self) public view returns(uint256 maxValue) {
+259	 assembly {
+260	 mstore(0x60,self_slot) maxValue := sload(sha3(0x60,0x20)) for {
+261	 let i := 0 }
+262	 lt(i, sload(self_slot)) {
+263	 i := add(i, 1) }
+264	 {
+265	 switch gt(sload(add(sha3(0x60,0x20),i)), maxValue) case 1 {
+266	 maxValue := sload(add(sha3(0x60,0x20),i)) }
+267	 }
+268	 }
+269	 }
+270	 function getMin(uint256[] storage self) public view returns(uint256 minValue) {
+271	 assembly {
+272	 mstore(0x60,self_slot) minValue := sload(sha3(0x60,0x20)) for {
+273	 let i := 0 }
+274	 lt(i, sload(self_slot)) {
+275	 i := add(i, 1) }
+276	 {
+277	 switch gt(sload(add(sha3(0x60,0x20),i)), minValue) case 0 {
+278	 minValue := sload(add(sha3(0x60,0x20),i)) }
+279	 }
+280	 }
+281	 }
+282	 function indexOf(uint256[] storage self, uint256 value, bool isSorted) public view returns(bool found, uint256 index) {
+283	 assembly{
+284	 mstore(0x60,self_slot) switch isSorted case 1 {
+285	 let high := sub(sload(self_slot),1) let mid := 0 let low := 0 for {
+286	 }
+287	 iszero(gt(low, high)) {
+288	 }
+289	 {
+290	 mid := div(add(low,high),2) switch lt(sload(add(sha3(0x60,0x20),mid)),value) case 1 {
+291	 low := add(mid,1) }
+292	 case 0 {
+293	 switch gt(sload(add(sha3(0x60,0x20),mid)),value) case 1 {
+294	 high := sub(mid,1) }
+295	 case 0 {
+296	 found := 1 index := mid low := add(high,1) }
+297	 }
+298	 }
+299	 }
+300	 case 0 {
+301	 for { let low := 0 } lt(low, sload(self_slot)) {
+302	 low := add(low, 1) }
+303	 {
+304	 switch eq(sload(add(sha3(0x60,0x20),low)), value) case 1 {
+305	 found := 1 index := low low := sload(self_slot) }
+306	 }
+307	 }
+308	 }
+309	 }
+310	 function getParentI(uint256 index) private pure returns (uint256 pI) {
+311	 uint256 i = index - 1;
+312	 pI = i/2;
+313	 }
+314	 function getLeftChildI(uint256 index) private pure returns (uint256 lcI) {
+315	 uint256 i = index * 2;
+316	 lcI = i + 1;
+317	 }
+318	 function heapSort(uint256[] storage self) public {
+319	 uint256 end = self.length - 1;
+320	 uint256 start = getParentI(end);
+321	 uint256 root = start;
+322	 uint256 lChild;
+323	 uint256 rChild;
+324	 uint256 swap;
+325	 uint256 temp;
+326	 while(start >= 0){
+327	 root = start;
+328	 lChild = getLeftChildI(start);
+329	 while(lChild <= end){
+330	 rChild = lChild + 1;
+331	 swap = root;
+332	 if(self[swap] < self[lChild]) swap = lChild;
+333	 if((rChild <= end) && (self[swap]<self[rChild])) swap = rChild;
+334	 if(swap == root) lChild = end+1;
+335	 else {
+336	 temp = self[swap];
+337	 self[swap] = self[root];
+338	 self[root] = temp;
+339	 root = swap;
+340	 lChild = getLeftChildI(root);
+341	 }
+342	 }
+343	 if(start == 0) break;
+344	 else start = start - 1;
+345	 }
+346	 while(end > 0){
+347	 temp = self[end];
+348	 self[end] = self[0];
+349	 self[0] = temp;
+350	 end = end - 1;
+351	 root = 0;
+352	 lChild = getLeftChildI(0);
+353	 while(lChild <= end){
+354	 rChild = lChild + 1;
+355	 swap = root;
+356	 if(self[swap] < self[lChild]) swap = lChild;
+357	 if((rChild <= end) && (self[swap]<self[rChild])) swap = rChild;
+358	 if(swap == root) lChild = end + 1;
+359	 else {
+360	 temp = self[swap];
+361	 self[swap] = self[root];
+362	 self[root] = temp;
+363	 root = swap;
+364	 lChild = getLeftChildI(root);
+365	 }
+366	 }
+367	 }
+368	 }
+369	 function uniq(uint256[] storage self) public returns (uint256 length) {
+370	 bool contains;
+371	 uint256 index;
+372	 for (uint256 i = 0; i < self.length; i++) {
+373	 (contains, index) = indexOf(self, self[i], false);
+374	 if (i > index) {
+375	 for (uint256 j = i; j < self.length - 1; j++){
+376	 self[j] = self[j + 1];
+377	 }
+378	 delete self[self.length - 1];
+379	 self.length--;
+380	 i--;
+381	 }
+382	 }
+383	 length = self.length;
+384	 }
+385	 }
+386	 contract BytesToTypes {
+387	 function bytesToAddress(uint _offst, bytes memory _input) internal pure returns (address _output) {
+388	 assembly {
+389	 _output := mload(add(_input, _offst)) }
+390	 }
+391	 function bytesToBool(uint _offst, bytes memory _input) internal pure returns (bool _output) {
+392	 uint8 x;
+393	 assembly {
+394	 x := mload(add(_input, _offst)) }
+395	 x==0 ? _output = false : _output = true;
+396	 }
+397	 function getStringSize(uint _offst, bytes memory _input) internal pure returns(uint size){
+398	 assembly{
+399	 size := mload(add(_input,_offst)) let chunk_count := add(div(size,32),1) if gt(mod(size,32),0) {
+400	 chunk_count := add(chunk_count,1) }
+401	 size := mul(chunk_count,32) }
+402	 }
+403	 function bytesToString(uint _offst, bytes memory _input, bytes memory _output) internal {
+404	 uint size = 32;
+405	 assembly {
+406	 let loop_index:= 0 let chunk_count size := mload(add(_input,_offst)) chunk_count := add(div(size,32),1) if gt(mod(size,32),0) {
+407	 chunk_count := add(chunk_count,1) }
+408	 loop: mstore(add(_output,mul(loop_index,32)),mload(add(_input,_offst))) _offst := sub(_offst,32) loop_index := add(loop_index,1) jumpi(loop , lt(loop_index , chunk_count)) }
+409	 }
+410	 function bytesToBytes32(uint _offst, bytes memory _input, bytes32 _output) internal pure {
+411	 assembly {
+412	 mstore(_output , add(_input, _offst)) mstore(add(_output,32) , add(add(_input, _offst),32)) }
+413	 }
+414	 function bytesToInt8(uint _offst, bytes memory _input) internal pure returns (int8 _output) {
+415	 assembly {
+416	 _output := mload(add(_input, _offst)) }
+417	 }
+418	 function bytesToInt16(uint _offst, bytes memory _input) internal pure returns (int16 _output) {
+419	 assembly {
+420	 _output := mload(add(_input, _offst)) }
+421	 }
+422	 function bytesToInt24(uint _offst, bytes memory _input) internal pure returns (int24 _output) {
+423	 assembly {
+424	 _output := mload(add(_input, _offst)) }
+425	 }
+426	 function bytesToInt32(uint _offst, bytes memory _input) internal pure returns (int32 _output) {
+427	 assembly {
+428	 _output := mload(add(_input, _offst)) }
+429	 }
+430	 function bytesToInt40(uint _offst, bytes memory _input) internal pure returns (int40 _output) {
+431	 assembly {
+432	 _output := mload(add(_input, _offst)) }
+433	 }
+434	 function bytesToInt48(uint _offst, bytes memory _input) internal pure returns (int48 _output) {
+435	 assembly {
+436	 _output := mload(add(_input, _offst)) }
+437	 }
+438	 function bytesToInt56(uint _offst, bytes memory _input) internal pure returns (int56 _output) {
+439	 assembly {
+440	 _output := mload(add(_input, _offst)) }
+441	 }
+442	 function bytesToInt64(uint _offst, bytes memory _input) internal pure returns (int64 _output) {
+443	 assembly {
+444	 _output := mload(add(_input, _offst)) }
+445	 }
+446	 function bytesToInt72(uint _offst, bytes memory _input) internal pure returns (int72 _output) {
+447	 assembly {
+448	 _output := mload(add(_input, _offst)) }
+449	 }
+450	 function bytesToInt80(uint _offst, bytes memory _input) internal pure returns (int80 _output) {
+451	 assembly {
+452	 _output := mload(add(_input, _offst)) }
+453	 }
+454	 function bytesToInt88(uint _offst, bytes memory _input) internal pure returns (int88 _output) {
+455	 assembly {
+456	 _output := mload(add(_input, _offst)) }
+457	 }
+458	 function bytesToInt96(uint _offst, bytes memory _input) internal pure returns (int96 _output) {
+459	 assembly {
+460	 _output := mload(add(_input, _offst)) }
+461	 }
+462	 function bytesToInt104(uint _offst, bytes memory _input) internal pure returns (int104 _output) {
+463	 assembly {
+464	 _output := mload(add(_input, _offst)) }
+465	 }
+466	 function bytesToInt112(uint _offst, bytes memory _input) internal pure returns (int112 _output) {
+467	 assembly {
+468	 _output := mload(add(_input, _offst)) }
+469	 }
+470	 function bytesToInt120(uint _offst, bytes memory _input) internal pure returns (int120 _output) {
+471	 assembly {
+472	 _output := mload(add(_input, _offst)) }
+473	 }
+474	 function bytesToInt128(uint _offst, bytes memory _input) internal pure returns (int128 _output) {
+475	 assembly {
+476	 _output := mload(add(_input, _offst)) }
+477	 }
+478	 function bytesToInt136(uint _offst, bytes memory _input) internal pure returns (int136 _output) {
+479	 assembly {
+480	 _output := mload(add(_input, _offst)) }
+481	 }
+482	 function bytesToInt144(uint _offst, bytes memory _input) internal pure returns (int144 _output) {
+483	 assembly {
+484	 _output := mload(add(_input, _offst)) }
+485	 }
+486	 function bytesToInt152(uint _offst, bytes memory _input) internal pure returns (int152 _output) {
+487	 assembly {
+488	 _output := mload(add(_input, _offst)) }
+489	 }
+490	 function bytesToInt160(uint _offst, bytes memory _input) internal pure returns (int160 _output) {
+491	 assembly {
+492	 _output := mload(add(_input, _offst)) }
+493	 }
+494	 function bytesToInt168(uint _offst, bytes memory _input) internal pure returns (int168 _output) {
+495	 assembly {
+496	 _output := mload(add(_input, _offst)) }
+497	 }
+498	 function bytesToInt176(uint _offst, bytes memory _input) internal pure returns (int176 _output) {
+499	 assembly {
+500	 _output := mload(add(_input, _offst)) }
+501	 }
+502	 function bytesToInt184(uint _offst, bytes memory _input) internal pure returns (int184 _output) {
+503	 assembly {
+504	 _output := mload(add(_input, _offst)) }
+505	 }
+506	 function bytesToInt192(uint _offst, bytes memory _input) internal pure returns (int192 _output) {
+507	 assembly {
+508	 _output := mload(add(_input, _offst)) }
+509	 }
+510	 function bytesToInt200(uint _offst, bytes memory _input) internal pure returns (int200 _output) {
+511	 assembly {
+512	 _output := mload(add(_input, _offst)) }
+513	 }
+514	 function bytesToInt208(uint _offst, bytes memory _input) internal pure returns (int208 _output) {
+515	 assembly {
+516	 _output := mload(add(_input, _offst)) }
+517	 }
+518	 function bytesToInt216(uint _offst, bytes memory _input) internal pure returns (int216 _output) {
+519	 assembly {
+520	 _output := mload(add(_input, _offst)) }
+521	 }
+522	 function bytesToInt224(uint _offst, bytes memory _input) internal pure returns (int224 _output) {
+523	 assembly {
+524	 _output := mload(add(_input, _offst)) }
+525	 }
+526	 function bytesToInt232(uint _offst, bytes memory _input) internal pure returns (int232 _output) {
+527	 assembly {
+528	 _output := mload(add(_input, _offst)) }
+529	 }
+530	 function bytesToInt240(uint _offst, bytes memory _input) internal pure returns (int240 _output) {
+531	 assembly {
+532	 _output := mload(add(_input, _offst)) }
+533	 }
+534	 function bytesToInt248(uint _offst, bytes memory _input) internal pure returns (int248 _output) {
+535	 assembly {
+536	 _output := mload(add(_input, _offst)) }
+537	 }
+538	 function bytesToInt256(uint _offst, bytes memory _input) internal pure returns (int256 _output) {
+539	 assembly {
+540	 _output := mload(add(_input, _offst)) }
+541	 }
+542	 function bytesToUint8(uint _offst, bytes memory _input) internal pure returns (uint8 _output) {
+543	 assembly {
+544	 _output := mload(add(_input, _offst)) }
+545	 }
+546	 function bytesToUint16(uint _offst, bytes memory _input) internal pure returns (uint16 _output) {
+547	 assembly {
+548	 _output := mload(add(_input, _offst)) }
+549	 }
+550	 function bytesToUint24(uint _offst, bytes memory _input) internal pure returns (uint24 _output) {
+551	 assembly {
+552	 _output := mload(add(_input, _offst)) }
+553	 }
+554	 function bytesToUint32(uint _offst, bytes memory _input) internal pure returns (uint32 _output) {
+555	 assembly {
+556	 _output := mload(add(_input, _offst)) }
+557	 }
+558	 function bytesToUint40(uint _offst, bytes memory _input) internal pure returns (uint40 _output) {
+559	 assembly {
+560	 _output := mload(add(_input, _offst)) }
+561	 }
+562	 function bytesToUint48(uint _offst, bytes memory _input) internal pure returns (uint48 _output) {
+563	 assembly {
+564	 _output := mload(add(_input, _offst)) }
+565	 }
+566	 function bytesToUint56(uint _offst, bytes memory _input) internal pure returns (uint56 _output) {
+567	 assembly {
+568	 _output := mload(add(_input, _offst)) }
+569	 }
+570	 function bytesToUint64(uint _offst, bytes memory _input) internal pure returns (uint64 _output) {
+571	 assembly {
+572	 _output := mload(add(_input, _offst)) }
+573	 }
+574	 function bytesToUint72(uint _offst, bytes memory _input) internal pure returns (uint72 _output) {
+575	 assembly {
+576	 _output := mload(add(_input, _offst)) }
+577	 }
+578	 function bytesToUint80(uint _offst, bytes memory _input) internal pure returns (uint80 _output) {
+579	 assembly {
+580	 _output := mload(add(_input, _offst)) }
+581	 }
+582	 function bytesToUint88(uint _offst, bytes memory _input) internal pure returns (uint88 _output) {
+583	 assembly {
+584	 _output := mload(add(_input, _offst)) }
+585	 }
+586	 function bytesToUint96(uint _offst, bytes memory _input) internal pure returns (uint96 _output) {
+587	 assembly {
+588	 _output := mload(add(_input, _offst)) }
+589	 }
+590	 function bytesToUint104(uint _offst, bytes memory _input) internal pure returns (uint104 _output) {
+591	 assembly {
+592	 _output := mload(add(_input, _offst)) }
+593	 }
+594	 function bytesToUint112(uint _offst, bytes memory _input) internal pure returns (uint112 _output) {
+595	 assembly {
+596	 _output := mload(add(_input, _offst)) }
+597	 }
+598	 function bytesToUint120(uint _offst, bytes memory _input) internal pure returns (uint120 _output) {
+599	 assembly {
+600	 _output := mload(add(_input, _offst)) }
+601	 }
+602	 function bytesToUint128(uint _offst, bytes memory _input) internal pure returns (uint128 _output) {
+603	 assembly {
+604	 _output := mload(add(_input, _offst)) }
+605	 }
+606	 function bytesToUint136(uint _offst, bytes memory _input) internal pure returns (uint136 _output) {
+607	 assembly {
+608	 _output := mload(add(_input, _offst)) }
+609	 }
+610	 function bytesToUint144(uint _offst, bytes memory _input) internal pure returns (uint144 _output) {
+611	 assembly {
+612	 _output := mload(add(_input, _offst)) }
+613	 }
+614	 function bytesToUint152(uint _offst, bytes memory _input) internal pure returns (uint152 _output) {
+615	 assembly {
+616	 _output := mload(add(_input, _offst)) }
+617	 }
+618	 function bytesToUint160(uint _offst, bytes memory _input) internal pure returns (uint160 _output) {
+619	 assembly {
+620	 _output := mload(add(_input, _offst)) }
+621	 }
+622	 function bytesToUint168(uint _offst, bytes memory _input) internal pure returns (uint168 _output) {
+623	 assembly {
+624	 _output := mload(add(_input, _offst)) }
+625	 }
+626	 function bytesToUint176(uint _offst, bytes memory _input) internal pure returns (uint176 _output) {
+627	 assembly {
+628	 _output := mload(add(_input, _offst)) }
+629	 }
+630	 function bytesToUint184(uint _offst, bytes memory _input) internal pure returns (uint184 _output) {
+631	 assembly {
+632	 _output := mload(add(_input, _offst)) }
+633	 }
+634	 function bytesToUint192(uint _offst, bytes memory _input) internal pure returns (uint192 _output) {
+635	 assembly {
+636	 _output := mload(add(_input, _offst)) }
+637	 }
+638	 function bytesToUint200(uint _offst, bytes memory _input) internal pure returns (uint200 _output) {
+639	 assembly {
+640	 _output := mload(add(_input, _offst)) }
+641	 }
+642	 function bytesToUint208(uint _offst, bytes memory _input) internal pure returns (uint208 _output) {
+643	 assembly {
+644	 _output := mload(add(_input, _offst)) }
+645	 }
+646	 function bytesToUint216(uint _offst, bytes memory _input) internal pure returns (uint216 _output) {
+647	 assembly {
+648	 _output := mload(add(_input, _offst)) }
+649	 }
+650	 function bytesToUint224(uint _offst, bytes memory _input) internal pure returns (uint224 _output) {
+651	 assembly {
+652	 _output := mload(add(_input, _offst)) }
+653	 }
+654	 function bytesToUint232(uint _offst, bytes memory _input) internal pure returns (uint232 _output) {
+655	 assembly {
+656	 _output := mload(add(_input, _offst)) }
+657	 }
+658	 function bytesToUint240(uint _offst, bytes memory _input) internal pure returns (uint240 _output) {
+659	 assembly {
+660	 _output := mload(add(_input, _offst)) }
+661	 }
+662	 function bytesToUint248(uint _offst, bytes memory _input) internal pure returns (uint248 _output) {
+663	 assembly {
+664	 _output := mload(add(_input, _offst)) }
+665	 }
+666	 function bytesToUint256(uint _offst, bytes memory _input) internal pure returns (uint256 _output) {
+667	 assembly {
+668	 _output := mload(add(_input, _offst)) }
+669	 }
+670	 }
+671	 library SafeMath {
+672	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+673	 if (a == 0) {
+674	 return 0;
+675	 }
+676	 c = a * b;
+677	 assert(c / a == b);
+678	 return c;
+679	 }
+680	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+681	 return a / b;
+682	 }
+683	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+684	 assert(b <= a);
+685	 return a - b;
+686	 }
+687	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+688	 c = a + b;
+689	 assert(c >= a);
+690	 return c;
+691	 }
+692	 }
+693	 contract SizeOf {
+694	 function sizeOfString(string _in) internal pure returns(uint _size){
+695	 _size = bytes(_in).length / 32;
+696	 if(bytes(_in).length % 32 != 0) _size++;
+697	 _size++;
+698	 _size *= 32;
+699	 }
+700	 function sizeOfInt(uint16 _postfix) internal pure returns(uint size){
+701	 assembly{
+702	 switch _postfix case 8 {
+703	 size := 1 }
+704	 case 16 {
+705	 size := 2 }
+706	 case 24 {
+707	 size := 3 }
+708	 case 32 {
+709	 size := 4 }
+710	 case 40 {
+711	 size := 5 }
+712	 case 48 {
+713	 size := 6 }
+714	 case 56 {
+715	 size := 7 }
+716	 case 64 {
+717	 size := 8 }
+718	 case 72 {
+719	 size := 9 }
+720	 case 80 {
+721	 size := 10 }
+722	 case 88 {
+723	 size := 11 }
+724	 case 96 {
+725	 size := 12 }
+726	 case 104 {
+727	 size := 13 }
+728	 case 112 {
+729	 size := 14 }
+730	 case 120 {
+731	 size := 15 }
+732	 case 128 {
+733	 size := 16 }
+734	 case 136 {
+735	 size := 17 }
+736	 case 144 {
+737	 size := 18 }
+738	 case 152 {
+739	 size := 19 }
+740	 case 160 {
+741	 size := 20 }
+742	 case 168 {
+743	 size := 21 }
+744	 case 176 {
+745	 size := 22 }
+746	 case 184 {
+747	 size := 23 }
+748	 case 192 {
+749	 size := 24 }
+750	 case 200 {
+751	 size := 25 }
+752	 case 208 {
+753	 size := 26 }
+754	 case 216 {
+755	 size := 27 }
+756	 case 224 {
+757	 size := 28 }
+758	 case 232 {
+759	 size := 29 }
+760	 case 240 {
+761	 size := 30 }
+762	 case 248 {
+763	 size := 31 }
+764	 case 256 {
+765	 size := 32 }
+766	 default {
+767	 size := 32 }
+768	 }
+769	 }
+770	 function sizeOfUint(uint16 _postfix) internal pure returns(uint size){
+771	 return sizeOfInt(_postfix);
+772	 }
+773	 function sizeOfAddress() internal pure returns(uint8){
+774	 return 20;
+775	 }
+776	 function sizeOfBool() internal pure returns(uint8){
+777	 return 1;
+778	 }
+779	 }
+780	 contract TypesToBytes {
+781	 function TypesToBytes() internal {
+782	 }
+783	 function addressToBytes(uint _offst, address _input, bytes memory _output) internal pure {
+784	 assembly {
+785	 mstore(add(_output, _offst), _input) }
+786	 }
+787	 function bytes32ToBytes(uint _offst, bytes32 _input, bytes memory _output) internal pure {
+788	 assembly {
+789	 mstore(add(_output, _offst), _input) mstore(add(add(_output, _offst),32), add(_input,32)) }
+790	 }
+791	 function boolToBytes(uint _offst, bool _input, bytes memory _output) internal pure {
+792	 uint8 x = _input == false ? 0 : 1;
+793	 assembly {
+794	 mstore(add(_output, _offst), x) }
+795	 }
+796	 function stringToBytes(uint _offst, bytes memory _input, bytes memory _output) internal {
+797	 uint256 stack_size = _input.length / 32;
+798	 if(_input.length % 32 > 0) stack_size++;
+799	 assembly {
+800	 let index := 0 stack_size := add(stack_size,1) loop: mstore(add(_output, _offst), mload(add(_input,mul(index,32)))) _offst := sub(_offst , 32) index := add(index ,1) jumpi(loop , lt(index,stack_size)) }
+801	 }
+802	 function intToBytes(uint _offst, int _input, bytes memory _output) internal pure {
+803	 assembly {
+804	 mstore(add(_output, _offst), _input) }
+805	 }
+806	 function uintToBytes(uint _offst, uint _input, bytes memory _output) internal pure {
+807	 assembly {
+808	 mstore(add(_output, _offst), _input) }
+809	 }
+810	 }
+811	 contract Seriality is BytesToTypes, TypesToBytes, SizeOf {
+812	 function Seriality() public {
+813	 }
+814	 }
+815	 contract TimedEscrow is ContractReceiver, Seriality {
+816	 using Array256Lib for uint256[];
+817	 struct Transaction {
+818	 uint256 value;
+819	 address to_address;
+820	 uint256 time;
+821	 bool valid;
+822	 bool executed;
+823	 }
+824	 Token tokContract;
+825	 address owner;
+826	 Transaction[] transactions;
+827	 mapping(address => uint256[]) transactions_of;
+828	 event addingTransaction(uint256 value, address addr, uint256 time, bool valid, bool executed, uint index);
+829	 event voidingTransaction(uint256 index);
+830	 constructor(address _tokContract) public {
+831	 tokContract = Token(_tokContract);
+832	 owner = msg.sender;
+833	 }
+834	 function addTransaction(Transaction transaction) private {
+835	 transactions.push(transaction);
+836	 transactions_of[transaction.to_address].push(transactions.length - 1);
+837	 emit addingTransaction(transaction.value, transaction.to_address, transaction.time, transaction.valid, transaction.executed, transactions.length - 1);
+838	 }
+839	 function transferOwnership(address tbo){
+840	 require(msg.sender == owner, 'Unauthorized');
+841	 owner = tbo;
+842	 }
+843	 function voidTransaction(uint256 transaction_id){
+844	 require( msg.sender == transactions[transaction_id].to_address && !transactions[transaction_id].executed && transactions[transaction_id].valid );
+845	 transactions[transaction_id].valid = false;
+846	 tokContract.transfer(owner, transactions[transaction_id].value);
+847	 emit voidingTransaction(transaction_id);
+848	 }
+849	 function getTransactionIdsOf(address to_address) public view returns (uint[]){
+850	 return transactions_of[to_address];
+851	 }
+852	 function getTransaction(uint256 transaction_id) public view returns (uint256 value, address to_address, uint256 time, bool valid, bool executed){
+853	 Transaction memory t = transactions[transaction_id];
+854	 value = t.value;
+855	 to_address = t.to_address;
+856	 time = t.time;
+857	 valid = t.valid;
+858	 executed = t.executed;
+859	 return;
+860	 }
+861	 function performTransaction(uint256 transaction_id){
+862	 Transaction tbp = transactions[transaction_id];
+863	 require(now > tbp.time && tbp.valid && !tbp.executed, 'Invalid transaction data');
+864	 tbp.executed = true;
+865	 transactions[transaction_id] = tbp;
+866	 tokContract.transfer(tbp.to_address, tbp.value);
+867	 }
+868	 function transactionStructFromBytesSeriality(bytes data) internal pure returns (Transaction){
+869	 Transaction memory t;
+870	 uint offset = 128;
+871	 bytes memory buffer = new bytes(128);
+872	 t.value = bytesToUint256(offset, data);
+873	 offset -= sizeOfUint(256);
+874	 t.to_address = bytesToAddress(offset, data);
+875	 offset -= sizeOfAddress();
+876	 t.time = bytesToUint256(offset, data);
+877	 offset -= sizeOfUint(256);
+878	 t.valid = bytesToBool(offset, data);
+879	 offset -= sizeOfBool();
+880	 t.executed = bytesToBool(offset, data);
+881	 offset -= sizeOfBool();
+882	 return t;
+883	 }
+884	 function transactionStructToBytesSeriality(Transaction t) private pure returns (bytes){
+885	 bytes memory buffer = new bytes(128);
+886	 uint offset = 128;
+887	 uintToBytes(offset, t.value, buffer);
+888	 offset -= sizeOfUint(256);
+889	 addressToBytes(offset, t.to_address, buffer);
+890	 offset -= sizeOfAddress();
+891	 uintToBytes(offset, t.time, buffer);
+892	 offset -= sizeOfUint(256);
+893	 boolToBytes(offset, t.valid, buffer);
+894	 offset -= sizeOfBool();
+895	 boolToBytes(offset, t.executed, buffer);
+896	 offset -= sizeOfBool();
+897	 return buffer;
+898	 }
+899	 function transactionRawToBytes(uint256 value, address to_address, uint256 time, bool valid, bool executed) public pure returns (bytes){
+900	 Transaction memory t;
+901	 t.value = value;
+902	 t.to_address = to_address;
+903	 t.time = time;
+904	 t.valid = valid;
+905	 t.executed = executed;
+906	 return transactionStructToBytesSeriality(t);
+907	 }
+908	 function tokenFallback(address _from, uint _value, bytes _data) public {
+909	 require(_value > 0, 'No transaction was added because value was zero');
+910	 Transaction memory transaction = transactionStructFromBytesSeriality(_data);
+911	 require(transaction.value == _value, 'Token sent were not equal to token to store');
+912	 require(transaction.time > now, 'Time was in the past');
+913	 require(transaction.valid == true && transaction.executed == false, 'Transaction data is invalid');
+914	 addTransaction(transaction);
+915	 }
+916	 function rescheduleTransaction(uint256 transaction_id, uint256 newtime) public {
+917	 require(msg.sender == owner);
+918	 require(!transactions[transaction_id].executed && transactions[transaction_id].valid && transactions[transaction_id].time > newtime);
+919	 transactions[transaction_id].time = newtime;
+920	 }
+921	 }

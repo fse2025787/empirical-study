@@ -1,0 +1,189 @@
+row number 
+1	   pragma solidity ^0.4.21;
+2	 library SafeMath {
+3	 function mul(uint a, uint b) internal pure returns (uint) {
+4	 uint c = a * b;
+5	 assert(a == 0 || c / a == b);
+6	 return c;
+7	 }
+8	 function div(uint a, uint b) internal pure returns (uint) {
+9	 uint c = a / b;
+10	 assert(a == b * c + a % b);
+11	 return c;
+12	 }
+13	 function sub(uint a, uint b) internal pure returns (uint) {
+14	 assert(b <= a);
+15	 return a - b;
+16	 }
+17	 function add(uint a, uint b) internal pure returns (uint) {
+18	 uint c = a + b;
+19	 assert(c >= a);
+20	 return c;
+21	 }
+22	 function max64(uint64 a, uint64 b) internal pure returns (uint64) {
+23	 return a >= b ? a : b;
+24	 }
+25	 function min64(uint64 a, uint64 b) internal pure returns (uint64) {
+26	 return a < b ? a : b;
+27	 }
+28	 function max256(uint256 a, uint256 b) internal pure returns (uint256) {
+29	 return a >= b ? a : b;
+30	 }
+31	 function min256(uint256 a, uint256 b) internal pure returns (uint256) {
+32	 return a < b ? a : b;
+33	 }
+34	 }
+35	 contract ERC20Basic {
+36	 uint public totalSupply;
+37	 function balanceOf(address who) constant public returns (uint);
+38	 function transfer(address to, uint value) public;
+39	 event Transfer(address indexed from, address indexed to, uint value);
+40	 }
+41	 contract BasicToken is ERC20Basic {
+42	 using SafeMath for uint;
+43	 mapping(address => uint) balances;
+44	 modifier onlyPayloadSize(uint size) {
+45	 assert(msg.data.length >= size + 4);
+46	 _;
+47	 }
+48	 function transfer(address _to, uint _value) onlyPayloadSize(2 * 32) public {
+49	 balances[msg.sender] = balances[msg.sender].sub(_value);
+50	 balances[_to] = balances[_to].add(_value);
+51	 emit Transfer(msg.sender, _to, _value);
+52	 }
+53	 function balanceOf(address _owner) constant public returns (uint balance) {
+54	 return balances[_owner];
+55	 }
+56	 }
+57	 contract ERC20 is ERC20Basic {
+58	 function allowance(address owner, address spender) constant public returns (uint);
+59	 function transferFrom(address from, address to, uint value) public;
+60	 function approve(address spender, uint value) public;
+61	 event Approval(address indexed owner, address indexed spender, uint value);
+62	 }
+63	 contract StandardToken is BasicToken, ERC20 {
+64	 mapping (address => mapping (address => uint)) allowed;
+65	 function transferFrom(address _from, address _to, uint _value) onlyPayloadSize(3 * 32) public {
+66	 uint _allowance;
+67	 _allowance = allowed[_from][msg.sender];
+68	 require(_allowance >= _value);
+69	 balances[_from] = balances[_from].sub(_value);
+70	 balances[_to] = balances[_to].add(_value);
+71	 allowed[_from][msg.sender] = _allowance.sub(_value);
+72	 emit Transfer(_from, _to, _value);
+73	 }
+74	 function approve(address _spender, uint _value) public {
+75	 require((_value == 0) || (allowed[msg.sender][_spender] == 0));
+76	 allowed[msg.sender][_spender] = _value;
+77	 emit Approval(msg.sender, _spender, _value);
+78	 }
+79	 function allowance(address _owner, address _spender) constant public returns (uint remaining) {
+80	 return allowed[_owner][_spender];
+81	 }
+82	 }
+83	 contract Ownable {
+84	 address public owner;
+85	 constructor() public {
+86	 owner = msg.sender;
+87	 }
+88	 modifier onlyOwner() {
+89	 require(msg.sender == owner);
+90	 _;
+91	 }
+92	 function transferOwnership(address newOwner) onlyOwner public {
+93	 if (newOwner != address(0)) {
+94	 owner = newOwner;
+95	 }
+96	 }
+97	 }
+98	 contract MintableToken is StandardToken, Ownable {
+99	 event Mint(address indexed to, uint value);
+100	 event MintFinished();
+101	 bool public mintingFinished = false;
+102	 uint public totalSupply = 0;
+103	 modifier canMint() {
+104	 require(!mintingFinished);
+105	 _;
+106	 }
+107	 function mint(address _to, uint _amount) onlyOwner canMint public returns (bool) {
+108	 totalSupply = totalSupply.add(_amount);
+109	 balances[_to] = balances[_to].add(_amount);
+110	 emit Mint(_to, _amount);
+111	 return true;
+112	 }
+113	 function finishMinting() onlyOwner public returns (bool) {
+114	 mintingFinished = true;
+115	 emit MintFinished();
+116	 return true;
+117	 }
+118	 }
+119	 contract Pausable is Ownable {
+120	 event Pause();
+121	 event Unpause();
+122	 bool public paused = false;
+123	 modifier whenNotPaused() {
+124	 require(!paused);
+125	 _;
+126	 }
+127	 modifier whenPaused {
+128	 require(paused);
+129	 _;
+130	 }
+131	 function pause() onlyOwner whenNotPaused public returns (bool) {
+132	 paused = true;
+133	 emit Pause();
+134	 return true;
+135	 }
+136	 function unpause() onlyOwner whenPaused public returns (bool) {
+137	 paused = false;
+138	 emit Unpause();
+139	 return true;
+140	 }
+141	 }
+142	 contract PausableToken is StandardToken, Pausable {
+143	 function transfer(address _to, uint _value) whenNotPaused public {
+144	 super.transfer(_to, _value);
+145	 }
+146	 function transferFrom(address _from, address _to, uint _value) whenNotPaused public {
+147	 super.transferFrom(_from, _to, _value);
+148	 }
+149	 }
+150	 contract TokenTimelock {
+151	 ERC20Basic token;
+152	 address public beneficiary;
+153	 uint public releaseTime;
+154	 constructor(ERC20Basic _token, address _beneficiary, uint _releaseTime) public {
+155	 require(_releaseTime > now);
+156	 token = _token;
+157	 beneficiary = _beneficiary;
+158	 releaseTime = _releaseTime;
+159	 }
+160	 function claim() public {
+161	 require(msg.sender == beneficiary);
+162	 require(now >= releaseTime);
+163	 uint amount = token.balanceOf(this);
+164	 require(amount > 0);
+165	 token.transfer(beneficiary, amount);
+166	 }
+167	 }
+168	 contract FactsToken is PausableToken, MintableToken {
+169	 using SafeMath for uint256;
+170	 string public name = "FACTS Token";
+171	 string public symbol = "FACTS";
+172	 uint public decimals = 18;
+173	 function mintTimelocked(address _to, uint256 _amount, uint256 _releaseTime) public onlyOwner canMint returns (TokenTimelock) {
+174	 TokenTimelock timelock = new TokenTimelock(this, _to, _releaseTime);
+175	 mint(timelock, _amount);
+176	 return timelock;
+177	 }
+178	 mapping (address => string) public keys;
+179	 event LogRegister (address user, string key);
+180	 function register(string key) public {
+181	 assert(bytes(key).length <= 64);
+182	 keys[msg.sender] = key;
+183	 emit LogRegister(msg.sender, key);
+184	 }
+185	 function () public payable{
+186	 revert();
+187	 }
+188	 }

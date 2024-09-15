@@ -1,0 +1,361 @@
+row number 
+1	                                                                                           pragma solidity >=0.7.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address) {
+4	 return msg.sender;
+5	 }
+6	 }
+7	 interface IERC20 {
+8	 function totalSupply() external view returns (uint256);
+9	 function balanceOf(address account) external view returns (uint256);
+10	 function transfer(address recipient, uint256 amount) external returns (bool);
+11	 function allowance(address owner, address spender) external view returns (uint256);
+12	 function approve(address spender, uint256 amount) external returns (bool);
+13	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+14	 event Transfer(address indexed from, address indexed to, uint256 value);
+15	 event Approval(address indexed owner, address indexed spender, uint256 value);
+16	 }
+17	 library SafeMath {
+18	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+19	 uint256 c = a + b;
+20	 require(c >= a, "SafeMath: addition overflow");
+21	 return c;
+22	 }
+23	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+24	 return sub(a, b, "SafeMath: subtraction overflow");
+25	 }
+26	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+27	 require(b <= a, errorMessage);
+28	 uint256 c = a - b;
+29	 return c;
+30	 }
+31	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+32	 if (a == 0) {
+33	 return 0;
+34	 }
+35	 uint256 c = a * b;
+36	 require(c / a == b, "SafeMath: multiplication overflow");
+37	 return c;
+38	 }
+39	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+40	 return div(a, b, "SafeMath: division by zero");
+41	 }
+42	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+43	 require(b > 0, errorMessage);
+44	 uint256 c = a / b;
+45	 return c;
+46	 }
+47	 }
+48	 contract Ownable is Context {
+49	 address private _owner;
+50	 address private _previousOwner;
+51	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+52	 constructor() {
+53	 address msgSender = _msgSender();
+54	 _owner = msgSender;
+55	 emit OwnershipTransferred(address(0), msgSender);
+56	 }
+57	 function owner() public view returns (address) {
+58	 return _owner;
+59	 }
+60	 modifier onlyOwner() {
+61	 require(_owner == _msgSender(), "Ownable: caller is not the owner");
+62	 _;
+63	 }
+64	 function renounceOwnership() public virtual onlyOwner {
+65	 emit OwnershipTransferred(_owner, address(0));
+66	 _owner = address(0);
+67	 }
+68	 }
+69	 interface IUniswapV2Factory {
+70	 function createPair(address tokenA, address tokenB) external returns (address pair);
+71	 }
+72	 interface IUniswapV2Router02 {
+73	 function swapExactTokensForETHSupportingFeeOnTransferTokens( uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline ) external;
+74	 function factory() external pure returns (address);
+75	 function WETH() external pure returns (address);
+76	 function addLiquidityETH( address token, uint256 amountTokenDesired, uint256 amountTokenMin, uint256 amountETHMin, address to, uint256 deadline ) external payable returns (uint256 amountToken, uint256 amountETH, uint256 liquidity);
+77	 }
+78	 contract POPSHIBA is Context, IERC20, Ownable {
+79	 using SafeMath for uint256;
+80	 mapping (address => uint256) private _balance;
+81	 mapping (address => uint256) private _lastTX;
+82	 mapping (address => mapping (address => uint256)) private _allowances;
+83	 mapping (address => bool) private _isExcludedFromFee;
+84	 mapping (address => bool) private _isExcluded;
+85	 mapping (address => bool) private _isBlacklisted;
+86	 address[] private _excluded;
+87	 bool public tradingLive = false;
+88	 uint256 private _totalSupply = 1300000000 * 10**9;
+89	 uint256 public _totalBurned;
+90	 string private _name = "Popeye Shiba";
+91	 string private _symbol = "POPSHIBA";
+92	 uint8 private _decimals = 9;
+93	 address payable private _projWallet;
+94	 uint256 public firstLiveBlock;
+95	 uint256 public _spinach = 3;
+96	 uint256 public _liquidityMarketingFee = 10;
+97	 uint256 private _previousSpinach = _spinach;
+98	 uint256 private _previousLiquidityMarketingFee = _liquidityMarketingFee;
+99	 IUniswapV2Router02 public immutable uniswapV2Router;
+100	 address public immutable uniswapV2Pair;
+101	 bool inSwapAndLiquify;
+102	 bool public swapAndLiquifyEnabled = true;
+103	 bool public antiBotLaunch = true;
+104	 uint256 public _maxTxAmount = 26000000 * 10**9;
+105	 uint256 public _maxHoldings = 90000000 * 10**9;
+106	 bool public maxHoldingsEnabled = true;
+107	 bool public maxTXEnabled = true;
+108	 bool public antiSnipe = true;
+109	 bool public extraCalories = true;
+110	 bool public cooldown = true;
+111	 uint256 public numTokensSellToAddToLiquidity = 13000000 * 10**9;
+112	 event MinTokensBeforeSwapUpdated(uint256 minTokensBeforeSwap);
+113	 event SwapAndLiquifyEnabledUpdated(bool enabled);
+114	 event SwapAndLiquify( uint256 tokensSwapped, uint256 ethReceived, uint256 tokensIntoLiqudity );
+115	 modifier lockTheSwap {
+116	 inSwapAndLiquify = true;
+117	 _;
+118	 inSwapAndLiquify = false;
+119	 }
+120	 constructor () {
+121	 _balance[_msgSender()] = _totalSupply;
+122	 IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
+123	 uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory()).createPair(address(this), _uniswapV2Router.WETH());
+124	 uniswapV2Router = _uniswapV2Router;
+125	 _isExcludedFromFee[owner()] = true;
+126	 _isExcludedFromFee[address(this)] = true;
+127	 emit Transfer(address(0), _msgSender(), _totalSupply);
+128	 }
+129	 function name() public view returns (string memory) {
+130	 return _name;
+131	 }
+132	 function symbol() public view returns (string memory) {
+133	 return _symbol;
+134	 }
+135	 function decimals() public view returns (uint8) {
+136	 return _decimals;
+137	 }
+138	 function totalSupply() public view override returns (uint256) {
+139	 return _totalSupply;
+140	 }
+141	 function balanceOf(address account) public view override returns (uint256) {
+142	 return _balance[account];
+143	 }
+144	 function transfer(address recipient, uint256 amount) public override returns (bool) {
+145	 _transfer(_msgSender(), recipient, amount);
+146	 return true;
+147	 }
+148	 function allowance(address owner, address spender) public view override returns (uint256) {
+149	 return _allowances[owner][spender];
+150	 }
+151	 function approve(address spender, uint256 amount) public override returns (bool) {
+152	 _approve(_msgSender(), spender, amount);
+153	 return true;
+154	 }
+155	 function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+156	 _transfer(sender, recipient, amount);
+157	 _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+158	 return true;
+159	 }
+160	 function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+161	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+162	 return true;
+163	 }
+164	 function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+165	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+166	 return true;
+167	 }
+168	 function totalBurned() public view returns (uint256) {
+169	 return _totalBurned;
+170	 }
+171	 function excludeFromFee(address account) external onlyOwner {
+172	 _isExcludedFromFee[account] = true;
+173	 }
+174	 function includeInFee(address account) external onlyOwner {
+175	 _isExcludedFromFee[account] = false;
+176	 }
+177	 function setProjWallet(address payable _address) external onlyOwner {
+178	 _projWallet = _address;
+179	 }
+180	 function setMaxTxAmount(uint256 maxTxAmount) external onlyOwner() {
+181	 _maxTxAmount = maxTxAmount * 10**9;
+182	 }
+183	 function setMaxHoldings(uint256 maxHoldings) external onlyOwner() {
+184	 _maxHoldings = maxHoldings * 10**9;
+185	 }
+186	 function setMaxTXEnabled(bool enabled) external onlyOwner() {
+187	 maxTXEnabled = enabled;
+188	 }
+189	 function setMaxHoldingsEnabled(bool enabled) external onlyOwner() {
+190	 maxHoldingsEnabled = enabled;
+191	 }
+192	 function setAntiSnipe(bool enabled) external onlyOwner() {
+193	 antiSnipe = enabled;
+194	 }
+195	 function setCooldown(bool enabled) external onlyOwner() {
+196	 cooldown = enabled;
+197	 }
+198	 function setExtraCalories(bool enabled) external onlyOwner() {
+199	 extraCalories = enabled;
+200	 }
+201	 function setSwapThresholdAmount(uint256 SwapThresholdAmount) external onlyOwner() {
+202	 numTokensSellToAddToLiquidity = SwapThresholdAmount * 10**9;
+203	 }
+204	 function claimETH (address walletaddress) external onlyOwner {
+205	 payable(walletaddress).transfer(address(this).balance);
+206	 }
+207	 function claimAltTokens(IERC20 tokenAddress, address walletaddress) external onlyOwner() {
+208	 tokenAddress.transfer(walletaddress, tokenAddress.balanceOf(address(this)));
+209	 }
+210	 function clearStuckBalance (address payable walletaddress) external onlyOwner() {
+211	 walletaddress.transfer(address(this).balance);
+212	 }
+213	 function blacklist(address _address) external onlyOwner() {
+214	 _isBlacklisted[_address] = true;
+215	 }
+216	 function removeFromBlacklist(address _address) external onlyOwner() {
+217	 _isBlacklisted[_address] = false;
+218	 }
+219	 function getIsBlacklistedStatus(address _address) external view returns (bool) {
+220	 return _isBlacklisted[_address];
+221	 }
+222	 function allowtrading() external onlyOwner() {
+223	 tradingLive = true;
+224	 firstLiveBlock = block.number;
+225	 }
+226	 function setSwapAndLiquifyEnabled(bool _enabled) external onlyOwner {
+227	 swapAndLiquifyEnabled = _enabled;
+228	 emit SwapAndLiquifyEnabledUpdated(_enabled);
+229	 }
+230	 receive() external payable {
+231	 }
+232	 function isExcludedFromFee(address account) public view returns(bool) {
+233	 return _isExcludedFromFee[account];
+234	 }
+235	 function _approve(address owner, address spender, uint256 amount) private {
+236	 require(owner != address(0), "ERC20: approve from the zero address");
+237	 require(spender != address(0), "ERC20: approve to the zero address");
+238	 _allowances[owner][spender] = amount;
+239	 emit Approval(owner, spender, amount);
+240	 }
+241	 function _eatSpinach(address _account, uint _amount) private {
+242	 require( _amount <= balanceOf(_account));
+243	 _balance[_account] = _balance[_account].sub(_amount);
+244	 _totalSupply = _totalSupply.sub(_amount);
+245	 _totalBurned = _totalBurned.add(_amount);
+246	 emit Transfer(_account, address(0), _amount);
+247	 }
+248	 function _projectBoost(uint _amount) private {
+249	 _balance[address(this)] = _balance[address(this)].add(_amount);
+250	 }
+251	 function removeAllFee() private {
+252	 if(_spinach == 0 && _liquidityMarketingFee == 0) return;
+253	 _previousSpinach = _spinach;
+254	 _previousLiquidityMarketingFee = _liquidityMarketingFee;
+255	 _spinach = 0;
+256	 _liquidityMarketingFee = 0;
+257	 }
+258	 function restoreAllFee() private {
+259	 _spinach = _previousSpinach;
+260	 _liquidityMarketingFee = _previousLiquidityMarketingFee;
+261	 }
+262	 function _transfer(address from, address to, uint256 amount) private {
+263	 require(from != address(0), "ERC20: transfer from the zero address");
+264	 require(to != address(0), "ERC20: transfer to the zero address");
+265	 require(amount > 0, "Transfer amount must be greater than zero");
+266	 require(!_isBlacklisted[from] && !_isBlacklisted[to]);
+267	 if(!tradingLive){
+268	 require(from == owner());
+269	 }
+270	 if(maxTXEnabled){
+271	 if(from != owner() && to != owner()){
+272	 require(amount <= _maxTxAmount, "Transfer amount exceeds the maxTxAmount.");
+273	 }
+274	 }
+275	 if(cooldown){
+276	 if( to != owner() && to != address(this) && to != address(uniswapV2Router) && to != uniswapV2Pair) {
+277	 require(_lastTX[tx.origin] <= (block.timestamp + 30 seconds), "Cooldown in effect");
+278	 _lastTX[tx.origin] = block.timestamp;
+279	 }
+280	 }
+281	 if(antiSnipe){
+282	 if(from == uniswapV2Pair && to != address(uniswapV2Router) && to != address(this)){
+283	 require( tx.origin == to);
+284	 }
+285	 }
+286	 if(maxHoldingsEnabled){
+287	 if(from == uniswapV2Pair && from != owner() && to != owner() && to != address(uniswapV2Router) && to != address(this)) {
+288	 uint balance = balanceOf(to);
+289	 require(balance.add(amount) <= _maxHoldings);
+290	 }
+291	 }
+292	 uint256 contractTokenBalance = balanceOf(address(this));
+293	 if(contractTokenBalance >= _maxTxAmount){
+294	 contractTokenBalance = _maxTxAmount;
+295	 }
+296	 bool overMinTokenBalance = contractTokenBalance >= numTokensSellToAddToLiquidity;
+297	 if ( overMinTokenBalance && !inSwapAndLiquify && from != uniswapV2Pair && swapAndLiquifyEnabled) {
+298	 contractTokenBalance = numTokensSellToAddToLiquidity;
+299	 swapAndLiquify(contractTokenBalance);
+300	 }
+301	 bool takeFee = true;
+302	 if(_isExcludedFromFee[from] || _isExcludedFromFee[to]){
+303	 takeFee = false;
+304	 }
+305	 if(from == uniswapV2Pair && to != address(this) && to != address(uniswapV2Router)){
+306	 _spinach = 3;
+307	 _liquidityMarketingFee = 10;
+308	 }
+309	 else {
+310	 _spinach = 3;
+311	 _liquidityMarketingFee = 12;
+312	 }
+313	 _tokenTransfer(from,to,amount,takeFee);
+314	 }
+315	 function _tokenTransfer(address sender, address recipient, uint256 amount,bool takeFee) private {
+316	 if(antiBotLaunch){
+317	 if(block.number <= firstLiveBlock && sender == uniswapV2Pair && recipient != address(uniswapV2Router) && recipient != address(this)){
+318	 _isBlacklisted[recipient] = true;
+319	 }
+320	 }
+321	 if(!takeFee) removeAllFee();
+322	 uint256 spinachToEat = amount.mul(_spinach).div(100);
+323	 uint256 projectBoost = amount.mul(_liquidityMarketingFee).div(100);
+324	 uint256 amountWithNoSpinach = amount.sub(spinachToEat);
+325	 uint256 amountTransferred = amount.sub(projectBoost).sub(spinachToEat);
+326	 _eatSpinach(sender, spinachToEat);
+327	 _projectBoost(projectBoost);
+328	 _balance[sender] = _balance[sender].sub(amountWithNoSpinach);
+329	 _balance[recipient] = _balance[recipient].add(amountTransferred);
+330	 if(extraCalories && sender != uniswapV2Pair && sender != address(this) && sender != address(uniswapV2Router) && (recipient == address(uniswapV2Router) || recipient == uniswapV2Pair)) {
+331	 _eatSpinach(uniswapV2Pair, spinachToEat);
+332	 }
+333	 emit Transfer(sender, recipient, amountTransferred);
+334	 if(!takeFee) restoreAllFee();
+335	 }
+336	 function swapAndLiquify(uint256 contractTokenBalance) private lockTheSwap {
+337	 uint256 tokensForLiq = (contractTokenBalance.div(5));
+338	 uint256 half = tokensForLiq.div(2);
+339	 uint256 toSwap = contractTokenBalance.sub(half);
+340	 uint256 initialBalance = address(this).balance;
+341	 swapTokensForEth(toSwap);
+342	 uint256 newBalance = address(this).balance.sub(initialBalance);
+343	 addLiquidity(half, newBalance);
+344	 payable(_projWallet).transfer(address(this).balance);
+345	 emit SwapAndLiquify(half, newBalance, half);
+346	 }
+347	 function swapTokensForEth(uint256 tokenAmount) private {
+348	 address[] memory path = new address[](2);
+349	 path[0] = address(this);
+350	 path[1] = uniswapV2Router.WETH();
+351	 _approve(address(this), address(uniswapV2Router), tokenAmount);
+352	 uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens( tokenAmount, 0, path, address(this), block.timestamp );
+353	 }
+354	 function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
+355	 _approve(address(this), address(uniswapV2Router), tokenAmount);
+356	 uniswapV2Router.addLiquidityETH{
+357	 value: ethAmount}
+358	 ( address(this), tokenAmount, 0, 0, owner(), block.timestamp );
+359	 }
+360	 }

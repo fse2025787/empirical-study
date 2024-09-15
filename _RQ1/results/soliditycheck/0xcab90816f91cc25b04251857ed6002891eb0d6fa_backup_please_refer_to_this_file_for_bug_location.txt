@@ -1,0 +1,337 @@
+row number 
+1	       pragma solidity ^0.5.16;
+2	 interface ERC3156FlashBorrowerInterface {
+3	 function onFlashLoan( address initiator, address token, uint256 amount, uint256 fee, bytes calldata data ) external returns (bytes32);
+4	 }
+5	 contract ComptrollerInterface {
+6	 bool public constant isComptroller = true;
+7	 function enterMarkets(address[] calldata apeTokens) external;
+8	 function exitMarket(address apeToken) external;
+9	 function mintAllowed( address payer, address apeToken, address minter, uint256 mintAmount ) external returns (uint256);
+10	 function mintVerify( address apeToken, address payer, address minter, uint256 mintAmount, uint256 mintTokens ) external;
+11	 function redeemAllowed( address apeToken, address redeemer, uint256 redeemTokens ) external returns (uint256);
+12	 function redeemVerify( address apeToken, address redeemer, uint256 redeemAmount, uint256 redeemTokens ) external;
+13	 function borrowAllowed( address apeToken, address borrower, uint256 borrowAmount ) external returns (uint256);
+14	 function borrowVerify( address apeToken, address borrower, uint256 borrowAmount ) external;
+15	 function repayBorrowAllowed( address apeToken, address payer, address borrower, uint256 repayAmount ) external returns (uint256);
+16	 function repayBorrowVerify( address apeToken, address payer, address borrower, uint256 repayAmount, uint256 borrowerIndex ) external;
+17	 function liquidateBorrowAllowed( address apeTokenBorrowed, address apeTokenCollateral, address liquidator, address borrower, uint256 repayAmount ) external returns (uint256);
+18	 function liquidateBorrowVerify( address apeTokenBorrowed, address apeTokenCollateral, address liquidator, address borrower, uint256 repayAmount, uint256 seizeTokens ) external;
+19	 function seizeAllowed( address apeTokenCollateral, address apeTokenBorrowed, address liquidator, address borrower, uint256 seizeTokens ) external returns (uint256);
+20	 function seizeVerify( address apeTokenCollateral, address apeTokenBorrowed, address liquidator, address borrower, uint256 seizeTokens ) external;
+21	 function liquidateCalculateSeizeTokens( address apeTokenBorrowed, address apeTokenCollateral, uint256 repayAmount ) external view returns (uint256, uint256);
+22	 }
+23	 interface ComptrollerInterfaceExtension {
+24	 function checkMembership(address account, address apeToken) external view returns (bool);
+25	 function flashloanAllowed( address apeToken, address receiver, uint256 amount, bytes calldata params ) external view returns (bool);
+26	 function getAccountLiquidity(address account) external view returns ( uint256, uint256, uint256 );
+27	 function supplyCaps(address market) external view returns (uint256);
+28	 }
+29	 contract InterestRateModel {
+30	 bool public constant isInterestRateModel = true;
+31	 function getBorrowRate( uint256 cash, uint256 borrows, uint256 reserves ) external view returns (uint256);
+32	 function getSupplyRate( uint256 cash, uint256 borrows, uint256 reserves, uint256 reserveFactorMantissa ) external view returns (uint256);
+33	 }
+34	 contract ApeTokenStorage {
+35	 bool internal _notEntered;
+36	 enum Version {
+37	 VANILLA, COLLATERALCAP, WRAPPEDNATIVE }
+38	 Version public version;
+39	 string public name;
+40	 string public symbol;
+41	 uint8 public decimals;
+42	 uint256 internal constant borrowRateMaxMantissa = 0.0005e16;
+43	 uint256 internal constant reserveFactorMaxMantissa = 1e18;
+44	 address payable public admin;
+45	 address payable public pendingAdmin;
+46	 ComptrollerInterface public comptroller;
+47	 InterestRateModel public interestRateModel;
+48	 uint256 internal initialExchangeRateMantissa;
+49	 uint256 public reserveFactorMantissa;
+50	 uint256 public accrualBlockNumber;
+51	 uint256 public borrowIndex;
+52	 uint256 public totalBorrows;
+53	 uint256 public totalReserves;
+54	 uint256 public totalSupply;
+55	 mapping(address => uint256) internal accountTokens;
+56	 struct BorrowSnapshot {
+57	 uint256 principal;
+58	 uint256 interestIndex;
+59	 }
+60	 mapping(address => BorrowSnapshot) internal accountBorrows;
+61	 uint256 public borrowFee;
+62	 address public helper;
+63	 }
+64	 contract ApeErc20Storage {
+65	 address public underlying;
+66	 address public implementation;
+67	 }
+68	 contract CSupplyCapStorage {
+69	 uint256 public internalCash;
+70	 }
+71	 contract CCollateralCapStorage {
+72	 uint256 public totalCollateralTokens;
+73	 mapping(address => uint256) public accountCollateralTokens;
+74	 uint256 public collateralCap;
+75	 }
+76	 contract ApeTokenInterface is ApeTokenStorage {
+77	 bool public constant isApeToken = true;
+78	 event AccrueInterest(uint256 cashPrior, uint256 interestAccumulated, uint256 borrowIndex, uint256 totalBorrows);
+79	 event Mint(address payer, address minter, uint256 mintAmount, uint256 mintTokens);
+80	 event Redeem(address redeemer, uint256 redeemAmount, uint256 redeemTokens);
+81	 event Borrow(address borrower, uint256 borrowAmount, uint256 accountBorrows, uint256 totalBorrows);
+82	 event RepayBorrow( address payer, address borrower, uint256 repayAmount, uint256 accountBorrows, uint256 totalBorrows );
+83	 event LiquidateBorrow( address liquidator, address borrower, uint256 repayAmount, address apeTokenCollateral, uint256 seizeTokens );
+84	 event NewPendingAdmin(address oldPendingAdmin, address newPendingAdmin);
+85	 event NewAdmin(address oldAdmin, address newAdmin);
+86	 event NewComptroller(ComptrollerInterface oldComptroller, ComptrollerInterface newComptroller);
+87	 event NewMarketInterestRateModel(InterestRateModel oldInterestRateModel, InterestRateModel newInterestRateModel);
+88	 event NewReserveFactor(uint256 oldReserveFactorMantissa, uint256 newReserveFactorMantissa);
+89	 event ReservesAdded(address benefactor, uint256 addAmount, uint256 newTotalReserves);
+90	 event ReservesReduced(address admin, uint256 reduceAmount, uint256 newTotalReserves);
+91	 event Failure(uint256 error, uint256 info, uint256 detail);
+92	 event BorrowFee(uint256 oldBorrowFee, uint256 newBorrowFee);
+93	 event HelperSet(address oldHelper, address newHelper);
+94	 function balanceOf(address owner) external view returns (uint256);
+95	 function balanceOfUnderlying(address owner) external returns (uint256);
+96	 function getAccountSnapshot(address account) external view returns ( uint256, uint256, uint256, uint256 );
+97	 function borrowRatePerBlock() external view returns (uint256);
+98	 function supplyRatePerBlock() external view returns (uint256);
+99	 function totalBorrowsCurrent() external returns (uint256);
+100	 function borrowBalanceCurrent(address account) external returns (uint256);
+101	 function borrowBalanceStored(address account) public view returns (uint256);
+102	 function exchangeRateCurrent() public returns (uint256);
+103	 function exchangeRateStored() public view returns (uint256);
+104	 function getCash() external view returns (uint256);
+105	 function accrueInterest() public returns (uint256);
+106	 function seize( address liquidator, address borrower, uint256 seizeTokens, uint256 feeTokens ) external returns (uint256);
+107	 function _setPendingAdmin(address payable newPendingAdmin) external returns (uint256);
+108	 function _acceptAdmin() external returns (uint256);
+109	 function _setComptroller(ComptrollerInterface newComptroller) public returns (uint256);
+110	 function _setReserveFactor(uint256 newReserveFactorMantissa) external returns (uint256);
+111	 function _reduceReserves(uint256 reduceAmount) external returns (uint256);
+112	 function _setInterestRateModel(InterestRateModel newInterestRateModel) public returns (uint256);
+113	 function _setBorrowFee(uint256 newBorrowFee) public;
+114	 function _setHelper(address newHelper) public;
+115	 function _setDelegate( address delegateContract, bytes32 id, address delegate ) external;
+116	 }
+117	 contract ApeErc20Interface is ApeErc20Storage {
+118	 function mint(address minter, uint256 mintAmount) external returns (uint256);
+119	 function redeem( address payable redeemer, uint256 redeemTokens, uint256 redeemAmount ) external returns (uint256);
+120	 function borrow(address payable borrower, uint256 borrowAmount) external returns (uint256);
+121	 function repayBorrow(address borrower, uint256 repayAmount) external returns (uint256);
+122	 function liquidateBorrow( address borrower, uint256 repayAmount, ApeTokenInterface apeTokenCollateral ) external returns (uint256);
+123	 function _addReserves(uint256 addAmount) external returns (uint256);
+124	 }
+125	 contract ApeWrappedNativeInterface is ApeErc20Interface {
+126	 uint256 public constant flashFeeBips = 3;
+127	 event Flashloan(address indexed receiver, uint256 amount, uint256 totalFee, uint256 reservesFee);
+128	 function mintNative(address minter) external payable returns (uint256);
+129	 function redeemNative( address payable redeemer, uint256 redeemTokens, uint256 redeemAmount ) external returns (uint256);
+130	 function borrowNative(address payable borrower, uint256 borrowAmount) external returns (uint256);
+131	 function repayBorrowNative(address borrower) external payable returns (uint256);
+132	 function liquidateBorrowNative(address borrower, ApeTokenInterface apeTokenCollateral) external payable returns (uint256);
+133	 function flashLoan( ERC3156FlashBorrowerInterface receiver, address initiator, uint256 amount, bytes calldata data ) external returns (bool);
+134	 function _addReservesNative() external payable returns (uint256);
+135	 function collateralCap() external view returns (uint256);
+136	 function totalCollateralTokens() external view returns (uint256);
+137	 }
+138	 contract CCapableErc20Interface is ApeErc20Interface, CSupplyCapStorage {
+139	 uint256 public constant flashFeeBips = 3;
+140	 event Flashloan(address indexed receiver, uint256 amount, uint256 totalFee, uint256 reservesFee);
+141	 function gulp() external;
+142	 }
+143	 contract ApeCollateralCapErc20Interface is CCapableErc20Interface, CCollateralCapStorage {
+144	 event NewCollateralCap(address token, uint256 newCap);
+145	 event UserCollateralChanged(address account, uint256 newCollateralTokens);
+146	 function registerCollateral(address account) external returns (uint256);
+147	 function unregisterCollateral(address account) external;
+148	 function flashLoan( ERC3156FlashBorrowerInterface receiver, address initiator, uint256 amount, bytes calldata data ) external returns (bool);
+149	 function _setCollateralCap(uint256 newCollateralCap) external;
+150	 }
+151	 contract CDelegatorInterface {
+152	 event NewImplementation(address oldImplementation, address newImplementation);
+153	 function _setImplementation( address implementation_, bool allowResign, bytes memory becomeImplementationData ) public;
+154	 }
+155	 contract CDelegateInterface {
+156	 function _becomeImplementation(bytes memory data) public;
+157	 function _resignImplementation() public;
+158	 }
+159	 interface IFlashloanReceiver {
+160	 function executeOperation( address sender, address underlying, uint256 amount, uint256 fee, bytes calldata params ) external;
+161	 }
+162	 contract ApeErc20Delegator is ApeTokenInterface, ApeErc20Interface, CDelegatorInterface {
+163	 constructor( address underlying_, ComptrollerInterface comptroller_, InterestRateModel interestRateModel_, uint256 initialExchangeRateMantissa_, string memory name_, string memory symbol_, uint8 decimals_, address payable admin_, address implementation_, bytes memory becomeImplementationData ) public {
+164	 admin = msg.sender;
+165	 delegateTo( implementation_, abi.encodeWithSignature( "initialize(address,address,address,uint256,string,string,uint8)", underlying_, comptroller_, interestRateModel_, initialExchangeRateMantissa_, name_, symbol_, decimals_ ) );
+166	 _setImplementation(implementation_, false, becomeImplementationData);
+167	 admin = admin_;
+168	 }
+169	 function _setImplementation( address implementation_, bool allowResign, bytes memory becomeImplementationData ) public {
+170	 require(msg.sender == admin, "ApeErc20Delegator::_setImplementation: Caller must be admin");
+171	 if (allowResign) {
+172	 delegateToImplementation(abi.encodeWithSignature("_resignImplementation()"));
+173	 }
+174	 address oldImplementation = implementation;
+175	 implementation = implementation_;
+176	 delegateToImplementation(abi.encodeWithSignature("_becomeImplementation(bytes)", becomeImplementationData));
+177	 emit NewImplementation(oldImplementation, implementation);
+178	 }
+179	 function mint(address minter, uint256 mintAmount) external returns (uint256) {
+180	 minter;
+181	 mintAmount;
+182	 delegateAndReturn();
+183	 }
+184	 function redeem( address payable redeemer, uint256 redeemTokens, uint256 redeemAmount ) external returns (uint256) {
+185	 redeemer;
+186	 redeemTokens;
+187	 redeemAmount;
+188	 delegateAndReturn();
+189	 }
+190	 function borrow(address payable borrower, uint256 borrowAmount) external returns (uint256) {
+191	 borrower;
+192	 borrowAmount;
+193	 delegateAndReturn();
+194	 }
+195	 function repayBorrow(address borrower, uint256 repayAmount) external returns (uint256) {
+196	 borrower;
+197	 repayAmount;
+198	 delegateAndReturn();
+199	 }
+200	 function liquidateBorrow( address borrower, uint256 repayAmount, ApeTokenInterface apeTokenCollateral ) external returns (uint256) {
+201	 borrower;
+202	 repayAmount;
+203	 apeTokenCollateral;
+204	 delegateAndReturn();
+205	 }
+206	 function balanceOf(address owner) external view returns (uint256) {
+207	 owner;
+208	 delegateToViewAndReturn();
+209	 }
+210	 function balanceOfUnderlying(address owner) external returns (uint256) {
+211	 owner;
+212	 delegateAndReturn();
+213	 }
+214	 function getAccountSnapshot(address account) external view returns ( uint256, uint256, uint256, uint256 ) {
+215	 account;
+216	 delegateToViewAndReturn();
+217	 }
+218	 function borrowRatePerBlock() external view returns (uint256) {
+219	 delegateToViewAndReturn();
+220	 }
+221	 function supplyRatePerBlock() external view returns (uint256) {
+222	 delegateToViewAndReturn();
+223	 }
+224	 function totalBorrowsCurrent() external returns (uint256) {
+225	 delegateAndReturn();
+226	 }
+227	 function borrowBalanceCurrent(address account) external returns (uint256) {
+228	 account;
+229	 delegateAndReturn();
+230	 }
+231	 function borrowBalanceStored(address account) public view returns (uint256) {
+232	 account;
+233	 delegateToViewAndReturn();
+234	 }
+235	 function exchangeRateCurrent() public returns (uint256) {
+236	 delegateAndReturn();
+237	 }
+238	 function exchangeRateStored() public view returns (uint256) {
+239	 delegateToViewAndReturn();
+240	 }
+241	 function getCash() external view returns (uint256) {
+242	 delegateToViewAndReturn();
+243	 }
+244	 function accrueInterest() public returns (uint256) {
+245	 delegateAndReturn();
+246	 }
+247	 function seize( address liquidator, address borrower, uint256 seizeTokens, uint256 feeTokens ) external returns (uint256) {
+248	 liquidator;
+249	 borrower;
+250	 seizeTokens;
+251	 feeTokens;
+252	 delegateAndReturn();
+253	 }
+254	 function _setPendingAdmin(address payable newPendingAdmin) external returns (uint256) {
+255	 newPendingAdmin;
+256	 delegateAndReturn();
+257	 }
+258	 function _setComptroller(ComptrollerInterface newComptroller) public returns (uint256) {
+259	 newComptroller;
+260	 delegateAndReturn();
+261	 }
+262	 function _setReserveFactor(uint256 newReserveFactorMantissa) external returns (uint256) {
+263	 newReserveFactorMantissa;
+264	 delegateAndReturn();
+265	 }
+266	 function _acceptAdmin() external returns (uint256) {
+267	 delegateAndReturn();
+268	 }
+269	 function _addReserves(uint256 addAmount) external returns (uint256) {
+270	 addAmount;
+271	 delegateAndReturn();
+272	 }
+273	 function _reduceReserves(uint256 reduceAmount) external returns (uint256) {
+274	 reduceAmount;
+275	 delegateAndReturn();
+276	 }
+277	 function _setInterestRateModel(InterestRateModel newInterestRateModel) public returns (uint256) {
+278	 newInterestRateModel;
+279	 delegateAndReturn();
+280	 }
+281	 function _setBorrowFee(uint256 newBorrowFee) public {
+282	 newBorrowFee;
+283	 delegateAndReturn();
+284	 }
+285	 function _setHelper(address newHelper) public {
+286	 newHelper;
+287	 delegateAndReturn();
+288	 }
+289	 function _setDelegate( address delegateContract, bytes32 id, address delegate ) external {
+290	 delegateContract;
+291	 id;
+292	 delegate;
+293	 delegateAndReturn();
+294	 }
+295	 function delegateTo(address callee, bytes memory data) internal returns (bytes memory) {
+296	 (bool success, bytes memory returnData) = callee.delegatecall(data);
+297	 assembly {
+298	 if eq(success, 0) {
+299	 revert(add(returnData, 0x20), returndatasize) }
+300	 }
+301	 return returnData;
+302	 }
+303	 function delegateToImplementation(bytes memory data) public returns (bytes memory) {
+304	 return delegateTo(implementation, data);
+305	 }
+306	 function delegateToViewImplementation(bytes memory data) public view returns (bytes memory) {
+307	 (bool success, bytes memory returnData) = address(this).staticcall( abi.encodeWithSignature("delegateToImplementation(bytes)", data) );
+308	 assembly {
+309	 if eq(success, 0) {
+310	 revert(add(returnData, 0x20), returndatasize) }
+311	 }
+312	 return abi.decode(returnData, (bytes));
+313	 }
+314	 function delegateToViewAndReturn() private view returns (bytes memory) {
+315	 (bool success, ) = address(this).staticcall( abi.encodeWithSignature("delegateToImplementation(bytes)", msg.data) );
+316	 assembly {
+317	 let free_mem_ptr := mload(0x40) returndatacopy(free_mem_ptr, 0, returndatasize) switch success case 0 {
+318	 revert(free_mem_ptr, returndatasize) }
+319	 default {
+320	 return(add(free_mem_ptr, 0x40), returndatasize) }
+321	 }
+322	 }
+323	 function delegateAndReturn() private returns (bytes memory) {
+324	 (bool success, ) = implementation.delegatecall(msg.data);
+325	 assembly {
+326	 let free_mem_ptr := mload(0x40) returndatacopy(free_mem_ptr, 0, returndatasize) switch success case 0 {
+327	 revert(free_mem_ptr, returndatasize) }
+328	 default {
+329	 return(free_mem_ptr, returndatasize) }
+330	 }
+331	 }
+332	 function() external payable {
+333	 require(msg.value == 0, "ApeErc20Delegator:fallback: cannot send value to fallback");
+334	 delegateAndReturn();
+335	 }
+336	 }

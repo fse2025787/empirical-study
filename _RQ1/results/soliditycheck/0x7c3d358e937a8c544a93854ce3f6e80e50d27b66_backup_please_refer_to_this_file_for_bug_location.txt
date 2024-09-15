@@ -1,0 +1,146 @@
+row number 
+1	   pragma solidity ^0.4.23;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+4	 if (a == 0) {
+5	 return 0;
+6	 }
+7	 c = a * b;
+8	 assert(c / a == b);
+9	 return c;
+10	 }
+11	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+12	 return a / b;
+13	 }
+14	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+15	 assert(b <= a);
+16	 return a - b;
+17	 }
+18	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+19	 c = a + b;
+20	 assert(c >= a);
+21	 return c;
+22	 }
+23	 }
+24	 contract Token {
+25	 function transferFrom(address from, address to, uint256 tokens) public returns (bool success);
+26	 function transfer(address to, uint256 tokens) public returns (bool success);
+27	 }
+28	 contract BancorKillerContract {
+29	 using SafeMath for uint256;
+30	 address public admin;
+31	 address public base_token;
+32	 address public traded_token;
+33	 uint256 public base_token_seed_amount;
+34	 uint256 public traded_token_seed_amount;
+35	 uint256 public commission_ratio;
+36	 bool public base_token_is_seeded;
+37	 bool public traded_token_is_seeded;
+38	 mapping (address => uint256) public token_balance;
+39	 constructor(address _base_token, address _traded_token,uint256 _base_token_seed_amount, uint256 _traded_token_seed_amount, uint256 _commission_ratio) public {
+40	 admin = tx.origin;
+41	 base_token = _base_token;
+42	 traded_token = _traded_token;
+43	 base_token_seed_amount = _base_token_seed_amount;
+44	 traded_token_seed_amount = _traded_token_seed_amount;
+45	 commission_ratio = _commission_ratio;
+46	 }
+47	 function transferTokensThroughProxyToContract(address _from, address _to, uint256 _amount) private {
+48	 token_balance[traded_token] = token_balance[traded_token].add(_amount);
+49	 require(Token(traded_token).transferFrom(_from,_to,_amount));
+50	 }
+51	 function transferTokensFromContract(address _to, uint256 _amount) private {
+52	 token_balance[traded_token] = token_balance[traded_token].sub(_amount);
+53	 require(Token(traded_token).transfer(_to,_amount));
+54	 }
+55	 function transferETHToContract() private {
+56	 token_balance[0] = token_balance[0].add(msg.value);
+57	 }
+58	 function transferETHFromContract(address _to, uint256 _amount) private {
+59	 token_balance[0] = token_balance[0].sub(_amount);
+60	 _to.transfer(_amount);
+61	 }
+62	 function deposit_token(uint256 _amount) private {
+63	 transferTokensThroughProxyToContract(msg.sender, this, _amount);
+64	 }
+65	 function deposit_eth() private {
+66	 transferETHToContract();
+67	 }
+68	 function withdraw_token(uint256 _amount) public {
+69	 require(msg.sender == admin);
+70	 uint256 currentBalance_ = token_balance[traded_token];
+71	 require(currentBalance_ >= _amount);
+72	 transferTokensFromContract(admin, _amount);
+73	 }
+74	 function withdraw_eth(uint256 _amount) public {
+75	 require(msg.sender == admin);
+76	 uint256 currentBalance_ = token_balance[0];
+77	 require(currentBalance_ >= _amount);
+78	 transferETHFromContract(admin, _amount);
+79	 }
+80	 function set_traded_token_as_seeded() private {
+81	 traded_token_is_seeded = true;
+82	 }
+83	 function set_base_token_as_seeded() private {
+84	 base_token_is_seeded = true;
+85	 }
+86	 function seed_traded_token() public {
+87	 require(!market_is_open());
+88	 set_traded_token_as_seeded();
+89	 deposit_token(traded_token_seed_amount);
+90	 }
+91	 function seed_base_token() public payable {
+92	 require(!market_is_open());
+93	 require(msg.value == base_token_seed_amount);
+94	 set_base_token_as_seeded();
+95	 deposit_eth();
+96	 }
+97	 function market_is_open() private view returns(bool) {
+98	 return (base_token_is_seeded && traded_token_is_seeded);
+99	 }
+100	 function get_amount_sell(uint256 _amount) public view returns(uint256) {
+101	 uint256 base_token_balance_ = token_balance[base_token];
+102	 uint256 traded_token_balance_ = token_balance[traded_token];
+103	 uint256 traded_token_balance_plus_amount_ = traded_token_balance_ + _amount;
+104	 return (2*base_token_balance_*_amount)/(traded_token_balance_ + traded_token_balance_plus_amount_);
+105	 }
+106	 function get_amount_buy(uint256 _amount) public view returns(uint256) {
+107	 uint256 base_token_balance_ = token_balance[base_token];
+108	 uint256 traded_token_balance_ = token_balance[traded_token];
+109	 uint256 base_token_balance_plus_amount_ = base_token_balance_ + _amount;
+110	 return (_amount*traded_token_balance_*(base_token_balance_plus_amount_ + base_token_balance_))/(2*base_token_balance_plus_amount_*base_token_balance_);
+111	 }
+112	 function get_amount_minus_fee(uint256 _amount) private view returns(uint256) {
+113	 return (_amount*(1 ether - commission_ratio))/(1 ether);
+114	 }
+115	 function complete_sell_exchange(uint256 _amount_give) private {
+116	 uint256 amount_get_ = get_amount_sell(_amount_give);
+117	 require(amount_get_ < token_balance[base_token]);
+118	 uint256 amount_get_minus_fee_ = get_amount_minus_fee(amount_get_);
+119	 uint256 admin_fee = amount_get_ - amount_get_minus_fee_;
+120	 transferTokensThroughProxyToContract(msg.sender,this,_amount_give);
+121	 transferETHFromContract(msg.sender,amount_get_minus_fee_);
+122	 transferETHFromContract(admin, admin_fee);
+123	 }
+124	 function complete_buy_exchange() private {
+125	 uint256 amount_give_ = msg.value;
+126	 uint256 amount_get_ = get_amount_buy(amount_give_);
+127	 require(amount_get_ < token_balance[traded_token]);
+128	 uint256 amount_get_minus_fee_ = get_amount_minus_fee(amount_get_);
+129	 uint256 admin_fee = amount_get_ - amount_get_minus_fee_;
+130	 transferETHToContract();
+131	 transferTokensFromContract(msg.sender, amount_get_minus_fee_);
+132	 transferTokensFromContract(admin, admin_fee);
+133	 }
+134	 function sell_tokens(uint256 _amount_give) public {
+135	 require(market_is_open());
+136	 complete_sell_exchange(_amount_give);
+137	 }
+138	 function buy_tokens() private {
+139	 require(market_is_open());
+140	 complete_buy_exchange();
+141	 }
+142	 function() public payable {
+143	 buy_tokens();
+144	 }
+145	 }

@@ -1,0 +1,427 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity >=0.6.0 <0.8.0;
+3	 abstract contract Context {
+4	 function _msgSender() internal view virtual returns (address payable) {
+5	 return msg.sender;
+6	 }
+7	 function _msgData() internal view virtual returns (bytes memory) {
+8	 this;
+9	 return msg.data;
+10	 }
+11	 }
+12	 pragma solidity >=0.6.0 <0.8.0;
+13	 abstract contract Ownable is Context {
+14	 address private _owner;
+15	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+16	 constructor () internal {
+17	 address msgSender = _msgSender();
+18	 _owner = msgSender;
+19	 emit OwnershipTransferred(address(0), msgSender);
+20	 }
+21	 function owner() public view virtual returns (address) {
+22	 return _owner;
+23	 }
+24	 modifier onlyOwner() {
+25	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+26	 _;
+27	 }
+28	 function renounceOwnership() public virtual onlyOwner {
+29	 emit OwnershipTransferred(_owner, address(0));
+30	 _owner = address(0);
+31	 }
+32	 function transferOwnership(address newOwner) public virtual onlyOwner {
+33	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+34	 emit OwnershipTransferred(_owner, newOwner);
+35	 _owner = newOwner;
+36	 }
+37	 }
+38	 pragma solidity ^0.7.6;
+39	 interface ISNXFlashLoanTool {
+40	 event Burn(address sender, uint256 sUSDAmount, uint256 snxAmount);
+41	 function burn( uint256 sUSDAmount, uint256 snxAmount, address exchange, bytes calldata exchangeData ) external;
+42	 }
+43	 pragma solidity >=0.6.12;
+44	 interface IFlashLoanReceiver {
+45	 function executeOperation( address[] calldata assets, uint256[] calldata amounts, uint256[] calldata premiums, address initiator, bytes calldata params ) external returns (bool);
+46	 function ADDRESSES_PROVIDER() external view returns (ILendingPoolAddressesProvider);
+47	 function LENDING_POOL() external view returns (ILendingPool);
+48	 }
+49	 pragma solidity ^0.7.6;
+50	 contract SNXFlashLoanTool is ISNXFlashLoanTool, IFlashLoanReceiver, Ownable {
+51	 using SafeMath for uint256;
+52	 using SafeERC20 for IERC20;
+53	 ISynthetix public immutable synthetix;
+54	 IERC20 public immutable snx;
+55	 IERC20 public immutable sUSD;
+56	 ILendingPoolAddressesProvider public immutable override ADDRESSES_PROVIDER;
+57	 ILendingPool public immutable override LENDING_POOL;
+58	 uint16 public constant referralCode = 185;
+59	 constructor(address _snxResolver, address _provider) {
+60	 IAddressResolver synthetixResolver = IAddressResolver(_snxResolver);
+61	 synthetix = ISynthetix(synthetixResolver.getAddress("Synthetix"));
+62	 snx = IERC20(synthetixResolver.getAddress("ProxyERC20"));
+63	 sUSD = IERC20(synthetixResolver.getAddress("ProxyERC20sUSD"));
+64	 ILendingPoolAddressesProvider provider = ILendingPoolAddressesProvider(_provider);
+65	 ADDRESSES_PROVIDER = provider;
+66	 LENDING_POOL = ILendingPool(provider.getLendingPool());
+67	 }
+68	 function burn( uint256 sUSDAmount, uint256 snxAmount, address exchange, bytes calldata exchangeData ) external override {
+69	 address[] memory assets = new address[](1);
+70	 assets[0] = address(sUSD);
+71	 uint256[] memory amounts = new uint256[](1);
+72	 amounts[0] = sUSDAmount == type(uint256).max ? synthetix.debtBalanceOf(msg.sender, "sUSD") : sUSDAmount;
+73	 uint256[] memory modes = new uint256[](1);
+74	 modes[0] = 0;
+75	 LENDING_POOL.flashLoan( address(this), assets, amounts, modes, address(this), abi.encode(snxAmount, msg.sender, exchange, exchangeData), referralCode );
+76	 emit Burn(msg.sender, amounts[0], snxAmount);
+77	 }
+78	 function executeOperation( address[] calldata assets, uint256[] calldata amounts, uint256[] calldata premiums, address initiator, bytes calldata params ) external override returns (bool) {
+79	 require(msg.sender == address(LENDING_POOL), "SNXFlashLoanTool: Invalid msg.sender");
+80	 require(initiator == address(this), "SNXFlashLoanTool: Invalid initiator");
+81	 (uint256 snxAmount, address user, address exchange, bytes memory exchangeData) = abi.decode( params, (uint256, address, address, bytes) );
+82	 sUSD.transfer(user, amounts[0]);
+83	 synthetix.burnSynthsOnBehalf(user, amounts[0]);
+84	 snx.safeTransferFrom(user, address(this), snxAmount);
+85	 uint256 receivedSUSD = swap(snxAmount, exchange, exchangeData);
+86	 uint256 amountOwing = amounts[0].add(premiums[0]);
+87	 sUSD.safeApprove(msg.sender, amountOwing);
+88	 if (amountOwing < receivedSUSD) {
+89	 sUSD.safeTransfer(user, receivedSUSD.sub(amountOwing));
+90	 }
+91	 return true;
+92	 }
+93	 function transferToken(address token) external onlyOwner {
+94	 IERC20(token).safeTransfer(msg.sender, IERC20(token).balanceOf(address(this)));
+95	 }
+96	 function swap( uint256 amount, address exchange, bytes memory data ) internal returns (uint256) {
+97	 snx.safeApprove(exchange, amount);
+98	 require( exchange != address(LENDING_POOL) && exchange != address(synthetix) && exchange != address(snx), "SNXFlashLoanTool: Unauthorized address" );
+99	 (bool success, ) = exchange.call(data);
+100	 require(success, "SNXFlashLoanTool: Swap failed");
+101	 return sUSD.balanceOf(address(this));
+102	 }
+103	 }
+104	 pragma solidity >=0.6.0 <0.8.0;
+105	 interface IERC20 {
+106	 function totalSupply() external view returns (uint256);
+107	 function balanceOf(address account) external view returns (uint256);
+108	 function transfer(address recipient, uint256 amount) external returns (bool);
+109	 function allowance(address owner, address spender) external view returns (uint256);
+110	 function approve(address spender, uint256 amount) external returns (bool);
+111	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+112	 event Transfer(address indexed from, address indexed to, uint256 value);
+113	 event Approval(address indexed owner, address indexed spender, uint256 value);
+114	 }
+115	 pragma solidity >=0.4.24;
+116	 interface IAddressResolver {
+117	 function getAddress(bytes32 name) external view returns (address);
+118	 function getSynth(bytes32 key) external view returns (address);
+119	 function requireAndGetAddress(bytes32 name, string calldata reason) external view returns (address);
+120	 }
+121	 pragma solidity >=0.4.24;
+122	 interface ISynthetix {
+123	 function anySynthOrSNXRateIsInvalid() external view returns (bool anyRateInvalid);
+124	 function availableCurrencyKeys() external view returns (bytes32[] memory);
+125	 function availableSynthCount() external view returns (uint);
+126	 function availableSynths(uint index) external view returns (ISynth);
+127	 function collateral(address account) external view returns (uint);
+128	 function collateralisationRatio(address issuer) external view returns (uint);
+129	 function debtBalanceOf(address issuer, bytes32 currencyKey) external view returns (uint);
+130	 function isWaitingPeriod(bytes32 currencyKey) external view returns (bool);
+131	 function maxIssuableSynths(address issuer) external view returns (uint maxIssuable);
+132	 function remainingIssuableSynths(address issuer) external view returns ( uint maxIssuable, uint alreadyIssued, uint totalSystemDebt );
+133	 function synths(bytes32 currencyKey) external view returns (ISynth);
+134	 function synthsByAddress(address synthAddress) external view returns (bytes32);
+135	 function totalIssuedSynths(bytes32 currencyKey) external view returns (uint);
+136	 function totalIssuedSynthsExcludeEtherCollateral(bytes32 currencyKey) external view returns (uint);
+137	 function transferableSynthetix(address account) external view returns (uint transferable);
+138	 function burnSynths(uint amount) external;
+139	 function burnSynthsOnBehalf(address burnForAddress, uint amount) external;
+140	 function burnSynthsToTarget() external;
+141	 function burnSynthsToTargetOnBehalf(address burnForAddress) external;
+142	 function exchange( bytes32 sourceCurrencyKey, uint sourceAmount, bytes32 destinationCurrencyKey ) external returns (uint amountReceived);
+143	 function exchangeOnBehalf( address exchangeForAddress, bytes32 sourceCurrencyKey, uint sourceAmount, bytes32 destinationCurrencyKey ) external returns (uint amountReceived);
+144	 function exchangeWithTracking( bytes32 sourceCurrencyKey, uint sourceAmount, bytes32 destinationCurrencyKey, address rewardAddress, bytes32 trackingCode ) external returns (uint amountReceived);
+145	 function exchangeWithTrackingForInitiator( bytes32 sourceCurrencyKey, uint sourceAmount, bytes32 destinationCurrencyKey, address rewardAddress, bytes32 trackingCode ) external returns (uint amountReceived);
+146	 function exchangeOnBehalfWithTracking( address exchangeForAddress, bytes32 sourceCurrencyKey, uint sourceAmount, bytes32 destinationCurrencyKey, address rewardAddress, bytes32 trackingCode ) external returns (uint amountReceived);
+147	 function exchangeWithVirtual( bytes32 sourceCurrencyKey, uint sourceAmount, bytes32 destinationCurrencyKey, bytes32 trackingCode ) external returns (uint amountReceived, IVirtualSynth vSynth);
+148	 function issueMaxSynths() external;
+149	 function issueMaxSynthsOnBehalf(address issueForAddress) external;
+150	 function issueSynths(uint amount) external;
+151	 function issueSynthsOnBehalf(address issueForAddress, uint amount) external;
+152	 function mint() external returns (bool);
+153	 function settle(bytes32 currencyKey) external returns ( uint reclaimed, uint refunded, uint numEntries );
+154	 function liquidateDelinquentAccount(address account, uint susdAmount) external returns (bool);
+155	 function mintSecondary(address account, uint amount) external;
+156	 function mintSecondaryRewards(uint amount) external;
+157	 function burnSecondary(address account, uint amount) external;
+158	 }
+159	 pragma solidity >=0.6.12;
+160	 interface ILendingPoolAddressesProvider {
+161	 event MarketIdSet(string newMarketId);
+162	 event LendingPoolUpdated(address indexed newAddress);
+163	 event ConfigurationAdminUpdated(address indexed newAddress);
+164	 event EmergencyAdminUpdated(address indexed newAddress);
+165	 event LendingPoolConfiguratorUpdated(address indexed newAddress);
+166	 event LendingPoolCollateralManagerUpdated(address indexed newAddress);
+167	 event PriceOracleUpdated(address indexed newAddress);
+168	 event LendingRateOracleUpdated(address indexed newAddress);
+169	 event ProxyCreated(bytes32 id, address indexed newAddress);
+170	 event AddressSet(bytes32 id, address indexed newAddress, bool hasProxy);
+171	 function getMarketId() external view returns (string memory);
+172	 function setMarketId(string calldata marketId) external;
+173	 function setAddress(bytes32 id, address newAddress) external;
+174	 function setAddressAsProxy(bytes32 id, address impl) external;
+175	 function getAddress(bytes32 id) external view returns (address);
+176	 function getLendingPool() external view returns (address);
+177	 function setLendingPoolImpl(address pool) external;
+178	 function getLendingPoolConfigurator() external view returns (address);
+179	 function setLendingPoolConfiguratorImpl(address configurator) external;
+180	 function getLendingPoolCollateralManager() external view returns (address);
+181	 function setLendingPoolCollateralManager(address manager) external;
+182	 function getPoolAdmin() external view returns (address);
+183	 function setPoolAdmin(address admin) external;
+184	 function getEmergencyAdmin() external view returns (address);
+185	 function setEmergencyAdmin(address admin) external;
+186	 function getPriceOracle() external view returns (address);
+187	 function setPriceOracle(address priceOracle) external;
+188	 function getLendingRateOracle() external view returns (address);
+189	 function setLendingRateOracle(address lendingRateOracle) external;
+190	 }
+191	 pragma solidity >=0.6.12;
+192	 interface ILendingPool {
+193	 event Deposit( address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint16 indexed referral );
+194	 event Withdraw(address indexed reserve, address indexed user, address indexed to, uint256 amount);
+195	 event Borrow( address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint256 borrowRateMode, uint256 borrowRate, uint16 indexed referral );
+196	 event Repay(address indexed reserve, address indexed user, address indexed repayer, uint256 amount);
+197	 event Swap(address indexed reserve, address indexed user, uint256 rateMode);
+198	 event ReserveUsedAsCollateralEnabled(address indexed reserve, address indexed user);
+199	 event ReserveUsedAsCollateralDisabled(address indexed reserve, address indexed user);
+200	 event RebalanceStableBorrowRate(address indexed reserve, address indexed user);
+201	 event FlashLoan( address indexed target, address indexed initiator, address indexed asset, uint256 amount, uint256 premium, uint16 referralCode );
+202	 event Paused();
+203	 event Unpaused();
+204	 event LiquidationCall( address indexed collateralAsset, address indexed debtAsset, address indexed user, uint256 debtToCover, uint256 liquidatedCollateralAmount, address liquidator, bool receiveAToken );
+205	 event ReserveDataUpdated( address indexed reserve, uint256 liquidityRate, uint256 stableBorrowRate, uint256 variableBorrowRate, uint256 liquidityIndex, uint256 variableBorrowIndex );
+206	 function deposit( address asset, uint256 amount, address onBehalfOf, uint16 referralCode ) external;
+207	 function withdraw( address asset, uint256 amount, address to ) external returns (uint256);
+208	 function borrow( address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf ) external;
+209	 function repay( address asset, uint256 amount, uint256 rateMode, address onBehalfOf ) external returns (uint256);
+210	 function swapBorrowRateMode(address asset, uint256 rateMode) external;
+211	 function rebalanceStableBorrowRate(address asset, address user) external;
+212	 function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external;
+213	 function liquidationCall( address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken ) external;
+214	 function flashLoan( address receiverAddress, address[] calldata assets, uint256[] calldata amounts, uint256[] calldata modes, address onBehalfOf, bytes calldata params, uint16 referralCode ) external;
+215	 function getUserAccountData(address user) external view returns ( uint256 totalCollateralETH, uint256 totalDebtETH, uint256 availableBorrowsETH, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor );
+216	 function initReserve( address reserve, address aTokenAddress, address stableDebtAddress, address variableDebtAddress, address interestRateStrategyAddress ) external;
+217	 function setReserveInterestRateStrategyAddress(address reserve, address rateStrategyAddress) external;
+218	 function setConfiguration(address reserve, uint256 configuration) external;
+219	 function getConfiguration(address asset) external view returns (DataTypes.ReserveConfigurationMap memory);
+220	 function getUserConfiguration(address user) external view returns (DataTypes.UserConfigurationMap memory);
+221	 function getReserveNormalizedIncome(address asset) external view returns (uint256);
+222	 function getReserveNormalizedVariableDebt(address asset) external view returns (uint256);
+223	 function getReserveData(address asset) external view returns (DataTypes.ReserveData memory);
+224	 function finalizeTransfer( address asset, address from, address to, uint256 amount, uint256 balanceFromAfter, uint256 balanceToBefore ) external;
+225	 function getReservesList() external view returns (address[] memory);
+226	 function getAddressesProvider() external view returns (ILendingPoolAddressesProvider);
+227	 function setPause(bool val) external;
+228	 function paused() external view returns (bool);
+229	 }
+230	 pragma solidity >=0.6.0 <0.8.0;
+231	 library SafeERC20 {
+232	 using SafeMath for uint256;
+233	 using Address for address;
+234	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+235	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+236	 }
+237	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+238	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+239	 }
+240	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+241	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+242	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+243	 }
+244	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+245	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+246	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+247	 }
+248	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+249	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+250	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+251	 }
+252	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+253	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+254	 if (returndata.length > 0) {
+255	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+256	 }
+257	 }
+258	 }
+259	 pragma solidity >=0.6.0 <0.8.0;
+260	 library SafeMath {
+261	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+262	 uint256 c = a + b;
+263	 if (c < a) return (false, 0);
+264	 return (true, c);
+265	 }
+266	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+267	 if (b > a) return (false, 0);
+268	 return (true, a - b);
+269	 }
+270	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+271	 if (a == 0) return (true, 0);
+272	 uint256 c = a * b;
+273	 if (c / a != b) return (false, 0);
+274	 return (true, c);
+275	 }
+276	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+277	 if (b == 0) return (false, 0);
+278	 return (true, a / b);
+279	 }
+280	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+281	 if (b == 0) return (false, 0);
+282	 return (true, a % b);
+283	 }
+284	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+285	 uint256 c = a + b;
+286	 require(c >= a, "SafeMath: addition overflow");
+287	 return c;
+288	 }
+289	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+290	 require(b <= a, "SafeMath: subtraction overflow");
+291	 return a - b;
+292	 }
+293	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+294	 if (a == 0) return 0;
+295	 uint256 c = a * b;
+296	 require(c / a == b, "SafeMath: multiplication overflow");
+297	 return c;
+298	 }
+299	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+300	 require(b > 0, "SafeMath: division by zero");
+301	 return a / b;
+302	 }
+303	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+304	 require(b > 0, "SafeMath: modulo by zero");
+305	 return a % b;
+306	 }
+307	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+308	 require(b <= a, errorMessage);
+309	 return a - b;
+310	 }
+311	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+312	 require(b > 0, errorMessage);
+313	 return a / b;
+314	 }
+315	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+316	 require(b > 0, errorMessage);
+317	 return a % b;
+318	 }
+319	 }
+320	 pragma solidity >=0.4.24;
+321	 interface ISynth {
+322	 function currencyKey() external view returns (bytes32);
+323	 function transferableSynths(address account) external view returns (uint);
+324	 function transferAndSettle(address to, uint value) external returns (bool);
+325	 function transferFromAndSettle( address from, address to, uint value ) external returns (bool);
+326	 function burn(address account, uint amount) external;
+327	 function issue(address account, uint amount) external;
+328	 }
+329	 pragma solidity >=0.4.24;
+330	 interface IVirtualSynth {
+331	 function balanceOfUnderlying(address account) external view returns (uint);
+332	 function rate() external view returns (uint);
+333	 function readyToSettle() external view returns (bool);
+334	 function secsLeftInWaitingPeriod() external view returns (uint);
+335	 function settled() external view returns (bool);
+336	 function synth() external view returns (ISynth);
+337	 function settle(address account) external;
+338	 }
+339	 pragma solidity >=0.6.12;
+340	 library DataTypes {
+341	 struct ReserveData {
+342	 ReserveConfigurationMap configuration;
+343	 uint128 liquidityIndex;
+344	 uint128 variableBorrowIndex;
+345	 uint128 currentLiquidityRate;
+346	 uint128 currentVariableBorrowRate;
+347	 uint128 currentStableBorrowRate;
+348	 uint40 lastUpdateTimestamp;
+349	 address aTokenAddress;
+350	 address stableDebtTokenAddress;
+351	 address variableDebtTokenAddress;
+352	 address interestRateStrategyAddress;
+353	 uint8 id;
+354	 }
+355	 struct ReserveConfigurationMap {
+356	 uint256 data;
+357	 }
+358	 struct UserConfigurationMap {
+359	 uint256 data;
+360	 }
+361	 enum InterestRateMode {
+362	 NONE, STABLE, VARIABLE }
+363	 }
+364	 pragma solidity >=0.6.2 <0.8.0;
+365	 library Address {
+366	 function isContract(address account) internal view returns (bool) {
+367	 uint256 size;
+368	 assembly {
+369	 size := extcodesize(account) }
+370	 return size > 0;
+371	 }
+372	 function sendValue(address payable recipient, uint256 amount) internal {
+373	 require(address(this).balance >= amount, "Address: insufficient balance");
+374	 (bool success, ) = recipient.call{
+375	 value: amount }
+376	 ("");
+377	 require(success, "Address: unable to send value, recipient may have reverted");
+378	 }
+379	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+380	 return functionCall(target, data, "Address: low-level call failed");
+381	 }
+382	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+383	 return functionCallWithValue(target, data, 0, errorMessage);
+384	 }
+385	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+386	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+387	 }
+388	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+389	 require(address(this).balance >= value, "Address: insufficient balance for call");
+390	 require(isContract(target), "Address: call to non-contract");
+391	 (bool success, bytes memory returndata) = target.call{
+392	 value: value }
+393	 (data);
+394	 return _verifyCallResult(success, returndata, errorMessage);
+395	 }
+396	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+397	 return functionStaticCall(target, data, "Address: low-level static call failed");
+398	 }
+399	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+400	 require(isContract(target), "Address: static call to non-contract");
+401	 (bool success, bytes memory returndata) = target.staticcall(data);
+402	 return _verifyCallResult(success, returndata, errorMessage);
+403	 }
+404	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+405	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+406	 }
+407	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+408	 require(isContract(target), "Address: delegate call to non-contract");
+409	 (bool success, bytes memory returndata) = target.delegatecall(data);
+410	 return _verifyCallResult(success, returndata, errorMessage);
+411	 }
+412	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+413	 if (success) {
+414	 return returndata;
+415	 }
+416	 else {
+417	 if (returndata.length > 0) {
+418	 assembly {
+419	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+420	 }
+421	 else {
+422	 revert(errorMessage);
+423	 }
+424	 }
+425	 }
+426	 }

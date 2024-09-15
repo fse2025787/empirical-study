@@ -1,0 +1,549 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.6.0;
+3	 interface IERC20 {
+4	 function totalSupply() external view returns (uint256);
+5	 function balanceOf(address account) external view returns (uint256);
+6	 function transfer(address recipient, uint256 amount) external returns (bool);
+7	 function allowance(address owner, address spender) external view returns (uint256);
+8	 function approve(address spender, uint256 amount) external returns (bool);
+9	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+10	 event Transfer(address indexed from, address indexed to, uint256 value);
+11	 event Approval(address indexed owner, address indexed spender, uint256 value);
+12	 }
+13	 pragma solidity ^0.6.0;
+14	 abstract contract Context {
+15	 function _msgSender() internal view virtual returns (address payable) {
+16	 return msg.sender;
+17	 }
+18	 function _msgData() internal view virtual returns (bytes memory) {
+19	 this;
+20	 return msg.data;
+21	 }
+22	 }
+23	 pragma solidity ^0.6.12;
+24	 struct LockedNFT {
+25	 uint256 token_id;
+26	 uint256 liquidity;
+27	 uint256 start_timestamp;
+28	 uint256 ending_timestamp;
+29	 uint256 lock_multiplier;
+30	 int24 tick_lower;
+31	 int24 tick_upper;
+32	 }
+33	 struct LockedStake {
+34	 bytes32 kek_id;
+35	 uint256 start_timestamp;
+36	 uint256 liquidity;
+37	 uint256 ending_timestamp;
+38	 uint256 lock_multiplier;
+39	 }
+40	 interface IFraxGaugeBase {
+41	 function lockedLiquidityOf(address account) external view returns (uint256);
+42	 function getReward() external returns (uint256);
+43	 function lock_time_min() external returns (uint256);
+44	 function combinedWeightOf(address account) external view returns (uint256);
+45	 }
+46	 pragma solidity ^0.6.7;
+47	 interface FeeDistribution {
+48	 function claim(address) external;
+49	 }
+50	 contract veFXSVault {
+51	 using SafeMath for uint256;
+52	 string public constant name = "pickle veFXS Vault";
+53	 string public constant symbol = "pveFXS";
+54	 uint8 public constant decimals = 18;
+55	 uint256 public totalSupply = 0;
+56	 mapping(address => address) public delegates;
+57	 mapping(address => mapping(uint32 => Checkpoint)) public checkpoints;
+58	 mapping(address => uint32) public numCheckpoints;
+59	 mapping(address => mapping(address => uint256)) internal allowances;
+60	 mapping(address => uint256) internal balances;
+61	 bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint chainId,address verifyingContract)");
+62	 bytes32 public immutable DOMAINSEPARATOR;
+63	 bytes32 public constant DELEGATION_TYPEHASH = keccak256("Delegation(address delegatee,uint nonce,uint expiry)");
+64	 bytes32 public constant PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint value,uint nonce,uint deadline)");
+65	 mapping(address => uint256) public nonces;
+66	 event DelegateChanged(address indexed delegator, address indexed fromDelegate, address indexed toDelegate);
+67	 event DelegateVotesChanged(address indexed delegate, uint256 previousBalance, uint256 newBalance);
+68	 struct Checkpoint {
+69	 uint32 fromBlock;
+70	 uint256 votes;
+71	 }
+72	 function delegate(address delegatee) public {
+73	 _delegate(msg.sender, delegatee);
+74	 }
+75	 function delegateBySig( address delegatee, uint256 nonce, uint256 expiry, uint8 v, bytes32 r, bytes32 s ) public {
+76	 bytes32 structHash = keccak256(abi.encode(DELEGATION_TYPEHASH, delegatee, nonce, expiry));
+77	 bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAINSEPARATOR, structHash));
+78	 address signatory = ecrecover(digest, v, r, s);
+79	 require(signatory != address(0), "delegateBySig: sig");
+80	 require(nonce == nonces[signatory]++, "delegateBySig: nonce");
+81	 require(block.timestamp <= expiry, "delegateBySig: expired");
+82	 _delegate(signatory, delegatee);
+83	 }
+84	 function getCurrentVotes(address account) external view returns (uint256) {
+85	 uint32 nCheckpoints = numCheckpoints[account];
+86	 return nCheckpoints > 0 ? checkpoints[account][nCheckpoints - 1].votes : 0;
+87	 }
+88	 function getPriorVotes(address account, uint256 blockNumber) public view returns (uint256) {
+89	 require(blockNumber < block.number, "getPriorVotes:");
+90	 uint32 nCheckpoints = numCheckpoints[account];
+91	 if (nCheckpoints == 0) {
+92	 return 0;
+93	 }
+94	 if (checkpoints[account][nCheckpoints - 1].fromBlock <= blockNumber) {
+95	 return checkpoints[account][nCheckpoints - 1].votes;
+96	 }
+97	 if (checkpoints[account][0].fromBlock > blockNumber) {
+98	 return 0;
+99	 }
+100	 uint32 lower = 0;
+101	 uint32 upper = nCheckpoints - 1;
+102	 while (upper > lower) {
+103	 uint32 center = upper - (upper - lower) / 2;
+104	 Checkpoint memory cp = checkpoints[account][center];
+105	 if (cp.fromBlock == blockNumber) {
+106	 return cp.votes;
+107	 }
+108	 else if (cp.fromBlock < blockNumber) {
+109	 lower = center;
+110	 }
+111	 else {
+112	 upper = center - 1;
+113	 }
+114	 }
+115	 return checkpoints[account][lower].votes;
+116	 }
+117	 function _delegate(address delegator, address delegatee) internal {
+118	 address currentDelegate = delegates[delegator];
+119	 uint256 delegatorBalance = balances[delegator];
+120	 delegates[delegator] = delegatee;
+121	 emit DelegateChanged(delegator, currentDelegate, delegatee);
+122	 _moveDelegates(currentDelegate, delegatee, delegatorBalance);
+123	 }
+124	 function _moveDelegates( address srcRep, address dstRep, uint256 amount ) internal {
+125	 if (srcRep != dstRep && amount > 0) {
+126	 if (srcRep != address(0)) {
+127	 uint32 srcRepNum = numCheckpoints[srcRep];
+128	 uint256 srcRepOld = srcRepNum > 0 ? checkpoints[srcRep][srcRepNum - 1].votes : 0;
+129	 uint256 srcRepNew = srcRepOld.sub(amount, "_moveVotes: underflows");
+130	 _writeCheckpoint(srcRep, srcRepNum, srcRepOld, srcRepNew);
+131	 }
+132	 if (dstRep != address(0)) {
+133	 uint32 dstRepNum = numCheckpoints[dstRep];
+134	 uint256 dstRepOld = dstRepNum > 0 ? checkpoints[dstRep][dstRepNum - 1].votes : 0;
+135	 uint256 dstRepNew = dstRepOld.add(amount);
+136	 _writeCheckpoint(dstRep, dstRepNum, dstRepOld, dstRepNew);
+137	 }
+138	 }
+139	 }
+140	 function _writeCheckpoint( address delegatee, uint32 nCheckpoints, uint256 oldVotes, uint256 newVotes ) internal {
+141	 uint32 blockNumber = safe32(block.number, "_writeCheckpoint: 32 bits");
+142	 if (nCheckpoints > 0 && checkpoints[delegatee][nCheckpoints - 1].fromBlock == blockNumber) {
+143	 checkpoints[delegatee][nCheckpoints - 1].votes = newVotes;
+144	 }
+145	 else {
+146	 checkpoints[delegatee][nCheckpoints] = Checkpoint(blockNumber, newVotes);
+147	 numCheckpoints[delegatee] = nCheckpoints + 1;
+148	 }
+149	 emit DelegateVotesChanged(delegatee, oldVotes, newVotes);
+150	 }
+151	 function safe32(uint256 n, string memory errorMessage) internal pure returns (uint32) {
+152	 require(n < 2**32, errorMessage);
+153	 return uint32(n);
+154	 }
+155	 event Transfer(address indexed from, address indexed to, uint256 amount);
+156	 event Approval(address indexed owner, address indexed spender, uint256 amount);
+157	 address public governance;
+158	 address public pendingGovernance;
+159	 IERC20 public constant FXS = IERC20(0x3432B6A60D23Ca0dFCa7761B7ab56459D9C964D0);
+160	 address public locker = 0xd639C2eA4eEFfAD39b599410d00252E6c80008DF;
+161	 address public proxy = 0x26B62c5F0bA4eB6a4Aff34141AF43Af7b5454a78;
+162	 address public feeDistribution = 0x26B62c5F0bA4eB6a4Aff34141AF43Af7b5454a78;
+163	 IERC20 public constant rewards = IERC20(0x3432B6A60D23Ca0dFCa7761B7ab56459D9C964D0);
+164	 uint256 public index = 0;
+165	 uint256 public bal = 0;
+166	 mapping(address => uint256) public supplyIndex;
+167	 constructor() public {
+168	 governance = msg.sender;
+169	 DOMAINSEPARATOR = keccak256(abi.encode(DOMAIN_TYPEHASH, keccak256(bytes(name)), _getChainId(), address(this)));
+170	 }
+171	 function update() external {
+172	 _update();
+173	 }
+174	 function _update() internal {
+175	 if (totalSupply > 0) {
+176	 _claim();
+177	 uint256 _bal = rewards.balanceOf(address(this));
+178	 if (_bal > bal) {
+179	 uint256 _diff = _bal.sub(bal);
+180	 if (_diff > 0) {
+181	 uint256 _ratio = _diff.mul(1e18).div(totalSupply);
+182	 if (_ratio > 0) {
+183	 index = index.add(_ratio);
+184	 bal = _bal;
+185	 }
+186	 }
+187	 }
+188	 }
+189	 }
+190	 function _claim() internal {
+191	 if (feeDistribution != address(0x0)) {
+192	 FeeDistribution(feeDistribution).claim(address(this));
+193	 }
+194	 }
+195	 function updateFor(address recipient) public {
+196	 _update();
+197	 uint256 _supplied = balances[recipient];
+198	 if (_supplied > 0) {
+199	 uint256 _supplyIndex = supplyIndex[recipient];
+200	 supplyIndex[recipient] = index;
+201	 uint256 _delta = index.sub(_supplyIndex);
+202	 if (_delta > 0) {
+203	 uint256 _share = _supplied.mul(_delta).div(1e18);
+204	 claimable[recipient] = claimable[recipient].add(_share);
+205	 }
+206	 }
+207	 else {
+208	 supplyIndex[recipient] = index;
+209	 }
+210	 }
+211	 mapping(address => uint256) public claimable;
+212	 function claim() external {
+213	 _claimFor(msg.sender);
+214	 }
+215	 function claimFor(address recipient) external {
+216	 _claimFor(recipient);
+217	 }
+218	 function _claimFor(address recipient) internal {
+219	 updateFor(recipient);
+220	 rewards.transfer(recipient, claimable[recipient]);
+221	 claimable[recipient] = 0;
+222	 bal = rewards.balanceOf(address(this));
+223	 }
+224	 function _mint(address dst, uint256 amount) internal {
+225	 updateFor(dst);
+226	 totalSupply = totalSupply.add(amount);
+227	 balances[dst] = balances[dst].add(amount);
+228	 emit Transfer(address(0), dst, amount);
+229	 _moveDelegates(address(0), delegates[dst], amount);
+230	 }
+231	 function depositAll() external {
+232	 _deposit(FXS.balanceOf(msg.sender));
+233	 }
+234	 function deposit(uint256 _amount) external {
+235	 _deposit(_amount);
+236	 }
+237	 function _deposit(uint256 _amount) internal {
+238	 FXS.transferFrom(msg.sender, locker, _amount);
+239	 _mint(msg.sender, _amount);
+240	 IStrategyProxy(proxy).lock();
+241	 }
+242	 function setProxy(address _proxy) external {
+243	 require(msg.sender == governance, "setGovernance: !gov");
+244	 proxy = _proxy;
+245	 }
+246	 function setLocker(address _locker) external {
+247	 require(msg.sender == governance, "setGovernance: !gov");
+248	 locker = _locker;
+249	 }
+250	 function setFeeDistribution(address _feeDistribution) external {
+251	 require(msg.sender == governance, "setGovernance: !gov");
+252	 feeDistribution = _feeDistribution;
+253	 }
+254	 function setGovernance(address _governance) external {
+255	 require(msg.sender == governance, "setGovernance: !gov");
+256	 pendingGovernance = _governance;
+257	 }
+258	 function acceptGovernance() external {
+259	 require(msg.sender == pendingGovernance, "acceptGovernance: !pendingGov");
+260	 governance = pendingGovernance;
+261	 }
+262	 function allowance(address account, address spender) external view returns (uint256) {
+263	 return allowances[account][spender];
+264	 }
+265	 function approve(address spender, uint256 amount) external returns (bool) {
+266	 allowances[msg.sender][spender] = amount;
+267	 emit Approval(msg.sender, spender, amount);
+268	 return true;
+269	 }
+270	 function permit( address owner, address spender, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s ) external {
+271	 bytes32 structHash = keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, amount, nonces[owner]++, deadline));
+272	 bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAINSEPARATOR, structHash));
+273	 address signatory = ecrecover(digest, v, r, s);
+274	 require(signatory != address(0), "permit: signature");
+275	 require(signatory == owner, "permit: unauthorized");
+276	 require(block.timestamp <= deadline, "permit: expired");
+277	 allowances[owner][spender] = amount;
+278	 emit Approval(owner, spender, amount);
+279	 }
+280	 function balanceOf(address account) external view returns (uint256) {
+281	 return balances[account];
+282	 }
+283	 function transfer(address dst, uint256 amount) external returns (bool) {
+284	 _transferTokens(msg.sender, dst, amount);
+285	 return true;
+286	 }
+287	 function transferFrom( address src, address dst, uint256 amount ) external returns (bool) {
+288	 address spender = msg.sender;
+289	 uint256 spenderAllowance = allowances[src][spender];
+290	 if (spender != src && spenderAllowance != uint256(-1)) {
+291	 uint256 newAllowance = spenderAllowance.sub(amount);
+292	 allowances[src][spender] = newAllowance;
+293	 emit Approval(src, spender, newAllowance);
+294	 }
+295	 _transferTokens(src, dst, amount);
+296	 return true;
+297	 }
+298	 function _transferTokens( address src, address dst, uint256 amount ) internal {
+299	 require(src != address(0), "_transferTokens: zero address");
+300	 require(dst != address(0), "_transferTokens: zero address");
+301	 updateFor(src);
+302	 updateFor(dst);
+303	 balances[src] = balances[src].sub(amount);
+304	 balances[dst] = balances[dst].add(amount);
+305	 emit Transfer(src, dst, amount);
+306	 }
+307	 function _getChainId() internal pure returns (uint256) {
+308	 uint256 chainId;
+309	 assembly {
+310	 chainId := chainid() }
+311	 return chainId;
+312	 }
+313	 function execute(address _target, bytes memory _data) public payable returns (bytes memory response) {
+314	 require(msg.sender == governance, "!governance");
+315	 require(_target != address(0), "!target");
+316	 assembly {
+317	 let succeeded := delegatecall(sub(gas(), 5000), _target, add(_data, 0x20), mload(_data), 0, 0) let size := returndatasize() response := mload(0x40) mstore(0x40, add(response, and(add(add(size, 0x20), 0x1f), not(0x1f)))) mstore(response, size) returndatacopy(add(response, 0x20), 0, size) switch iszero(succeeded) case 1 {
+318	 revert(add(response, 0x20), size) }
+319	 }
+320	 }
+321	 }
+322	 pragma solidity ^0.6.0;
+323	 library SafeMath {
+324	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+325	 uint256 c = a + b;
+326	 require(c >= a, "SafeMath: addition overflow");
+327	 return c;
+328	 }
+329	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+330	 return sub(a, b, "SafeMath: subtraction overflow");
+331	 }
+332	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+333	 require(b <= a, errorMessage);
+334	 uint256 c = a - b;
+335	 return c;
+336	 }
+337	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+338	 if (a == 0) {
+339	 return 0;
+340	 }
+341	 uint256 c = a * b;
+342	 require(c / a == b, "SafeMath: multiplication overflow");
+343	 return c;
+344	 }
+345	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+346	 return div(a, b, "SafeMath: division by zero");
+347	 }
+348	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+349	 require(b > 0, errorMessage);
+350	 uint256 c = a / b;
+351	 return c;
+352	 }
+353	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+354	 return mod(a, b, "SafeMath: modulo by zero");
+355	 }
+356	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+357	 require(b != 0, errorMessage);
+358	 return a % b;
+359	 }
+360	 }
+361	 library Address {
+362	 function isContract(address account) internal view returns (bool) {
+363	 uint256 size;
+364	 assembly {
+365	 size := extcodesize(account) }
+366	 return size > 0;
+367	 }
+368	 function sendValue(address payable recipient, uint256 amount) internal {
+369	 require(address(this).balance >= amount, "Address: insufficient balance");
+370	 (bool success, ) = recipient.call{
+371	 value: amount }
+372	 ("");
+373	 require(success, "Address: unable to send value, recipient may have reverted");
+374	 }
+375	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+376	 return functionCall(target, data, "Address: low-level call failed");
+377	 }
+378	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+379	 return _functionCallWithValue(target, data, 0, errorMessage);
+380	 }
+381	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+382	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+383	 }
+384	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+385	 require(address(this).balance >= value, "Address: insufficient balance for call");
+386	 return _functionCallWithValue(target, data, value, errorMessage);
+387	 }
+388	 function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+389	 require(isContract(target), "Address: call to non-contract");
+390	 (bool success, bytes memory returndata) = target.call{
+391	 value: weiValue }
+392	 (data);
+393	 if (success) {
+394	 return returndata;
+395	 }
+396	 else {
+397	 if (returndata.length > 0) {
+398	 assembly {
+399	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+400	 }
+401	 else {
+402	 revert(errorMessage);
+403	 }
+404	 }
+405	 }
+406	 }
+407	 contract ERC20 is Context, IERC20 {
+408	 using SafeMath for uint256;
+409	 using Address for address;
+410	 mapping (address => uint256) private _balances;
+411	 mapping (address => mapping (address => uint256)) private _allowances;
+412	 uint256 private _totalSupply;
+413	 string private _name;
+414	 string private _symbol;
+415	 uint8 private _decimals;
+416	 constructor (string memory name, string memory symbol) public {
+417	 _name = name;
+418	 _symbol = symbol;
+419	 _decimals = 18;
+420	 }
+421	 function name() public view returns (string memory) {
+422	 return _name;
+423	 }
+424	 function symbol() public view returns (string memory) {
+425	 return _symbol;
+426	 }
+427	 function decimals() public view returns (uint8) {
+428	 return _decimals;
+429	 }
+430	 function totalSupply() public view override returns (uint256) {
+431	 return _totalSupply;
+432	 }
+433	 function balanceOf(address account) public view override returns (uint256) {
+434	 return _balances[account];
+435	 }
+436	 function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+437	 _transfer(_msgSender(), recipient, amount);
+438	 return true;
+439	 }
+440	 function allowance(address owner, address spender) public view virtual override returns (uint256) {
+441	 return _allowances[owner][spender];
+442	 }
+443	 function approve(address spender, uint256 amount) public virtual override returns (bool) {
+444	 _approve(_msgSender(), spender, amount);
+445	 return true;
+446	 }
+447	 function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+448	 _transfer(sender, recipient, amount);
+449	 _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+450	 return true;
+451	 }
+452	 function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+453	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+454	 return true;
+455	 }
+456	 function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+457	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+458	 return true;
+459	 }
+460	 function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+461	 require(sender != address(0), "ERC20: transfer from the zero address");
+462	 require(recipient != address(0), "ERC20: transfer to the zero address");
+463	 _beforeTokenTransfer(sender, recipient, amount);
+464	 _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+465	 _balances[recipient] = _balances[recipient].add(amount);
+466	 emit Transfer(sender, recipient, amount);
+467	 }
+468	 function _mint(address account, uint256 amount) internal virtual {
+469	 require(account != address(0), "ERC20: mint to the zero address");
+470	 _beforeTokenTransfer(address(0), account, amount);
+471	 _totalSupply = _totalSupply.add(amount);
+472	 _balances[account] = _balances[account].add(amount);
+473	 emit Transfer(address(0), account, amount);
+474	 }
+475	 function _burn(address account, uint256 amount) internal virtual {
+476	 require(account != address(0), "ERC20: burn from the zero address");
+477	 _beforeTokenTransfer(account, address(0), amount);
+478	 _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+479	 _totalSupply = _totalSupply.sub(amount);
+480	 emit Transfer(account, address(0), amount);
+481	 }
+482	 function _approve(address owner, address spender, uint256 amount) internal virtual {
+483	 require(owner != address(0), "ERC20: approve from the zero address");
+484	 require(spender != address(0), "ERC20: approve to the zero address");
+485	 _allowances[owner][spender] = amount;
+486	 emit Approval(owner, spender, amount);
+487	 }
+488	 function _setupDecimals(uint8 decimals_) internal {
+489	 _decimals = decimals_;
+490	 }
+491	 function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual {
+492	 }
+493	 }
+494	 library SafeERC20 {
+495	 using SafeMath for uint256;
+496	 using Address for address;
+497	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+498	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+499	 }
+500	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+501	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+502	 }
+503	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+504	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+505	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+506	 }
+507	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+508	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+509	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+510	 }
+511	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+512	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+513	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+514	 }
+515	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+516	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+517	 if (returndata.length > 0) {
+518	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+519	 }
+520	 }
+521	 }
+522	 pragma solidity ^0.6.7;
+523	 interface IStrategyProxy {
+524	 function withdrawV3( address _gauge, uint256 _tokenId, address[] calldata _rewardTokens ) external returns (uint256);
+525	 function withdrawV2( address _gauge, address _token, bytes32 _kek_id, address[] calldata _rewardTokens ) external returns (uint256);
+526	 function balanceOf(address _gauge) external view returns (uint256);
+527	 function lockedNFTsOf(address _gauge) external view returns (LockedNFT[] memory);
+528	 function lockedStakesOf(address _gauge) external view returns (LockedStake[] memory);
+529	 function withdrawAllV3( address _gauge, address _token, address[] calldata _rewardTokens ) external returns (uint256 amount);
+530	 function withdrawAllV2( address _gauge, address _token, address[] calldata _rewardTokens ) external returns (uint256 amount);
+531	 function harvest(address _gauge, address[] calldata _tokens) external;
+532	 function depositV2( address _gauge, address _token, uint256 _secs ) external;
+533	 function depositV3( address _gauge, uint256 _tokenId, uint256 _secs ) external;
+534	 function claim(address recipient) external;
+535	 function lock() external;
+536	 function claimRewards(address _gauge, address _token) external;
+537	 }
+538	 interface IFraxGaugeUniV3 is IFraxGaugeBase {
+539	 function stakeLocked(uint256 token_id, uint256 secs) external;
+540	 function withdrawLocked(uint256 token_id) external;
+541	 function lockedNFTsOf(address account) external view returns (LockedNFT[] memory);
+542	 }
+543	 interface IFraxGaugeUniV2 {
+544	 function stakeLocked(uint256 liquidity, uint256 secs) external;
+545	 function lockedStakesOf(address) external view returns (LockedStake[] memory);
+546	 function withdrawLocked(bytes32 kek_id) external;
+547	 function getAllRewardTokens() external view returns (address[] memory);
+548	 }

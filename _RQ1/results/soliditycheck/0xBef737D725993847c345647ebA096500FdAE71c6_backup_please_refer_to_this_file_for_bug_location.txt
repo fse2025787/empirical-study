@@ -1,0 +1,438 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.6.0 <0.8.0;
+3	 abstract contract Context {
+4	 function _msgSender() internal view virtual returns (address payable) {
+5	 return msg.sender;
+6	 }
+7	 function _msgData() internal view virtual returns (bytes memory) {
+8	 this;
+9	 return msg.data;
+10	 }
+11	 }
+12	 pragma solidity >=0.6.0 <0.8.0;
+13	 abstract contract AccessControl is Context {
+14	 using EnumerableSet for EnumerableSet.AddressSet;
+15	 using Address for address;
+16	 struct RoleData {
+17	 EnumerableSet.AddressSet members;
+18	 bytes32 adminRole;
+19	 }
+20	 mapping (bytes32 => RoleData) private _roles;
+21	 bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
+22	 event RoleAdminChanged(bytes32 indexed role, bytes32 indexed previousAdminRole, bytes32 indexed newAdminRole);
+23	 event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
+24	 event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+25	 function hasRole(bytes32 role, address account) public view returns (bool) {
+26	 return _roles[role].members.contains(account);
+27	 }
+28	 function getRoleMemberCount(bytes32 role) public view returns (uint256) {
+29	 return _roles[role].members.length();
+30	 }
+31	 function getRoleMember(bytes32 role, uint256 index) public view returns (address) {
+32	 return _roles[role].members.at(index);
+33	 }
+34	 function getRoleAdmin(bytes32 role) public view returns (bytes32) {
+35	 return _roles[role].adminRole;
+36	 }
+37	 function grantRole(bytes32 role, address account) public virtual {
+38	 require(hasRole(_roles[role].adminRole, _msgSender()), "AccessControl: sender must be an admin to grant");
+39	 _grantRole(role, account);
+40	 }
+41	 function revokeRole(bytes32 role, address account) public virtual {
+42	 require(hasRole(_roles[role].adminRole, _msgSender()), "AccessControl: sender must be an admin to revoke");
+43	 _revokeRole(role, account);
+44	 }
+45	 function renounceRole(bytes32 role, address account) public virtual {
+46	 require(account == _msgSender(), "AccessControl: can only renounce roles for self");
+47	 _revokeRole(role, account);
+48	 }
+49	 function _setupRole(bytes32 role, address account) internal virtual {
+50	 _grantRole(role, account);
+51	 }
+52	 function _setRoleAdmin(bytes32 role, bytes32 adminRole) internal virtual {
+53	 emit RoleAdminChanged(role, _roles[role].adminRole, adminRole);
+54	 _roles[role].adminRole = adminRole;
+55	 }
+56	 function _grantRole(bytes32 role, address account) private {
+57	 if (_roles[role].members.add(account)) {
+58	 emit RoleGranted(role, account, _msgSender());
+59	 }
+60	 }
+61	 function _revokeRole(bytes32 role, address account) private {
+62	 if (_roles[role].members.remove(account)) {
+63	 emit RoleRevoked(role, account, _msgSender());
+64	 }
+65	 }
+66	 }
+67	 pragma solidity ^0.7.6;
+68	 contract AccessRoleCommon {
+69	 bytes32 public constant ADMIN_ROLE = keccak256("ADMIN");
+70	 bytes32 public constant MINTER_ROLE = keccak256("MINTER");
+71	 bytes32 public constant BURNER_ROLE = keccak256("BURNER");
+72	 }
+73	 pragma solidity ^0.7.6;
+74	 interface IPublicSaleProxy {
+75	 function setProxyPause(bool _pause) external;
+76	 function upgradeTo(address _impl) external;
+77	 function implementation() external view returns (address);
+78	 function initialize( address _saleTokenAddress, address _getTokenAddress, address _getTokenOwner, address _sTOS ) external;
+79	 }
+80	 pragma solidity ^0.7.6;
+81	 contract AccessibleCommon is AccessRoleCommon, AccessControl {
+82	 modifier onlyOwner() {
+83	 require(isAdmin(msg.sender), "Accessible: Caller is not an admin");
+84	 _;
+85	 }
+86	 function addAdmin(address account) public virtual onlyOwner {
+87	 grantRole(ADMIN_ROLE, account);
+88	 }
+89	 function removeAdmin(address account) public virtual onlyOwner {
+90	 renounceRole(ADMIN_ROLE, account);
+91	 }
+92	 function transferAdmin(address newAdmin) external virtual onlyOwner {
+93	 require(newAdmin != address(0), "Accessible: zero address");
+94	 require(msg.sender != newAdmin, "Accessible: same admin");
+95	 grantRole(ADMIN_ROLE, newAdmin);
+96	 renounceRole(ADMIN_ROLE, msg.sender);
+97	 }
+98	 function isAdmin(address account) public view virtual returns (bool) {
+99	 return hasRole(ADMIN_ROLE, account);
+100	 }
+101	 }
+102	 pragma solidity ^0.7.6;
+103	 contract PublicSaleStorage {
+104	 bool public pauseProxy;
+105	 struct UserInfoEx {
+106	 bool join;
+107	 uint tier;
+108	 uint256 payAmount;
+109	 uint256 saleAmount;
+110	 }
+111	 struct UserInfoOpen {
+112	 bool join;
+113	 uint256 depositAmount;
+114	 uint256 payAmount;
+115	 uint256 saleAmount;
+116	 }
+117	 struct UserClaim {
+118	 bool exec;
+119	 uint256 claimAmount;
+120	 uint256 refundAmount;
+121	 }
+122	 uint256 public snapshot = 0;
+123	 uint256 public startAddWhiteTime = 0;
+124	 uint256 public endAddWhiteTime = 0;
+125	 uint256 public startExclusiveTime = 0;
+126	 uint256 public endExclusiveTime = 0;
+127	 uint256 public startDepositTime = 0;
+128	 uint256 public endDepositTime = 0;
+129	 uint256 public startClaimTime = 0;
+130	 uint256 public totalUsers = 0;
+131	 uint256 public totalRound1Users = 0;
+132	 uint256 public totalRound2Users = 0;
+133	 uint256 public totalRound2UsersClaim = 0;
+134	 uint256 public totalWhitelists = 0;
+135	 uint256 public totalExSaleAmount = 0;
+136	 uint256 public totalExPurchasedAmount = 0;
+137	 uint256 public totalDepositAmount;
+138	 uint256 public totalExpectSaleAmount;
+139	 uint256 public totalExpectOpenSaleAmount;
+140	 uint256 public saleTokenPrice;
+141	 uint256 public payTokenPrice;
+142	 uint256 public claimInterval;
+143	 uint256 public claimPeriod;
+144	 uint256 public claimFirst;
+145	 address public getTokenOwner;
+146	 IERC20 public saleToken;
+147	 IERC20 public getToken;
+148	 ILockTOS public sTOS;
+149	 address[] public depositors;
+150	 address[] public whitelists;
+151	 bool public adminWithdraw;
+152	 mapping (address => UserInfoEx) public usersEx;
+153	 mapping (address => UserInfoOpen) public usersOpen;
+154	 mapping (address => UserClaim) public usersClaim;
+155	 mapping (uint => uint256) public tiers;
+156	 mapping (uint => uint256) public tiersAccount;
+157	 mapping (uint => uint256) public tiersExAccount;
+158	 mapping (uint => uint256) public tiersPercents;
+159	 }
+160	 pragma solidity ^0.7.6;
+161	 abstract contract ProxyBase {
+162	 bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+163	 function _setImplementation(address newImplementation) internal {
+164	 require( Address.isContract(newImplementation), "ProxyBase: Cannot set a proxy implementation to a non-contract address" );
+165	 bytes32 slot = IMPLEMENTATION_SLOT;
+166	 assembly {
+167	 sstore(slot, newImplementation) }
+168	 }
+169	 function _implementation() internal view returns (address impl) {
+170	 bytes32 slot = IMPLEMENTATION_SLOT;
+171	 assembly {
+172	 impl := sload(slot) }
+173	 }
+174	 }
+175	 pragma solidity ^0.7.6;
+176	 contract PublicSaleProxy is PublicSaleStorage, AccessibleCommon, ProxyBase, IPublicSaleProxy {
+177	 event Upgraded(address indexed implementation);
+178	 constructor(address _impl, address _admin) {
+179	 assert( IMPLEMENTATION_SLOT == bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1) );
+180	 require(_impl != address(0), "PublicSaleProxy: logic is zero");
+181	 _setImplementation(_impl);
+182	 _setRoleAdmin(ADMIN_ROLE, ADMIN_ROLE);
+183	 _setupRole(ADMIN_ROLE, _admin);
+184	 }
+185	 function setProxyPause(bool _pause) external override onlyOwner {
+186	 pauseProxy = _pause;
+187	 }
+188	 function upgradeTo(address impl) external override onlyOwner {
+189	 require(impl != address(0), "PublicSaleProxy: input is zero");
+190	 require(_implementation() != impl, "PublicSaleProxy: same");
+191	 _setImplementation(impl);
+192	 emit Upgraded(impl);
+193	 }
+194	 function implementation() public override view returns (address) {
+195	 return _implementation();
+196	 }
+197	 receive() external payable {
+198	 revert("cannot receive Ether");
+199	 }
+200	 fallback() external payable {
+201	 _fallback();
+202	 }
+203	 function _fallback() internal {
+204	 address _impl = _implementation();
+205	 require( _impl != address(0) && !pauseProxy, "PublicSaleProxy: impl OR proxy is false" );
+206	 assembly {
+207	 calldatacopy(0, 0, calldatasize()) let result := delegatecall(gas(), _impl, 0, calldatasize(), 0, 0) returndatacopy(0, 0, returndatasize()) switch result case 0 {
+208	 revert(0, returndatasize()) }
+209	 default {
+210	 return(0, returndatasize()) }
+211	 }
+212	 }
+213	 function initialize( address _saleTokenAddress, address _getTokenAddress, address _getTokenOwner, address _sTOS ) external override onlyOwner {
+214	 require(snapshot == 0, "possible to setting the snapshot before");
+215	 saleToken = IERC20(_saleTokenAddress);
+216	 getToken = IERC20(_getTokenAddress);
+217	 getTokenOwner = _getTokenOwner;
+218	 sTOS = ILockTOS(_sTOS);
+219	 }
+220	 }
+221	 pragma solidity >=0.6.2 <0.8.0;
+222	 library Address {
+223	 function isContract(address account) internal view returns (bool) {
+224	 uint256 size;
+225	 assembly {
+226	 size := extcodesize(account) }
+227	 return size > 0;
+228	 }
+229	 function sendValue(address payable recipient, uint256 amount) internal {
+230	 require(address(this).balance >= amount, "Address: insufficient balance");
+231	 (bool success, ) = recipient.call{
+232	 value: amount }
+233	 ("");
+234	 require(success, "Address: unable to send value, recipient may have reverted");
+235	 }
+236	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+237	 return functionCall(target, data, "Address: low-level call failed");
+238	 }
+239	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+240	 return functionCallWithValue(target, data, 0, errorMessage);
+241	 }
+242	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+243	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+244	 }
+245	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+246	 require(address(this).balance >= value, "Address: insufficient balance for call");
+247	 require(isContract(target), "Address: call to non-contract");
+248	 (bool success, bytes memory returndata) = target.call{
+249	 value: value }
+250	 (data);
+251	 return _verifyCallResult(success, returndata, errorMessage);
+252	 }
+253	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+254	 return functionStaticCall(target, data, "Address: low-level static call failed");
+255	 }
+256	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+257	 require(isContract(target), "Address: static call to non-contract");
+258	 (bool success, bytes memory returndata) = target.staticcall(data);
+259	 return _verifyCallResult(success, returndata, errorMessage);
+260	 }
+261	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+262	 if (success) {
+263	 return returndata;
+264	 }
+265	 else {
+266	 if (returndata.length > 0) {
+267	 assembly {
+268	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+269	 }
+270	 else {
+271	 revert(errorMessage);
+272	 }
+273	 }
+274	 }
+275	 }
+276	 pragma solidity >=0.6.0 <0.8.0;
+277	 library EnumerableSet {
+278	 struct Set {
+279	 bytes32[] _values;
+280	 mapping (bytes32 => uint256) _indexes;
+281	 }
+282	 function _add(Set storage set, bytes32 value) private returns (bool) {
+283	 if (!_contains(set, value)) {
+284	 set._values.push(value);
+285	 set._indexes[value] = set._values.length;
+286	 return true;
+287	 }
+288	 else {
+289	 return false;
+290	 }
+291	 }
+292	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+293	 uint256 valueIndex = set._indexes[value];
+294	 if (valueIndex != 0) {
+295	 uint256 toDeleteIndex = valueIndex - 1;
+296	 uint256 lastIndex = set._values.length - 1;
+297	 bytes32 lastvalue = set._values[lastIndex];
+298	 set._values[toDeleteIndex] = lastvalue;
+299	 set._indexes[lastvalue] = toDeleteIndex + 1;
+300	 set._values.pop();
+301	 delete set._indexes[value];
+302	 return true;
+303	 }
+304	 else {
+305	 return false;
+306	 }
+307	 }
+308	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+309	 return set._indexes[value] != 0;
+310	 }
+311	 function _length(Set storage set) private view returns (uint256) {
+312	 return set._values.length;
+313	 }
+314	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+315	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+316	 return set._values[index];
+317	 }
+318	 struct Bytes32Set {
+319	 Set _inner;
+320	 }
+321	 function add(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+322	 return _add(set._inner, value);
+323	 }
+324	 function remove(Bytes32Set storage set, bytes32 value) internal returns (bool) {
+325	 return _remove(set._inner, value);
+326	 }
+327	 function contains(Bytes32Set storage set, bytes32 value) internal view returns (bool) {
+328	 return _contains(set._inner, value);
+329	 }
+330	 function length(Bytes32Set storage set) internal view returns (uint256) {
+331	 return _length(set._inner);
+332	 }
+333	 function at(Bytes32Set storage set, uint256 index) internal view returns (bytes32) {
+334	 return _at(set._inner, index);
+335	 }
+336	 struct AddressSet {
+337	 Set _inner;
+338	 }
+339	 function add(AddressSet storage set, address value) internal returns (bool) {
+340	 return _add(set._inner, bytes32(uint256(value)));
+341	 }
+342	 function remove(AddressSet storage set, address value) internal returns (bool) {
+343	 return _remove(set._inner, bytes32(uint256(value)));
+344	 }
+345	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+346	 return _contains(set._inner, bytes32(uint256(value)));
+347	 }
+348	 function length(AddressSet storage set) internal view returns (uint256) {
+349	 return _length(set._inner);
+350	 }
+351	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+352	 return address(uint256(_at(set._inner, index)));
+353	 }
+354	 struct UintSet {
+355	 Set _inner;
+356	 }
+357	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+358	 return _add(set._inner, bytes32(value));
+359	 }
+360	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+361	 return _remove(set._inner, bytes32(value));
+362	 }
+363	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+364	 return _contains(set._inner, bytes32(value));
+365	 }
+366	 function length(UintSet storage set) internal view returns (uint256) {
+367	 return _length(set._inner);
+368	 }
+369	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+370	 return uint256(_at(set._inner, index));
+371	 }
+372	 }
+373	 pragma solidity >=0.6.0 <0.8.0;
+374	 interface IERC20 {
+375	 function totalSupply() external view returns (uint256);
+376	 function balanceOf(address account) external view returns (uint256);
+377	 function transfer(address recipient, uint256 amount) external returns (bool);
+378	 function allowance(address owner, address spender) external view returns (uint256);
+379	 function approve(address spender, uint256 amount) external returns (bool);
+380	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+381	 event Transfer(address indexed from, address indexed to, uint256 value);
+382	 event Approval(address indexed owner, address indexed spender, uint256 value);
+383	 }
+384	 pragma solidity ^0.7.6;
+385	 interface ILockTOS {
+386	 function allHolders() external returns (address[] memory);
+387	 function activeHolders() external returns (address[] memory);
+388	 function withdrawableLocksOf(address user) external view returns (uint256[] memory);
+389	 function locksOf(address _addr) external view returns (uint256[] memory);
+390	 function activeLocksOf(address _addr) external view returns (uint256[] memory);
+391	 function totalLockedAmountOf(address _addr) external view returns (uint256);
+392	 function withdrawableAmountOf(address _addr) external view returns (uint256);
+393	 function locksInfo(uint256 _lockId) external view returns ( uint256, uint256, uint256 );
+394	 function pointHistoryOf(uint256 _lockId) external view returns (LibLockTOS.Point[] memory);
+395	 function totalSupply() external view returns (uint256);
+396	 function totalSupplyAt(uint256 _timestamp) external view returns (uint256);
+397	 function balanceOfLockAt(uint256 _lockId, uint256 _timestamp) external view returns (uint256);
+398	 function balanceOfLock(uint256 _lockId) external view returns (uint256);
+399	 function balanceOfAt(address _addr, uint256 _timestamp) external view returns (uint256 balance);
+400	 function balanceOf(address _addr) external view returns (uint256 balance);
+401	 function increaseAmount(uint256 _lockId, uint256 _value) external;
+402	 function depositFor( address _addr, uint256 _lockId, uint256 _value ) external;
+403	 function createLockWithPermit( uint256 _value, uint256 _unlockTime, uint256 _deadline, uint8 _v, bytes32 _r, bytes32 _s ) external returns (uint256 lockId);
+404	 function createLock(uint256 _value, uint256 _unlockTime) external returns (uint256 lockId);
+405	 function increaseUnlockTime(uint256 _lockId, uint256 unlockTime) external;
+406	 function withdrawAll() external;
+407	 function withdraw(uint256 _lockId) external;
+408	 function needCheckpoint() external view returns (bool need);
+409	 function globalCheckpoint() external;
+410	 function setMaxTime(uint256 _maxTime) external;
+411	 }
+412	 pragma solidity ^0.7.6;
+413	 library LibLockTOS {
+414	 struct Point {
+415	 int256 bias;
+416	 int256 slope;
+417	 uint256 timestamp;
+418	 }
+419	 struct LockedBalance {
+420	 uint256 start;
+421	 uint256 end;
+422	 uint256 amount;
+423	 bool withdrawn;
+424	 }
+425	 struct SlopeChange {
+426	 int256 bias;
+427	 int256 slope;
+428	 uint256 changeTime;
+429	 }
+430	 struct LockedBalanceInfo {
+431	 uint256 id;
+432	 uint256 start;
+433	 uint256 end;
+434	 uint256 amount;
+435	 uint256 balance;
+436	 }
+437	 }

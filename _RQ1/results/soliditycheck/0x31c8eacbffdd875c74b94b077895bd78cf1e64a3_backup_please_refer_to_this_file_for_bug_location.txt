@@ -1,0 +1,213 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.7.5;
+3	 contract RadicleToken {
+4	 string public constant NAME = "Radicle";
+5	 string public constant SYMBOL = "RAD";
+6	 uint8 public constant DECIMALS = 18;
+7	 uint256 public totalSupply = 100000000e18;
+8	 mapping(address => mapping(address => uint96)) internal allowances;
+9	 mapping(address => uint96) internal balances;
+10	 mapping(address => address) public delegates;
+11	 struct Checkpoint {
+12	 uint32 fromBlock;
+13	 uint96 votes;
+14	 }
+15	 mapping(address => mapping(uint32 => Checkpoint)) public checkpoints;
+16	 mapping(address => uint32) public numCheckpoints;
+17	 bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
+18	 bytes32 public constant DELEGATION_TYPEHASH = keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)");
+19	 bytes32 public constant PERMIT_TYPEHASH = keccak256( "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)" );
+20	 mapping(address => uint256) public nonces;
+21	 event DelegateChanged( address indexed delegator, address indexed fromDelegate, address indexed toDelegate );
+22	 event DelegateVotesChanged( address indexed delegate, uint256 previousBalance, uint256 newBalance );
+23	 event Transfer(address indexed from, address indexed to, uint256 amount);
+24	 event Approval(address indexed owner, address indexed spender, uint256 amount);
+25	 constructor(address account) {
+26	 balances[account] = uint96(totalSupply);
+27	 emit Transfer(address(0), account, totalSupply);
+28	 }
+29	 function name() public pure returns (string memory) {
+30	 return NAME;
+31	 }
+32	 function symbol() public pure returns (string memory) {
+33	 return SYMBOL;
+34	 }
+35	 function decimals() public pure returns (uint8) {
+36	 return DECIMALS;
+37	 }
+38	 function DOMAIN_SEPARATOR() public view returns (bytes32) {
+39	 return keccak256( abi.encode(DOMAIN_TYPEHASH, keccak256(bytes(NAME)), getChainId(), address(this)) );
+40	 }
+41	 function allowance(address account, address spender) external view returns (uint256) {
+42	 return allowances[account][spender];
+43	 }
+44	 function approve(address spender, uint256 rawAmount) external returns (bool) {
+45	 _approve(msg.sender, spender, rawAmount);
+46	 return true;
+47	 }
+48	 function _approve( address owner, address spender, uint256 rawAmount ) internal {
+49	 uint96 amount;
+50	 if (rawAmount == uint256(-1)) {
+51	 amount = uint96(-1);
+52	 }
+53	 else {
+54	 amount = safe96(rawAmount, "RadicleToken::approve: amount exceeds 96 bits");
+55	 }
+56	 allowances[owner][spender] = amount;
+57	 emit Approval(owner, spender, amount);
+58	 }
+59	 function balanceOf(address account) external view returns (uint256) {
+60	 return balances[account];
+61	 }
+62	 function transfer(address dst, uint256 rawAmount) external returns (bool) {
+63	 uint96 amount = safe96(rawAmount, "RadicleToken::transfer: amount exceeds 96 bits");
+64	 _transferTokens(msg.sender, dst, amount);
+65	 return true;
+66	 }
+67	 function transferFrom( address src, address dst, uint256 rawAmount ) external returns (bool) {
+68	 address spender = msg.sender;
+69	 uint96 spenderAllowance = allowances[src][spender];
+70	 uint96 amount = safe96(rawAmount, "RadicleToken::approve: amount exceeds 96 bits");
+71	 if (spender != src && spenderAllowance != uint96(-1)) {
+72	 uint96 newAllowance = sub96( spenderAllowance, amount, "RadicleToken::transferFrom: transfer amount exceeds spender allowance" );
+73	 allowances[src][spender] = newAllowance;
+74	 emit Approval(src, spender, newAllowance);
+75	 }
+76	 _transferTokens(src, dst, amount);
+77	 return true;
+78	 }
+79	 function burnFrom(address account, uint256 rawAmount) public {
+80	 require(account != address(0), "RadicleToken::burnFrom: cannot burn from the zero address");
+81	 uint96 amount = safe96(rawAmount, "RadicleToken::burnFrom: amount exceeds 96 bits");
+82	 address spender = msg.sender;
+83	 uint96 spenderAllowance = allowances[account][spender];
+84	 if (spender != account && spenderAllowance != uint96(-1)) {
+85	 uint96 newAllowance = sub96( spenderAllowance, amount, "RadicleToken::burnFrom: burn amount exceeds allowance" );
+86	 allowances[account][spender] = newAllowance;
+87	 emit Approval(account, spender, newAllowance);
+88	 }
+89	 balances[account] = sub96( balances[account], amount, "RadicleToken::burnFrom: burn amount exceeds balance" );
+90	 emit Transfer(account, address(0), amount);
+91	 _moveDelegates(delegates[account], address(0), amount);
+92	 totalSupply -= rawAmount;
+93	 }
+94	 function delegate(address delegatee) public {
+95	 return _delegate(msg.sender, delegatee);
+96	 }
+97	 function delegateBySig( address delegatee, uint256 nonce, uint256 expiry, uint8 v, bytes32 r, bytes32 s ) public {
+98	 bytes32 structHash = keccak256(abi.encode(DELEGATION_TYPEHASH, delegatee, nonce, expiry));
+99	 bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+100	 address signatory = ecrecover(digest, v, r, s);
+101	 require(signatory != address(0), "RadicleToken::delegateBySig: invalid signature");
+102	 require(nonce == nonces[signatory]++, "RadicleToken::delegateBySig: invalid nonce");
+103	 require(block.timestamp <= expiry, "RadicleToken::delegateBySig: signature expired");
+104	 _delegate(signatory, delegatee);
+105	 }
+106	 function permit( address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s ) public {
+107	 bytes32 structHash = keccak256( abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonces[owner]++, deadline) );
+108	 bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+109	 require(owner == ecrecover(digest, v, r, s), "RadicleToken::permit: invalid signature");
+110	 require(owner != address(0), "RadicleToken::permit: invalid signature");
+111	 require(block.timestamp <= deadline, "RadicleToken::permit: signature expired");
+112	 _approve(owner, spender, value);
+113	 }
+114	 function getCurrentVotes(address account) external view returns (uint96) {
+115	 uint32 nCheckpoints = numCheckpoints[account];
+116	 return nCheckpoints > 0 ? checkpoints[account][nCheckpoints - 1].votes : 0;
+117	 }
+118	 function getPriorVotes(address account, uint256 blockNumber) public view returns (uint96) {
+119	 require(blockNumber < block.number, "RadicleToken::getPriorVotes: not yet determined");
+120	 uint32 nCheckpoints = numCheckpoints[account];
+121	 if (nCheckpoints == 0) {
+122	 return 0;
+123	 }
+124	 if (checkpoints[account][nCheckpoints - 1].fromBlock <= blockNumber) {
+125	 return checkpoints[account][nCheckpoints - 1].votes;
+126	 }
+127	 if (checkpoints[account][0].fromBlock > blockNumber) {
+128	 return 0;
+129	 }
+130	 uint32 lower = 0;
+131	 uint32 upper = nCheckpoints - 1;
+132	 while (upper > lower) {
+133	 uint32 center = upper - (upper - lower) / 2;
+134	 Checkpoint memory cp = checkpoints[account][center];
+135	 if (cp.fromBlock == blockNumber) {
+136	 return cp.votes;
+137	 }
+138	 else if (cp.fromBlock < blockNumber) {
+139	 lower = center;
+140	 }
+141	 else {
+142	 upper = center - 1;
+143	 }
+144	 }
+145	 return checkpoints[account][lower].votes;
+146	 }
+147	 function _delegate(address delegator, address delegatee) internal {
+148	 address currentDelegate = delegates[delegator];
+149	 uint96 delegatorBalance = balances[delegator];
+150	 delegates[delegator] = delegatee;
+151	 emit DelegateChanged(delegator, currentDelegate, delegatee);
+152	 _moveDelegates(currentDelegate, delegatee, delegatorBalance);
+153	 }
+154	 function _transferTokens( address src, address dst, uint96 amount ) internal {
+155	 require( src != address(0), "RadicleToken::_transferTokens: cannot transfer from the zero address" );
+156	 require( dst != address(0), "RadicleToken::_transferTokens: cannot transfer to the zero address" );
+157	 balances[src] = sub96( balances[src], amount, "RadicleToken::_transferTokens: transfer amount exceeds balance" );
+158	 balances[dst] = add96( balances[dst], amount, "RadicleToken::_transferTokens: transfer amount overflows" );
+159	 emit Transfer(src, dst, amount);
+160	 _moveDelegates(delegates[src], delegates[dst], amount);
+161	 }
+162	 function _moveDelegates( address srcRep, address dstRep, uint96 amount ) internal {
+163	 if (srcRep != dstRep && amount > 0) {
+164	 if (srcRep != address(0)) {
+165	 uint32 srcRepNum = numCheckpoints[srcRep];
+166	 uint96 srcRepOld = srcRepNum > 0 ? checkpoints[srcRep][srcRepNum - 1].votes : 0;
+167	 uint96 srcRepNew = sub96(srcRepOld, amount, "RadicleToken::_moveVotes: vote amount underflows");
+168	 _writeCheckpoint(srcRep, srcRepNum, srcRepOld, srcRepNew);
+169	 }
+170	 if (dstRep != address(0)) {
+171	 uint32 dstRepNum = numCheckpoints[dstRep];
+172	 uint96 dstRepOld = dstRepNum > 0 ? checkpoints[dstRep][dstRepNum - 1].votes : 0;
+173	 uint96 dstRepNew = add96(dstRepOld, amount, "RadicleToken::_moveVotes: vote amount overflows");
+174	 _writeCheckpoint(dstRep, dstRepNum, dstRepOld, dstRepNew);
+175	 }
+176	 }
+177	 }
+178	 function _writeCheckpoint( address delegatee, uint32 nCheckpoints, uint96 oldVotes, uint96 newVotes ) internal {
+179	 uint32 blockNumber = safe32(block.number, "RadicleToken::_writeCheckpoint: block number exceeds 32 bits");
+180	 if (nCheckpoints > 0 && checkpoints[delegatee][nCheckpoints - 1].fromBlock == blockNumber) {
+181	 checkpoints[delegatee][nCheckpoints - 1].votes = newVotes;
+182	 }
+183	 else {
+184	 checkpoints[delegatee][nCheckpoints] = Checkpoint(blockNumber, newVotes);
+185	 numCheckpoints[delegatee] = nCheckpoints + 1;
+186	 }
+187	 emit DelegateVotesChanged(delegatee, oldVotes, newVotes);
+188	 }
+189	 function safe32(uint256 n, string memory errorMessage) internal pure returns (uint32) {
+190	 require(n < 2**32, errorMessage);
+191	 return uint32(n);
+192	 }
+193	 function safe96(uint256 n, string memory errorMessage) internal pure returns (uint96) {
+194	 require(n < 2**96, errorMessage);
+195	 return uint96(n);
+196	 }
+197	 function add96( uint96 a, uint96 b, string memory errorMessage ) internal pure returns (uint96) {
+198	 uint96 c = a + b;
+199	 require(c >= a, errorMessage);
+200	 return c;
+201	 }
+202	 function sub96( uint96 a, uint96 b, string memory errorMessage ) internal pure returns (uint96) {
+203	 require(b <= a, errorMessage);
+204	 return a - b;
+205	 }
+206	 function getChainId() internal pure returns (uint256) {
+207	 uint256 chainId;
+208	 assembly {
+209	 chainId := chainid() }
+210	 return chainId;
+211	 }
+212	 }

@@ -1,0 +1,689 @@
+row number 
+1	           pragma solidity ^0.5.16;
+2	 contract RewardPoolDelegationStorage {
+3	 address public filstAddress;
+4	 address public efilAddress;
+5	 address public admin;
+6	 address public pendingAdmin;
+7	 address public implementation;
+8	 address public pendingImplementation;
+9	 }
+10	 interface IRewardCalculator {
+11	 function calculate(uint filstAmount, uint fromBlockNumber) external view returns (uint);
+12	 }
+13	 interface IRewardStrategy {
+14	 function allocate(address staking, uint rewardAmount) external view returns (uint stakingPart, address[] memory others, uint[] memory othersParts);
+15	 }
+16	 interface IFilstManagement {
+17	 function getTotalMintedAmount() external view returns (uint);
+18	 function getMintedAmount(string calldata miner) external view returns (uint);
+19	 }
+20	 contract RewardPoolStorage is RewardPoolDelegationStorage {
+21	 IFilstManagement public management;
+22	 IRewardStrategy public strategy;
+23	 IRewardCalculator public calculator;
+24	 address public staking;
+25	 uint public accrualBlockNumber;
+26	 mapping(address => uint) public accruedRewards;
+27	 struct Debt {
+28	 uint accruedIndex;
+29	 uint accruedAmount;
+30	 uint lastRepaymentBlock;
+31	 }
+32	 uint public debtAccruedIndex;
+33	 mapping(string => Debt) public minerDebts;
+34	 }
+35	 contract RewardPoolDelegator is RewardPoolDelegationStorage {
+36	 event NewPendingImplementation(address oldPendingImplementation, address newPendingImplementation);
+37	 event NewImplementation(address oldImplementation, address newImplementation);
+38	 event NewPendingAdmin(address oldPendingAdmin, address newPendingAdmin);
+39	 event NewAdmin(address oldAdmin, address newAdmin);
+40	 constructor(address filstAddress_, address efilAddress_) public {
+41	 filstAddress = filstAddress_;
+42	 efilAddress = efilAddress_;
+43	 admin = msg.sender;
+44	 }
+45	 function _setPendingImplementation(address newPendingImplementation) external {
+46	 require(msg.sender == admin, "admin check");
+47	 address oldPendingImplementation = pendingImplementation;
+48	 pendingImplementation = newPendingImplementation;
+49	 emit NewPendingImplementation(oldPendingImplementation, pendingImplementation);
+50	 }
+51	 function _acceptImplementation() external {
+52	 require(msg.sender == pendingImplementation && pendingImplementation != address(0), "pendingImplementation check");
+53	 address oldImplementation = implementation;
+54	 address oldPendingImplementation = pendingImplementation;
+55	 implementation = pendingImplementation;
+56	 pendingImplementation = address(0);
+57	 emit NewImplementation(oldImplementation, implementation);
+58	 emit NewPendingImplementation(oldPendingImplementation, pendingImplementation);
+59	 }
+60	 function _setPendingAdmin(address newPendingAdmin) external {
+61	 require(msg.sender == admin, "admin check");
+62	 address oldPendingAdmin = pendingAdmin;
+63	 pendingAdmin = newPendingAdmin;
+64	 emit NewPendingAdmin(oldPendingAdmin, newPendingAdmin);
+65	 }
+66	 function _acceptAdmin() external {
+67	 require(msg.sender == pendingAdmin && pendingAdmin != address(0), "pendingAdmin check");
+68	 address oldAdmin = admin;
+69	 address oldPendingAdmin = pendingAdmin;
+70	 admin = pendingAdmin;
+71	 pendingAdmin = address(0);
+72	 emit NewAdmin(oldAdmin, admin);
+73	 emit NewPendingAdmin(oldPendingAdmin, pendingAdmin);
+74	 }
+75	 function () payable external {
+76	 (bool success, ) = implementation.delegatecall(msg.data);
+77	 assembly {
+78	 let free_mem_ptr := mload(0x40) returndatacopy(free_mem_ptr, 0, returndatasize) switch success case 0 {
+79	 revert(free_mem_ptr, returndatasize) }
+80	 default {
+81	 return(free_mem_ptr, returndatasize) }
+82	 }
+83	 }
+84	 }
+85	 contract ExponentialNoError {
+86	 uint constant expScale = 1e18;
+87	 uint constant doubleScale = 1e36;
+88	 uint constant halfExpScale = expScale/2;
+89	 uint constant mantissaOne = expScale;
+90	 struct Exp {
+91	 uint mantissa;
+92	 }
+93	 struct Double {
+94	 uint mantissa;
+95	 }
+96	 function truncate(Exp memory exp) pure internal returns (uint) {
+97	 return exp.mantissa / expScale;
+98	 }
+99	 function mul_ScalarTruncate(Exp memory a, uint scalar) pure internal returns (uint) {
+100	 Exp memory product = mul_(a, scalar);
+101	 return truncate(product);
+102	 }
+103	 function mul_ScalarTruncateAddUInt(Exp memory a, uint scalar, uint addend) pure internal returns (uint) {
+104	 Exp memory product = mul_(a, scalar);
+105	 return add_(truncate(product), addend);
+106	 }
+107	 function lessThanExp(Exp memory left, Exp memory right) pure internal returns (bool) {
+108	 return left.mantissa < right.mantissa;
+109	 }
+110	 function lessThanOrEqualExp(Exp memory left, Exp memory right) pure internal returns (bool) {
+111	 return left.mantissa <= right.mantissa;
+112	 }
+113	 function greaterThanExp(Exp memory left, Exp memory right) pure internal returns (bool) {
+114	 return left.mantissa > right.mantissa;
+115	 }
+116	 function isZeroExp(Exp memory value) pure internal returns (bool) {
+117	 return value.mantissa == 0;
+118	 }
+119	 function safe224(uint n, string memory errorMessage) pure internal returns (uint224) {
+120	 require(n < 2**224, errorMessage);
+121	 return uint224(n);
+122	 }
+123	 function safe32(uint n, string memory errorMessage) pure internal returns (uint32) {
+124	 require(n < 2**32, errorMessage);
+125	 return uint32(n);
+126	 }
+127	 function add_(Exp memory a, Exp memory b) pure internal returns (Exp memory) {
+128	 return Exp({
+129	 mantissa: add_(a.mantissa, b.mantissa)}
+130	 );
+131	 }
+132	 function add_(Double memory a, Double memory b) pure internal returns (Double memory) {
+133	 return Double({
+134	 mantissa: add_(a.mantissa, b.mantissa)}
+135	 );
+136	 }
+137	 function add_(uint a, uint b) pure internal returns (uint) {
+138	 return add_(a, b, "addition overflow");
+139	 }
+140	 function add_(uint a, uint b, string memory errorMessage) pure internal returns (uint) {
+141	 uint c = a + b;
+142	 require(c >= a, errorMessage);
+143	 return c;
+144	 }
+145	 function sub_(Exp memory a, Exp memory b) pure internal returns (Exp memory) {
+146	 return Exp({
+147	 mantissa: sub_(a.mantissa, b.mantissa)}
+148	 );
+149	 }
+150	 function sub_(Double memory a, Double memory b) pure internal returns (Double memory) {
+151	 return Double({
+152	 mantissa: sub_(a.mantissa, b.mantissa)}
+153	 );
+154	 }
+155	 function sub_(uint a, uint b) pure internal returns (uint) {
+156	 return sub_(a, b, "subtraction underflow");
+157	 }
+158	 function sub_(uint a, uint b, string memory errorMessage) pure internal returns (uint) {
+159	 require(b <= a, errorMessage);
+160	 return a - b;
+161	 }
+162	 function mul_(Exp memory a, Exp memory b) pure internal returns (Exp memory) {
+163	 return Exp({
+164	 mantissa: mul_(a.mantissa, b.mantissa) / expScale}
+165	 );
+166	 }
+167	 function mul_(Exp memory a, uint b) pure internal returns (Exp memory) {
+168	 return Exp({
+169	 mantissa: mul_(a.mantissa, b)}
+170	 );
+171	 }
+172	 function mul_(uint a, Exp memory b) pure internal returns (uint) {
+173	 return mul_(a, b.mantissa) / expScale;
+174	 }
+175	 function mul_(Double memory a, Double memory b) pure internal returns (Double memory) {
+176	 return Double({
+177	 mantissa: mul_(a.mantissa, b.mantissa) / doubleScale}
+178	 );
+179	 }
+180	 function mul_(Double memory a, uint b) pure internal returns (Double memory) {
+181	 return Double({
+182	 mantissa: mul_(a.mantissa, b)}
+183	 );
+184	 }
+185	 function mul_(uint a, Double memory b) pure internal returns (uint) {
+186	 return mul_(a, b.mantissa) / doubleScale;
+187	 }
+188	 function mul_(uint a, uint b) pure internal returns (uint) {
+189	 return mul_(a, b, "multiplication overflow");
+190	 }
+191	 function mul_(uint a, uint b, string memory errorMessage) pure internal returns (uint) {
+192	 if (a == 0 || b == 0) {
+193	 return 0;
+194	 }
+195	 uint c = a * b;
+196	 require(c / a == b, errorMessage);
+197	 return c;
+198	 }
+199	 function div_(Exp memory a, Exp memory b) pure internal returns (Exp memory) {
+200	 return Exp({
+201	 mantissa: div_(mul_(a.mantissa, expScale), b.mantissa)}
+202	 );
+203	 }
+204	 function div_(Exp memory a, uint b) pure internal returns (Exp memory) {
+205	 return Exp({
+206	 mantissa: div_(a.mantissa, b)}
+207	 );
+208	 }
+209	 function div_(uint a, Exp memory b) pure internal returns (uint) {
+210	 return div_(mul_(a, expScale), b.mantissa);
+211	 }
+212	 function div_(Double memory a, Double memory b) pure internal returns (Double memory) {
+213	 return Double({
+214	 mantissa: div_(mul_(a.mantissa, doubleScale), b.mantissa)}
+215	 );
+216	 }
+217	 function div_(Double memory a, uint b) pure internal returns (Double memory) {
+218	 return Double({
+219	 mantissa: div_(a.mantissa, b)}
+220	 );
+221	 }
+222	 function div_(uint a, Double memory b) pure internal returns (uint) {
+223	 return div_(mul_(a, doubleScale), b.mantissa);
+224	 }
+225	 function div_(uint a, uint b) pure internal returns (uint) {
+226	 return div_(a, b, "divide by zero");
+227	 }
+228	 function div_(uint a, uint b, string memory errorMessage) pure internal returns (uint) {
+229	 require(b > 0, errorMessage);
+230	 return a / b;
+231	 }
+232	 function fraction(uint a, uint b) pure internal returns (Double memory) {
+233	 return Double({
+234	 mantissa: div_(mul_(a, doubleScale), b)}
+235	 );
+236	 }
+237	 }
+238	 interface Distributor {
+239	 function asset() external view returns (address);
+240	 function accruedStored(address account) external view returns (uint);
+241	 function accrue() external returns (uint);
+242	 function claim(address receiver, uint amount) external returns (uint);
+243	 }
+244	 interface EIP20Interface {
+245	 function name() external view returns (string memory);
+246	 function symbol() external view returns (string memory);
+247	 function decimals() external view returns (uint8);
+248	 function totalSupply() external view returns (uint256);
+249	 function balanceOf(address owner) external view returns (uint256 balance);
+250	 function transfer(address dst, uint256 amount) external returns (bool success);
+251	 function transferFrom(address src, address dst, uint256 amount) external returns (bool success);
+252	 function approve(address spender, uint256 amount) external returns (bool success);
+253	 function allowance(address owner, address spender) external view returns (uint256 remaining);
+254	 event Transfer(address indexed from, address indexed to, uint256 amount);
+255	 event Approval(address indexed owner, address indexed spender, uint256 amount);
+256	 }
+257	 interface EIP20NonStandardInterface {
+258	 function totalSupply() external view returns (uint256);
+259	 function balanceOf(address owner) external view returns (uint256 balance);
+260	 function transfer(address dst, uint256 amount) external;
+261	 function transferFrom(address src, address dst, uint256 amount) external;
+262	 function approve(address spender, uint256 amount) external returns (bool success);
+263	 function allowance(address owner, address spender) external view returns (uint256 remaining);
+264	 event Transfer(address indexed from, address indexed to, uint256 amount);
+265	 event Approval(address indexed owner, address indexed spender, uint256 amount);
+266	 }
+267	 contract Redistributor is Distributor, ExponentialNoError {
+268	 Distributor public superior;
+269	 uint public superiorAccruedAmount;
+270	 uint internal constant initialAccruedIndex = 1e36;
+271	 uint public accrualBlockNumber;
+272	 uint public globalAccruedIndex;
+273	 uint internal totalShares;
+274	 struct AccountState {
+275	 uint share;
+276	 uint accruedIndex;
+277	 uint accruedAmount;
+278	 }
+279	 mapping(address => AccountState) internal accountStates;
+280	 event Accrued(uint amount, uint globalAccruedIndex);
+281	 event Distributed(address account, uint amount, uint accruedIndex);
+282	 event Claimed(address account, address receiver, uint amount);
+283	 event Transferred(address from, address to, uint amount);
+284	 constructor(Distributor superior_) public {
+285	 superior = superior_;
+286	 globalAccruedIndex = initialAccruedIndex;
+287	 }
+288	 function asset() external view returns (address) {
+289	 return superior.asset();
+290	 }
+291	 function accruedStored(address account) external view returns(uint) {
+292	 uint storedGlobalAccruedIndex;
+293	 if (totalShares == 0) {
+294	 storedGlobalAccruedIndex = globalAccruedIndex;
+295	 }
+296	 else {
+297	 uint superiorAccruedStored = superior.accruedStored(address(this));
+298	 uint delta = sub_(superiorAccruedStored, superiorAccruedAmount);
+299	 Double memory ratio = fraction(delta, totalShares);
+300	 Double memory doubleGlobalAccruedIndex = add_(Double({
+301	 mantissa: globalAccruedIndex}
+302	 ), ratio);
+303	 storedGlobalAccruedIndex = doubleGlobalAccruedIndex.mantissa;
+304	 }
+305	 (, uint instantAccountAccruedAmount) = accruedStoredInternal(account, storedGlobalAccruedIndex);
+306	 return instantAccountAccruedAmount;
+307	 }
+308	 function accruedStoredInternal(address account, uint withGlobalAccruedIndex) internal view returns(uint, uint) {
+309	 AccountState memory state = accountStates[account];
+310	 Double memory doubleGlobalAccruedIndex = Double({
+311	 mantissa: withGlobalAccruedIndex}
+312	 );
+313	 Double memory doubleAccountAccruedIndex = Double({
+314	 mantissa: state.accruedIndex}
+315	 );
+316	 if (doubleAccountAccruedIndex.mantissa == 0 && doubleGlobalAccruedIndex.mantissa > 0) {
+317	 doubleAccountAccruedIndex.mantissa = initialAccruedIndex;
+318	 }
+319	 Double memory deltaIndex = sub_(doubleGlobalAccruedIndex, doubleAccountAccruedIndex);
+320	 uint delta = mul_(state.share, deltaIndex);
+321	 return (delta, add_(state.accruedAmount, delta));
+322	 }
+323	 function accrueInternal() internal {
+324	 uint blockNumber = getBlockNumber();
+325	 if (accrualBlockNumber == blockNumber) {
+326	 return;
+327	 }
+328	 uint newSuperiorAccruedAmount = superior.accrue();
+329	 if (totalShares == 0) {
+330	 accrualBlockNumber = blockNumber;
+331	 return;
+332	 }
+333	 uint delta = sub_(newSuperiorAccruedAmount, superiorAccruedAmount);
+334	 Double memory ratio = fraction(delta, totalShares);
+335	 Double memory doubleAccruedIndex = add_(Double({
+336	 mantissa: globalAccruedIndex}
+337	 ), ratio);
+338	 globalAccruedIndex = doubleAccruedIndex.mantissa;
+339	 superiorAccruedAmount = newSuperiorAccruedAmount;
+340	 accrualBlockNumber = blockNumber;
+341	 emit Accrued(delta, doubleAccruedIndex.mantissa);
+342	 }
+343	 function accrue() external returns (uint) {
+344	 accrueInternal();
+345	 (, uint instantAccountAccruedAmount) = accruedStoredInternal(msg.sender, globalAccruedIndex);
+346	 return instantAccountAccruedAmount;
+347	 }
+348	 function distributeInternal(address account) internal {
+349	 (uint delta, uint instantAccruedAmount) = accruedStoredInternal(account, globalAccruedIndex);
+350	 AccountState storage state = accountStates[account];
+351	 state.accruedIndex = globalAccruedIndex;
+352	 state.accruedAmount = instantAccruedAmount;
+353	 emit Distributed(account, delta, globalAccruedIndex);
+354	 }
+355	 function claim(address receiver, uint amount) external returns (uint) {
+356	 address account = msg.sender;
+357	 accrueInternal();
+358	 distributeInternal(account);
+359	 AccountState storage state = accountStates[account];
+360	 require(amount <= state.accruedAmount, "claim: insufficient value");
+361	 require(superior.claim(receiver, amount) == amount, "claim: amount mismatch");
+362	 state.accruedAmount = sub_(state.accruedAmount, amount);
+363	 superiorAccruedAmount = sub_(superiorAccruedAmount, amount);
+364	 emit Claimed(account, receiver, amount);
+365	 return amount;
+366	 }
+367	 function claimAll() external {
+368	 address account = msg.sender;
+369	 accrueInternal();
+370	 distributeInternal(account);
+371	 AccountState storage state = accountStates[account];
+372	 uint amount = state.accruedAmount;
+373	 require(superior.claim(account, amount) == amount, "claim: amount mismatch");
+374	 state.accruedAmount = 0;
+375	 superiorAccruedAmount = sub_(superiorAccruedAmount, amount);
+376	 emit Claimed(account, account, amount);
+377	 }
+378	 function transfer(address to, uint amount) external {
+379	 address from = msg.sender;
+380	 accrueInternal();
+381	 distributeInternal(from);
+382	 AccountState storage fromState = accountStates[from];
+383	 uint actualAmount = amount;
+384	 if (actualAmount == 0) {
+385	 actualAmount = fromState.accruedAmount;
+386	 }
+387	 require(fromState.accruedAmount >= actualAmount, "transfer: insufficient value");
+388	 AccountState storage toState = accountStates[to];
+389	 fromState.accruedAmount = sub_(fromState.accruedAmount, actualAmount);
+390	 toState.accruedAmount = add_(toState.accruedAmount, actualAmount);
+391	 emit Transferred(from, to, actualAmount);
+392	 }
+393	 function getBlockNumber() public view returns (uint) {
+394	 return block.number;
+395	 }
+396	 }
+397	 contract Staking is Redistributor {
+398	 address public property;
+399	 event Deposit(address account, uint amount);
+400	 event Withdraw(address account, uint amount);
+401	 constructor(address property_, Distributor superior_) Redistributor(superior_) public {
+402	 property = property_;
+403	 }
+404	 function totalDeposits() external view returns (uint) {
+405	 return totalShares;
+406	 }
+407	 function accountState(address account) external view returns (uint, uint, uint) {
+408	 AccountState memory state = accountStates[account];
+409	 return (state.share, state.accruedIndex, state.accruedAmount);
+410	 }
+411	 function deposit(uint amount) external returns (uint) {
+412	 address account = msg.sender;
+413	 accrueInternal();
+414	 distributeInternal(account);
+415	 uint actualAmount = doTransferIn(account, amount);
+416	 AccountState storage state = accountStates[account];
+417	 totalShares = add_(totalShares, actualAmount);
+418	 state.share = add_(state.share, actualAmount);
+419	 emit Deposit(account, actualAmount);
+420	 return actualAmount;
+421	 }
+422	 function withdraw(uint amount) external returns (uint) {
+423	 address account = msg.sender;
+424	 AccountState storage state = accountStates[account];
+425	 require(state.share >= amount, "withdraw: insufficient value");
+426	 accrueInternal();
+427	 distributeInternal(account);
+428	 totalShares = sub_(totalShares, amount);
+429	 state.share = sub_(state.share, amount);
+430	 doTransferOut(account, amount);
+431	 emit Withdraw(account, amount);
+432	 return amount;
+433	 }
+434	 function doTransferIn(address from, uint amount) internal returns (uint) {
+435	 EIP20NonStandardInterface token = EIP20NonStandardInterface(property);
+436	 uint balanceBefore = EIP20Interface(property).balanceOf(address(this));
+437	 token.transferFrom(from, address(this), amount);
+438	 bool success;
+439	 assembly {
+440	 switch returndatasize() case 0 {
+441	 success := not(0) }
+442	 case 32 {
+443	 returndatacopy(0, 0, 32) success := mload(0) }
+444	 default {
+445	 revert(0, 0) }
+446	 }
+447	 require(success, "TOKEN_TRANSFER_IN_FAILED");
+448	 uint balanceAfter = EIP20Interface(property).balanceOf(address(this));
+449	 require(balanceAfter >= balanceBefore, "TOKEN_TRANSFER_IN_OVERFLOW");
+450	 return balanceAfter - balanceBefore;
+451	 }
+452	 function doTransferOut(address to, uint amount) internal {
+453	 EIP20NonStandardInterface token = EIP20NonStandardInterface(property);
+454	 token.transfer(to, amount);
+455	 bool success;
+456	 assembly {
+457	 switch returndatasize() case 0 {
+458	 success := not(0) }
+459	 case 32 {
+460	 returndatacopy(0, 0, 32) success := mload(0) }
+461	 default {
+462	 revert(0, 0) }
+463	 }
+464	 require(success, "TOKEN_TRANSFER_OUT_FAILED");
+465	 }
+466	 }
+467	 contract RewardPool is RewardPoolStorage, Distributor, ExponentialNoError {
+468	 uint internal constant initialAccruedIndex = 1e36;
+469	 event Accrued(uint stakingPart, address[] others, uint[] othersParts, uint debtAccruedIndex);
+470	 event Claimed(address account, address receiver, uint amount);
+471	 event DistributedDebt(string miner, uint debtDelta, uint accruedIndex);
+472	 event Repayment(string miner, address repayer, uint amount);
+473	 event Transferred(address from, address to, uint amount);
+474	 event StrategyChanged(IRewardStrategy oldStrategy, IRewardStrategy newStrategy);
+475	 event CalculatorChanged(IRewardCalculator oldCalculator, IRewardCalculator newCalculator);
+476	 event StakingChanged(address oldStaking, address newStaking);
+477	 event ManagementChanged(IFilstManagement oldManagement, IFilstManagement newManagement);
+478	 event LiqudityAdded(address benefactor, address admin, uint addAmount);
+479	 constructor() public {
+480	 }
+481	 function getEfilAddress() internal view returns (address) {
+482	 return 0x2a2cB9bA73289D4D068BD57D3c26165DaD5Cb628;
+483	 }
+484	 function asset() external view returns (address) {
+485	 address efilAddr = getEfilAddress();
+486	 return efilAddr;
+487	 }
+488	 function accruedStored(address account) external view returns (uint) {
+489	 if (accrualBlockNumber == getBlockNumber() || Staking(staking).totalDeposits() == 0) {
+490	 return accruedRewards[account];
+491	 }
+492	 uint totalFilst = management.getTotalMintedAmount();
+493	 uint deltaRewards = calculator.calculate(totalFilst, accrualBlockNumber);
+494	 (uint stakingPart, address[] memory others, uint[] memory othersParts) = strategy.allocate(staking, deltaRewards);
+495	 require(others.length == othersParts.length, "IRewardStrategy.allocalte: others length mismatch");
+496	 if (staking == account) {
+497	 return add_(accruedRewards[staking], stakingPart);
+498	 }
+499	 else {
+500	 uint sumAllocation = stakingPart;
+501	 uint accountAccruedReward = accruedRewards[account];
+502	 for (uint i = 0; i < others.length; i ++) {
+503	 sumAllocation = add_(sumAllocation, othersParts[i]);
+504	 if (others[i] == account) {
+505	 accountAccruedReward = add_(accountAccruedReward, othersParts[i]);
+506	 }
+507	 }
+508	 require(sumAllocation == deltaRewards, "sumAllocation mismatch");
+509	 return accountAccruedReward;
+510	 }
+511	 }
+512	 function accrue() public returns (uint) {
+513	 uint blockNumber = getBlockNumber();
+514	 if (accrualBlockNumber == blockNumber) {
+515	 return accruedRewards[msg.sender];
+516	 }
+517	 if (Staking(staking).totalDeposits() == 0) {
+518	 accrualBlockNumber = blockNumber;
+519	 return accruedRewards[msg.sender];
+520	 }
+521	 uint totalFilst = management.getTotalMintedAmount();
+522	 uint deltaRewards = calculator.calculate(totalFilst, accrualBlockNumber);
+523	 (uint stakingPart, address[] memory others, uint[] memory othersParts) = strategy.allocate(staking, deltaRewards);
+524	 require(others.length == othersParts.length, "IRewardStrategy.allocalte: others length mismatch");
+525	 accruedRewards[staking] = add_(accruedRewards[staking], stakingPart);
+526	 uint sumAllocation = stakingPart;
+527	 for (uint i = 0; i < others.length; i ++) {
+528	 sumAllocation = add_(sumAllocation, othersParts[i]);
+529	 accruedRewards[others[i]] = add_(accruedRewards[others[i]], othersParts[i]);
+530	 }
+531	 require(sumAllocation == deltaRewards, "sumAllocation mismatch");
+532	 accureDebtInternal(deltaRewards);
+533	 accrualBlockNumber = blockNumber;
+534	 emit Accrued(stakingPart, others, othersParts, debtAccruedIndex);
+535	 return accruedRewards[msg.sender];
+536	 }
+537	 function accureDebtInternal(uint deltaDebts) internal {
+538	 uint totalFilst = management.getTotalMintedAmount();
+539	 Double memory ratio = fraction(deltaDebts, totalFilst);
+540	 Double memory doubleAccruedIndex = add_(Double({
+541	 mantissa: debtAccruedIndex}
+542	 ), ratio);
+543	 debtAccruedIndex = doubleAccruedIndex.mantissa;
+544	 }
+545	 function accruedDebtStored(string calldata miner) external view returns(uint) {
+546	 uint storedGlobalAccruedIndex;
+547	 if (accrualBlockNumber == getBlockNumber() || Staking(staking).totalDeposits() == 0) {
+548	 storedGlobalAccruedIndex = debtAccruedIndex;
+549	 }
+550	 else {
+551	 uint totalFilst = management.getTotalMintedAmount();
+552	 uint deltaDebts = calculator.calculate(totalFilst, accrualBlockNumber);
+553	 Double memory ratio = fraction(deltaDebts, totalFilst);
+554	 Double memory doubleAccruedIndex = add_(Double({
+555	 mantissa: debtAccruedIndex}
+556	 ), ratio);
+557	 storedGlobalAccruedIndex = doubleAccruedIndex.mantissa;
+558	 }
+559	 (, uint instantAccruedAmount) = accruedDebtStoredInternal(miner, storedGlobalAccruedIndex);
+560	 return instantAccruedAmount;
+561	 }
+562	 function accruedDebtStoredInternal(string memory miner, uint withDebtAccruedIndex) internal view returns(uint, uint) {
+563	 Debt memory debt = minerDebts[miner];
+564	 Double memory doubleDebtAccruedIndex = Double({
+565	 mantissa: withDebtAccruedIndex}
+566	 );
+567	 Double memory doubleMinerAccruedIndex = Double({
+568	 mantissa: debt.accruedIndex}
+569	 );
+570	 if (doubleMinerAccruedIndex.mantissa == 0 && doubleDebtAccruedIndex.mantissa > 0) {
+571	 doubleMinerAccruedIndex.mantissa = initialAccruedIndex;
+572	 }
+573	 uint minerMintedAmount = management.getMintedAmount(miner);
+574	 Double memory deltaIndex = sub_(doubleDebtAccruedIndex, doubleMinerAccruedIndex);
+575	 uint delta = mul_(minerMintedAmount, deltaIndex);
+576	 return (delta, add_(debt.accruedAmount, delta));
+577	 }
+578	 function accrue(string memory miner) public {
+579	 accrue();
+580	 distributeDebtInternal(miner);
+581	 }
+582	 function distributeDebtInternal(string memory miner) internal {
+583	 (uint delta, uint instantAccruedAmount) = accruedDebtStoredInternal(miner, debtAccruedIndex);
+584	 Debt storage debt = minerDebts[miner];
+585	 debt.accruedIndex = debtAccruedIndex;
+586	 debt.accruedAmount = instantAccruedAmount;
+587	 emit DistributedDebt(miner, delta, debtAccruedIndex);
+588	 }
+589	 function claim(address receiver, uint amount) external returns (uint) {
+590	 address account = msg.sender;
+591	 accrue();
+592	 uint accruedReward = accruedRewards[account];
+593	 require(accruedReward >= amount, "Insufficient value");
+594	 transferRewardOut(receiver, amount);
+595	 accruedRewards[account] = sub_(accruedReward, amount);
+596	 emit Claimed(account, receiver, amount);
+597	 return amount;
+598	 }
+599	 function claimAll() external returns (uint) {
+600	 address account = msg.sender;
+601	 accrue();
+602	 uint accruedReward = accruedRewards[account];
+603	 transferRewardOut(account, accruedReward);
+604	 accruedRewards[account] = 0;
+605	 emit Claimed(account, account, accruedReward);
+606	 }
+607	 function transferRewardOut(address account, uint amount) internal {
+608	 address efilAddr = getEfilAddress();
+609	 EIP20Interface efil = EIP20Interface(efilAddr);
+610	 uint remaining = efil.balanceOf(address(this));
+611	 require(remaining >= amount, "Insufficient cash");
+612	 efil.transfer(account, amount);
+613	 }
+614	 function repayDebt(string calldata miner, uint amount) external {
+615	 address repayer = msg.sender;
+616	 accrue(miner);
+617	 Debt storage debt = minerDebts[miner];
+618	 uint actualAmount = amount;
+619	 if (actualAmount > debt.accruedAmount) {
+620	 actualAmount = debt.accruedAmount;
+621	 }
+622	 address efilAddr = getEfilAddress();
+623	 EIP20Interface efil = EIP20Interface(efilAddr);
+624	 require(efil.transferFrom(repayer, address(this), actualAmount), "transferFrom failed");
+625	 debt.accruedAmount = sub_(debt.accruedAmount, actualAmount);
+626	 debt.lastRepaymentBlock = getBlockNumber();
+627	 emit Repayment(miner, repayer, actualAmount);
+628	 }
+629	 function transfer(address to, uint amount) external {
+630	 address from = msg.sender;
+631	 accrue();
+632	 uint actualAmount = amount;
+633	 if (actualAmount == 0) {
+634	 actualAmount = accruedRewards[from];
+635	 }
+636	 require(accruedRewards[from] >= actualAmount, "Insufficient value");
+637	 accruedRewards[from] = sub_(accruedRewards[from], actualAmount);
+638	 accruedRewards[to] = add_(accruedRewards[to], actualAmount);
+639	 emit Transferred(from, to, actualAmount);
+640	 }
+641	 function setManagement(IFilstManagement newManagement) external {
+642	 require(msg.sender == admin, "admin check");
+643	 require(address(newManagement) != address(0), "Invalid newManagement");
+644	 if (debtAccruedIndex == 0) {
+645	 debtAccruedIndex = initialAccruedIndex;
+646	 }
+647	 IFilstManagement oldManagement = management;
+648	 management = newManagement;
+649	 emit ManagementChanged(oldManagement, newManagement);
+650	 }
+651	 function setStrategy(IRewardStrategy newStrategy) external {
+652	 require(msg.sender == admin, "admin check");
+653	 require(address(newStrategy) != address(0), "Invalid newStrategy");
+654	 IRewardStrategy oldStrategy = strategy;
+655	 strategy = newStrategy;
+656	 emit StrategyChanged(oldStrategy, newStrategy);
+657	 }
+658	 function setCalculator(IRewardCalculator newCalculator) external {
+659	 require(msg.sender == admin, "admin check");
+660	 require(address(newCalculator) != address(0), "Invalid newCalculator");
+661	 IRewardCalculator oldCalculator = calculator;
+662	 calculator = newCalculator;
+663	 emit CalculatorChanged(oldCalculator, newCalculator);
+664	 }
+665	 function setStaking(address newStaking) external {
+666	 require(msg.sender == admin, "admin check");
+667	 require(address(Staking(newStaking).superior()) == address(this), "Staking superior mismatch");
+668	 require(Staking(newStaking).property() == filstAddress, "Staking property mismatch");
+669	 address efilAddr = getEfilAddress();
+670	 require(Staking(newStaking).asset() == efilAddr, "Staking asset mismatch");
+671	 address oldStaking = staking;
+672	 staking = newStaking;
+673	 emit StakingChanged(oldStaking, newStaking);
+674	 }
+675	 function addLiqudity(uint amount) external {
+676	 address efilAddr = getEfilAddress();
+677	 require(EIP20Interface(efilAddr).transferFrom(msg.sender, address(this), amount), "transfer in failed");
+678	 accruedRewards[admin] = add_(accruedRewards[admin], amount);
+679	 emit LiqudityAdded(msg.sender, admin, amount);
+680	 }
+681	 function getBlockNumber() public view returns (uint) {
+682	 return block.number;
+683	 }
+684	 function _become(RewardPoolDelegator delegator) public {
+685	 require(msg.sender == delegator.admin(), "only delegator admin can change implementation");
+686	 delegator._acceptImplementation();
+687	 }
+688	 }

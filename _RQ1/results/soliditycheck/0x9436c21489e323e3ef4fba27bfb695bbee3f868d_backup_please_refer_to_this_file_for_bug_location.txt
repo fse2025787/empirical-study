@@ -1,0 +1,666 @@
+row number 
+1	          pragma solidity 0.5.17;
+2	 contract XVersion {
+3	 function getVersion() external view returns (bytes32);
+4	 }
+5	 contract XApollo is XVersion {
+6	 function getVersion() external view returns (bytes32) {
+7	 return bytes32("APOLLO");
+8	 }
+9	 }
+10	 pragma solidity 0.5.17;
+11	 contract XConst {
+12	 uint256 public constant BONE = 10**18;
+13	 uint256 public constant MIN_BOUND_TOKENS = 2;
+14	 uint256 public constant MAX_BOUND_TOKENS = 8;
+15	 uint256 public constant EXIT_ZERO_FEE = 0;
+16	 uint256 public constant MIN_WEIGHT = BONE;
+17	 uint256 public constant MAX_WEIGHT = BONE * 50;
+18	 uint256 public constant MAX_TOTAL_WEIGHT = BONE * 50;
+19	 uint256 public constant MIN_BALANCE = 10**6;
+20	 uint256 public constant MIN_POOL_AMOUNT = 10**8;
+21	 uint256 public constant INIT_POOL_SUPPLY = BONE * 100;
+22	 uint256 public constant MAX_IN_RATIO = BONE / 2;
+23	 uint256 public constant MAX_OUT_RATIO = (BONE / 3) + 1 wei;
+24	 }
+25	 pragma solidity 0.5.17;
+26	 library XNum {
+27	 uint256 public constant BONE = 10**18;
+28	 uint256 public constant MIN_BPOW_BASE = 1 wei;
+29	 uint256 public constant MAX_BPOW_BASE = (2 * BONE) - 1 wei;
+30	 uint256 public constant BPOW_PRECISION = BONE / 10**10;
+31	 function btoi(uint256 a) internal pure returns (uint256) {
+32	 return a / BONE;
+33	 }
+34	 function bfloor(uint256 a) internal pure returns (uint256) {
+35	 return btoi(a) * BONE;
+36	 }
+37	 function badd(uint256 a, uint256 b) internal pure returns (uint256) {
+38	 uint256 c = a + b;
+39	 require(c >= a, "ERR_ADD_OVERFLOW");
+40	 return c;
+41	 }
+42	 function bsub(uint256 a, uint256 b) internal pure returns (uint256) {
+43	 (uint256 c, bool flag) = bsubSign(a, b);
+44	 require(!flag, "ERR_SUB_UNDERFLOW");
+45	 return c;
+46	 }
+47	 function bsubSign(uint256 a, uint256 b) internal pure returns (uint256, bool) {
+48	 if (a >= b) {
+49	 return (a - b, false);
+50	 }
+51	 else {
+52	 return (b - a, true);
+53	 }
+54	 }
+55	 function bmul(uint256 a, uint256 b) internal pure returns (uint256) {
+56	 uint256 c0 = a * b;
+57	 require(a == 0 || c0 / a == b, "ERR_MUL_OVERFLOW");
+58	 uint256 c1 = c0 + (BONE / 2);
+59	 require(c1 >= c0, "ERR_MUL_OVERFLOW");
+60	 uint256 c2 = c1 / BONE;
+61	 return c2;
+62	 }
+63	 function bdiv(uint256 a, uint256 b) internal pure returns (uint256) {
+64	 require(b != 0, "ERR_DIV_ZERO");
+65	 uint256 c0 = a * BONE;
+66	 require(a == 0 || c0 / a == BONE, "ERR_DIV_INTERNAL");
+67	 uint256 c1 = c0 + (b / 2);
+68	 require(c1 >= c0, "ERR_DIV_INTERNAL");
+69	 uint256 c2 = c1 / b;
+70	 return c2;
+71	 }
+72	 function bpowi(uint256 a, uint256 n) internal pure returns (uint256) {
+73	 uint256 z = n % 2 != 0 ? a : BONE;
+74	 for (n /= 2; n != 0; n /= 2) {
+75	 a = bmul(a, a);
+76	 if (n % 2 != 0) {
+77	 z = bmul(z, a);
+78	 }
+79	 }
+80	 return z;
+81	 }
+82	 function bpow(uint256 base, uint256 exp) internal pure returns (uint256) {
+83	 require(base >= MIN_BPOW_BASE, "ERR_BPOW_BASE_TOO_LOW");
+84	 require(base <= MAX_BPOW_BASE, "ERR_BPOW_BASE_TOO_HIGH");
+85	 uint256 whole = bfloor(exp);
+86	 uint256 remain = bsub(exp, whole);
+87	 uint256 wholePow = bpowi(base, btoi(whole));
+88	 if (remain == 0) {
+89	 return wholePow;
+90	 }
+91	 uint256 partialResult = bpowApprox(base, remain, BPOW_PRECISION);
+92	 return bmul(wholePow, partialResult);
+93	 }
+94	 function bpowApprox( uint256 base, uint256 exp, uint256 precision ) internal pure returns (uint256) {
+95	 uint256 a = exp;
+96	 (uint256 x, bool xneg) = bsubSign(base, BONE);
+97	 uint256 term = BONE;
+98	 uint256 sum = term;
+99	 bool negative = false;
+100	 for (uint256 i = 1; term >= precision; i++) {
+101	 uint256 bigK = i * BONE;
+102	 (uint256 c, bool cneg) = bsubSign(a, bsub(bigK, BONE));
+103	 term = bmul(term, bmul(c, x));
+104	 term = bdiv(term, bigK);
+105	 if (term == 0) break;
+106	 if (xneg) negative = !negative;
+107	 if (cneg) negative = !negative;
+108	 if (negative) {
+109	 sum = bsub(sum, term);
+110	 }
+111	 else {
+112	 sum = badd(sum, term);
+113	 }
+114	 }
+115	 return sum;
+116	 }
+117	 }
+118	 pragma solidity 0.5.17;
+119	 interface IERC20 {
+120	 function name() external view returns (string memory);
+121	 function symbol() external view returns (string memory);
+122	 function decimals() external view returns (uint8);
+123	 function totalSupply() external view returns (uint256);
+124	 function balanceOf(address _owner) external view returns (uint256 balance);
+125	 function transfer(address _to, uint256 _value) external returns (bool success);
+126	 function transferFrom( address _from, address _to, uint256 _value ) external returns (bool success);
+127	 function approve(address _spender, uint256 _value) external returns (bool success);
+128	 function allowance(address _owner, address _spender) external view returns (uint256 remaining);
+129	 }
+130	 pragma solidity 0.5.17;
+131	 contract XTokenBase {
+132	 using XNum for uint256;
+133	 mapping(address => uint256) internal _balance;
+134	 mapping(address => mapping(address => uint256)) internal _allowance;
+135	 uint256 internal _totalSupply;
+136	 event Approval(address indexed src, address indexed dst, uint256 amt);
+137	 event Transfer(address indexed src, address indexed dst, uint256 amt);
+138	 function _mint(uint256 amt) internal {
+139	 _balance[address(this)] = (_balance[address(this)]).badd(amt);
+140	 _totalSupply = _totalSupply.badd(amt);
+141	 emit Transfer(address(0), address(this), amt);
+142	 }
+143	 function _burn(uint256 amt) internal {
+144	 require(_balance[address(this)] >= amt, "ERR_INSUFFICIENT_BAL");
+145	 _balance[address(this)] = (_balance[address(this)]).bsub(amt);
+146	 _totalSupply = _totalSupply.bsub(amt);
+147	 emit Transfer(address(this), address(0), amt);
+148	 }
+149	 function _move( address src, address dst, uint256 amt ) internal {
+150	 require(_balance[src] >= amt, "ERR_INSUFFICIENT_BAL");
+151	 _balance[src] = (_balance[src]).bsub(amt);
+152	 _balance[dst] = (_balance[dst]).badd(amt);
+153	 emit Transfer(src, dst, amt);
+154	 }
+155	 }
+156	 contract XPToken is XTokenBase, IERC20, XApollo {
+157	 using XNum for uint256;
+158	 string private constant _name = "XDeFi Pool Token";
+159	 string private constant _symbol = "XPT";
+160	 uint8 private constant _decimals = 18;
+161	 function name() external view returns (string memory) {
+162	 return _name;
+163	 }
+164	 function symbol() external view returns (string memory) {
+165	 return _symbol;
+166	 }
+167	 function decimals() external view returns (uint8) {
+168	 return _decimals;
+169	 }
+170	 function allowance(address src, address dst) external view returns (uint256) {
+171	 return _allowance[src][dst];
+172	 }
+173	 function balanceOf(address whom) external view returns (uint256) {
+174	 return _balance[whom];
+175	 }
+176	 function totalSupply() public view returns (uint256) {
+177	 return _totalSupply;
+178	 }
+179	 function approve(address dst, uint256 amt) external returns (bool) {
+180	 _allowance[msg.sender][dst] = amt;
+181	 emit Approval(msg.sender, dst, amt);
+182	 return true;
+183	 }
+184	 function transfer(address dst, uint256 amt) external returns (bool) {
+185	 _move(msg.sender, dst, amt);
+186	 return true;
+187	 }
+188	 function transferFrom( address src, address dst, uint256 amt ) external returns (bool) {
+189	 require( msg.sender == src || amt <= _allowance[src][msg.sender], "ERR_BTOKEN_BAD_CALLER" );
+190	 _move(src, dst, amt);
+191	 if (msg.sender != src && _allowance[src][msg.sender] != uint256(-1)) {
+192	 _allowance[src][msg.sender] = (_allowance[src][msg.sender]).bsub( amt );
+193	 emit Approval(msg.sender, dst, _allowance[src][msg.sender]);
+194	 }
+195	 return true;
+196	 }
+197	 }
+198	 pragma solidity 0.5.17;
+199	 library XMath {
+200	 using XNum for uint256;
+201	 uint256 public constant BONE = 10**18;
+202	 uint256 public constant EXIT_ZERO_FEE = 0;
+203	 function calcSpotPrice( uint256 tokenBalanceIn, uint256 tokenWeightIn, uint256 tokenBalanceOut, uint256 tokenWeightOut, uint256 swapFee ) public pure returns (uint256 spotPrice) {
+204	 uint256 numer = tokenBalanceIn.bdiv(tokenWeightIn);
+205	 uint256 denom = tokenBalanceOut.bdiv(tokenWeightOut);
+206	 uint256 ratio = numer.bdiv(denom);
+207	 uint256 scale = BONE.bdiv(BONE.bsub(swapFee));
+208	 return (spotPrice = ratio.bmul(scale));
+209	 }
+210	 function calcOutGivenIn( uint256 tokenBalanceIn, uint256 tokenWeightIn, uint256 tokenBalanceOut, uint256 tokenWeightOut, uint256 tokenAmountIn, uint256 swapFee ) public pure returns (uint256 tokenAmountOut) {
+211	 uint256 weightRatio;
+212	 if (tokenWeightIn == tokenWeightOut) {
+213	 weightRatio = 1 * BONE;
+214	 }
+215	 else if (tokenWeightIn >> 1 == tokenWeightOut) {
+216	 weightRatio = 2 * BONE;
+217	 }
+218	 else {
+219	 weightRatio = tokenWeightIn.bdiv(tokenWeightOut);
+220	 }
+221	 uint256 adjustedIn = BONE.bsub(swapFee);
+222	 adjustedIn = tokenAmountIn.bmul(adjustedIn);
+223	 uint256 y = tokenBalanceIn.bdiv(tokenBalanceIn.badd(adjustedIn));
+224	 uint256 foo;
+225	 if (tokenWeightIn == tokenWeightOut) {
+226	 foo = y;
+227	 }
+228	 else if (tokenWeightIn >> 1 == tokenWeightOut) {
+229	 foo = y.bmul(y);
+230	 }
+231	 else {
+232	 foo = y.bpow(weightRatio);
+233	 }
+234	 uint256 bar = BONE.bsub(foo);
+235	 tokenAmountOut = tokenBalanceOut.bmul(bar);
+236	 return tokenAmountOut;
+237	 }
+238	 function calcInGivenOut( uint256 tokenBalanceIn, uint256 tokenWeightIn, uint256 tokenBalanceOut, uint256 tokenWeightOut, uint256 tokenAmountOut, uint256 swapFee ) public pure returns (uint256 tokenAmountIn) {
+239	 uint256 weightRatio;
+240	 if (tokenWeightOut == tokenWeightIn) {
+241	 weightRatio = 1 * BONE;
+242	 }
+243	 else if (tokenWeightOut >> 1 == tokenWeightIn) {
+244	 weightRatio = 2 * BONE;
+245	 }
+246	 else {
+247	 weightRatio = tokenWeightOut.bdiv(tokenWeightIn);
+248	 }
+249	 uint256 diff = tokenBalanceOut.bsub(tokenAmountOut);
+250	 uint256 y = tokenBalanceOut.bdiv(diff);
+251	 uint256 foo;
+252	 if (tokenWeightOut == tokenWeightIn) {
+253	 foo = y;
+254	 }
+255	 else if (tokenWeightOut >> 1 == tokenWeightIn) {
+256	 foo = y.bmul(y);
+257	 }
+258	 else {
+259	 foo = y.bpow(weightRatio);
+260	 }
+261	 foo = foo.bsub(BONE);
+262	 tokenAmountIn = BONE.bsub(swapFee);
+263	 tokenAmountIn = tokenBalanceIn.bmul(foo).bdiv(tokenAmountIn);
+264	 return tokenAmountIn;
+265	 }
+266	 function calcPoolOutGivenSingleIn( uint256 tokenBalanceIn, uint256 tokenWeightIn, uint256 poolSupply, uint256 totalWeight, uint256 tokenAmountIn, uint256 swapFee ) public pure returns (uint256 poolAmountOut) {
+267	 uint256 normalizedWeight = tokenWeightIn.bdiv(totalWeight);
+268	 uint256 zaz = BONE.bsub(normalizedWeight).bmul(swapFee);
+269	 uint256 tokenAmountInAfterFee = tokenAmountIn.bmul(BONE.bsub(zaz));
+270	 uint256 newTokenBalanceIn = tokenBalanceIn.badd(tokenAmountInAfterFee);
+271	 uint256 tokenInRatio = newTokenBalanceIn.bdiv(tokenBalanceIn);
+272	 uint256 poolRatio = tokenInRatio.bpow(normalizedWeight);
+273	 uint256 newPoolSupply = poolRatio.bmul(poolSupply);
+274	 poolAmountOut = newPoolSupply.bsub(poolSupply);
+275	 return poolAmountOut;
+276	 }
+277	 function calcSingleOutGivenPoolIn( uint256 tokenBalanceOut, uint256 tokenWeightOut, uint256 poolSupply, uint256 totalWeight, uint256 poolAmountIn, uint256 swapFee ) public pure returns (uint256 tokenAmountOut) {
+278	 uint256 normalizedWeight = tokenWeightOut.bdiv(totalWeight);
+279	 uint256 poolAmountInAfterExitFee = poolAmountIn.bmul(BONE.bsub(EXIT_ZERO_FEE));
+280	 uint256 newPoolSupply = poolSupply.bsub(poolAmountInAfterExitFee);
+281	 uint256 poolRatio = newPoolSupply.bdiv(poolSupply);
+282	 uint256 tokenOutRatio = poolRatio.bpow(BONE.bdiv(normalizedWeight));
+283	 uint256 newTokenBalanceOut = tokenOutRatio.bmul(tokenBalanceOut);
+284	 uint256 tokenAmountOutBeforeSwapFee = tokenBalanceOut.bsub(newTokenBalanceOut);
+285	 uint256 zaz = BONE.bsub(normalizedWeight).bmul(swapFee);
+286	 tokenAmountOut = tokenAmountOutBeforeSwapFee.bmul(BONE.bsub(zaz));
+287	 return tokenAmountOut;
+288	 }
+289	 }
+290	 pragma solidity 0.5.17;
+291	 interface IXConfig {
+292	 function getCore() external view returns (address);
+293	 function getSAFU() external view returns (address);
+294	 function getMaxExitFee() external view returns (uint256);
+295	 function getSafuFee() external view returns (uint256);
+296	 function getSwapProxy() external view returns (address);
+297	 function dedupPool(address[] calldata tokens, uint256[] calldata denorms) external returns (bool exist, bytes32 sig);
+298	 function addPoolSig(bytes32 sig, address pool) external;
+299	 }
+300	 pragma solidity 0.5.17;
+301	 contract XPool is XApollo, XPToken, XConst {
+302	 using XNum for uint256;
+303	 uint256[5] public SWAP_FEES = [ BONE / 1000, (25 * BONE) / 10000, BONE / 100, (25 * BONE) / 1000, BONE / 10 ];
+304	 struct Record {
+305	 bool bound;
+306	 uint256 index;
+307	 uint256 denorm;
+308	 uint256 balance;
+309	 }
+310	 event LOG_SWAP( address indexed caller, address indexed tokenIn, address indexed tokenOut, uint256 tokenAmountIn, uint256 tokenAmountOut );
+311	 event LOG_REFER( address indexed caller, address indexed ref, address indexed tokenIn, uint256 fee );
+312	 event LOG_JOIN( address indexed caller, address indexed tokenIn, uint256 tokenAmountIn );
+313	 event LOG_EXIT( address indexed caller, address indexed tokenOut, uint256 tokenAmountOut );
+314	 event LOG_BIND( address indexed caller, address indexed token, uint256 denorm, uint256 balance );
+315	 event LOG_UPDATE_SAFU(address indexed safu, uint256 fee);
+316	 event LOG_EXIT_FEE(uint256 fee);
+317	 event LOG_FINAL(uint256 swapFee);
+318	 event SET_CONTROLLER(address indexed manager);
+319	 event UPDATE_FARM(address indexed caller, bool isFarm);
+320	 event LOG_CALL( bytes4 indexed sig, address indexed caller, bytes data ) anonymous;
+321	 modifier _logs_() {
+322	 emit LOG_CALL(msg.sig, msg.sender, msg.data);
+323	 _;
+324	 }
+325	 modifier _lock_() {
+326	 require(!_mutex, "ERR_REENTRY");
+327	 _mutex = true;
+328	 _;
+329	 _mutex = false;
+330	 }
+331	 modifier _viewlock_() {
+332	 require(!_mutex, "ERR_REENTRY");
+333	 _;
+334	 }
+335	 bool private _mutex;
+336	 address public controller;
+337	 bool public finalized;
+338	 uint256 public swapFee;
+339	 uint256 public exitFee;
+340	 address public SAFU;
+341	 uint256 public safuFee;
+342	 bool public isFarmPool;
+343	 address[] internal _tokens;
+344	 mapping(address => Record) internal _records;
+345	 uint256 private _totalWeight;
+346	 IXConfig public xconfig;
+347	 address public origin;
+348	 constructor(address _xconfig, address _controller) public {
+349	 controller = _controller;
+350	 origin = tx.origin;
+351	 swapFee = SWAP_FEES[1];
+352	 exitFee = EXIT_ZERO_FEE;
+353	 finalized = false;
+354	 xconfig = IXConfig(_xconfig);
+355	 SAFU = xconfig.getSAFU();
+356	 safuFee = xconfig.getSafuFee();
+357	 }
+358	 function isBound(address t) external view returns (bool) {
+359	 return _records[t].bound;
+360	 }
+361	 function getNumTokens() external view returns (uint256) {
+362	 return _tokens.length;
+363	 }
+364	 function getFinalTokens() external view _viewlock_ returns (address[] memory tokens) {
+365	 require(finalized, "ERR_NOT_FINALIZED");
+366	 return _tokens;
+367	 }
+368	 function getDenormalizedWeight(address token) external view _viewlock_ returns (uint256) {
+369	 require(_records[token].bound, "ERR_NOT_BOUND");
+370	 return _records[token].denorm;
+371	 }
+372	 function getTotalDenormalizedWeight() external view _viewlock_ returns (uint256) {
+373	 return _totalWeight;
+374	 }
+375	 function getNormalizedWeight(address token) external view _viewlock_ returns (uint256) {
+376	 require(_records[token].bound, "ERR_NOT_BOUND");
+377	 uint256 denorm = _records[token].denorm;
+378	 return denorm.bdiv(_totalWeight);
+379	 }
+380	 function getBalance(address token) external view _viewlock_ returns (uint256) {
+381	 require(_records[token].bound, "ERR_NOT_BOUND");
+382	 return _records[token].balance;
+383	 }
+384	 function setController(address manager) external _logs_ {
+385	 require(msg.sender == controller, "ERR_NOT_CONTROLLER");
+386	 require(manager != address(0), "ERR_ZERO_ADDR");
+387	 controller = manager;
+388	 emit SET_CONTROLLER(manager);
+389	 }
+390	 function setExitFee(uint256 fee) external {
+391	 require(!finalized, "ERR_IS_FINALIZED");
+392	 require(msg.sender == controller, "ERR_NOT_CONTROLLER");
+393	 require(fee <= xconfig.getMaxExitFee(), "INVALID_EXIT_FEE");
+394	 exitFee = fee;
+395	 emit LOG_EXIT_FEE(fee);
+396	 }
+397	 function updateSafu(address safu, uint256 fee) external {
+398	 require(msg.sender == address(xconfig), "ERR_NOT_CONFIG");
+399	 require(safu != address(0), "ERR_ZERO_ADDR");
+400	 SAFU = safu;
+401	 safuFee = fee;
+402	 emit LOG_UPDATE_SAFU(safu, fee);
+403	 }
+404	 function updateFarm(bool isFarm) external {
+405	 require(msg.sender == address(xconfig), "ERR_NOT_CONFIG");
+406	 isFarmPool = isFarm;
+407	 emit UPDATE_FARM(msg.sender, isFarm);
+408	 }
+409	 function bind(address token, uint256 denorm) external _lock_ {
+410	 require(msg.sender == controller, "ERR_NOT_CONTROLLER");
+411	 require(!_records[token].bound, "ERR_IS_BOUND");
+412	 require(!finalized, "ERR_IS_FINALIZED");
+413	 require(_tokens.length < MAX_BOUND_TOKENS, "ERR_MAX_TOKENS");
+414	 require(denorm >= MIN_WEIGHT, "ERR_MIN_WEIGHT");
+415	 require(denorm <= MAX_WEIGHT, "ERR_MAX_WEIGHT");
+416	 uint256 balance = IERC20(token).balanceOf(address(this));
+417	 uint256 decimal = 10**uint256(IERC20(token).decimals());
+418	 require(decimal >= 10**6, "ERR_TOO_SMALL");
+419	 require(balance >= decimal / MIN_BALANCE, "ERR_MIN_BALANCE");
+420	 _totalWeight = _totalWeight.badd(denorm);
+421	 require(_totalWeight <= MAX_TOTAL_WEIGHT, "ERR_MAX_TOTAL_WEIGHT");
+422	 _records[token] = Record({
+423	 bound: true, index: _tokens.length, denorm: denorm, balance: balance }
+424	 );
+425	 _tokens.push(token);
+426	 emit LOG_BIND(msg.sender, token, denorm, balance);
+427	 }
+428	 function finalize(uint256 _swapFee) external _lock_ {
+429	 require(msg.sender == controller, "ERR_NOT_CONTROLLER");
+430	 require(!finalized, "ERR_IS_FINALIZED");
+431	 require(_tokens.length >= MIN_BOUND_TOKENS, "ERR_MIN_TOKENS");
+432	 require(_tokens.length <= MAX_BOUND_TOKENS, "ERR_MAX_TOKENS");
+433	 require(_swapFee >= SWAP_FEES[0], "ERR_MIN_FEE");
+434	 require(_swapFee <= SWAP_FEES[SWAP_FEES.length - 1], "ERR_MAX_FEE");
+435	 bool found = false;
+436	 for (uint256 i = 0; i < SWAP_FEES.length; i++) {
+437	 if (_swapFee == SWAP_FEES[i]) {
+438	 found = true;
+439	 break;
+440	 }
+441	 }
+442	 require(found, "ERR_INVALID_SWAP_FEE");
+443	 swapFee = _swapFee;
+444	 finalized = true;
+445	 _mintPoolShare(INIT_POOL_SUPPLY);
+446	 _pushPoolShare(msg.sender, INIT_POOL_SUPPLY);
+447	 emit LOG_FINAL(swapFee);
+448	 }
+449	 function gulp(address token) external _logs_ _lock_ {
+450	 require(_records[token].bound, "ERR_NOT_BOUND");
+451	 _records[token].balance = IERC20(token).balanceOf(address(this));
+452	 }
+453	 function getSpotPrice(address tokenIn, address tokenOut) external view _viewlock_ returns (uint256 spotPrice) {
+454	 require(_records[tokenIn].bound, "ERR_NOT_BOUND");
+455	 require(_records[tokenOut].bound, "ERR_NOT_BOUND");
+456	 Record storage inRecord = _records[tokenIn];
+457	 Record storage outRecord = _records[tokenOut];
+458	 return XMath.calcSpotPrice( inRecord.balance, inRecord.denorm, outRecord.balance, outRecord.denorm, swapFee );
+459	 }
+460	 function getSpotPriceSansFee(address tokenIn, address tokenOut) external view _viewlock_ returns (uint256 spotPrice) {
+461	 require(_records[tokenIn].bound, "ERR_NOT_BOUND");
+462	 require(_records[tokenOut].bound, "ERR_NOT_BOUND");
+463	 Record storage inRecord = _records[tokenIn];
+464	 Record storage outRecord = _records[tokenOut];
+465	 return XMath.calcSpotPrice( inRecord.balance, inRecord.denorm, outRecord.balance, outRecord.denorm, 0 );
+466	 }
+467	 function joinPool(uint256 poolAmountOut, uint256[] calldata maxAmountsIn) external _lock_ {
+468	 require(finalized, "ERR_NOT_FINALIZED");
+469	 require(maxAmountsIn.length == _tokens.length, "ERR_LENGTH_MISMATCH");
+470	 uint256 poolTotal = totalSupply();
+471	 uint256 ratio = poolAmountOut.bdiv(poolTotal);
+472	 require(ratio != 0, "ERR_MATH_APPROX");
+473	 for (uint256 i = 0; i < _tokens.length; i++) {
+474	 address t = _tokens[i];
+475	 uint256 bal = _records[t].balance;
+476	 uint256 tokenAmountIn = ratio.bmul(bal);
+477	 require(tokenAmountIn != 0, "ERR_MATH_APPROX");
+478	 require(tokenAmountIn <= maxAmountsIn[i], "ERR_LIMIT_IN");
+479	 _records[t].balance = (_records[t].balance).badd(tokenAmountIn);
+480	 emit LOG_JOIN(msg.sender, t, tokenAmountIn);
+481	 _pullUnderlying(t, msg.sender, tokenAmountIn);
+482	 }
+483	 _mintPoolShare(poolAmountOut);
+484	 _pushPoolShare(msg.sender, poolAmountOut);
+485	 }
+486	 function exitPool(uint256 poolAmountIn, uint256[] calldata minAmountsOut) external _lock_ {
+487	 require(finalized, "ERR_NOT_FINALIZED");
+488	 require(minAmountsOut.length == _tokens.length, "ERR_LENGTH_MISMATCH");
+489	 require(poolAmountIn >= MIN_POOL_AMOUNT, "ERR_MIN_AMOUNT");
+490	 uint256 poolTotal = totalSupply();
+491	 uint256 _exitFee = poolAmountIn.bmul(exitFee);
+492	 if (msg.sender == origin) {
+493	 _exitFee = 0;
+494	 }
+495	 uint256 pAiAfterExitFee = poolAmountIn.bsub(_exitFee);
+496	 uint256 ratio = pAiAfterExitFee.bdiv(poolTotal);
+497	 require(ratio != 0, "ERR_MATH_APPROX");
+498	 _pullPoolShare(msg.sender, poolAmountIn);
+499	 if (_exitFee > 0) {
+500	 _pushPoolShare(origin, _exitFee);
+501	 }
+502	 _burnPoolShare(pAiAfterExitFee);
+503	 for (uint256 i = 0; i < _tokens.length; i++) {
+504	 address t = _tokens[i];
+505	 uint256 bal = _records[t].balance;
+506	 uint256 tokenAmountOut = ratio.bmul(bal);
+507	 require(tokenAmountOut != 0, "ERR_MATH_APPROX");
+508	 require(tokenAmountOut >= minAmountsOut[i], "ERR_LIMIT_OUT");
+509	 _records[t].balance = (_records[t].balance).bsub(tokenAmountOut);
+510	 emit LOG_EXIT(msg.sender, t, tokenAmountOut);
+511	 _pushUnderlying(t, msg.sender, tokenAmountOut);
+512	 }
+513	 }
+514	 function swapExactAmountIn( address tokenIn, uint256 tokenAmountIn, address tokenOut, uint256 minAmountOut, uint256 maxPrice ) external returns (uint256 tokenAmountOut, uint256 spotPriceAfter) {
+515	 return swapExactAmountInRefer( tokenIn, tokenAmountIn, tokenOut, minAmountOut, maxPrice, address(0x0) );
+516	 }
+517	 function swapExactAmountInRefer( address tokenIn, uint256 tokenAmountIn, address tokenOut, uint256 minAmountOut, uint256 maxPrice, address referrer ) public _lock_ returns (uint256 tokenAmountOut, uint256 spotPriceAfter) {
+518	 require(_records[tokenIn].bound, "ERR_NOT_BOUND");
+519	 require(_records[tokenOut].bound, "ERR_NOT_BOUND");
+520	 require(finalized, "ERR_NOT_FINALIZED");
+521	 Record storage inRecord = _records[address(tokenIn)];
+522	 Record storage outRecord = _records[address(tokenOut)];
+523	 require( tokenAmountIn <= (inRecord.balance).bmul(MAX_IN_RATIO), "ERR_MAX_IN_RATIO" );
+524	 uint256 spotPriceBefore = XMath.calcSpotPrice( inRecord.balance, inRecord.denorm, outRecord.balance, outRecord.denorm, swapFee );
+525	 require(spotPriceBefore <= maxPrice, "ERR_BAD_LIMIT_PRICE");
+526	 tokenAmountOut = calcOutGivenIn( inRecord.balance, inRecord.denorm, outRecord.balance, outRecord.denorm, tokenAmountIn, swapFee );
+527	 require(tokenAmountOut >= minAmountOut, "ERR_LIMIT_OUT");
+528	 require( spotPriceBefore <= tokenAmountIn.bdiv(tokenAmountOut), "ERR_MATH_APPROX" );
+529	 inRecord.balance = (inRecord.balance).badd(tokenAmountIn);
+530	 outRecord.balance = (outRecord.balance).bsub(tokenAmountOut);
+531	 spotPriceAfter = XMath.calcSpotPrice( inRecord.balance, inRecord.denorm, outRecord.balance, outRecord.denorm, swapFee );
+532	 require(spotPriceAfter >= spotPriceBefore, "ERR_MATH_APPROX");
+533	 require(spotPriceAfter <= maxPrice, "ERR_LIMIT_PRICE");
+534	 emit LOG_SWAP( msg.sender, tokenIn, tokenOut, tokenAmountIn, tokenAmountOut );
+535	 _pullUnderlying(tokenIn, msg.sender, tokenAmountIn);
+536	 uint256 _swapFee = tokenAmountIn.bmul(swapFee);
+537	 uint256 _referFee = 0;
+538	 if ( referrer != address(0) && referrer != msg.sender && referrer != tx.origin ) {
+539	 _referFee = _swapFee / 5;
+540	 _pushUnderlying(tokenIn, referrer, _referFee);
+541	 inRecord.balance = (inRecord.balance).bsub(_referFee);
+542	 emit LOG_REFER(msg.sender, referrer, tokenIn, _referFee);
+543	 }
+544	 uint256 _safuFee = tokenAmountIn.bmul(safuFee);
+545	 if (isFarmPool) {
+546	 _safuFee = _swapFee.bsub(_referFee);
+547	 }
+548	 require(_safuFee.badd(_referFee) <= _swapFee, "ERR_FEE_LIMIT");
+549	 _pushUnderlying(tokenIn, SAFU, _safuFee);
+550	 inRecord.balance = (inRecord.balance).bsub(_safuFee);
+551	 _pushUnderlying(tokenOut, msg.sender, tokenAmountOut);
+552	 return (tokenAmountOut, spotPriceAfter);
+553	 }
+554	 function swapExactAmountOut( address tokenIn, uint256 maxAmountIn, address tokenOut, uint256 tokenAmountOut, uint256 maxPrice ) external returns (uint256 tokenAmountIn, uint256 spotPriceAfter) {
+555	 return swapExactAmountOutRefer( tokenIn, maxAmountIn, tokenOut, tokenAmountOut, maxPrice, address(0x0) );
+556	 }
+557	 function swapExactAmountOutRefer( address tokenIn, uint256 maxAmountIn, address tokenOut, uint256 tokenAmountOut, uint256 maxPrice, address referrer ) public _lock_ returns (uint256 tokenAmountIn, uint256 spotPriceAfter) {
+558	 require(_records[tokenIn].bound, "ERR_NOT_BOUND");
+559	 require(_records[tokenOut].bound, "ERR_NOT_BOUND");
+560	 require(finalized, "ERR_NOT_FINALIZED");
+561	 Record storage inRecord = _records[address(tokenIn)];
+562	 Record storage outRecord = _records[address(tokenOut)];
+563	 require( tokenAmountOut <= (outRecord.balance).bmul(MAX_OUT_RATIO), "ERR_MAX_OUT_RATIO" );
+564	 uint256 spotPriceBefore = XMath.calcSpotPrice( inRecord.balance, inRecord.denorm, outRecord.balance, outRecord.denorm, swapFee );
+565	 require(spotPriceBefore <= maxPrice, "ERR_BAD_LIMIT_PRICE");
+566	 tokenAmountIn = calcInGivenOut( inRecord.balance, inRecord.denorm, outRecord.balance, outRecord.denorm, tokenAmountOut, swapFee );
+567	 require(tokenAmountIn <= maxAmountIn, "ERR_LIMIT_IN");
+568	 require( spotPriceBefore <= tokenAmountIn.bdiv(tokenAmountOut), "ERR_MATH_APPROX" );
+569	 inRecord.balance = (inRecord.balance).badd(tokenAmountIn);
+570	 outRecord.balance = (outRecord.balance).bsub(tokenAmountOut);
+571	 spotPriceAfter = XMath.calcSpotPrice( inRecord.balance, inRecord.denorm, outRecord.balance, outRecord.denorm, swapFee );
+572	 require(spotPriceAfter >= spotPriceBefore, "ERR_MATH_APPROX");
+573	 require(spotPriceAfter <= maxPrice, "ERR_LIMIT_PRICE");
+574	 emit LOG_SWAP( msg.sender, tokenIn, tokenOut, tokenAmountIn, tokenAmountOut );
+575	 _pullUnderlying(tokenIn, msg.sender, tokenAmountIn);
+576	 uint256 _swapFee = tokenAmountIn.bmul(swapFee);
+577	 uint256 _referFee = 0;
+578	 if ( referrer != address(0) && referrer != msg.sender && referrer != tx.origin ) {
+579	 _referFee = _swapFee / 5;
+580	 _pushUnderlying(tokenIn, referrer, _referFee);
+581	 inRecord.balance = (inRecord.balance).bsub(_referFee);
+582	 emit LOG_REFER(msg.sender, referrer, tokenIn, _referFee);
+583	 }
+584	 uint256 _safuFee = tokenAmountIn.bmul(safuFee);
+585	 if (isFarmPool) {
+586	 _safuFee = _swapFee.bsub(_referFee);
+587	 }
+588	 require(_safuFee.badd(_referFee) <= _swapFee, "ERR_FEE_LIMIT");
+589	 _pushUnderlying(tokenIn, SAFU, _safuFee);
+590	 inRecord.balance = (inRecord.balance).bsub(_safuFee);
+591	 _pushUnderlying(tokenOut, msg.sender, tokenAmountOut);
+592	 return (tokenAmountIn, spotPriceAfter);
+593	 }
+594	 function joinswapExternAmountIn( address tokenIn, uint256 tokenAmountIn, uint256 minPoolAmountOut ) external _lock_ returns (uint256 poolAmountOut) {
+595	 require(finalized, "ERR_NOT_FINALIZED");
+596	 require(_records[tokenIn].bound, "ERR_NOT_BOUND");
+597	 require( tokenAmountIn <= (_records[tokenIn].balance).bmul(MAX_IN_RATIO), "ERR_MAX_IN_RATIO" );
+598	 _pullUnderlying(tokenIn, msg.sender, tokenAmountIn);
+599	 uint256 _safuFee = tokenAmountIn.bmul(safuFee);
+600	 if (isFarmPool) {
+601	 _safuFee = tokenAmountIn.bmul(swapFee);
+602	 }
+603	 tokenAmountIn = tokenAmountIn.bsub(_safuFee);
+604	 Record storage inRecord = _records[tokenIn];
+605	 poolAmountOut = XMath.calcPoolOutGivenSingleIn( inRecord.balance, inRecord.denorm, _totalSupply, _totalWeight, tokenAmountIn, swapFee );
+606	 require(poolAmountOut >= minPoolAmountOut, "ERR_LIMIT_OUT");
+607	 inRecord.balance = (inRecord.balance).badd(tokenAmountIn);
+608	 _pushUnderlying(tokenIn, SAFU, _safuFee);
+609	 emit LOG_JOIN(msg.sender, tokenIn, tokenAmountIn);
+610	 _mintPoolShare(poolAmountOut);
+611	 _pushPoolShare(msg.sender, poolAmountOut);
+612	 return poolAmountOut;
+613	 }
+614	 function exitswapPoolAmountIn( address tokenOut, uint256 poolAmountIn, uint256 minAmountOut ) external _logs_ _lock_ returns (uint256 tokenAmountOut) {
+615	 require(finalized, "ERR_NOT_FINALIZED");
+616	 require(_records[tokenOut].bound, "ERR_NOT_BOUND");
+617	 require(poolAmountIn >= MIN_POOL_AMOUNT, "ERR_MIN_AMOUNT");
+618	 _pullPoolShare(msg.sender, poolAmountIn);
+619	 if (exitFee > 0 && msg.sender != origin) {
+620	 uint256 _exitFee = poolAmountIn.bmul(exitFee);
+621	 _pushPoolShare(origin, _exitFee);
+622	 poolAmountIn = poolAmountIn.bsub(_exitFee);
+623	 }
+624	 _burnPoolShare(poolAmountIn);
+625	 Record storage outRecord = _records[tokenOut];
+626	 tokenAmountOut = XMath.calcSingleOutGivenPoolIn( outRecord.balance, outRecord.denorm, _totalSupply, _totalWeight, poolAmountIn, swapFee );
+627	 require(tokenAmountOut >= minAmountOut, "ERR_LIMIT_OUT");
+628	 require( tokenAmountOut <= (_records[tokenOut].balance).bmul(MAX_OUT_RATIO), "ERR_MAX_OUT_RATIO" );
+629	 outRecord.balance = (outRecord.balance).bsub(tokenAmountOut);
+630	 uint256 _safuFee = tokenAmountOut.bmul(safuFee);
+631	 if (isFarmPool) {
+632	 _safuFee = tokenAmountOut.bmul(swapFee);
+633	 }
+634	 emit LOG_EXIT(msg.sender, tokenOut, tokenAmountOut);
+635	 _pushUnderlying(tokenOut, SAFU, _safuFee);
+636	 _pushUnderlying(tokenOut, msg.sender, tokenAmountOut.bsub(_safuFee));
+637	 return tokenAmountOut;
+638	 }
+639	 function calcOutGivenIn( uint256 tokenBalanceIn, uint256 tokenWeightIn, uint256 tokenBalanceOut, uint256 tokenWeightOut, uint256 tokenAmountIn, uint256 _swapFee ) public pure returns (uint256) {
+640	 return XMath.calcOutGivenIn( tokenBalanceIn, tokenWeightIn, tokenBalanceOut, tokenWeightOut, tokenAmountIn, _swapFee );
+641	 }
+642	 function calcInGivenOut( uint256 tokenBalanceIn, uint256 tokenWeightIn, uint256 tokenBalanceOut, uint256 tokenWeightOut, uint256 tokenAmountOut, uint256 _swapFee ) public pure returns (uint256) {
+643	 return XMath.calcInGivenOut( tokenBalanceIn, tokenWeightIn, tokenBalanceOut, tokenWeightOut, tokenAmountOut, _swapFee );
+644	 }
+645	 function _pullUnderlying( address erc20, address from, uint256 amount ) internal {
+646	 (bool success, bytes memory data) = erc20.call( abi.encodeWithSelector(0x23b872dd, from, address(this), amount) );
+647	 require( success && (data.length == 0 || abi.decode(data, (bool))), "ERC20_TRANSFER_FROM_FAILED" );
+648	 }
+649	 function _pushUnderlying( address erc20, address to, uint256 amount ) internal {
+650	 (bool success, bytes memory data) = erc20.call(abi.encodeWithSelector(0xa9059cbb, to, amount));
+651	 require( success && (data.length == 0 || abi.decode(data, (bool))), "ERC20_TRANSFER_FAILED" );
+652	 }
+653	 function _pullPoolShare(address from, uint256 amount) internal {
+654	 _move(from, address(this), amount);
+655	 }
+656	 function _pushPoolShare(address to, uint256 amount) internal {
+657	 _move(address(this), to, amount);
+658	 }
+659	 function _mintPoolShare(uint256 amount) internal {
+660	 _mint(amount);
+661	 }
+662	 function _burnPoolShare(uint256 amount) internal {
+663	 _burn(amount);
+664	 }
+665	 }

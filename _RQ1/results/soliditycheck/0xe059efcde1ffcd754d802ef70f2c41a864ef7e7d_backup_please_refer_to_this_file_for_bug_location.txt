@@ -1,0 +1,598 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 library strings {
+3	 struct slice {
+4	 uint _len;
+5	 uint _ptr;
+6	 }
+7	 function memcpy(uint dest, uint src, uint len) private pure {
+8	 for(; len >= 32; len -= 32) {
+9	 assembly {
+10	 mstore(dest, mload(src)) }
+11	 dest += 32;
+12	 src += 32;
+13	 }
+14	 uint mask = 256 ** (32 - len) - 1;
+15	 assembly {
+16	 let srcpart := and(mload(src), not(mask)) let destpart := and(mload(dest), mask) mstore(dest, or(destpart, srcpart)) }
+17	 }
+18	 function toSlice(string memory self) internal pure returns (slice memory) {
+19	 uint ptr;
+20	 assembly {
+21	 ptr := add(self, 0x20) }
+22	 return slice(bytes(self).length, ptr);
+23	 }
+24	 function len(bytes32 self) internal pure returns (uint) {
+25	 uint ret;
+26	 if (self == 0) return 0;
+27	 if (self & 0xffffffffffffffffffffffffffffffff == 0) {
+28	 ret += 16;
+29	 self = bytes32(uint(self) / 0x100000000000000000000000000000000);
+30	 }
+31	 if (self & 0xffffffffffffffff == 0) {
+32	 ret += 8;
+33	 self = bytes32(uint(self) / 0x10000000000000000);
+34	 }
+35	 if (self & 0xffffffff == 0) {
+36	 ret += 4;
+37	 self = bytes32(uint(self) / 0x100000000);
+38	 }
+39	 if (self & 0xffff == 0) {
+40	 ret += 2;
+41	 self = bytes32(uint(self) / 0x10000);
+42	 }
+43	 if (self & 0xff == 0) {
+44	 ret += 1;
+45	 }
+46	 return 32 - ret;
+47	 }
+48	 function toSliceB32(bytes32 self) internal pure returns (slice memory ret) {
+49	 assembly {
+50	 let ptr := mload(0x40) mstore(0x40, add(ptr, 0x20)) mstore(ptr, self) mstore(add(ret, 0x20), ptr) }
+51	 ret._len = len(self);
+52	 }
+53	 function copy(slice memory self) internal pure returns (slice memory) {
+54	 return slice(self._len, self._ptr);
+55	 }
+56	 function toString(slice memory self) internal pure returns (string memory) {
+57	 string memory ret = new string(self._len);
+58	 uint retptr;
+59	 assembly {
+60	 retptr := add(ret, 32) }
+61	 memcpy(retptr, self._ptr, self._len);
+62	 return ret;
+63	 }
+64	 function len(slice memory self) internal pure returns (uint l) {
+65	 uint ptr = self._ptr - 31;
+66	 uint end = ptr + self._len;
+67	 for (l = 0; ptr < end; l++) {
+68	 uint8 b;
+69	 assembly {
+70	 b := and(mload(ptr), 0xFF) }
+71	 if (b < 0x80) {
+72	 ptr += 1;
+73	 }
+74	 else if(b < 0xE0) {
+75	 ptr += 2;
+76	 }
+77	 else if(b < 0xF0) {
+78	 ptr += 3;
+79	 }
+80	 else if(b < 0xF8) {
+81	 ptr += 4;
+82	 }
+83	 else if(b < 0xFC) {
+84	 ptr += 5;
+85	 }
+86	 else {
+87	 ptr += 6;
+88	 }
+89	 }
+90	 }
+91	 function empty(slice memory self) internal pure returns (bool) {
+92	 return self._len == 0;
+93	 }
+94	 function compare(slice memory self, slice memory other) internal pure returns (int) {
+95	 uint shortest = self._len;
+96	 if (other._len < self._len) shortest = other._len;
+97	 uint selfptr = self._ptr;
+98	 uint otherptr = other._ptr;
+99	 for (uint idx = 0; idx < shortest; idx += 32) {
+100	 uint a;
+101	 uint b;
+102	 assembly {
+103	 a := mload(selfptr) b := mload(otherptr) }
+104	 if (a != b) {
+105	 uint256 mask = uint256(-1);
+106	 if(shortest < 32) {
+107	 mask = ~(2 ** (8 * (32 - shortest + idx)) - 1);
+108	 }
+109	 uint256 diff = (a & mask) - (b & mask);
+110	 if (diff != 0) return int(diff);
+111	 }
+112	 selfptr += 32;
+113	 otherptr += 32;
+114	 }
+115	 return int(self._len) - int(other._len);
+116	 }
+117	 function equals(slice memory self, slice memory other) internal pure returns (bool) {
+118	 return compare(self, other) == 0;
+119	 }
+120	 function nextRune(slice memory self, slice memory rune) internal pure returns (slice memory) {
+121	 rune._ptr = self._ptr;
+122	 if (self._len == 0) {
+123	 rune._len = 0;
+124	 return rune;
+125	 }
+126	 uint l;
+127	 uint b;
+128	 assembly {
+129	 b := and(mload(sub(mload(add(self, 32)), 31)), 0xFF) }
+130	 if (b < 0x80) {
+131	 l = 1;
+132	 }
+133	 else if(b < 0xE0) {
+134	 l = 2;
+135	 }
+136	 else if(b < 0xF0) {
+137	 l = 3;
+138	 }
+139	 else {
+140	 l = 4;
+141	 }
+142	 if (l > self._len) {
+143	 rune._len = self._len;
+144	 self._ptr += self._len;
+145	 self._len = 0;
+146	 return rune;
+147	 }
+148	 self._ptr += l;
+149	 self._len -= l;
+150	 rune._len = l;
+151	 return rune;
+152	 }
+153	 function nextRune(slice memory self) internal pure returns (slice memory ret) {
+154	 nextRune(self, ret);
+155	 }
+156	 function ord(slice memory self) internal pure returns (uint ret) {
+157	 if (self._len == 0) {
+158	 return 0;
+159	 }
+160	 uint word;
+161	 uint length;
+162	 uint divisor = 2 ** 248;
+163	 assembly {
+164	 word:= mload(mload(add(self, 32))) }
+165	 uint b = word / divisor;
+166	 if (b < 0x80) {
+167	 ret = b;
+168	 length = 1;
+169	 }
+170	 else if(b < 0xE0) {
+171	 ret = b & 0x1F;
+172	 length = 2;
+173	 }
+174	 else if(b < 0xF0) {
+175	 ret = b & 0x0F;
+176	 length = 3;
+177	 }
+178	 else {
+179	 ret = b & 0x07;
+180	 length = 4;
+181	 }
+182	 if (length > self._len) {
+183	 return 0;
+184	 }
+185	 for (uint i = 1; i < length; i++) {
+186	 divisor = divisor / 256;
+187	 b = (word / divisor) & 0xFF;
+188	 if (b & 0xC0 != 0x80) {
+189	 return 0;
+190	 }
+191	 ret = (ret * 64) | (b & 0x3F);
+192	 }
+193	 return ret;
+194	 }
+195	 function keccak(slice memory self) internal pure returns (bytes32 ret) {
+196	 assembly {
+197	 ret := keccak256(mload(add(self, 32)), mload(self)) }
+198	 }
+199	 function startsWith(slice memory self, slice memory needle) internal pure returns (bool) {
+200	 if (self._len < needle._len) {
+201	 return false;
+202	 }
+203	 if (self._ptr == needle._ptr) {
+204	 return true;
+205	 }
+206	 bool equal;
+207	 assembly {
+208	 let length := mload(needle) let selfptr := mload(add(self, 0x20)) let needleptr := mload(add(needle, 0x20)) equal := eq(keccak256(selfptr, length), keccak256(needleptr, length)) }
+209	 return equal;
+210	 }
+211	 function beyond(slice memory self, slice memory needle) internal pure returns (slice memory) {
+212	 if (self._len < needle._len) {
+213	 return self;
+214	 }
+215	 bool equal = true;
+216	 if (self._ptr != needle._ptr) {
+217	 assembly {
+218	 let length := mload(needle) let selfptr := mload(add(self, 0x20)) let needleptr := mload(add(needle, 0x20)) equal := eq(keccak256(selfptr, length), keccak256(needleptr, length)) }
+219	 }
+220	 if (equal) {
+221	 self._len -= needle._len;
+222	 self._ptr += needle._len;
+223	 }
+224	 return self;
+225	 }
+226	 function endsWith(slice memory self, slice memory needle) internal pure returns (bool) {
+227	 if (self._len < needle._len) {
+228	 return false;
+229	 }
+230	 uint selfptr = self._ptr + self._len - needle._len;
+231	 if (selfptr == needle._ptr) {
+232	 return true;
+233	 }
+234	 bool equal;
+235	 assembly {
+236	 let length := mload(needle) let needleptr := mload(add(needle, 0x20)) equal := eq(keccak256(selfptr, length), keccak256(needleptr, length)) }
+237	 return equal;
+238	 }
+239	 function until(slice memory self, slice memory needle) internal pure returns (slice memory) {
+240	 if (self._len < needle._len) {
+241	 return self;
+242	 }
+243	 uint selfptr = self._ptr + self._len - needle._len;
+244	 bool equal = true;
+245	 if (selfptr != needle._ptr) {
+246	 assembly {
+247	 let length := mload(needle) let needleptr := mload(add(needle, 0x20)) equal := eq(keccak256(selfptr, length), keccak256(needleptr, length)) }
+248	 }
+249	 if (equal) {
+250	 self._len -= needle._len;
+251	 }
+252	 return self;
+253	 }
+254	 function findPtr(uint selflen, uint selfptr, uint needlelen, uint needleptr) private pure returns (uint) {
+255	 uint ptr = selfptr;
+256	 uint idx;
+257	 if (needlelen <= selflen) {
+258	 if (needlelen <= 32) {
+259	 bytes32 mask = bytes32(~(2 ** (8 * (32 - needlelen)) - 1));
+260	 bytes32 needledata;
+261	 assembly {
+262	 needledata := and(mload(needleptr), mask) }
+263	 uint end = selfptr + selflen - needlelen;
+264	 bytes32 ptrdata;
+265	 assembly {
+266	 ptrdata := and(mload(ptr), mask) }
+267	 while (ptrdata != needledata) {
+268	 if (ptr >= end) return selfptr + selflen;
+269	 ptr++;
+270	 assembly {
+271	 ptrdata := and(mload(ptr), mask) }
+272	 }
+273	 return ptr;
+274	 }
+275	 else {
+276	 bytes32 hash;
+277	 assembly {
+278	 hash := keccak256(needleptr, needlelen) }
+279	 for (idx = 0; idx <= selflen - needlelen; idx++) {
+280	 bytes32 testHash;
+281	 assembly {
+282	 testHash := keccak256(ptr, needlelen) }
+283	 if (hash == testHash) return ptr;
+284	 ptr += 1;
+285	 }
+286	 }
+287	 }
+288	 return selfptr + selflen;
+289	 }
+290	 function rfindPtr(uint selflen, uint selfptr, uint needlelen, uint needleptr) private pure returns (uint) {
+291	 uint ptr;
+292	 if (needlelen <= selflen) {
+293	 if (needlelen <= 32) {
+294	 bytes32 mask = bytes32(~(2 ** (8 * (32 - needlelen)) - 1));
+295	 bytes32 needledata;
+296	 assembly {
+297	 needledata := and(mload(needleptr), mask) }
+298	 ptr = selfptr + selflen - needlelen;
+299	 bytes32 ptrdata;
+300	 assembly {
+301	 ptrdata := and(mload(ptr), mask) }
+302	 while (ptrdata != needledata) {
+303	 if (ptr <= selfptr) return selfptr;
+304	 ptr--;
+305	 assembly {
+306	 ptrdata := and(mload(ptr), mask) }
+307	 }
+308	 return ptr + needlelen;
+309	 }
+310	 else {
+311	 bytes32 hash;
+312	 assembly {
+313	 hash := keccak256(needleptr, needlelen) }
+314	 ptr = selfptr + (selflen - needlelen);
+315	 while (ptr >= selfptr) {
+316	 bytes32 testHash;
+317	 assembly {
+318	 testHash := keccak256(ptr, needlelen) }
+319	 if (hash == testHash) return ptr + needlelen;
+320	 ptr -= 1;
+321	 }
+322	 }
+323	 }
+324	 return selfptr;
+325	 }
+326	 function find(slice memory self, slice memory needle) internal pure returns (slice memory) {
+327	 uint ptr = findPtr(self._len, self._ptr, needle._len, needle._ptr);
+328	 self._len -= ptr - self._ptr;
+329	 self._ptr = ptr;
+330	 return self;
+331	 }
+332	 function rfind(slice memory self, slice memory needle) internal pure returns (slice memory) {
+333	 uint ptr = rfindPtr(self._len, self._ptr, needle._len, needle._ptr);
+334	 self._len = ptr - self._ptr;
+335	 return self;
+336	 }
+337	 function split(slice memory self, slice memory needle, slice memory token) internal pure returns (slice memory) {
+338	 uint ptr = findPtr(self._len, self._ptr, needle._len, needle._ptr);
+339	 token._ptr = self._ptr;
+340	 token._len = ptr - self._ptr;
+341	 if (ptr == self._ptr + self._len) {
+342	 self._len = 0;
+343	 }
+344	 else {
+345	 self._len -= token._len + needle._len;
+346	 self._ptr = ptr + needle._len;
+347	 }
+348	 return token;
+349	 }
+350	 function split(slice memory self, slice memory needle) internal pure returns (slice memory token) {
+351	 split(self, needle, token);
+352	 }
+353	 function rsplit(slice memory self, slice memory needle, slice memory token) internal pure returns (slice memory) {
+354	 uint ptr = rfindPtr(self._len, self._ptr, needle._len, needle._ptr);
+355	 token._ptr = ptr;
+356	 token._len = self._len - (ptr - self._ptr);
+357	 if (ptr == self._ptr) {
+358	 self._len = 0;
+359	 }
+360	 else {
+361	 self._len -= token._len + needle._len;
+362	 }
+363	 return token;
+364	 }
+365	 function rsplit(slice memory self, slice memory needle) internal pure returns (slice memory token) {
+366	 rsplit(self, needle, token);
+367	 }
+368	 function count(slice memory self, slice memory needle) internal pure returns (uint cnt) {
+369	 uint ptr = findPtr(self._len, self._ptr, needle._len, needle._ptr) + needle._len;
+370	 while (ptr <= self._ptr + self._len) {
+371	 cnt++;
+372	 ptr = findPtr(self._len - (ptr - self._ptr), ptr, needle._len, needle._ptr) + needle._len;
+373	 }
+374	 }
+375	 function contains(slice memory self, slice memory needle) internal pure returns (bool) {
+376	 return rfindPtr(self._len, self._ptr, needle._len, needle._ptr) != self._ptr;
+377	 }
+378	 function concat(slice memory self, slice memory other) internal pure returns (string memory) {
+379	 string memory ret = new string(self._len + other._len);
+380	 uint retptr;
+381	 assembly {
+382	 retptr := add(ret, 32) }
+383	 memcpy(retptr, self._ptr, self._len);
+384	 memcpy(retptr + self._len, other._ptr, other._len);
+385	 return ret;
+386	 }
+387	 function join(slice memory self, slice[] memory parts) internal pure returns (string memory) {
+388	 if (parts.length == 0) return "";
+389	 uint length = self._len * (parts.length - 1);
+390	 for(uint i = 0; i < parts.length; i++) length += parts[i]._len;
+391	 string memory ret = new string(length);
+392	 uint retptr;
+393	 assembly {
+394	 retptr := add(ret, 32) }
+395	 for(i = 0; i < parts.length; i++) {
+396	 memcpy(retptr, parts[i]._ptr, parts[i]._len);
+397	 retptr += parts[i]._len;
+398	 if (i < parts.length - 1) {
+399	 memcpy(retptr, self._ptr, self._len);
+400	 retptr += self._len;
+401	 }
+402	 }
+403	 return ret;
+404	 }
+405	 }
+406	 contract Control {
+407	 using strings for *;
+408	 uint constant REWARD_BASE = 100;
+409	 uint constant REWARD_TAX = 8;
+410	 uint constant REWARD_GET = REWARD_BASE - REWARD_TAX;
+411	 uint constant MAX_ALLBET = 2**120;
+412	 uint constant MIN_BET = 0.001 ether;
+413	 bytes32 constant SHA_DEUCE = keccak256("DEUCE");
+414	 address internal creator;
+415	 address internal owner;
+416	 uint public destroy_time;
+417	 constructor(address target) public {
+418	 creator = msg.sender;
+419	 owner = target;
+420	 destroy_time = now + 365 * 24 * 60 * 60;
+421	 }
+422	 function kill() external payable {
+423	 require(now >= destroy_time);
+424	 selfdestruct(owner);
+425	 }
+426	 struct PlayerBet {
+427	 uint bet0;
+428	 uint bet1;
+429	 uint bet2;
+430	 bool drawed;
+431	 }
+432	 struct MatchBet {
+433	 uint betDeadline;
+434	 uint allbet;
+435	 uint allbet0;
+436	 uint allbet1;
+437	 uint allbet2;
+438	 bool ownerDrawed;
+439	 bytes32 SHA_WIN;
+440	 bytes32 SHA_T1;
+441	 bytes32 SHA_T2;
+442	 mapping(address => PlayerBet) list;
+443	 }
+444	 MatchBet[] public MatchList;
+445	 modifier onlyOwner() {
+446	 require(msg.sender == creator || msg.sender == owner);
+447	 _;
+448	 }
+449	 modifier MatchExist(uint index) {
+450	 require(index < MatchList.length);
+451	 _;
+452	 }
+453	 function AddMatch(string troop1, string troop2, uint deadline) external onlyOwner {
+454	 MatchList.push(MatchBet({
+455	 betDeadline :deadline, allbet :0, allbet0 :0, allbet1 :0, allbet2 :0, ownerDrawed :false, SHA_T1 :keccak256(bytes(troop1)), SHA_T2 :keccak256(bytes(troop2)), SHA_WIN :bytes32(0) }
+456	 ));
+457	 }
+458	 function MatchResetDeadline(uint index,uint time) external onlyOwner MatchExist(index) {
+459	 MatchBet storage oMatch = MatchList[index];
+460	 oMatch.betDeadline = time;
+461	 }
+462	 function MatchEnd(uint index,string winTroop) external onlyOwner MatchExist(index) {
+463	 MatchBet storage oMatch = MatchList[index];
+464	 require(oMatch.SHA_WIN == 0);
+465	 bytes32 shaWin = keccak256(bytes(winTroop));
+466	 require(shaWin == SHA_DEUCE || shaWin == oMatch.SHA_T1 || shaWin == oMatch.SHA_T2 );
+467	 oMatch.SHA_WIN = shaWin;
+468	 }
+469	 function Bet(uint index, string troop) external payable MatchExist(index) {
+470	 require(msg.value >= MIN_BET);
+471	 MatchBet storage oMatch = MatchList[index];
+472	 require(oMatch.SHA_WIN == 0 && oMatch.betDeadline >= now);
+473	 uint tempAllBet = oMatch.allbet + msg.value;
+474	 require(tempAllBet > oMatch.allbet && tempAllBet <= MAX_ALLBET);
+475	 PlayerBet storage oBet = oMatch.list[msg.sender];
+476	 oMatch.allbet = tempAllBet;
+477	 bytes32 shaBetTroop = keccak256(bytes(troop));
+478	 if ( shaBetTroop == oMatch.SHA_T1 ) {
+479	 oBet.bet1 += msg.value;
+480	 oMatch.allbet1 += msg.value;
+481	 }
+482	 else if ( shaBetTroop == oMatch.SHA_T2 ) {
+483	 oBet.bet2 += msg.value;
+484	 oMatch.allbet2 += msg.value;
+485	 }
+486	 else {
+487	 require( shaBetTroop == SHA_DEUCE );
+488	 oBet.bet0 += msg.value;
+489	 oMatch.allbet0 += msg.value;
+490	 }
+491	 }
+492	 function CalReward(MatchBet storage oMatch,PlayerBet storage oBet) internal view returns(uint) {
+493	 uint myWinBet;
+494	 uint allWinBet;
+495	 if ( oMatch.SHA_WIN == oMatch.SHA_T1) {
+496	 myWinBet = oBet.bet1;
+497	 allWinBet = oMatch.allbet1;
+498	 }
+499	 else if ( oMatch.SHA_WIN == oMatch.SHA_T2 ) {
+500	 myWinBet = oBet.bet2;
+501	 allWinBet = oMatch.allbet2;
+502	 }
+503	 else {
+504	 myWinBet = oBet.bet0;
+505	 allWinBet = oMatch.allbet0;
+506	 }
+507	 if (myWinBet == 0) return 0;
+508	 return myWinBet + (oMatch.allbet - allWinBet) * myWinBet / allWinBet * REWARD_GET / REWARD_BASE;
+509	 }
+510	 function Withdraw(uint index,address target) public payable MatchExist(index) {
+511	 MatchBet storage oMatch = MatchList[index];
+512	 PlayerBet storage oBet = oMatch.list[target];
+513	 if (oBet.drawed) return;
+514	 if (oMatch.SHA_WIN == 0) return;
+515	 uint reward = CalReward(oMatch,oBet);
+516	 if (reward == 0) return;
+517	 oBet.drawed = true;
+518	 target.transfer(reward);
+519	 }
+520	 function WithdrawAll(address target) external payable {
+521	 for (uint i=0; i<MatchList.length; i++) {
+522	 Withdraw(i,target);
+523	 }
+524	 }
+525	 function CreatorWithdraw(uint index) internal {
+526	 MatchBet storage oMatch = MatchList[index];
+527	 if (oMatch.ownerDrawed) return;
+528	 if (oMatch.SHA_WIN == 0) return;
+529	 oMatch.ownerDrawed = true;
+530	 uint allWinBet;
+531	 if ( oMatch.SHA_WIN == oMatch.SHA_T1) {
+532	 allWinBet = oMatch.allbet1;
+533	 }
+534	 else if ( oMatch.SHA_WIN == oMatch.SHA_T2 ) {
+535	 allWinBet = oMatch.allbet2;
+536	 }
+537	 else {
+538	 allWinBet = oMatch.allbet0;
+539	 }
+540	 if (oMatch.allbet == allWinBet) return;
+541	 if (allWinBet == 0) {
+542	 owner.transfer(oMatch.allbet);
+543	 }
+544	 else {
+545	 uint alltax = (oMatch.allbet - allWinBet) * REWARD_TAX / REWARD_BASE;
+546	 owner.transfer(alltax);
+547	 }
+548	 }
+549	 function CreatorWithdrawAll() external payable {
+550	 for (uint i=0; i<MatchList.length; i++) {
+551	 CreatorWithdraw(i);
+552	 }
+553	 }
+554	 function GetMatchLength() external view returns(uint) {
+555	 return MatchList.length;
+556	 }
+557	 function uint2str(uint i) internal pure returns (string){
+558	 if (i == 0) return "0";
+559	 uint j = i;
+560	 uint len;
+561	 while (j != 0){
+562	 len++;
+563	 j /= 10;
+564	 }
+565	 bytes memory bstr = new bytes(len);
+566	 while (i != 0){
+567	 bstr[--len] = byte(48 + i % 10);
+568	 i /= 10;
+569	 }
+570	 return string(bstr);
+571	 }
+572	 function GetInfo(MatchBet storage obj,uint idx,address target) internal view returns(string){
+573	 PlayerBet storage oBet = obj.list[target];
+574	 string memory info = "#";
+575	 info = info.toSlice().concat(uint2str(idx).toSlice());
+576	 info = info.toSlice().concat(",".toSlice()).toSlice().concat(uint2str(oBet.bet1).toSlice());
+577	 info = info.toSlice().concat(",".toSlice()).toSlice().concat(uint2str(obj.allbet1).toSlice());
+578	 info = info.toSlice().concat(",".toSlice()).toSlice().concat(uint2str(oBet.bet2).toSlice());
+579	 info = info.toSlice().concat(",".toSlice()).toSlice().concat(uint2str(obj.allbet2).toSlice());
+580	 info = info.toSlice().concat(",".toSlice()).toSlice().concat(uint2str(oBet.bet0).toSlice());
+581	 info = info.toSlice().concat(",".toSlice()).toSlice().concat(uint2str(obj.allbet0).toSlice());
+582	 if (oBet.drawed) {
+583	 info = info.toSlice().concat(",".toSlice()).toSlice().concat("1".toSlice());
+584	 }
+585	 else {
+586	 info = info.toSlice().concat(",".toSlice()).toSlice().concat("0".toSlice());
+587	 }
+588	 return info;
+589	 }
+590	 function GetDetail(address target) external view returns(string) {
+591	 string memory res;
+592	 for (uint i=0; i<MatchList.length; i++){
+593	 res = res.toSlice().concat(GetInfo(MatchList[i],i,target).toSlice());
+594	 }
+595	 return res;
+596	 }
+597	 }

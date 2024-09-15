@@ -1,0 +1,231 @@
+row number 
+1	   pragma solidity ^0.4.19;
+2	 contract ERCInterface {
+3	 function transferFrom(address _from, address _to, uint256 _value) public;
+4	 function balanceOf(address who) constant public returns (uint256);
+5	 function allowance(address owner, address spender) constant public returns (uint256);
+6	 function transfer(address to, uint256 value) public returns(bool);
+7	 }
+8	 library SafeMath {
+9	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+10	 if (a == 0) {
+11	 return 0;
+12	 }
+13	 c = a * b;
+14	 assert(c / a == b);
+15	 return c;
+16	 }
+17	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+18	 return a / b;
+19	 }
+20	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+21	 assert(b <= a);
+22	 return a - b;
+23	 }
+24	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+25	 uint256 c = a + b;
+26	 assert(c >= a);
+27	 return c;
+28	 }
+29	 }
+30	 contract Ownable {
+31	 address public owner;
+32	 event OwnershipTransferred(address indexed from, address indexed to);
+33	 function Ownable() public {
+34	 owner = msg.sender;
+35	 }
+36	 modifier onlyOwner {
+37	 require(msg.sender == owner);
+38	 _;
+39	 }
+40	 function transferOwnership(address _newOwner) public onlyOwner {
+41	 require( _newOwner != address(0) && _newOwner != owner );
+42	 OwnershipTransferred(owner, _newOwner);
+43	 owner = _newOwner;
+44	 }
+45	 }
+46	 contract DappleAirdrops is Ownable {
+47	 using SafeMath for uint256;
+48	 mapping (address => uint256) public bonusDropsOf;
+49	 mapping (address => uint256) public ethBalanceOf;
+50	 mapping (address => bool) public tokenIsBanned;
+51	 mapping (address => uint256) public trialDrops;
+52	 uint256 public rate;
+53	 uint256 public dropUnitPrice;
+54	 uint256 public bonus;
+55	 uint256 public maxDropsPerTx;
+56	 uint256 public maxTrialDrops;
+57	 string public constant website = "www.dappleairdrops.com";
+58	 event BonusCreditGranted(address indexed to, uint256 credit);
+59	 event BonusCreditRevoked(address indexed from, uint256 credit);
+60	 event CreditPurchased(address indexed by, uint256 etherValue, uint256 credit);
+61	 event AirdropInvoked(address indexed by, uint256 creditConsumed);
+62	 event BonustChanged(uint256 from, uint256 to);
+63	 event TokenBanned(address indexed tokenAddress);
+64	 event TokenUnbanned(address indexed tokenAddress);
+65	 event EthWithdrawn(address indexed by, uint256 totalWei);
+66	 event RateChanged(uint256 from, uint256 to);
+67	 event MaxDropsChanged(uint256 from, uint256 to);
+68	 event RefundIssued(address indexed to, uint256 totalWei);
+69	 event ERC20TokensWithdrawn(address token, address sentTo, uint256 value);
+70	 function DappleAirdrops() public {
+71	 rate = 10000;
+72	 dropUnitPrice = 1e14;
+73	 bonus = 20;
+74	 maxDropsPerTx = 100;
+75	 maxTrialDrops = 100;
+76	 }
+77	 function tokenHasFreeTrial(address _addressOfToken) public view returns(bool) {
+78	 return trialDrops[_addressOfToken] < maxTrialDrops;
+79	 }
+80	 function getRemainingTrialDrops(address _addressOfToken) public view returns(uint256) {
+81	 if(tokenHasFreeTrial(_addressOfToken)) {
+82	 return maxTrialDrops.sub(trialDrops[_addressOfToken]);
+83	 }
+84	 return 0;
+85	 }
+86	 function setRate(uint256 _newRate) public onlyOwner returns(bool) {
+87	 require( _newRate != rate && _newRate > 0 );
+88	 RateChanged(rate, _newRate);
+89	 rate = _newRate;
+90	 uint256 eth = 1 ether;
+91	 dropUnitPrice = eth.div(rate);
+92	 return true;
+93	 }
+94	 function getRate() public view returns(uint256) {
+95	 return rate;
+96	 }
+97	 function getMaxDropsPerTx() public view returns(uint256) {
+98	 return maxDropsPerTx;
+99	 }
+100	 function setMaxDrops(uint256 _maxDrops) public onlyOwner returns(bool) {
+101	 require(_maxDrops >= 100);
+102	 MaxDropsChanged(maxDropsPerTx, _maxDrops);
+103	 maxDropsPerTx = _maxDrops;
+104	 return true;
+105	 }
+106	 function setBonus(uint256 _newBonus) public onlyOwner returns(bool) {
+107	 require(bonus != _newBonus);
+108	 BonustChanged(bonus, _newBonus);
+109	 bonus = _newBonus;
+110	 }
+111	 function grantBonusDrops(address _addr, uint256 _bonusDrops) public onlyOwner returns(bool) {
+112	 require( _addr != address(0) && _bonusDrops > 0 );
+113	 bonusDropsOf[_addr] = bonusDropsOf[_addr].add(_bonusDrops);
+114	 BonusCreditGranted(_addr, _bonusDrops);
+115	 return true;
+116	 }
+117	 function revokeBonusCreditOf(address _addr, uint256 _bonusDrops) public onlyOwner returns(bool) {
+118	 require( _addr != address(0) && bonusDropsOf[_addr] >= _bonusDrops );
+119	 bonusDropsOf[_addr] = bonusDropsOf[_addr].sub(_bonusDrops);
+120	 BonusCreditRevoked(_addr, _bonusDrops);
+121	 return true;
+122	 }
+123	 function getDropsOf(address _addr) public view returns(uint256) {
+124	 return (ethBalanceOf[_addr].mul(rate)).div(10 ** 18);
+125	 }
+126	 function getBonusDropsOf(address _addr) public view returns(uint256) {
+127	 return bonusDropsOf[_addr];
+128	 }
+129	 function getTotalDropsOf(address _addr) public view returns(uint256) {
+130	 return getDropsOf(_addr).add(getBonusDropsOf(_addr));
+131	 }
+132	 function getEthBalanceOf(address _addr) public view returns(uint256) {
+133	 return ethBalanceOf[_addr];
+134	 }
+135	 function banToken(address _tokenAddr) public onlyOwner returns(bool) {
+136	 require(!tokenIsBanned[_tokenAddr]);
+137	 tokenIsBanned[_tokenAddr] = true;
+138	 TokenBanned(_tokenAddr);
+139	 return true;
+140	 }
+141	 function unbanToken(address _tokenAddr) public onlyOwner returns(bool) {
+142	 require(tokenIsBanned[_tokenAddr]);
+143	 tokenIsBanned[_tokenAddr] = false;
+144	 TokenUnbanned(_tokenAddr);
+145	 return true;
+146	 }
+147	 function getTokenAllowance(address _addr, address _addressOfToken) public view returns(uint256) {
+148	 ERCInterface token = ERCInterface(_addressOfToken);
+149	 return token.allowance(_addr, address(this));
+150	 }
+151	 function() public payable {
+152	 ethBalanceOf[msg.sender] = ethBalanceOf[msg.sender].add(msg.value);
+153	 CreditPurchased(msg.sender, msg.value, msg.value.mul(rate));
+154	 }
+155	 function withdrawEth(uint256 _eth) public returns(bool) {
+156	 require( ethBalanceOf[msg.sender] >= _eth && _eth > 0 );
+157	 uint256 toTransfer = _eth;
+158	 ethBalanceOf[msg.sender] = ethBalanceOf[msg.sender].sub(_eth);
+159	 msg.sender.transfer(toTransfer);
+160	 EthWithdrawn(msg.sender, toTransfer);
+161	 }
+162	 function issueRefunds(address[] _addrs) public onlyOwner returns(bool) {
+163	 require(_addrs.length <= maxDropsPerTx);
+164	 for(uint i = 0; i < _addrs.length; i++) {
+165	 if(_addrs[i] != address(0) && ethBalanceOf[_addrs[i]] > 0) {
+166	 uint256 toRefund = ethBalanceOf[_addrs[i]];
+167	 ethBalanceOf[_addrs[i]] = 0;
+168	 _addrs[i].transfer(toRefund);
+169	 RefundIssued(_addrs[i], toRefund);
+170	 }
+171	 }
+172	 }
+173	 function singleValueAirdrop(address _addressOfToken, address[] _recipients, uint256 _value) public returns(bool) {
+174	 ERCInterface token = ERCInterface(_addressOfToken);
+175	 require( _recipients.length <= maxDropsPerTx && ( getTotalDropsOf(msg.sender)>= _recipients.length || tokenHasFreeTrial(_addressOfToken) ) && !tokenIsBanned[_addressOfToken] );
+176	 for(uint i = 0; i < _recipients.length; i++) {
+177	 if(_recipients[i] != address(0)) {
+178	 token.transferFrom(msg.sender, _recipients[i], _value);
+179	 }
+180	 }
+181	 if(tokenHasFreeTrial(_addressOfToken)) {
+182	 trialDrops[_addressOfToken] = trialDrops[_addressOfToken].add(_recipients.length);
+183	 }
+184	 else {
+185	 updateMsgSenderBonusDrops(_recipients.length);
+186	 }
+187	 AirdropInvoked(msg.sender, _recipients.length);
+188	 return true;
+189	 }
+190	 function multiValueAirdrop(address _addressOfToken, address[] _recipients, uint256[] _values) public returns(bool) {
+191	 ERCInterface token = ERCInterface(_addressOfToken);
+192	 require( _recipients.length <= maxDropsPerTx && _recipients.length == _values.length && ( getTotalDropsOf(msg.sender) >= _recipients.length || tokenHasFreeTrial(_addressOfToken) ) && !tokenIsBanned[_addressOfToken] );
+193	 for(uint i = 0; i < _recipients.length; i++) {
+194	 if(_recipients[i] != address(0) && _values[i] > 0) {
+195	 token.transferFrom(msg.sender, _recipients[i], _values[i]);
+196	 }
+197	 }
+198	 if(tokenHasFreeTrial(_addressOfToken)) {
+199	 trialDrops[_addressOfToken] = trialDrops[_addressOfToken].add(_recipients.length);
+200	 }
+201	 else {
+202	 updateMsgSenderBonusDrops(_recipients.length);
+203	 }
+204	 AirdropInvoked(msg.sender, _recipients.length);
+205	 return true;
+206	 }
+207	 function updateMsgSenderBonusDrops(uint256 _drops) internal {
+208	 if(_drops <= getDropsOf(msg.sender)) {
+209	 bonusDropsOf[msg.sender] = bonusDropsOf[msg.sender].add(_drops.mul(bonus).div(100));
+210	 ethBalanceOf[msg.sender] = ethBalanceOf[msg.sender].sub(_drops.mul(dropUnitPrice));
+211	 owner.transfer(_drops.mul(dropUnitPrice));
+212	 }
+213	 else {
+214	 uint256 remainder = _drops.sub(getDropsOf(msg.sender));
+215	 if(ethBalanceOf[msg.sender] > 0) {
+216	 bonusDropsOf[msg.sender] = bonusDropsOf[msg.sender].add(getDropsOf(msg.sender).mul(bonus).div(100));
+217	 owner.transfer(ethBalanceOf[msg.sender]);
+218	 ethBalanceOf[msg.sender] = 0;
+219	 }
+220	 bonusDropsOf[msg.sender] = bonusDropsOf[msg.sender].sub(remainder);
+221	 }
+222	 }
+223	 function withdrawERC20Tokens(address _addressOfToken, address _recipient, uint256 _value) public onlyOwner returns(bool){
+224	 require( _addressOfToken != address(0) && _recipient != address(0) && _value > 0 );
+225	 ERCInterface token = ERCInterface(_addressOfToken);
+226	 token.transfer(_recipient, _value);
+227	 ERC20TokensWithdrawn(_addressOfToken, _recipient, _value);
+228	 return true;
+229	 }
+230	 }

@@ -1,0 +1,148 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract Ownable {
+3	 address public owner;
+4	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+5	 constructor() public {
+6	 owner = msg.sender;
+7	 }
+8	 modifier onlyOwner() {
+9	 require(msg.sender == owner, "Only the owner may call this method.");
+10	 _;
+11	 }
+12	 function transferOwnership(address _newOwner) public onlyOwner {
+13	 _transferOwnership(_newOwner);
+14	 }
+15	 function _transferOwnership(address _newOwner) internal {
+16	 require(_newOwner != address(0), "Invalid owner address");
+17	 emit OwnershipTransferred(owner, _newOwner);
+18	 owner = _newOwner;
+19	 }
+20	 }
+21	 contract ReviewThisPlease is Ownable {
+22	 event Accept(string topic, uint256 value);
+23	 event Decline(string topic, uint256 value);
+24	 event NewTopic(string topic, address from, uint256 value);
+25	 event ContributeToTopic(string topic, address from, uint256 value);
+26	 struct Supporter {
+27	 address addr;
+28	 uint256 value;
+29	 }
+30	 struct SupporterList {
+31	 mapping(uint256 => Supporter) idToSupporter;
+32	 uint256 length;
+33	 }
+34	 struct TopicList {
+35	 mapping(uint256 => string) idToTopic;
+36	 uint256 length;
+37	 }
+38	 uint256 public minForNewTopic;
+39	 uint256 public minForExistingTopic;
+40	 mapping(string => SupporterList) private topicToSupporterList;
+41	 mapping(address => TopicList) private supporterToTopicList;
+42	 TopicList private allTopics;
+43	 constructor() public {
+44	 minForNewTopic = 0.05 ether;
+45	 minForExistingTopic = 0.001 ether;
+46	 }
+47	 function setMins(uint256 _minForNewTopic, uint256 _minForExistingTopic) onlyOwner public {
+48	 require(_minForNewTopic > 0, "The _minForNewTopic should be > 0.");
+49	 require(_minForExistingTopic > 0, "The _minForExistingTopic should be > 0.");
+50	 minForNewTopic = _minForNewTopic;
+51	 minForExistingTopic = _minForExistingTopic;
+52	 }
+53	 function getTopicCount() public view returns (uint256) {
+54	 return allTopics.length;
+55	 }
+56	 function getTopic(uint256 id) public view returns (string) {
+57	 return allTopics.idToTopic[id];
+58	 }
+59	 function getSupportersForTopic(string topic) public view returns (address[], uint256[]) {
+60	 SupporterList storage supporterList = topicToSupporterList[topic];
+61	 address[] memory addressList = new address[](supporterList.length);
+62	 uint256[] memory valueList = new uint256[](supporterList.length);
+63	 for(uint i = 0; i < supporterList.length; i++) {
+64	 Supporter memory supporter = supporterList.idToSupporter[i];
+65	 addressList[i] = supporter.addr;
+66	 valueList[i] = supporter.value;
+67	 }
+68	 return (addressList, valueList);
+69	 }
+70	 function requestTopic(string topic) public payable {
+71	 require(bytes(topic).length > 0, "Please specify a topic.");
+72	 require(bytes(topic).length <= 500, "The topic is too long (max 500 characters).");
+73	 SupporterList storage supporterList = topicToSupporterList[topic];
+74	 if(supporterList.length == 0) {
+75	 require(msg.value >= minForNewTopic, "Please send at least 'minForNewTopic' to request a new topic.");
+76	 allTopics.idToTopic[allTopics.length++] = topic;
+77	 emit NewTopic(topic, msg.sender, msg.value);
+78	 }
+79	 else {
+80	 require(msg.value >= minForExistingTopic, "Please send at least 'minForExistingTopic' to add support to an existing topic.");
+81	 emit ContributeToTopic(topic, msg.sender, msg.value);
+82	 }
+83	 supporterList.idToSupporter[supporterList.length++] = Supporter(msg.sender, msg.value);
+84	 }
+85	 function refund(string topic) public returns (bool) {
+86	 SupporterList storage supporterList = topicToSupporterList[topic];
+87	 uint256 amountToRefund = 0;
+88	 for(uint i = 0; i < supporterList.length; i++) {
+89	 Supporter memory supporter = supporterList.idToSupporter[i];
+90	 if(supporter.addr == msg.sender) {
+91	 amountToRefund += supporter.value;
+92	 supporterList.idToSupporter[i] = supporterList.idToSupporter[--supporterList.length];
+93	 i--;
+94	 }
+95	 }
+96	 bool topicWasRemoved = false;
+97	 if(supporterList.length == 0) {
+98	 _removeTopic(topic);
+99	 topicWasRemoved = true;
+100	 }
+101	 msg.sender.transfer(amountToRefund);
+102	 return (topicWasRemoved);
+103	 }
+104	 function refundAll() public {
+105	 for(uint i = 0; i < allTopics.length; i++) {
+106	 if(refund(allTopics.idToTopic[i])) {
+107	 i--;
+108	 }
+109	 }
+110	 }
+111	 function accept(string topic) public onlyOwner {
+112	 SupporterList storage supporterList = topicToSupporterList[topic];
+113	 uint256 totalValue = 0;
+114	 for(uint i = 0; i < supporterList.length; i++) {
+115	 totalValue += supporterList.idToSupporter[i].value;
+116	 }
+117	 _removeTopic(topic);
+118	 emit Accept(topic, totalValue);
+119	 owner.transfer(totalValue);
+120	 }
+121	 function decline(string topic) public onlyOwner {
+122	 SupporterList storage supporterList = topicToSupporterList[topic];
+123	 uint256 totalValue = 0;
+124	 for(uint i = 0; i < supporterList.length; i++) {
+125	 totalValue += supporterList.idToSupporter[i].value;
+126	 supporterList.idToSupporter[i].addr.transfer( supporterList.idToSupporter[i].value);
+127	 }
+128	 _removeTopic(topic);
+129	 emit Decline(topic, totalValue);
+130	 }
+131	 function declineAll() public onlyOwner {
+132	 for(uint i = 0; i < allTopics.length; i++) {
+133	 decline(allTopics.idToTopic[i]);
+134	 }
+135	 }
+136	 function _removeTopic(string topic) private {
+137	 delete topicToSupporterList[topic];
+138	 bytes32 topicHash = keccak256(abi.encodePacked(topic));
+139	 for(uint i = 0; i < allTopics.length; i++) {
+140	 string memory _topic = allTopics.idToTopic[i];
+141	 if(keccak256(abi.encodePacked(_topic)) == topicHash) {
+142	 allTopics.idToTopic[i] = allTopics.idToTopic[--allTopics.length];
+143	 return;
+144	 }
+145	 }
+146	 }
+147	 }

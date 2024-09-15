@@ -1,0 +1,312 @@
+row number 
+1	        pragma solidity ^0.8.0;
+2	 contract Nonce {
+3	 uint256 public constant MAX_INCREASE = 100;
+4	 uint256 private compound;
+5	 constructor(){
+6	 setBoth(128, 0);
+7	 }
+8	 function nextNonce() external view returns (uint128){
+9	 return getMax() + 1;
+10	 }
+11	 function isFree(uint128 nonce) external view returns (bool){
+12	 uint128 max = getMax();
+13	 return isValidHighNonce(max, nonce) || isValidLowNonce(max, getRegister(), nonce);
+14	 }
+15	 function flagUsed(uint128 nonce) internal {
+16	 uint256 comp = compound;
+17	 uint128 max = uint128(comp);
+18	 uint128 reg = uint128(comp >> 128);
+19	 if (isValidHighNonce(max, nonce)){
+20	 setBoth(nonce, ((reg << 1) | 0x1) << (nonce - max - 1));
+21	 }
+22	 else if (isValidLowNonce(max, reg, nonce)){
+23	 setBoth(max, uint128(reg | 0x1 << (max - nonce - 1)));
+24	 }
+25	 else {
+26	 revert("used");
+27	 }
+28	 }
+29	 function getMax() private view returns (uint128) {
+30	 return uint128(compound);
+31	 }
+32	 function getRegister() private view returns (uint128) {
+33	 return uint128(compound >> 128);
+34	 }
+35	 function setBoth(uint128 max, uint128 reg) private {
+36	 compound = uint256(reg) << 128 | max;
+37	 }
+38	 function isValidHighNonce(uint128 max, uint128 nonce) private pure returns (bool){
+39	 return nonce > max && nonce <= max + MAX_INCREASE;
+40	 }
+41	 function isValidLowNonce(uint128 max, uint128 reg, uint128 nonce) private pure returns (bool){
+42	 uint256 diff = max - nonce;
+43	 return diff > 0 && diff <= 128 && ((0x1 << (diff - 1)) & reg == 0);
+44	 }
+45	 }
+46	 pragma solidity ^0.8.0;
+47	 abstract contract Initializable {
+48	 bool private _initialized;
+49	 modifier initializer() {
+50	 require(!_initialized, "already initialized");
+51	 _;
+52	 _initialized = true;
+53	 }
+54	 }
+55	 pragma solidity ^0.8.0;
+56	 library Clones {
+57	 function clone(address implementation) internal returns (address instance) {
+58	 assembly {
+59	 let ptr := mload(0x40) mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(ptr, 0x14), shl(0x60, implementation)) mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000) instance := create(0, ptr, 0x37) }
+60	 require(instance != address(0), "ERC1167: create failed");
+61	 }
+62	 function cloneDeterministic(address implementation, bytes32 salt) internal returns (address instance) {
+63	 assembly {
+64	 let ptr := mload(0x40) mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(ptr, 0x14), shl(0x60, implementation)) mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000) instance := create2(0, ptr, 0x37, salt) }
+65	 require(instance != address(0), "ERC1167: create2 failed");
+66	 }
+67	 function predictDeterministicAddress( address implementation, bytes32 salt, address deployer ) internal pure returns (address predicted) {
+68	 assembly {
+69	 let ptr := mload(0x40) mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(ptr, 0x14), shl(0x60, implementation)) mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf3ff00000000000000000000000000000000) mstore(add(ptr, 0x38), shl(0x60, deployer)) mstore(add(ptr, 0x4c), salt) mstore(add(ptr, 0x6c), keccak256(ptr, 0x37)) predicted := keccak256(add(ptr, 0x37), 0x55) }
+70	 }
+71	 function predictDeterministicAddress(address implementation, bytes32 salt) internal view returns (address predicted) {
+72	 return predictDeterministicAddress(implementation, salt, address(this));
+73	 }
+74	 }
+75	 pragma solidity ^0.8.0;
+76	 contract MultiSigCloneFactory {
+77	 address immutable public multiSigImplementation;
+78	 event ContractCreated(address indexed contractAddress, string indexed typeName);
+79	 constructor(address _multiSigImplementation) {
+80	 multiSigImplementation = _multiSigImplementation;
+81	 }
+82	 function predict(bytes32 salt) external view returns (address) {
+83	 return Clones.predictDeterministicAddress(multiSigImplementation, salt);
+84	 }
+85	 function create(address owner, bytes32 salt) external returns (MultiSigWallet) {
+86	 address payable instance = payable(Clones.cloneDeterministic(multiSigImplementation, salt));
+87	 MultiSigWallet(instance).initialize(owner);
+88	 emit ContractCreated(instance, "MultiSigWallet");
+89	 return MultiSigWallet(instance);
+90	 }
+91	 }
+92	 pragma solidity ^0.8.0;
+93	 contract MultiSigWallet is Nonce, Initializable {
+94	 mapping (address => uint8) public signers;
+95	 uint16 public signerCount;
+96	 bytes public contractId;
+97	 event SignerChange( address indexed signer, uint8 signaturesNeeded );
+98	 event Transacted( address indexed toAddress, bytes4 selector, address[] signers );
+99	 event Received(address indexed sender, uint amount);
+100	 function initialize(address owner) external initializer {
+101	 contractId = toBytes(uint32(uint160(address(this))));
+102	 signerCount = 0;
+103	 _setSigner(owner, 1);
+104	 }
+105	 receive() external payable {
+106	 emit Received(msg.sender, msg.value);
+107	 }
+108	 function checkSignatures(uint128 nonce, address to, uint value, bytes calldata data, uint8[] calldata v, bytes32[] calldata r, bytes32[] calldata s) external view returns (address[] memory) {
+109	 bytes32 transactionHash = calculateTransactionHash(nonce, contractId, to, value, data);
+110	 return verifySignatures(transactionHash, v, r, s);
+111	 }
+112	 function checkExecution(address to, uint value, bytes calldata data) external {
+113	 Address.functionCallWithValue(to, data, value);
+114	 revert("Test passed. Reverting.");
+115	 }
+116	 function execute(uint128 nonce, address to, uint value, bytes calldata data, uint8[] calldata v, bytes32[] calldata r, bytes32[] calldata s) external returns (bytes memory) {
+117	 bytes32 transactionHash = calculateTransactionHash(nonce, contractId, to, value, data);
+118	 address[] memory found = verifySignatures(transactionHash, v, r, s);
+119	 bytes memory returndata = Address.functionCallWithValue(to, data, value);
+120	 flagUsed(nonce);
+121	 emit Transacted(to, extractSelector(data), found);
+122	 return returndata;
+123	 }
+124	 function extractSelector(bytes calldata data) private pure returns (bytes4){
+125	 if (data.length < 4){
+126	 return bytes4(0);
+127	 }
+128	 else {
+129	 return bytes4(data[0]) | (bytes4(data[1]) >> 8) | (bytes4(data[2]) >> 16) | (bytes4(data[3]) >> 24);
+130	 }
+131	 }
+132	 function toBytes(uint number) internal pure returns (bytes memory){
+133	 uint len = 0;
+134	 uint temp = 1;
+135	 while (number >= temp){
+136	 temp = temp << 8;
+137	 len++;
+138	 }
+139	 temp = number;
+140	 bytes memory data = new bytes(len);
+141	 for (uint i = len; i>0; i--) {
+142	 data[i-1] = bytes1(uint8(temp));
+143	 temp = temp >> 8;
+144	 }
+145	 return data;
+146	 }
+147	 function calculateTransactionHash(uint128 sequence, bytes memory id, address to, uint value, bytes calldata data) internal view returns (bytes32){
+148	 bytes[] memory all = new bytes[](9);
+149	 all[0] = toBytes(sequence);
+150	 all[1] = id;
+151	 all[2] = toBytes(21000);
+152	 all[3] = abi.encodePacked(to);
+153	 all[4] = toBytes(value);
+154	 all[5] = data;
+155	 all[6] = toBytes(block.chainid);
+156	 all[7] = toBytes(0);
+157	 for (uint i = 0; i<8; i++){
+158	 all[i] = RLPEncode.encodeBytes(all[i]);
+159	 }
+160	 all[8] = all[7];
+161	 return keccak256(RLPEncode.encodeList(all));
+162	 }
+163	 function verifySignatures(bytes32 transactionHash, uint8[] calldata v, bytes32[] calldata r, bytes32[] calldata s) public view returns (address[] memory) {
+164	 address[] memory found = new address[](r.length);
+165	 require(r.length > 0, "sig missing");
+166	 for (uint i = 0; i < r.length; i++) {
+167	 address signer = ecrecover(transactionHash, v[i], r[i], s[i]);
+168	 uint8 signaturesNeeded = signers[signer];
+169	 require(signaturesNeeded > 0 && signaturesNeeded <= r.length, "cosigner error");
+170	 found[i] = signer;
+171	 }
+172	 requireNoDuplicates(found);
+173	 return found;
+174	 }
+175	 function requireNoDuplicates(address[] memory found) private pure {
+176	 for (uint i = 0; i < found.length; i++) {
+177	 for (uint j = i+1; j < found.length; j++) {
+178	 require(found[i] != found[j], "duplicate signature");
+179	 }
+180	 }
+181	 }
+182	 function setSigner(address signer, uint8 signaturesNeeded) external authorized {
+183	 _setSigner(signer, signaturesNeeded);
+184	 require(signerCount > 0, "signer count 0");
+185	 }
+186	 function migrate(address destination) external {
+187	 _migrate(msg.sender, destination);
+188	 }
+189	 function migrate(address source, address destination) external authorized {
+190	 _migrate(source, destination);
+191	 }
+192	 function _migrate(address source, address destination) private {
+193	 require(signers[destination] == 0, "destination not new");
+194	 _setSigner(destination, signers[source]);
+195	 _setSigner(source, 0);
+196	 }
+197	 function _setSigner(address signer, uint8 signaturesNeeded) private {
+198	 require(!Address.isContract(signer), "signer cannot be a contract");
+199	 require(signer != address(0x0), "0x0 signer");
+200	 uint8 prevValue = signers[signer];
+201	 signers[signer] = signaturesNeeded;
+202	 if (prevValue > 0 && signaturesNeeded == 0){
+203	 signerCount--;
+204	 }
+205	 else if (prevValue == 0 && signaturesNeeded > 0){
+206	 signerCount++;
+207	 }
+208	 emit SignerChange(signer, signaturesNeeded);
+209	 }
+210	 modifier authorized() {
+211	 require(address(this) == msg.sender || signers[msg.sender] == 1, "not authorized");
+212	 _;
+213	 }
+214	 }
+215	 pragma solidity ^0.8.0;
+216	 library RLPEncode {
+217	 function encodeBytes(bytes memory self) internal pure returns (bytes memory) {
+218	 bytes memory encoded;
+219	 if (self.length == 1 && uint8(self[0]) < 128) {
+220	 encoded = self;
+221	 }
+222	 else {
+223	 encoded = abi.encodePacked(encodeLength(self.length, 128), self);
+224	 }
+225	 return encoded;
+226	 }
+227	 function encodeList(bytes[] memory self) internal pure returns (bytes memory) {
+228	 bytes memory list = flatten(self);
+229	 return abi.encodePacked(encodeLength(list.length, 192), list);
+230	 }
+231	 function encodeLength(uint len, uint offset) private pure returns (bytes memory) {
+232	 bytes memory encoded;
+233	 if (len < 56) {
+234	 encoded = new bytes(1);
+235	 encoded[0] = bytes32(len + offset)[31];
+236	 }
+237	 else {
+238	 uint lenLen;
+239	 uint i = 1;
+240	 while (len >= i) {
+241	 lenLen++;
+242	 i <<= 8;
+243	 }
+244	 encoded = new bytes(lenLen + 1);
+245	 encoded[0] = bytes32(lenLen + offset + 55)[31];
+246	 for(i = 1; i <= lenLen; i++) {
+247	 encoded[i] = bytes32((len / (256**(lenLen-i))) % 256)[31];
+248	 }
+249	 }
+250	 return encoded;
+251	 }
+252	 function memcpy(uint _dest, uint _src, uint _len) private pure {
+253	 uint dest = _dest;
+254	 uint src = _src;
+255	 uint len = _len;
+256	 for(; len >= 32; len -= 32) {
+257	 assembly {
+258	 mstore(dest, mload(src)) }
+259	 dest += 32;
+260	 src += 32;
+261	 }
+262	 uint mask = type(uint).max >> (len << 3);
+263	 assembly {
+264	 let srcpart := and(mload(src), not(mask)) let destpart := and(mload(dest), mask) mstore(dest, or(destpart, srcpart)) }
+265	 }
+266	 function flatten(bytes[] memory _list) private pure returns (bytes memory) {
+267	 if (_list.length == 0) {
+268	 return new bytes(0);
+269	 }
+270	 uint len;
+271	 uint i;
+272	 for (i = 0; i < _list.length; i++) {
+273	 len += _list[i].length;
+274	 }
+275	 bytes memory flattened = new bytes(len);
+276	 uint flattenedPtr;
+277	 assembly {
+278	 flattenedPtr := add(flattened, 0x20) }
+279	 for(i = 0; i < _list.length; i++) {
+280	 bytes memory item = _list[i];
+281	 uint listPtr;
+282	 assembly {
+283	 listPtr := add(item, 0x20)}
+284	 memcpy(flattenedPtr, listPtr, item.length);
+285	 flattenedPtr += item.length;
+286	 }
+287	 return flattened;
+288	 }
+289	 }
+290	 pragma solidity ^0.8.0;
+291	 library Address {
+292	 function isContract(address account) internal view returns (bool) {
+293	 return account.code.length > 0;
+294	 }
+295	 function functionCallWithValue(address target, bytes memory data, uint256 weiValue) internal returns (bytes memory) {
+296	 require(data.length == 0 || isContract(target), "transfer or contract");
+297	 (bool success, bytes memory returndata) = target.call{
+298	 value: weiValue }
+299	 (data);
+300	 if (success) {
+301	 return returndata;
+302	 }
+303	 else if (returndata.length > 0) {
+304	 assembly{
+305	 revert (add (returndata, 0x20), mload (returndata)) }
+306	 }
+307	 else {
+308	 revert("failed");
+309	 }
+310	 }
+311	 }

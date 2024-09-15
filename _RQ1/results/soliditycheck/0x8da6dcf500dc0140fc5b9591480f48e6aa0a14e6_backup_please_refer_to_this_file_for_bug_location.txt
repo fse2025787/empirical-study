@@ -1,0 +1,114 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity =0.7.6;
+3	 abstract contract Token {
+4	 function transferFrom(address _from, address _to, uint256 _value) public virtual returns (bool success);
+5	 function approve(address _spender, uint256 _value) public virtual returns (bool success);
+6	 }
+7	 abstract contract pToken {
+8	 function redeem(uint256 _value, string memory destinationAddress, bytes4 destinationChainId) public virtual returns (bool _success);
+9	 }
+10	 interface Curve {
+11	 function exchange_underlying(int128 i, int128 j, uint256 dx, uint256 min_dy, address receiver) external returns (uint256);
+12	 }
+13	 abstract contract WETH {
+14	 function deposit() external virtual payable;
+15	 function withdraw(uint256 amount) external virtual;
+16	 function approve(address guy, uint256 wad) external virtual;
+17	 }
+18	 interface ISwapRouter {
+19	 struct ExactInputSingleParams {
+20	 address tokenIn;
+21	 address tokenOut;
+22	 uint24 fee;
+23	 address recipient;
+24	 uint256 deadline;
+25	 uint256 amountIn;
+26	 uint256 amountOutMinimum;
+27	 uint160 sqrtPriceLimitX96;
+28	 }
+29	 function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+30	 struct ExactInputParams {
+31	 bytes path;
+32	 address recipient;
+33	 uint256 deadline;
+34	 uint256 amountIn;
+35	 uint256 amountOutMinimum;
+36	 }
+37	 function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
+38	 struct ExactOutputSingleParams {
+39	 address tokenIn;
+40	 address tokenOut;
+41	 uint24 fee;
+42	 address recipient;
+43	 uint256 deadline;
+44	 uint256 amountOut;
+45	 uint256 amountInMaximum;
+46	 uint160 sqrtPriceLimitX96;
+47	 }
+48	 function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
+49	 struct ExactOutputParams {
+50	 bytes path;
+51	 address recipient;
+52	 uint256 deadline;
+53	 uint256 amountOut;
+54	 uint256 amountInMaximum;
+55	 }
+56	 function exactOutput(ExactOutputParams calldata params) external payable returns (uint256 amountIn);
+57	 }
+58	 interface IUniswapRouter is ISwapRouter {
+59	 function wrapETH(uint256 value) external payable;
+60	 function refundETH() external payable;
+61	 }
+62	 contract BTCETHSwap {
+63	 fallback() external {
+64	 revert();
+65	 }
+66	 address public PBTC_ADDRESS = address(0x62199B909FB8B8cf870f97BEf2cE6783493c4908);
+67	 address public WBTC_ADDRESS = address(0x6B175474E89094C44Da98b954EedeAC495271d0F);
+68	 address public WETH_ADDRESS = address(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+69	 address public CURVE_PBTC_POOL = address(0xC9467E453620f16b57a34a770C6bceBECe002587);
+70	 int128 public CURVE_WBTC_INDEX = 2;
+71	 int128 public CURVE_PBTC_INDEX = 0;
+72	 bytes4 public PTOKENS_BTC_CHAINID = 0x01ec97de;
+73	 IUniswapRouter public constant uniswapRouter = IUniswapRouter(0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45);
+74	 constructor() {
+75	 }
+76	 function swapBTCforETH (uint256 amount, address payable recipient) public payable {
+77	 Token(PBTC_ADDRESS).transferFrom(msg.sender, address(this), amount);
+78	 uint256 amount_wbtc = CurveSwap( false, amount );
+79	 uint256 amountETH = Uniswap( WBTC_ADDRESS, WETH_ADDRESS, amount_wbtc, recipient, 3000 );
+80	 WETH(WETH_ADDRESS).withdraw(amountETH);
+81	 }
+82	 function swapETHforBTC (string memory recipientBtcAddress) external payable {
+83	 uint256 amountETH = msg.value;
+84	 uint256 amount_WBTC = Uniswap( WETH_ADDRESS, WBTC_ADDRESS, amountETH, address(this), 3000 );
+85	 }
+86	 function Uniswap( address tokenIn, address tokenOut, uint256 amountIn, address recipient, uint24 fee) internal returns (uint256) {
+87	 ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams( tokenIn, tokenOut, fee, recipient, block.timestamp + 15, amountIn, 1, uint160(0) );
+88	 uint256 amountOut = uniswapRouter.exactInputSingle{
+89	 value: amountIn}
+90	 (params);
+91	 uniswapRouter.refundETH();
+92	 (bool success,) = msg.sender.call{
+93	 value: address(this).balance }
+94	 ("");
+95	 require(success, "refund failed");
+96	 return amountOut;
+97	 }
+98	 function CurveSwap(bool wtop, uint256 amountSell) internal returns (uint256) {
+99	 int128 i;
+100	 int128 j;
+101	 if (wtop) {
+102	 i = CURVE_WBTC_INDEX;
+103	 j = CURVE_PBTC_INDEX;
+104	 }
+105	 else {
+106	 i = CURVE_PBTC_INDEX;
+107	 j = CURVE_WBTC_INDEX;
+108	 }
+109	 Curve(CURVE_PBTC_POOL).exchange_underlying(i, j, amountSell, 0, address(this));
+110	 }
+111	 receive() payable external {
+112	 }
+113	 }

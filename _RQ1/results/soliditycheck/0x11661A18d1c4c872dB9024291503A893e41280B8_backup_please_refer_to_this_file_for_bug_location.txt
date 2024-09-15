@@ -1,0 +1,491 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity 0.5.17;
+3	 library BytesLibrary {
+4	 function toString(bytes32 value) internal pure returns (string memory) {
+5	 bytes memory alphabet = "0123456789abcdef";
+6	 bytes memory str = new bytes(64);
+7	 for (uint256 i = 0; i < 32; i++) {
+8	 str[i*2] = alphabet[uint8(value[i] >> 4)];
+9	 str[1+i*2] = alphabet[uint8(value[i] & 0x0f)];
+10	 }
+11	 return string(str);
+12	 }
+13	 }
+14	 contract Context {
+15	 constructor () internal {
+16	 }
+17	 function _msgSender() internal view returns (address payable) {
+18	 return msg.sender;
+19	 }
+20	 function _msgData() internal view returns (bytes memory) {
+21	 this;
+22	 return msg.data;
+23	 }
+24	 }
+25	 contract ExchangeDomainV1 {
+26	 enum AssetType {
+27	 ETH, ERC20, ERC1155, ERC721, ERC721Deprecated}
+28	 struct Asset {
+29	 address token;
+30	 uint tokenId;
+31	 AssetType assetType;
+32	 }
+33	 struct OrderKey {
+34	 address owner;
+35	 uint salt;
+36	 Asset sellAsset;
+37	 Asset buyAsset;
+38	 }
+39	 struct Order {
+40	 OrderKey key;
+41	 uint selling;
+42	 uint buying;
+43	 uint sellerFee;
+44	 }
+45	 struct Sig {
+46	 uint8 v;
+47	 bytes32 r;
+48	 bytes32 s;
+49	 }
+50	 }
+51	 contract ExchangeOrdersHolderV1 {
+52	 mapping(bytes32 => OrderParams) internal orders;
+53	 struct OrderParams {
+54	 uint selling;
+55	 uint buying;
+56	 uint sellerFee;
+57	 }
+58	 function add(ExchangeDomainV1.Order calldata order) external {
+59	 require(msg.sender == order.key.owner, "order could be added by owner only");
+60	 bytes32 key = prepareKey(order);
+61	 orders[key] = OrderParams(order.selling, order.buying, order.sellerFee);
+62	 }
+63	 function exists(ExchangeDomainV1.Order calldata order) external view returns (bool) {
+64	 bytes32 key = prepareKey(order);
+65	 OrderParams memory params = orders[key];
+66	 return params.buying == order.buying && params.selling == order.selling && params.sellerFee == order.sellerFee;
+67	 }
+68	 function prepareKey(ExchangeDomainV1.Order memory order) internal pure returns (bytes32) {
+69	 return keccak256(abi.encode( order.key.sellAsset.token, order.key.sellAsset.tokenId, order.key.owner, order.key.buyAsset.token, order.key.buyAsset.tokenId, order.key.salt ));
+70	 }
+71	 }
+72	 interface IERC165 {
+73	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+74	 }
+75	 interface IERC20 {
+76	 function totalSupply() external view returns (uint256);
+77	 function balanceOf(address account) external view returns (uint256);
+78	 function transfer(address recipient, uint256 amount) external returns (bool);
+79	 function allowance(address owner, address spender) external view returns (uint256);
+80	 function approve(address spender, uint256 amount) external returns (bool);
+81	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+82	 event Transfer(address indexed from, address indexed to, uint256 value);
+83	 event Approval(address indexed owner, address indexed spender, uint256 value);
+84	 }
+85	 library Roles {
+86	 struct Role {
+87	 mapping (address => bool) bearer;
+88	 }
+89	 function add(Role storage role, address account) internal {
+90	 require(!has(role, account), "Roles: account already has role");
+91	 role.bearer[account] = true;
+92	 }
+93	 function remove(Role storage role, address account) internal {
+94	 require(has(role, account), "Roles: account does not have role");
+95	 role.bearer[account] = false;
+96	 }
+97	 function has(Role storage role, address account) internal view returns (bool) {
+98	 require(account != address(0), "Roles: account is the zero address");
+99	 return role.bearer[account];
+100	 }
+101	 }
+102	 library SafeMath {
+103	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+104	 if (a == 0) {
+105	 return 0;
+106	 }
+107	 c = a * b;
+108	 assert(c / a == b);
+109	 return c;
+110	 }
+111	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+112	 return a / b;
+113	 }
+114	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+115	 assert(b <= a);
+116	 return a - b;
+117	 }
+118	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+119	 c = a + b;
+120	 assert(c >= a);
+121	 return c;
+122	 }
+123	 }
+124	 contract ERC165 is IERC165 {
+125	 bytes4 private constant _INTERFACE_ID_ERC165 = 0x01ffc9a7;
+126	 mapping(bytes4 => bool) private _supportedInterfaces;
+127	 constructor () internal {
+128	 _registerInterface(_INTERFACE_ID_ERC165);
+129	 }
+130	 function supportsInterface(bytes4 interfaceId) external view returns (bool) {
+131	 return _supportedInterfaces[interfaceId];
+132	 }
+133	 function _registerInterface(bytes4 interfaceId) internal {
+134	 require(interfaceId != 0xffffffff, "ERC165: invalid interface id");
+135	 _supportedInterfaces[interfaceId] = true;
+136	 }
+137	 }
+138	 contract IERC1155 is IERC165 {
+139	 event TransferSingle(address indexed _operator, address indexed _from, address indexed _to, uint256 _id, uint256 _value);
+140	 event TransferBatch(address indexed _operator, address indexed _from, address indexed _to, uint256[] _ids, uint256[] _values);
+141	 event ApprovalForAll(address indexed _owner, address indexed _operator, bool _approved);
+142	 event URI(string _value, uint256 indexed _id);
+143	 function safeTransferFrom(address _from, address _to, uint256 _id, uint256 _value, bytes calldata _data) external;
+144	 function safeBatchTransferFrom(address _from, address _to, uint256[] calldata _ids, uint256[] calldata _values, bytes calldata _data) external;
+145	 function balanceOf(address _owner, uint256 _id) external view returns (uint256);
+146	 function balanceOfBatch(address[] calldata _owners, uint256[] calldata _ids) external view returns (uint256[] memory);
+147	 function setApprovalForAll(address _operator, bool _approved) external;
+148	 function isApprovedForAll(address _owner, address _operator) external view returns (bool);
+149	 }
+150	 contract IERC721 is IERC165 {
+151	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+152	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+153	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+154	 function balanceOf(address owner) public view returns (uint256 balance);
+155	 function ownerOf(uint256 tokenId) public view returns (address owner);
+156	 function safeTransferFrom(address from, address to, uint256 tokenId) public;
+157	 function transferFrom(address from, address to, uint256 tokenId) public;
+158	 function approve(address to, uint256 tokenId) public;
+159	 function getApproved(uint256 tokenId) public view returns (address operator);
+160	 function setApprovalForAll(address operator, bool _approved) public;
+161	 function isApprovedForAll(address owner, address operator) public view returns (bool);
+162	 function safeTransferFrom(address from, address to, uint256 tokenId, bytes memory data) public;
+163	 }
+164	 contract OperatorRole is Context {
+165	 using Roles for Roles.Role;
+166	 event OperatorAdded(address indexed account);
+167	 event OperatorRemoved(address indexed account);
+168	 Roles.Role private _operators;
+169	 constructor () internal {
+170	 }
+171	 modifier onlyOperator() {
+172	 require(isOperator(_msgSender()), "OperatorRole: caller does not have the Operator role");
+173	 _;
+174	 }
+175	 function isOperator(address account) public view returns (bool) {
+176	 return _operators.has(account);
+177	 }
+178	 function _addOperator(address account) internal {
+179	 _operators.add(account);
+180	 emit OperatorAdded(account);
+181	 }
+182	 function _removeOperator(address account) internal {
+183	 _operators.remove(account);
+184	 emit OperatorRemoved(account);
+185	 }
+186	 }
+187	 contract Ownable is Context {
+188	 address private _owner;
+189	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+190	 constructor () internal {
+191	 address msgSender = _msgSender();
+192	 _owner = msgSender;
+193	 emit OwnershipTransferred(address(0), msgSender);
+194	 }
+195	 function owner() public view returns (address) {
+196	 return _owner;
+197	 }
+198	 modifier onlyOwner() {
+199	 require(isOwner(), "Ownable: caller is not the owner");
+200	 _;
+201	 }
+202	 function isOwner() public view returns (bool) {
+203	 return _msgSender() == _owner;
+204	 }
+205	 function renounceOwnership() public onlyOwner {
+206	 emit OwnershipTransferred(_owner, address(0));
+207	 _owner = address(0);
+208	 }
+209	 function transferOwnership(address newOwner) public onlyOwner {
+210	 _transferOwnership(newOwner);
+211	 }
+212	 function _transferOwnership(address newOwner) internal {
+213	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+214	 emit OwnershipTransferred(_owner, newOwner);
+215	 _owner = newOwner;
+216	 }
+217	 }
+218	 library UintLibrary {
+219	 using SafeMath for uint;
+220	 function toString(uint256 _i) internal pure returns (string memory) {
+221	 if (_i == 0) {
+222	 return "0";
+223	 }
+224	 uint j = _i;
+225	 uint len;
+226	 while (j != 0) {
+227	 len++;
+228	 j /= 10;
+229	 }
+230	 bytes memory bstr = new bytes(len);
+231	 uint k = len - 1;
+232	 while (_i != 0) {
+233	 bstr[k--] = byte(uint8(48 + _i % 10));
+234	 _i /= 10;
+235	 }
+236	 return string(bstr);
+237	 }
+238	 function bp(uint value, uint bpValue) internal pure returns (uint) {
+239	 return value.mul(bpValue).div(10000);
+240	 }
+241	 }
+242	 contract HasSecondarySaleFees is ERC165 {
+243	 event SecondarySaleFees(uint256 tokenId, address[] recipients, uint[] bps);
+244	 bytes4 private constant _INTERFACE_ID_FEES = 0xb7799584;
+245	 constructor() public {
+246	 _registerInterface(_INTERFACE_ID_FEES);
+247	 }
+248	 function getFeeRecipients(uint256 id) public view returns (address payable[] memory);
+249	 function getFeeBps(uint256 id) public view returns (uint[] memory);
+250	 }
+251	 contract OwnableOperatorRole is Ownable, OperatorRole {
+252	 function addOperator(address account) external onlyOwner {
+253	 _addOperator(account);
+254	 }
+255	 function removeOperator(address account) external onlyOwner {
+256	 _removeOperator(account);
+257	 }
+258	 }
+259	 library StringLibrary {
+260	 using UintLibrary for uint256;
+261	 function append(string memory _a, string memory _b) internal pure returns (string memory) {
+262	 bytes memory _ba = bytes(_a);
+263	 bytes memory _bb = bytes(_b);
+264	 bytes memory bab = new bytes(_ba.length + _bb.length);
+265	 uint k = 0;
+266	 for (uint i = 0; i < _ba.length; i++) bab[k++] = _ba[i];
+267	 for (uint i = 0; i < _bb.length; i++) bab[k++] = _bb[i];
+268	 return string(bab);
+269	 }
+270	 function append(string memory _a, string memory _b, string memory _c) internal pure returns (string memory) {
+271	 bytes memory _ba = bytes(_a);
+272	 bytes memory _bb = bytes(_b);
+273	 bytes memory _bc = bytes(_c);
+274	 bytes memory bbb = new bytes(_ba.length + _bb.length + _bc.length);
+275	 uint k = 0;
+276	 for (uint i = 0; i < _ba.length; i++) bbb[k++] = _ba[i];
+277	 for (uint i = 0; i < _bb.length; i++) bbb[k++] = _bb[i];
+278	 for (uint i = 0; i < _bc.length; i++) bbb[k++] = _bc[i];
+279	 return string(bbb);
+280	 }
+281	 function recover(string memory message, uint8 v, bytes32 r, bytes32 s) internal pure returns (address) {
+282	 bytes memory msgBytes = bytes(message);
+283	 bytes memory fullMessage = concat( bytes("\x19Ethereum Signed Message:\n"), bytes(msgBytes.length.toString()), msgBytes, new bytes(0), new bytes(0), new bytes(0), new bytes(0) );
+284	 return ecrecover(keccak256(fullMessage), v, r, s);
+285	 }
+286	 function concat(bytes memory _ba, bytes memory _bb, bytes memory _bc, bytes memory _bd, bytes memory _be, bytes memory _bf, bytes memory _bg) internal pure returns (bytes memory) {
+287	 bytes memory resultBytes = new bytes(_ba.length + _bb.length + _bc.length + _bd.length + _be.length + _bf.length + _bg.length);
+288	 uint k = 0;
+289	 for (uint i = 0; i < _ba.length; i++) resultBytes[k++] = _ba[i];
+290	 for (uint i = 0; i < _bb.length; i++) resultBytes[k++] = _bb[i];
+291	 for (uint i = 0; i < _bc.length; i++) resultBytes[k++] = _bc[i];
+292	 for (uint i = 0; i < _bd.length; i++) resultBytes[k++] = _bd[i];
+293	 for (uint i = 0; i < _be.length; i++) resultBytes[k++] = _be[i];
+294	 for (uint i = 0; i < _bf.length; i++) resultBytes[k++] = _bf[i];
+295	 for (uint i = 0; i < _bg.length; i++) resultBytes[k++] = _bg[i];
+296	 return resultBytes;
+297	 }
+298	 }
+299	 contract ERC20TransferProxy is OwnableOperatorRole {
+300	 function erc20safeTransferFrom(IERC20 token, address from, address to, uint256 value) external onlyOperator {
+301	 require(token.transferFrom(from, to, value), "failure while transferring");
+302	 }
+303	 }
+304	 contract ExchangeStateV1 is OwnableOperatorRole {
+305	 mapping(bytes32 => uint256) public completed;
+306	 function getCompleted(ExchangeDomainV1.OrderKey calldata key) view external returns (uint256) {
+307	 return completed[getCompletedKey(key)];
+308	 }
+309	 function setCompleted(ExchangeDomainV1.OrderKey calldata key, uint256 newCompleted) external onlyOperator {
+310	 completed[getCompletedKey(key)] = newCompleted;
+311	 }
+312	 function getCompletedKey(ExchangeDomainV1.OrderKey memory key) pure public returns (bytes32) {
+313	 return keccak256(abi.encodePacked(key.owner, key.sellAsset.token, key.sellAsset.tokenId, key.buyAsset.token, key.buyAsset.tokenId, key.salt));
+314	 }
+315	 }
+316	 contract TransferProxy is OwnableOperatorRole {
+317	 function erc721safeTransferFrom(IERC721 token, address from, address to, uint256 tokenId) external onlyOperator {
+318	 token.safeTransferFrom(from, to, tokenId);
+319	 }
+320	 function erc1155safeTransferFrom(IERC1155 token, address from, address to, uint256 id, uint256 value, bytes calldata data) external onlyOperator {
+321	 token.safeTransferFrom(from, to, id, value, data);
+322	 }
+323	 }
+324	 contract TransferProxyForDeprecated is OwnableOperatorRole {
+325	 function erc721TransferFrom(IERC721 token, address from, address to, uint256 tokenId) external onlyOperator {
+326	 token.transferFrom(from, to, tokenId);
+327	 }
+328	 }
+329	 contract ExchangeV1 is Ownable, ExchangeDomainV1 {
+330	 using SafeMath for uint;
+331	 using UintLibrary for uint;
+332	 using StringLibrary for string;
+333	 using BytesLibrary for bytes32;
+334	 enum FeeSide {
+335	 NONE, SELL, BUY}
+336	 event Buy( address indexed sellToken, uint256 indexed sellTokenId, uint256 sellValue, address owner, address buyToken, uint256 buyTokenId, uint256 buyValue, address buyer, uint256 amount, uint256 salt );
+337	 event Cancel( address indexed sellToken, uint256 indexed sellTokenId, address owner, address buyToken, uint256 buyTokenId, uint256 salt );
+338	 bytes4 private constant _INTERFACE_ID_FEES = 0xb7799584;
+339	 uint256 private constant UINT256_MAX = 2 ** 256 - 1;
+340	 address payable public beneficiary;
+341	 address public buyerFeeSigner;
+342	 TransferProxy public transferProxy;
+343	 TransferProxyForDeprecated public transferProxyForDeprecated;
+344	 ERC20TransferProxy public erc20TransferProxy;
+345	 ExchangeStateV1 public state;
+346	 ExchangeOrdersHolderV1 public ordersHolder;
+347	 constructor( TransferProxy _transferProxy, TransferProxyForDeprecated _transferProxyForDeprecated, ERC20TransferProxy _erc20TransferProxy, ExchangeStateV1 _state, ExchangeOrdersHolderV1 _ordersHolder, address payable _beneficiary, address _buyerFeeSigner ) public {
+348	 transferProxy = _transferProxy;
+349	 transferProxyForDeprecated = _transferProxyForDeprecated;
+350	 erc20TransferProxy = _erc20TransferProxy;
+351	 state = _state;
+352	 ordersHolder = _ordersHolder;
+353	 beneficiary = _beneficiary;
+354	 buyerFeeSigner = _buyerFeeSigner;
+355	 }
+356	 function setBeneficiary(address payable newBeneficiary) external onlyOwner {
+357	 beneficiary = newBeneficiary;
+358	 }
+359	 function setBuyerFeeSigner(address newBuyerFeeSigner) external onlyOwner {
+360	 buyerFeeSigner = newBuyerFeeSigner;
+361	 }
+362	 function exchange( Order calldata order, Sig calldata sig, uint buyerFee, Sig calldata buyerFeeSig, uint amount, address buyer ) payable external {
+363	 validateOrderSig(order, sig);
+364	 validateBuyerFeeSig(order, buyerFee, buyerFeeSig);
+365	 uint paying = order.buying.mul(amount).div(order.selling);
+366	 verifyOpenAndModifyOrderState(order.key, order.selling, amount);
+367	 require(order.key.sellAsset.assetType != AssetType.ETH, "ETH is not supported on sell side");
+368	 if (order.key.buyAsset.assetType == AssetType.ETH) {
+369	 validateEthTransfer(paying, buyerFee);
+370	 }
+371	 FeeSide feeSide = getFeeSide(order.key.sellAsset.assetType, order.key.buyAsset.assetType);
+372	 if (buyer == address(0x0)) {
+373	 buyer = msg.sender;
+374	 }
+375	 transferWithFeesPossibility(order.key.sellAsset, amount, order.key.owner, buyer, feeSide == FeeSide.SELL, buyerFee, order.sellerFee, order.key.buyAsset);
+376	 transferWithFeesPossibility(order.key.buyAsset, paying, msg.sender, order.key.owner, feeSide == FeeSide.BUY, order.sellerFee, buyerFee, order.key.sellAsset);
+377	 emitBuy(order, amount, buyer);
+378	 }
+379	 function validateEthTransfer(uint value, uint buyerFee) internal view {
+380	 uint256 buyerFeeValue = value.bp(buyerFee);
+381	 require(msg.value == value + buyerFeeValue, "msg.value is incorrect");
+382	 }
+383	 function cancel(OrderKey calldata key) external {
+384	 require(key.owner == msg.sender, "not an owner");
+385	 state.setCompleted(key, UINT256_MAX);
+386	 emit Cancel(key.sellAsset.token, key.sellAsset.tokenId, msg.sender, key.buyAsset.token, key.buyAsset.tokenId, key.salt);
+387	 }
+388	 function validateOrderSig( Order memory order, Sig memory sig ) internal view {
+389	 if (sig.v == 0 && sig.r == bytes32(0x0) && sig.s == bytes32(0x0)) {
+390	 require(ordersHolder.exists(order), "incorrect signature");
+391	 }
+392	 else {
+393	 require(prepareMessage(order).recover(sig.v, sig.r, sig.s) == order.key.owner, "incorrect signature");
+394	 }
+395	 }
+396	 function validateBuyerFeeSig( Order memory order, uint buyerFee, Sig memory sig ) internal view {
+397	 require(prepareBuyerFeeMessage(order, buyerFee).recover(sig.v, sig.r, sig.s) == buyerFeeSigner, "incorrect buyer fee signature");
+398	 }
+399	 function prepareBuyerFeeMessage(Order memory order, uint fee) public pure returns (string memory) {
+400	 return keccak256(abi.encode(order, fee)).toString();
+401	 }
+402	 function prepareMessage(Order memory order) public pure returns (string memory) {
+403	 return keccak256(abi.encode(order)).toString();
+404	 }
+405	 function transferWithFeesPossibility(Asset memory firstType, uint value, address from, address to, bool hasFee, uint256 sellerFee, uint256 buyerFee, Asset memory secondType) internal {
+406	 if (!hasFee) {
+407	 transfer(firstType, value, from, to);
+408	 }
+409	 else {
+410	 transferWithFees(firstType, value, from, to, sellerFee, buyerFee, secondType);
+411	 }
+412	 }
+413	 function transfer(Asset memory asset, uint value, address from, address to) internal {
+414	 if (asset.assetType == AssetType.ETH) {
+415	 address payable toPayable = address(uint160(to));
+416	 toPayable.transfer(value);
+417	 }
+418	 else if (asset.assetType == AssetType.ERC20) {
+419	 require(asset.tokenId == 0, "tokenId should be 0");
+420	 erc20TransferProxy.erc20safeTransferFrom(IERC20(asset.token), from, to, value);
+421	 }
+422	 else if (asset.assetType == AssetType.ERC721) {
+423	 require(value == 1, "value should be 1 for ERC-721");
+424	 transferProxy.erc721safeTransferFrom(IERC721(asset.token), from, to, asset.tokenId);
+425	 }
+426	 else if (asset.assetType == AssetType.ERC721Deprecated) {
+427	 require(value == 1, "value should be 1 for ERC-721");
+428	 transferProxyForDeprecated.erc721TransferFrom(IERC721(asset.token), from, to, asset.tokenId);
+429	 }
+430	 else {
+431	 transferProxy.erc1155safeTransferFrom(IERC1155(asset.token), from, to, asset.tokenId, value, "");
+432	 }
+433	 }
+434	 function transferWithFees(Asset memory firstType, uint value, address from, address to, uint256 sellerFee, uint256 buyerFee, Asset memory secondType) internal {
+435	 uint restValue = transferFeeToBeneficiary(firstType, from, value, sellerFee, buyerFee);
+436	 if ( secondType.assetType == AssetType.ERC1155 && IERC1155(secondType.token).supportsInterface(_INTERFACE_ID_FEES) || (secondType.assetType == AssetType.ERC721 || secondType.assetType == AssetType.ERC721Deprecated) && IERC721(secondType.token).supportsInterface(_INTERFACE_ID_FEES) ) {
+437	 HasSecondarySaleFees withFees = HasSecondarySaleFees(secondType.token);
+438	 address payable[] memory recipients = withFees.getFeeRecipients(secondType.tokenId);
+439	 uint[] memory fees = withFees.getFeeBps(secondType.tokenId);
+440	 require(fees.length == recipients.length);
+441	 for (uint256 i = 0; i < fees.length; i++) {
+442	 (uint newRestValue, uint current) = subFeeInBp(restValue, value, fees[i]);
+443	 restValue = newRestValue;
+444	 transfer(firstType, current, from, recipients[i]);
+445	 }
+446	 }
+447	 address payable toPayable = address(uint160(to));
+448	 transfer(firstType, restValue, from, toPayable);
+449	 }
+450	 function transferFeeToBeneficiary(Asset memory asset, address from, uint total, uint sellerFee, uint buyerFee) internal returns (uint) {
+451	 (uint restValue, uint sellerFeeValue) = subFeeInBp(total, total, sellerFee);
+452	 uint buyerFeeValue = total.bp(buyerFee);
+453	 uint beneficiaryFee = buyerFeeValue.add(sellerFeeValue);
+454	 if (beneficiaryFee > 0) {
+455	 transfer(asset, beneficiaryFee, from, beneficiary);
+456	 }
+457	 return restValue;
+458	 }
+459	 function emitBuy(Order memory order, uint amount, address buyer) internal {
+460	 emit Buy(order.key.sellAsset.token, order.key.sellAsset.tokenId, order.selling, order.key.owner, order.key.buyAsset.token, order.key.buyAsset.tokenId, order.buying, buyer, amount, order.key.salt );
+461	 }
+462	 function subFeeInBp(uint value, uint total, uint feeInBp) internal pure returns (uint newValue, uint realFee) {
+463	 return subFee(value, total.bp(feeInBp));
+464	 }
+465	 function subFee(uint value, uint fee) internal pure returns (uint newValue, uint realFee) {
+466	 if (value > fee) {
+467	 newValue = value - fee;
+468	 realFee = fee;
+469	 }
+470	 else {
+471	 newValue = 0;
+472	 realFee = value;
+473	 }
+474	 }
+475	 function verifyOpenAndModifyOrderState(OrderKey memory key, uint selling, uint amount) internal {
+476	 uint completed = state.getCompleted(key);
+477	 uint newCompleted = completed.add(amount);
+478	 require(newCompleted <= selling, "not enough stock of order for buying");
+479	 state.setCompleted(key, newCompleted);
+480	 }
+481	 function getFeeSide(AssetType sellType, AssetType buyType) internal pure returns (FeeSide) {
+482	 if ((sellType == AssetType.ERC721 || sellType == AssetType.ERC721Deprecated) && (buyType == AssetType.ERC721 || buyType == AssetType.ERC721Deprecated)) {
+483	 return FeeSide.NONE;
+484	 }
+485	 if (uint(sellType) > uint(buyType)) {
+486	 return FeeSide.BUY;
+487	 }
+488	 return FeeSide.SELL;
+489	 }
+490	 }

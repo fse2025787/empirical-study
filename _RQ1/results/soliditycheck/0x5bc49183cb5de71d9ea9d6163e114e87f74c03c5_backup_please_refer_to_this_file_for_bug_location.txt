@@ -1,0 +1,276 @@
+row number 
+1	       pragma solidity ^0.5.16;
+2	 contract Owned {
+3	 address public owner;
+4	 address public nominatedOwner;
+5	 constructor(address _owner) public {
+6	 require(_owner != address(0), "Owner address cannot be 0");
+7	 owner = _owner;
+8	 emit OwnerChanged(address(0), _owner);
+9	 }
+10	 function nominateNewOwner(address _owner) external onlyOwner {
+11	 nominatedOwner = _owner;
+12	 emit OwnerNominated(_owner);
+13	 }
+14	 function acceptOwnership() external {
+15	 require(msg.sender == nominatedOwner, "You must be nominated before you can accept ownership");
+16	 emit OwnerChanged(owner, nominatedOwner);
+17	 owner = nominatedOwner;
+18	 nominatedOwner = address(0);
+19	 }
+20	 modifier onlyOwner {
+21	 _onlyOwner();
+22	 _;
+23	 }
+24	 function _onlyOwner() private view {
+25	 require(msg.sender == owner, "Only the contract owner may perform this action");
+26	 }
+27	 event OwnerNominated(address newOwner);
+28	 event OwnerChanged(address oldOwner, address newOwner);
+29	 }
+30	 contract RewardsDistributionRecipient is Owned {
+31	 address public rewardsDistribution;
+32	 function notifyRewardAmount(uint256 reward) external;
+33	 modifier onlyRewardsDistribution() {
+34	 require(msg.sender == rewardsDistribution, "Caller is not RewardsDistribution contract");
+35	 _;
+36	 }
+37	 function setRewardsDistribution(address _rewardsDistribution) external onlyOwner {
+38	 rewardsDistribution = _rewardsDistribution;
+39	 }
+40	 }
+41	 contract Pausable is Owned {
+42	 uint public lastPauseTime;
+43	 bool public paused;
+44	 constructor() internal {
+45	 require(owner != address(0), "Owner must be set");
+46	 }
+47	 function setPaused(bool _paused) external onlyOwner {
+48	 if (_paused == paused) {
+49	 return;
+50	 }
+51	 paused = _paused;
+52	 if (paused) {
+53	 lastPauseTime = now;
+54	 }
+55	 emit PauseChanged(paused);
+56	 }
+57	 event PauseChanged(bool isPaused);
+58	 modifier notPaused {
+59	 require(!paused, "This action cannot be performed while the contract is paused");
+60	 _;
+61	 }
+62	 }
+63	 interface IStakingRewards {
+64	 function balanceOf(address account) external view returns (uint256);
+65	 function earned(address account) external view returns (uint256);
+66	 function getRewardForDuration() external view returns (uint256);
+67	 function lastTimeRewardApplicable() external view returns (uint256);
+68	 function rewardPerToken() external view returns (uint256);
+69	 function rewardsDistribution() external view returns (address);
+70	 function rewardsToken() external view returns (address);
+71	 function totalSupply() external view returns (uint256);
+72	 function exit() external;
+73	 function getReward() external;
+74	 function stake(uint256 amount) external;
+75	 function withdraw(uint256 amount) external;
+76	 }
+77	 library SafeMath {
+78	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+79	 uint256 c = a + b;
+80	 require(c >= a, "SafeMath: addition overflow");
+81	 return c;
+82	 }
+83	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+84	 require(b <= a, "SafeMath: subtraction overflow");
+85	 uint256 c = a - b;
+86	 return c;
+87	 }
+88	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+89	 if (a == 0) {
+90	 return 0;
+91	 }
+92	 uint256 c = a * b;
+93	 require(c / a == b, "SafeMath: multiplication overflow");
+94	 return c;
+95	 }
+96	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+97	 require(b > 0, "SafeMath: division by zero");
+98	 uint256 c = a / b;
+99	 return c;
+100	 }
+101	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+102	 require(b != 0, "SafeMath: modulo by zero");
+103	 return a % b;
+104	 }
+105	 }
+106	 interface IERC20 {
+107	 function totalSupply() external view returns (uint256);
+108	 function balanceOf(address account) external view returns (uint256);
+109	 function transfer(address recipient, uint256 amount) external returns (bool);
+110	 function allowance(address owner, address spender) external view returns (uint256);
+111	 function approve(address spender, uint256 amount) external returns (bool);
+112	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+113	 event Transfer(address indexed from, address indexed to, uint256 value);
+114	 event Approval(address indexed owner, address indexed spender, uint256 value);
+115	 }
+116	 contract ReentrancyGuard {
+117	 uint256 private _guardCounter;
+118	 constructor () internal {
+119	 _guardCounter = 1;
+120	 }
+121	 modifier nonReentrant() {
+122	 _guardCounter += 1;
+123	 uint256 localCounter = _guardCounter;
+124	 _;
+125	 require(localCounter == _guardCounter, "ReentrancyGuard: reentrant call");
+126	 }
+127	 }
+128	 library Address {
+129	 function isContract(address account) internal view returns (bool) {
+130	 uint256 size;
+131	 assembly {
+132	 size := extcodesize(account) }
+133	 return size > 0;
+134	 }
+135	 function toPayable(address account) internal pure returns (address payable) {
+136	 return address(uint160(account));
+137	 }
+138	 }
+139	 library SafeERC20 {
+140	 using SafeMath for uint256;
+141	 using Address for address;
+142	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+143	 callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+144	 }
+145	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+146	 callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+147	 }
+148	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+149	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+150	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+151	 }
+152	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+153	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+154	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+155	 }
+156	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+157	 uint256 newAllowance = token.allowance(address(this), spender).sub(value);
+158	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+159	 }
+160	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+161	 require(address(token).isContract(), "SafeERC20: call to non-contract");
+162	 (bool success, bytes memory returndata) = address(token).call(data);
+163	 require(success, "SafeERC20: low-level call failed");
+164	 if (returndata.length > 0) {
+165	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+166	 }
+167	 }
+168	 }
+169	 contract StakingRewards is IStakingRewards, RewardsDistributionRecipient, ReentrancyGuard, Pausable {
+170	 using SafeMath for uint256;
+171	 using SafeERC20 for IERC20;
+172	 IERC20 public rewardsToken;
+173	 IERC20 public stakingToken;
+174	 uint256 public periodFinish = 0;
+175	 uint256 public rewardRate = 0;
+176	 uint256 public rewardsDuration = 365 days;
+177	 uint256 public lastUpdateTime;
+178	 uint256 public rewardPerTokenStored;
+179	 mapping(address => uint256) public userRewardPerTokenPaid;
+180	 mapping(address => uint256) public rewards;
+181	 uint256 private _totalSupply;
+182	 mapping(address => uint256) private _balances;
+183	 constructor( address _owner, address _rewardsDistribution, address _rewardsToken, address _stakingToken ) public Owned(_owner) {
+184	 rewardsToken = IERC20(_rewardsToken);
+185	 stakingToken = IERC20(_stakingToken);
+186	 rewardsDistribution = _rewardsDistribution;
+187	 }
+188	 function totalSupply() external view returns (uint256) {
+189	 return _totalSupply;
+190	 }
+191	 function balanceOf(address account) external view returns (uint256) {
+192	 return _balances[account];
+193	 }
+194	 function lastTimeRewardApplicable() public view returns (uint256) {
+195	 return block.timestamp < periodFinish ? block.timestamp : periodFinish;
+196	 }
+197	 function rewardPerToken() public view returns (uint256) {
+198	 if (_totalSupply == 0) {
+199	 return rewardPerTokenStored;
+200	 }
+201	 return rewardPerTokenStored.add( lastTimeRewardApplicable().sub(lastUpdateTime).mul(rewardRate).mul(1e18).div(_totalSupply) );
+202	 }
+203	 function earned(address account) public view returns (uint256) {
+204	 return _balances[account].mul(rewardPerToken().sub(userRewardPerTokenPaid[account])).div(1e18).add(rewards[account]);
+205	 }
+206	 function getRewardForDuration() external view returns (uint256) {
+207	 return rewardRate.mul(rewardsDuration);
+208	 }
+209	 function stake(uint256 amount) external nonReentrant notPaused updateReward(msg.sender) {
+210	 require(amount > 0, "Cannot stake 0");
+211	 _totalSupply = _totalSupply.add(amount);
+212	 _balances[msg.sender] = _balances[msg.sender].add(amount);
+213	 stakingToken.safeTransferFrom(msg.sender, address(this), amount);
+214	 emit Staked(msg.sender, amount);
+215	 }
+216	 function withdraw(uint256 amount) public nonReentrant updateReward(msg.sender) {
+217	 require(amount > 0, "Cannot withdraw 0");
+218	 _totalSupply = _totalSupply.sub(amount);
+219	 _balances[msg.sender] = _balances[msg.sender].sub(amount);
+220	 stakingToken.safeTransfer(msg.sender, amount);
+221	 emit Withdrawn(msg.sender, amount);
+222	 }
+223	 function getReward() public nonReentrant updateReward(msg.sender) {
+224	 uint256 reward = rewards[msg.sender];
+225	 if (reward > 0) {
+226	 rewards[msg.sender] = 0;
+227	 rewardsToken.safeTransfer(msg.sender, reward);
+228	 emit RewardPaid(msg.sender, reward);
+229	 }
+230	 }
+231	 function exit() external {
+232	 withdraw(_balances[msg.sender]);
+233	 getReward();
+234	 }
+235	 function notifyRewardAmount(uint256 reward) external onlyRewardsDistribution updateReward(address(0)) {
+236	 if (block.timestamp >= periodFinish) {
+237	 rewardRate = reward.div(rewardsDuration);
+238	 }
+239	 else {
+240	 uint256 remaining = periodFinish.sub(block.timestamp);
+241	 uint256 leftover = remaining.mul(rewardRate);
+242	 rewardRate = reward.add(leftover).div(rewardsDuration);
+243	 }
+244	 uint balance = rewardsToken.balanceOf(address(this));
+245	 require(rewardRate <= balance.div(rewardsDuration), "Provided reward too high");
+246	 lastUpdateTime = block.timestamp;
+247	 periodFinish = block.timestamp.add(rewardsDuration);
+248	 emit RewardAdded(reward);
+249	 }
+250	 function recoverERC20(address tokenAddress, uint256 tokenAmount) external onlyOwner {
+251	 require(tokenAddress != address(stakingToken), "Cannot withdraw the staking token");
+252	 IERC20(tokenAddress).safeTransfer(owner, tokenAmount);
+253	 emit Recovered(tokenAddress, tokenAmount);
+254	 }
+255	 function setRewardsDuration(uint256 _rewardsDuration) external onlyOwner {
+256	 require( block.timestamp > periodFinish, "Previous rewards period must be complete before changing the duration for the new period" );
+257	 rewardsDuration = _rewardsDuration;
+258	 emit RewardsDurationUpdated(rewardsDuration);
+259	 }
+260	 modifier updateReward(address account) {
+261	 rewardPerTokenStored = rewardPerToken();
+262	 lastUpdateTime = lastTimeRewardApplicable();
+263	 if (account != address(0)) {
+264	 rewards[account] = earned(account);
+265	 userRewardPerTokenPaid[account] = rewardPerTokenStored;
+266	 }
+267	 _;
+268	 }
+269	 event RewardAdded(uint256 reward);
+270	 event Staked(address indexed user, uint256 amount);
+271	 event Withdrawn(address indexed user, uint256 amount);
+272	 event RewardPaid(address indexed user, uint256 reward);
+273	 event RewardsDurationUpdated(uint256 newDuration);
+274	 event Recovered(address token, uint256 amount);
+275	 }

@@ -1,0 +1,173 @@
+row number 
+1	     contract MerkleTreeWithHistory {
+2	 uint256 public constant FIELD_SIZE = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+3	 uint256 public constant ZERO_VALUE = 21663839004416932945382355908790599225266501822907911457504978515578255421292;
+4	 uint32 public levels;
+5	 bytes32[] public filledSubtrees;
+6	 bytes32[] public zeros;
+7	 uint32 public currentRootIndex = 0;
+8	 uint32 public nextIndex = 0;
+9	 uint32 public constant ROOT_HISTORY_SIZE = 100;
+10	 bytes32[ROOT_HISTORY_SIZE] public roots;
+11	 constructor(uint32 _treeLevels) public {
+12	 require(_treeLevels > 0, "_treeLevels should be greater than zero");
+13	 require(_treeLevels < 32, "_treeLevels should be less than 32");
+14	 levels = _treeLevels;
+15	 bytes32 currentZero = bytes32(ZERO_VALUE);
+16	 zeros.push(currentZero);
+17	 filledSubtrees.push(currentZero);
+18	 for (uint32 i = 1; i < levels; i++) {
+19	 currentZero = hashLeftRight(currentZero, currentZero);
+20	 zeros.push(currentZero);
+21	 filledSubtrees.push(currentZero);
+22	 }
+23	 roots[0] = hashLeftRight(currentZero, currentZero);
+24	 }
+25	 function hashLeftRight(bytes32 _left, bytes32 _right) public pure returns (bytes32) {
+26	 require(uint256(_left) < FIELD_SIZE, "_left should be inside the field");
+27	 require(uint256(_right) < FIELD_SIZE, "_right should be inside the field");
+28	 uint256 R = uint256(_left);
+29	 uint256 C = 0;
+30	 (R, C) = Hasher.MiMCSponge(R, C);
+31	 R = addmod(R, uint256(_right), FIELD_SIZE);
+32	 (R, C) = Hasher.MiMCSponge(R, C);
+33	 return bytes32(R);
+34	 }
+35	 function _insert(bytes32 _leaf) internal returns(uint32 index) {
+36	 uint32 currentIndex = nextIndex;
+37	 require(currentIndex != uint32(2)**levels, "Merkle tree is full. No more leafs can be added");
+38	 nextIndex += 1;
+39	 bytes32 currentLevelHash = _leaf;
+40	 bytes32 left;
+41	 bytes32 right;
+42	 for (uint32 i = 0; i < levels; i++) {
+43	 if (currentIndex % 2 == 0) {
+44	 left = currentLevelHash;
+45	 right = zeros[i];
+46	 filledSubtrees[i] = currentLevelHash;
+47	 }
+48	 else {
+49	 left = filledSubtrees[i];
+50	 right = currentLevelHash;
+51	 }
+52	 currentLevelHash = hashLeftRight(left, right);
+53	 currentIndex /= 2;
+54	 }
+55	 currentRootIndex = (currentRootIndex + 1) % ROOT_HISTORY_SIZE;
+56	 roots[currentRootIndex] = currentLevelHash;
+57	 return nextIndex - 1;
+58	 }
+59	 function isKnownRoot(bytes32 _root) public view returns(bool) {
+60	 if (_root == 0) {
+61	 return false;
+62	 }
+63	 uint32 i = currentRootIndex;
+64	 do {
+65	 if (_root == roots[i]) {
+66	 return true;
+67	 }
+68	 if (i == 0) {
+69	 i = ROOT_HISTORY_SIZE;
+70	 }
+71	 i--;
+72	 }
+73	 while (i != currentRootIndex);
+74	 return false;
+75	 }
+76	 function getLastRoot() public view returns(bytes32) {
+77	 return roots[currentRootIndex];
+78	 }
+79	 }
+80	 pragma solidity ^0.5.0;
+81	 contract ReentrancyGuard {
+82	 uint256 private _guardCounter;
+83	 constructor () internal {
+84	 _guardCounter = 1;
+85	 }
+86	 modifier nonReentrant() {
+87	 _guardCounter += 1;
+88	 uint256 localCounter = _guardCounter;
+89	 _;
+90	 require(localCounter == _guardCounter, "ReentrancyGuard: reentrant call");
+91	 }
+92	 }
+93	 contract Tornado is MerkleTreeWithHistory, ReentrancyGuard {
+94	 uint256 public denomination;
+95	 mapping(bytes32 => bool) public nullifierHashes;
+96	 mapping(bytes32 => bool) public commitments;
+97	 IVerifier public verifier;
+98	 address public operator;
+99	 modifier onlyOperator {
+100	 require(msg.sender == operator, "Only operator can call this function.");
+101	 _;
+102	 }
+103	 event Deposit(bytes32 indexed commitment, uint32 leafIndex, uint256 timestamp);
+104	 event Withdrawal(address to, bytes32 nullifierHash, address indexed relayer, uint256 fee);
+105	 constructor( IVerifier _verifier, uint256 _denomination, uint32 _merkleTreeHeight, address _operator ) MerkleTreeWithHistory(_merkleTreeHeight) public {
+106	 require(_denomination > 0, "denomination should be greater than 0");
+107	 verifier = _verifier;
+108	 operator = _operator;
+109	 denomination = _denomination;
+110	 }
+111	 function deposit(bytes32 _commitment) external payable nonReentrant {
+112	 require(!commitments[_commitment], "The commitment has been submitted");
+113	 uint32 insertedIndex = _insert(_commitment);
+114	 commitments[_commitment] = true;
+115	 _processDeposit();
+116	 emit Deposit(_commitment, insertedIndex, block.timestamp);
+117	 }
+118	 function _processDeposit() internal;
+119	 function withdraw(bytes calldata _proof, bytes32 _root, bytes32 _nullifierHash, address payable _recipient, address payable _relayer, uint256 _fee, uint256 _refund) external payable nonReentrant {
+120	 require(_fee <= denomination, "Fee exceeds transfer value");
+121	 require(!nullifierHashes[_nullifierHash], "The note has been already spent");
+122	 require(isKnownRoot(_root), "Cannot find your merkle root");
+123	 require(verifier.verifyProof(_proof, [uint256(_root), uint256(_nullifierHash), uint256(_recipient), uint256(_relayer), _fee, _refund]), "Invalid withdraw proof");
+124	 nullifierHashes[_nullifierHash] = true;
+125	 _processWithdraw(_recipient, _relayer, _fee, _refund);
+126	 emit Withdrawal(_recipient, _nullifierHash, _relayer, _fee);
+127	 }
+128	 function _processWithdraw(address payable _recipient, address payable _relayer, uint256 _fee, uint256 _refund) internal;
+129	 function isSpent(bytes32 _nullifierHash) public view returns(bool) {
+130	 return nullifierHashes[_nullifierHash];
+131	 }
+132	 function isSpentArray(bytes32[] calldata _nullifierHashes) external view returns(bool[] memory spent) {
+133	 spent = new bool[](_nullifierHashes.length);
+134	 for(uint i = 0; i < _nullifierHashes.length; i++) {
+135	 if (isSpent(_nullifierHashes[i])) {
+136	 spent[i] = true;
+137	 }
+138	 }
+139	 }
+140	 function updateVerifier(address _newVerifier) external onlyOperator {
+141	 verifier = IVerifier(_newVerifier);
+142	 }
+143	 function changeOperator(address _newOperator) external onlyOperator {
+144	 operator = _newOperator;
+145	 }
+146	 }
+147	 pragma solidity 0.5.17;
+148	 contract ETHTornado is Tornado {
+149	 constructor( IVerifier _verifier, uint256 _denomination, uint32 _merkleTreeHeight, address _operator ) Tornado(_verifier, _denomination, _merkleTreeHeight, _operator) public {
+150	 }
+151	 function _processDeposit() internal {
+152	 require(msg.value == denomination, "Please send `mixDenomination` ETH along with transaction");
+153	 }
+154	 function _processWithdraw(address payable _recipient, address payable _relayer, uint256 _fee, uint256 _refund) internal {
+155	 require(msg.value == 0, "Message value is supposed to be zero for ETH instance");
+156	 require(_refund == 0, "Refund value is supposed to be zero for ETH instance");
+157	 (bool success, ) = _recipient.call.value(denomination - _fee)("");
+158	 require(success, "payment to _recipient did not go thru");
+159	 if (_fee > 0) {
+160	 (success, ) = _relayer.call.value(_fee)("");
+161	 require(success, "payment to _relayer did not go thru");
+162	 }
+163	 }
+164	 }
+165	 pragma solidity 0.5.17;
+166	 library Hasher {
+167	 function MiMCSponge(uint256 in_xL, uint256 in_xR) public pure returns (uint256 xL, uint256 xR);
+168	 }
+169	 pragma solidity 0.5.17;
+170	 contract IVerifier {
+171	 function verifyProof(bytes memory _proof, uint256[6] memory _input) public returns(bool);
+172	 }

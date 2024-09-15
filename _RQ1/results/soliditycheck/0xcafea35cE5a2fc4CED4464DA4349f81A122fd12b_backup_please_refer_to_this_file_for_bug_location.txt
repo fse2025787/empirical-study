@@ -1,0 +1,3472 @@
+row number 
+1	      pragma solidity ^0.5.0;
+2	 contract ReentrancyGuard {
+3	 bool private _notEntered;
+4	 constructor () internal {
+5	 _notEntered = true;
+6	 }
+7	 modifier nonReentrant() {
+8	 require(_notEntered, "ReentrancyGuard: reentrant call");
+9	 _notEntered = false;
+10	 _;
+11	 _notEntered = true;
+12	 }
+13	 }
+14	 pragma solidity ^0.5.0;
+15	 contract MasterAware {
+16	 INXMMaster public master;
+17	 modifier onlyMember {
+18	 require(master.isMember(msg.sender), "Caller is not a member");
+19	 _;
+20	 }
+21	 modifier onlyInternal {
+22	 require(master.isInternal(msg.sender), "Caller is not an internal contract");
+23	 _;
+24	 }
+25	 modifier onlyMaster {
+26	 if (address(master) != address(0)) {
+27	 require(address(master) == msg.sender, "Not master");
+28	 }
+29	 _;
+30	 }
+31	 modifier onlyGovernance {
+32	 require( master.checkIsAuthToGoverned(msg.sender), "Caller is not authorized to govern" );
+33	 _;
+34	 }
+35	 modifier whenPaused {
+36	 require(master.isPause(), "System is not paused");
+37	 _;
+38	 }
+39	 modifier whenNotPaused {
+40	 require(!master.isPause(), "System is paused");
+41	 _;
+42	 }
+43	 function changeDependentContractAddress() external;
+44	 function changeMasterAddress(address masterAddress) public onlyMaster {
+45	 master = INXMMaster(masterAddress);
+46	 }
+47	 }
+48	 pragma solidity >=0.5.0;
+49	 interface IPool {
+50	 function transferAssetToSwapOperator(address asset, uint amount) external;
+51	 function getAssetDetails(address _asset) external view returns ( uint112 min, uint112 max, uint32 lastAssetSwapTime, uint maxSlippageRatio );
+52	 function setAssetDataLastSwapTime(address asset, uint32 lastSwapTime) external;
+53	 function minPoolEth() external returns (uint);
+54	 }
+55	 pragma solidity ^0.5.0;
+56	 interface OZIERC20 {
+57	 function transfer(address to, uint256 value) external returns (bool);
+58	 function approve(address spender, uint256 value) external returns (bool);
+59	 function transferFrom(address from, address to, uint256 value) external returns (bool);
+60	 function totalSupply() external view returns (uint256);
+61	 function balanceOf(address who) external view returns (uint256);
+62	 function allowance(address owner, address spender) external view returns (uint256);
+63	 event Transfer( address indexed from, address indexed to, uint256 value );
+64	 event Approval( address indexed owner, address indexed spender, uint256 value );
+65	 }
+66	 pragma solidity ^0.5.0;
+67	 contract Iupgradable {
+68	 INXMMaster public ms;
+69	 address public nxMasterAddress;
+70	 modifier onlyInternal {
+71	 require(ms.isInternal(msg.sender));
+72	 _;
+73	 }
+74	 modifier isMemberAndcheckPause {
+75	 require(ms.isPause() == false && ms.isMember(msg.sender) == true);
+76	 _;
+77	 }
+78	 modifier onlyOwner {
+79	 require(ms.isOwner(msg.sender));
+80	 _;
+81	 }
+82	 modifier checkPause {
+83	 require(ms.isPause() == false);
+84	 _;
+85	 }
+86	 modifier isMember {
+87	 require(ms.isMember(msg.sender), "Not member");
+88	 _;
+89	 }
+90	 function changeDependentContractAddress() public;
+91	 function changeMasterAddress(address _masterAddress) public {
+92	 if (address(ms) != address(0)) {
+93	 require(address(ms) == msg.sender, "Not master");
+94	 }
+95	 ms = INXMMaster(_masterAddress);
+96	 nxMasterAddress = _masterAddress;
+97	 }
+98	 }
+99	 pragma solidity ^0.5.0;
+100	 contract LockHandler {
+101	 mapping(address => bytes32[]) public lockReason;
+102	 struct LockToken {
+103	 uint256 amount;
+104	 uint256 validity;
+105	 bool claimed;
+106	 }
+107	 mapping(address => mapping(bytes32 => LockToken)) public locked;
+108	 }
+109	 address[] public assets;
+110	 mapping(address => AssetData) public assetData;
+111	 Quotation public quotation;
+112	 NXMToken public nxmToken;
+113	 TokenController public tokenController;
+114	 MCR public mcr;
+115	 address public swapController;
+116	 uint public minPoolEth;
+117	 PriceFeedOracle public priceFeedOracle;
+118	 address public swapOperator;
+119	 address constant public ETH = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+120	 uint public constant MCR_RATIO_DECIMALS = 4;
+121	 uint public constant MAX_MCR_RATIO = 40000;
+122	 uint public constant MAX_BUY_SELL_MCR_ETH_FRACTION = 500;
+123	 uint internal constant CONSTANT_C = 5800000;
+124	 uint internal constant CONSTANT_A = 1028 * 1e13;
+125	 uint internal constant TOKEN_EXPONENT = 4;
+126	 event Payout(address indexed to, address indexed asset, uint amount);
+127	 event NXMSold (address indexed member, uint nxmIn, uint ethOut);
+128	 event NXMBought (address indexed member, uint ethIn, uint nxmOut);
+129	 event Swapped(address indexed fromAsset, address indexed toAsset, uint amountIn, uint amountOut);
+130	 modifier onlySwapOperator {
+131	 require(msg.sender == swapOperator, "Pool: not swapOperator");
+132	 _;
+133	 }
+134	 constructor ( address[] memory _assets, uint112[] memory _minAmounts, uint112[] memory _maxAmounts, uint[] memory _maxSlippageRatios, address _master, address _priceOracle, address _swapOperator ) public {
+135	 require(_assets.length == _minAmounts.length, "Pool: length mismatch");
+136	 require(_assets.length == _maxAmounts.length, "Pool: length mismatch");
+137	 require(_assets.length == _maxSlippageRatios.length, "Pool: length mismatch");
+138	 for (uint i = 0; i < _assets.length; i++) {
+139	 address asset = _assets[i];
+140	 require(asset != address(0), "Pool: asset is zero address");
+141	 require(_maxAmounts[i] >= _minAmounts[i], "Pool: max < min");
+142	 require(_maxSlippageRatios[i] <= 1 ether, "Pool: max < min");
+143	 assets.push(asset);
+144	 assetData[asset].minAmount = _minAmounts[i];
+145	 assetData[asset].maxAmount = _maxAmounts[i];
+146	 assetData[asset].maxSlippageRatio = _maxSlippageRatios[i];
+147	 }
+148	 master = INXMMaster(_master);
+149	 priceFeedOracle = PriceFeedOracle(_priceOracle);
+150	 swapOperator = _swapOperator;
+151	 }
+152	 function() external payable {
+153	 }
+154	 function sendEther() external payable {
+155	 }
+156	 function getPoolValueInEth() public view returns (uint) {
+157	 uint total = address(this).balance;
+158	 for (uint i = 0; i < assets.length; i++) {
+159	 address assetAddress = assets[i];
+160	 IERC20 token = IERC20(assetAddress);
+161	 uint rate = priceFeedOracle.getAssetToEthRate(assetAddress);
+162	 require(rate > 0, "Pool: zero rate");
+163	 uint assetBalance = token.balanceOf(address(this));
+164	 uint assetValue = assetBalance.mul(rate).div(1e18);
+165	 total = total.add(assetValue);
+166	 }
+167	 return total;
+168	 }
+169	 function getAssets() external view returns (address[] memory) {
+170	 return assets;
+171	 }
+172	 function getAssetDetails(address _asset) external view returns ( uint112 min, uint112 max, uint32 lastAssetSwapTime, uint maxSlippageRatio ) {
+173	 AssetData memory data = assetData[_asset];
+174	 return (data.minAmount, data.maxAmount, data.lastSwapTime, data.maxSlippageRatio);
+175	 }
+176	 function addAsset( address _asset, uint112 _min, uint112 _max, uint _maxSlippageRatio ) external onlyGovernance {
+177	 require(_asset != address(0), "Pool: asset is zero address");
+178	 require(_max >= _min, "Pool: max < min");
+179	 require(_maxSlippageRatio <= 1 ether, "Pool: max slippage ratio > 1");
+180	 for (uint i = 0; i < assets.length; i++) {
+181	 require(_asset != assets[i], "Pool: asset exists");
+182	 }
+183	 assets.push(_asset);
+184	 assetData[_asset] = AssetData(_min, _max, 0, _maxSlippageRatio);
+185	 }
+186	 function removeAsset(address _asset) external onlyGovernance {
+187	 for (uint i = 0; i < assets.length; i++) {
+188	 if (_asset != assets[i]) {
+189	 continue;
+190	 }
+191	 delete assetData[_asset];
+192	 assets[i] = assets[assets.length - 1];
+193	 assets.pop();
+194	 return;
+195	 }
+196	 revert("Pool: asset not found");
+197	 }
+198	 function setAssetDetails( address _asset, uint112 _min, uint112 _max, uint _maxSlippageRatio ) external onlyGovernance {
+199	 require(_min <= _max, "Pool: min > max");
+200	 require(_maxSlippageRatio <= 1 ether, "Pool: max slippage ratio > 1");
+201	 for (uint i = 0; i < assets.length; i++) {
+202	 if (_asset != assets[i]) {
+203	 continue;
+204	 }
+205	 assetData[_asset].minAmount = _min;
+206	 assetData[_asset].maxAmount = _max;
+207	 assetData[_asset].maxSlippageRatio = _maxSlippageRatio;
+208	 return;
+209	 }
+210	 revert("Pool: asset not found");
+211	 }
+212	 function sendClaimPayout ( address asset, address payable payoutAddress, uint amount ) external onlyInternal nonReentrant returns (bool success) {
+213	 bool ok;
+214	 if (asset == ETH) {
+215	 (ok, ) = payoutAddress.call.value(amount)("");
+216	 }
+217	 else {
+218	 ok = _safeTokenTransfer(asset, payoutAddress, amount);
+219	 }
+220	 if (ok) {
+221	 emit Payout(payoutAddress, asset, amount);
+222	 }
+223	 return ok;
+224	 }
+225	 function _safeTokenTransfer ( address tokenAddress, address to, uint256 value ) internal returns (bool) {
+226	 if (!tokenAddress.isContract()) {
+227	 return false;
+228	 }
+229	 IERC20 token = IERC20(tokenAddress);
+230	 bytes memory data = abi.encodeWithSelector(token.transfer.selector, to, value);
+231	 (bool success, bytes memory returndata) = tokenAddress.call(data);
+232	 if (!success) {
+233	 return false;
+234	 }
+235	 if (returndata.length == 0) {
+236	 return true;
+237	 }
+238	 return abi.decode(returndata, (bool));
+239	 }
+240	 function transferAsset( address asset, address payable destination, uint amount ) external onlyGovernance nonReentrant {
+241	 require(assetData[asset].maxAmount == 0, "Pool: max not zero");
+242	 require(destination != address(0), "Pool: dest zero");
+243	 IERC20 token = IERC20(asset);
+244	 uint balance = token.balanceOf(address(this));
+245	 uint transferableAmount = amount > balance ? balance : amount;
+246	 token.safeTransfer(destination, transferableAmount);
+247	 }
+248	 function upgradeCapitalPool(address payable newPoolAddress) external onlyMaster nonReentrant {
+249	 uint ethBalance = address(this).balance;
+250	 (bool ok, ) = newPoolAddress.call.value(ethBalance)("");
+251	 require(ok, "Pool: transfer failed");
+252	 for (uint i = 0; i < assets.length; i++) {
+253	 IERC20 token = IERC20(assets[i]);
+254	 uint tokenBalance = token.balanceOf(address(this));
+255	 token.safeTransfer(newPoolAddress, tokenBalance);
+256	 }
+257	 }
+258	 function changeDependentContractAddress() public {
+259	 nxmToken = NXMToken(master.tokenAddress());
+260	 tokenController = TokenController(master.getLatestAddress("TC"));
+261	 quotation = Quotation(master.getLatestAddress("QT"));
+262	 mcr = MCR(master.getLatestAddress("MC"));
+263	 }
+264	 function makeCoverBegin( address smartCAdd, bytes4 coverCurr, uint[] memory coverDetails, uint16 coverPeriod, uint8 _v, bytes32 _r, bytes32 _s ) public payable onlyMember whenNotPaused {
+265	 require(coverCurr == "ETH", "Pool: Unexpected asset type");
+266	 require(msg.value == coverDetails[1], "Pool: ETH amount does not match premium");
+267	 quotation.verifyCoverDetails(msg.sender, smartCAdd, coverCurr, coverDetails, coverPeriod, _v, _r, _s);
+268	 }
+269	 function makeCoverUsingCA( address smartCAdd, bytes4 coverCurr, uint[] memory coverDetails, uint16 coverPeriod, uint8 _v, bytes32 _r, bytes32 _s ) public onlyMember whenNotPaused {
+270	 require(coverCurr != "ETH", "Pool: Unexpected asset type");
+271	 quotation.verifyCoverDetails(msg.sender, smartCAdd, coverCurr, coverDetails, coverPeriod, _v, _r, _s);
+272	 }
+273	 function transferAssetFrom (address asset, address from, uint amount) public onlyInternal whenNotPaused {
+274	 IERC20 token = IERC20(asset);
+275	 token.safeTransferFrom(from, address(this), amount);
+276	 }
+277	 function transferAssetToSwapOperator (address asset, uint amount) public onlySwapOperator nonReentrant whenNotPaused {
+278	 if (asset == ETH) {
+279	 (bool ok, ) = swapOperator.call.value(amount)("");
+280	 require(ok, "Pool: Eth transfer failed");
+281	 return;
+282	 }
+283	 IERC20 token = IERC20(asset);
+284	 token.safeTransfer(swapOperator, amount);
+285	 }
+286	 function setAssetDataLastSwapTime(address asset, uint32 lastSwapTime) public onlySwapOperator whenNotPaused {
+287	 assetData[asset].lastSwapTime = lastSwapTime;
+288	 }
+289	 function sellNXMTokens(uint _amount) public onlyMember whenNotPaused returns (bool success) {
+290	 sellNXM(_amount, 0);
+291	 return true;
+292	 }
+293	 function getWei(uint amount) external view returns (uint weiToPay) {
+294	 return getEthForNXM(amount);
+295	 }
+296	 function buyNXM(uint minTokensOut) public payable onlyMember whenNotPaused {
+297	 uint ethIn = msg.value;
+298	 require(ethIn > 0, "Pool: ethIn > 0");
+299	 uint totalAssetValue = getPoolValueInEth().sub(ethIn);
+300	 uint mcrEth = mcr.getMCR();
+301	 uint mcrRatio = calculateMCRRatio(totalAssetValue, mcrEth);
+302	 require(mcrRatio <= MAX_MCR_RATIO, "Pool: Cannot purchase if MCR% > 400%");
+303	 uint tokensOut = calculateNXMForEth(ethIn, totalAssetValue, mcrEth);
+304	 require(tokensOut >= minTokensOut, "Pool: tokensOut is less than minTokensOut");
+305	 tokenController.mint(msg.sender, tokensOut);
+306	 mcr.updateMCRInternal(totalAssetValue.add(ethIn), false);
+307	 emit NXMBought(msg.sender, ethIn, tokensOut);
+308	 }
+309	 function sellNXM(uint tokenAmount, uint minEthOut) public onlyMember nonReentrant whenNotPaused {
+310	 require(nxmToken.balanceOf(msg.sender) >= tokenAmount, "Pool: Not enough balance");
+311	 require(nxmToken.isLockedForMV(msg.sender) <= now, "Pool: NXM tokens are locked for voting");
+312	 uint currentTotalAssetValue = getPoolValueInEth();
+313	 uint mcrEth = mcr.getMCR();
+314	 uint ethOut = calculateEthForNXM(tokenAmount, currentTotalAssetValue, mcrEth);
+315	 require(currentTotalAssetValue.sub(ethOut) >= mcrEth, "Pool: MCR% cannot fall below 100%");
+316	 require(ethOut >= minEthOut, "Pool: ethOut < minEthOut");
+317	 tokenController.burnFrom(msg.sender, tokenAmount);
+318	 (bool ok, ) = msg.sender.call.value(ethOut)("");
+319	 require(ok, "Pool: Sell transfer failed");
+320	 mcr.updateMCRInternal(currentTotalAssetValue.sub(ethOut), false);
+321	 emit NXMSold(msg.sender, tokenAmount, ethOut);
+322	 }
+323	 function getNXMForEth( uint ethAmount ) public view returns (uint) {
+324	 uint totalAssetValue = getPoolValueInEth();
+325	 uint mcrEth = mcr.getMCR();
+326	 return calculateNXMForEth(ethAmount, totalAssetValue, mcrEth);
+327	 }
+328	 function calculateNXMForEth( uint ethAmount, uint currentTotalAssetValue, uint mcrEth ) public pure returns (uint) {
+329	 require( ethAmount <= mcrEth.mul(MAX_BUY_SELL_MCR_ETH_FRACTION).div(10 ** MCR_RATIO_DECIMALS), "Pool: Purchases worth higher than 5% of MCReth are not allowed" );
+330	 if (currentTotalAssetValue == 0 || mcrEth.div(currentTotalAssetValue) > 1e12) {
+331	 uint tokenPrice = CONSTANT_A;
+332	 return ethAmount.mul(1e18).div(tokenPrice);
+333	 }
+334	 uint point0 = calculateIntegralAtPoint(currentTotalAssetValue, mcrEth);
+335	 uint nextTotalAssetValue = currentTotalAssetValue.add(ethAmount);
+336	 uint point1 = calculateIntegralAtPoint(nextTotalAssetValue, mcrEth);
+337	 uint adjustedTokenAmount = point0.sub(point1);
+338	 uint adjustedTokenPrice = ethAmount.mul(1e18).div(adjustedTokenAmount);
+339	 uint tokenPrice = adjustedTokenPrice.add(CONSTANT_A);
+340	 return ethAmount.mul(1e18).div(tokenPrice);
+341	 }
+342	 function calculateIntegralAtPoint( uint assetValue, uint mcrEth ) internal pure returns (uint) {
+343	 return CONSTANT_C .mul(1e18) .div(3) .mul(mcrEth).div(assetValue) .mul(mcrEth).div(assetValue) .mul(mcrEth).div(assetValue);
+344	 }
+345	 function getEthForNXM(uint nxmAmount) public view returns (uint ethAmount) {
+346	 uint currentTotalAssetValue = getPoolValueInEth();
+347	 uint mcrEth = mcr.getMCR();
+348	 return calculateEthForNXM(nxmAmount, currentTotalAssetValue, mcrEth);
+349	 }
+350	 function calculateEthForNXM( uint nxmAmount, uint currentTotalAssetValue, uint mcrEth ) public pure returns (uint) {
+351	 uint spotPrice0 = calculateTokenSpotPrice(currentTotalAssetValue, mcrEth);
+352	 uint spotEthAmount = nxmAmount.mul(spotPrice0).div(1e18);
+353	 uint totalValuePostSpotPriceSell = currentTotalAssetValue.sub(spotEthAmount);
+354	 uint spotPrice1 = calculateTokenSpotPrice(totalValuePostSpotPriceSell, mcrEth);
+355	 uint averagePriceWithSpread = spotPrice0.add(spotPrice1).div(2).mul(975).div(1000);
+356	 uint finalPrice = averagePriceWithSpread < spotPrice1 ? averagePriceWithSpread : spotPrice1;
+357	 uint ethAmount = finalPrice.mul(nxmAmount).div(1e18);
+358	 require( ethAmount <= mcrEth.mul(MAX_BUY_SELL_MCR_ETH_FRACTION).div(10 ** MCR_RATIO_DECIMALS), "Pool: Sales worth more than 5% of MCReth are not allowed" );
+359	 return ethAmount;
+360	 }
+361	 function calculateMCRRatio(uint totalAssetValue, uint mcrEth) public pure returns (uint) {
+362	 return totalAssetValue.mul(10 ** MCR_RATIO_DECIMALS).div(mcrEth);
+363	 }
+364	 function calculateTokenSpotPrice(uint totalAssetValue, uint mcrEth) public pure returns (uint tokenPrice) {
+365	 uint mcrRatio = calculateMCRRatio(totalAssetValue, mcrEth);
+366	 uint precisionDecimals = 10 ** TOKEN_EXPONENT.mul(MCR_RATIO_DECIMALS);
+367	 return mcrEth .mul(mcrRatio ** TOKEN_EXPONENT) .div(CONSTANT_C) .div(precisionDecimals) .add(CONSTANT_A);
+368	 }
+369	 function getTokenPrice(address asset) public view returns (uint tokenPrice) {
+370	 uint totalAssetValue = getPoolValueInEth();
+371	 uint mcrEth = mcr.getMCR();
+372	 uint tokenSpotPriceEth = calculateTokenSpotPrice(totalAssetValue, mcrEth);
+373	 return priceFeedOracle.getAssetForEth(asset, tokenSpotPriceEth);
+374	 }
+375	 function getMCRRatio() public view returns (uint) {
+376	 uint totalAssetValue = getPoolValueInEth();
+377	 uint mcrEth = mcr.getMCR();
+378	 return calculateMCRRatio(totalAssetValue, mcrEth);
+379	 }
+380	 function updateUintParameters(bytes8 code, uint value) external onlyGovernance {
+381	 if (code == "MIN_ETH") {
+382	 minPoolEth = value;
+383	 return;
+384	 }
+385	 revert("Pool: unknown parameter");
+386	 }
+387	 function updateAddressParameters(bytes8 code, address value) external onlyGovernance {
+388	 if (code == "SWP_OP") {
+389	 swapOperator = value;
+390	 return;
+391	 }
+392	 if (code == "PRC_FEED") {
+393	 priceFeedOracle = PriceFeedOracle(value);
+394	 return;
+395	 }
+396	 revert("Pool: unknown parameter");
+397	 }
+398	 }
+399	 pragma solidity ^0.5.0;
+400	 library SafeMath {
+401	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+402	 uint256 c = a + b;
+403	 require(c >= a, "SafeMath: addition overflow");
+404	 return c;
+405	 }
+406	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+407	 return sub(a, b, "SafeMath: subtraction overflow");
+408	 }
+409	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+410	 require(b <= a, errorMessage);
+411	 uint256 c = a - b;
+412	 return c;
+413	 }
+414	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+415	 if (a == 0) {
+416	 return 0;
+417	 }
+418	 uint256 c = a * b;
+419	 require(c / a == b, "SafeMath: multiplication overflow");
+420	 return c;
+421	 }
+422	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+423	 return div(a, b, "SafeMath: division by zero");
+424	 }
+425	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+426	 require(b > 0, errorMessage);
+427	 uint256 c = a / b;
+428	 return c;
+429	 }
+430	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+431	 return mod(a, b, "SafeMath: modulo by zero");
+432	 }
+433	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+434	 require(b != 0, errorMessage);
+435	 return a % b;
+436	 }
+437	 }
+438	 pragma solidity ^0.5.0;
+439	 interface IERC20 {
+440	 function totalSupply() external view returns (uint256);
+441	 function balanceOf(address account) external view returns (uint256);
+442	 function transfer(address recipient, uint256 amount) external returns (bool);
+443	 function allowance(address owner, address spender) external view returns (uint256);
+444	 function approve(address spender, uint256 amount) external returns (bool);
+445	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+446	 event Transfer(address indexed from, address indexed to, uint256 value);
+447	 event Approval(address indexed owner, address indexed spender, uint256 value);
+448	 }
+449	 pragma solidity ^0.5.0;
+450	 library SafeERC20 {
+451	 using SafeMath for uint256;
+452	 using Address for address;
+453	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+454	 callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+455	 }
+456	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+457	 callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+458	 }
+459	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+460	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+461	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+462	 }
+463	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+464	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+465	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+466	 }
+467	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+468	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+469	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+470	 }
+471	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+472	 require(address(token).isContract(), "SafeERC20: call to non-contract");
+473	 (bool success, bytes memory returndata) = address(token).call(data);
+474	 require(success, "SafeERC20: low-level call failed");
+475	 if (returndata.length > 0) {
+476	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+477	 }
+478	 }
+479	 }
+480	 pragma solidity ^0.5.5;
+481	 library Address {
+482	 function isContract(address account) internal view returns (bool) {
+483	 bytes32 codehash;
+484	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+485	 assembly {
+486	 codehash := extcodehash(account) }
+487	 return (codehash != accountHash && codehash != 0x0);
+488	 }
+489	 function toPayable(address account) internal pure returns (address payable) {
+490	 return address(uint160(account));
+491	 }
+492	 function sendValue(address payable recipient, uint256 amount) internal {
+493	 require(address(this).balance >= amount, "Address: insufficient balance");
+494	 (bool success, ) = recipient.call.value(amount)("");
+495	 require(success, "Address: unable to send value, recipient may have reverted");
+496	 }
+497	 }
+498	 function changeDependentContractAddress() public onlyInternal {
+499	 cr = ClaimsReward(master.getLatestAddress("CR"));
+500	 pool = Pool(master.getLatestAddress("P1"));
+501	 pooledStaking = IPooledStaking(master.getLatestAddress("PS"));
+502	 qd = QuotationData(master.getLatestAddress("QD"));
+503	 tc = TokenController(master.getLatestAddress("TC"));
+504	 td = TokenData(master.getLatestAddress("TD"));
+505	 incidents = Incidents(master.getLatestAddress("IC"));
+506	 }
+507	 function sendEther() public payable {
+508	 }
+509	 function expireCover(uint coverId) external {
+510	 uint expirationDate = qd.getValidityOfCover(coverId);
+511	 require(expirationDate < now, "Quotation: cover is not due to expire");
+512	 uint coverStatus = qd.getCoverStatusNo(coverId);
+513	 require(coverStatus != uint(QuotationData.CoverStatus.CoverExpired), "Quotation: cover already expired");
+514	 (, bool hasOpenClaim, ) = tc.coverInfo(coverId);
+515	 require(!hasOpenClaim, "Quotation: cover has an open claim");
+516	 if (coverStatus != uint(QuotationData.CoverStatus.ClaimAccepted)) {
+517	 (,, address contractAddress, bytes4 currency, uint amount,) = qd.getCoverDetailsByCoverID1(coverId);
+518	 qd.subFromTotalSumAssured(currency, amount);
+519	 qd.subFromTotalSumAssuredSC(contractAddress, currency, amount);
+520	 }
+521	 qd.changeCoverStatusNo(coverId, uint8(QuotationData.CoverStatus.CoverExpired));
+522	 }
+523	 function withdrawCoverNote(address coverOwner, uint[] calldata coverIds, uint[] calldata reasonIndexes) external {
+524	 uint gracePeriod = tc.claimSubmissionGracePeriod();
+525	 for (uint i = 0; i < coverIds.length; i++) {
+526	 uint expirationDate = qd.getValidityOfCover(coverIds[i]);
+527	 require(expirationDate.add(gracePeriod) < now, "Quotation: cannot withdraw before grace period expiration");
+528	 }
+529	 tc.withdrawCoverNote(coverOwner, coverIds, reasonIndexes);
+530	 }
+531	 function getWithdrawableCoverNoteCoverIds( address coverOwner ) public view returns ( uint[] memory expiredCoverIds, bytes32[] memory lockReasons ) {
+532	 uint[] memory coverIds = qd.getAllCoversOfUser(coverOwner);
+533	 uint[] memory expiredIdsQueue = new uint[](coverIds.length);
+534	 uint gracePeriod = tc.claimSubmissionGracePeriod();
+535	 uint expiredQueueLength = 0;
+536	 for (uint i = 0; i < coverIds.length; i++) {
+537	 uint coverExpirationDate = qd.getValidityOfCover(coverIds[i]);
+538	 uint gracePeriodExpirationDate = coverExpirationDate.add(gracePeriod);
+539	 (, bool hasOpenClaim, ) = tc.coverInfo(coverIds[i]);
+540	 if (!hasOpenClaim && gracePeriodExpirationDate < now) {
+541	 expiredIdsQueue[expiredQueueLength] = coverIds[i];
+542	 expiredQueueLength++;
+543	 }
+544	 }
+545	 expiredCoverIds = new uint[](expiredQueueLength);
+546	 lockReasons = new bytes32[](expiredQueueLength);
+547	 for (uint i = 0; i < expiredQueueLength; i++) {
+548	 expiredCoverIds[i] = expiredIdsQueue[i];
+549	 lockReasons[i] = keccak256(abi.encodePacked("CN", coverOwner, expiredIdsQueue[i]));
+550	 }
+551	 }
+552	 function getWithdrawableCoverNotesAmount(address coverOwner) external view returns (uint) {
+553	 uint withdrawableAmount;
+554	 bytes32[] memory lockReasons;
+555	 (, lockReasons) = getWithdrawableCoverNoteCoverIds(coverOwner);
+556	 for (uint i = 0; i < lockReasons.length; i++) {
+557	 uint coverNoteAmount = tc.tokensLocked(coverOwner, lockReasons[i]);
+558	 withdrawableAmount = withdrawableAmount.add(coverNoteAmount);
+559	 }
+560	 return withdrawableAmount;
+561	 }
+562	 function makeCoverUsingNXMTokens( uint[] calldata coverDetails, uint16 coverPeriod, bytes4 coverCurr, address smartCAdd, uint8 _v, bytes32 _r, bytes32 _s ) external onlyMember whenNotPaused {
+563	 tc.burnFrom(msg.sender, coverDetails[2]);
+564	 _verifyCoverDetails(msg.sender, smartCAdd, coverCurr, coverDetails, coverPeriod, _v, _r, _s, true);
+565	 }
+566	 function verifyCoverDetails( address payable from, address scAddress, bytes4 coverCurr, uint[] memory coverDetails, uint16 coverPeriod, uint8 _v, bytes32 _r, bytes32 _s ) public onlyInternal {
+567	 _verifyCoverDetails( from, scAddress, coverCurr, coverDetails, coverPeriod, _v, _r, _s, false );
+568	 }
+569	 function verifySignature( uint[] memory coverDetails, uint16 coverPeriod, bytes4 currency, address contractAddress, uint8 _v, bytes32 _r, bytes32 _s ) public view returns (bool) {
+570	 require(contractAddress != address(0));
+571	 bytes32 hash = getOrderHash(coverDetails, coverPeriod, currency, contractAddress);
+572	 return isValidSignature(hash, _v, _r, _s);
+573	 }
+574	 function getOrderHash( uint[] memory coverDetails, uint16 coverPeriod, bytes4 currency, address contractAddress ) public view returns (bytes32) {
+575	 return keccak256( abi.encodePacked( coverDetails[0], currency, coverPeriod, contractAddress, coverDetails[1], coverDetails[2], coverDetails[3], coverDetails[4], address(this) ) );
+576	 }
+577	 function isValidSignature(bytes32 hash, uint8 v, bytes32 r, bytes32 s) public view returns (bool) {
+578	 bytes memory prefix = "\x19Ethereum Signed Message:\n32";
+579	 bytes32 prefixedHash = keccak256(abi.encodePacked(prefix, hash));
+580	 address a = ecrecover(prefixedHash, v, r, s);
+581	 return (a == qd.getAuthQuoteEngine());
+582	 }
+583	 function _makeCover( address payable from, address contractAddress, bytes4 coverCurrency, uint[] memory coverDetails, uint16 coverPeriod ) internal {
+584	 address underlyingToken = incidents.underlyingToken(contractAddress);
+585	 if (underlyingToken != address(0)) {
+586	 address coverAsset = cr.getCurrencyAssetAddress(coverCurrency);
+587	 require(coverAsset == underlyingToken, "Quotation: Unsupported cover asset for this product");
+588	 }
+589	 uint cid = qd.getCoverLength();
+590	 qd.addCover( coverPeriod, coverDetails[0], from, coverCurrency, contractAddress, coverDetails[1], coverDetails[2] );
+591	 uint coverNoteAmount = coverDetails[2].mul(qd.tokensRetained()).div(100);
+592	 if (underlyingToken == address(0)) {
+593	 uint gracePeriod = tc.claimSubmissionGracePeriod();
+594	 uint claimSubmissionPeriod = uint(coverPeriod).mul(1 days).add(gracePeriod);
+595	 bytes32 reason = keccak256(abi.encodePacked("CN", from, cid));
+596	 td.setDepositCNAmount(cid, coverNoteAmount);
+597	 tc.mintCoverNote(from, reason, coverNoteAmount, claimSubmissionPeriod);
+598	 }
+599	 else {
+600	 tc.mint(from, coverNoteAmount);
+601	 }
+602	 qd.addInTotalSumAssured(coverCurrency, coverDetails[0]);
+603	 qd.addInTotalSumAssuredSC(contractAddress, coverCurrency, coverDetails[0]);
+604	 uint coverPremiumInNXM = coverDetails[2];
+605	 uint stakersRewardPercentage = td.stakerCommissionPer();
+606	 uint rewardValue = coverPremiumInNXM.mul(stakersRewardPercentage).div(100);
+607	 pooledStaking.accumulateReward(contractAddress, rewardValue);
+608	 }
+609	 function _verifyCoverDetails( address payable from, address scAddress, bytes4 coverCurr, uint[] memory coverDetails, uint16 coverPeriod, uint8 _v, bytes32 _r, bytes32 _s, bool isNXM ) internal {
+610	 require(coverDetails[3] > now, "Quotation: Quote has expired");
+611	 require(coverPeriod >= 30 && coverPeriod <= 365, "Quotation: Cover period out of bounds");
+612	 require(!qd.timestampRepeated(coverDetails[4]), "Quotation: Quote already used");
+613	 qd.setTimestampRepeated(coverDetails[4]);
+614	 address asset = cr.getCurrencyAssetAddress(coverCurr);
+615	 if (coverCurr != "ETH" && !isNXM) {
+616	 pool.transferAssetFrom(asset, from, coverDetails[1]);
+617	 }
+618	 require(verifySignature(coverDetails, coverPeriod, coverCurr, scAddress, _v, _r, _s), "Quotation: signature mismatch");
+619	 _makeCover(from, scAddress, coverCurr, coverDetails, coverPeriod);
+620	 }
+621	 function createCover( address payable from, address scAddress, bytes4 currency, uint[] calldata coverDetails, uint16 coverPeriod, uint8 _v, bytes32 _r, bytes32 _s ) external onlyInternal {
+622	 require(coverDetails[3] > now, "Quotation: Quote has expired");
+623	 require(coverPeriod >= 30 && coverPeriod <= 365, "Quotation: Cover period out of bounds");
+624	 require(!qd.timestampRepeated(coverDetails[4]), "Quotation: Quote already used");
+625	 qd.setTimestampRepeated(coverDetails[4]);
+626	 require(verifySignature(coverDetails, coverPeriod, currency, scAddress, _v, _r, _s), "Quotation: signature mismatch");
+627	 _makeCover(from, scAddress, currency, coverDetails, coverPeriod);
+628	 }
+629	 function transferAssetsToNewContract(address) external pure {
+630	 }
+631	 function freeUpHeldCovers() external nonReentrant {
+632	 IERC20 dai = IERC20(cr.getCurrencyAssetAddress("DAI"));
+633	 uint membershipFee = td.joiningFee();
+634	 uint lastCoverId = 106;
+635	 for (uint id = 1; id <= lastCoverId; id++) {
+636	 if (qd.holdedCoverIDStatus(id) != uint(QuotationData.HCIDStatus.kycPending)) {
+637	 continue;
+638	 }
+639	 (, , bytes4 currency, ) = qd.getHoldedCoverDetailsByID1(id);
+640	 (, address payable userAddress, uint[] memory coverDetails) = qd.getHoldedCoverDetailsByID2(id);
+641	 uint refundedETH = membershipFee;
+642	 uint coverPremium = coverDetails[1];
+643	 if (qd.refundEligible(userAddress)) {
+644	 qd.setRefundEligible(userAddress, false);
+645	 }
+646	 qd.setHoldedCoverIDStatus(id, uint(QuotationData.HCIDStatus.kycFailedOrRefunded));
+647	 if (currency == "ETH") {
+648	 refundedETH = refundedETH.add(coverPremium);
+649	 }
+650	 else {
+651	 require(dai.transfer(userAddress, coverPremium), "Quotation: DAI refund transfer failed");
+652	 }
+653	 userAddress.transfer(refundedETH);
+654	 }
+655	 }
+656	 }
+657	 function getAssetToEthRate(address asset) public view returns (uint) {
+658	 if (asset == ETH || asset == stETH) {
+659	 return 1 ether;
+660	 }
+661	 address aggregatorAddress = aggregators[asset];
+662	 if (aggregatorAddress == address(0)) {
+663	 revert("PriceFeedOracle: Oracle asset not found");
+664	 }
+665	 int rate = Aggregator(aggregatorAddress).latestAnswer();
+666	 require(rate > 0, "PriceFeedOracle: Rate must be > 0");
+667	 return uint(rate);
+668	 }
+669	 function getAssetForEth(address asset, uint ethIn) external view returns (uint) {
+670	 if (asset == daiAddress) {
+671	 return ethIn.mul(1e18).div(getAssetToEthRate(daiAddress));
+672	 }
+673	 if (asset == ETH || asset == stETH) {
+674	 return ethIn;
+675	 }
+676	 revert("PriceFeedOracle: Unknown asset");
+677	 }
+678	 }
+679	 function totalSupply() public view returns (uint256) {
+680	 return _totalSupply;
+681	 }
+682	 function balanceOf(address owner) public view returns (uint256) {
+683	 return _balances[owner];
+684	 }
+685	 function allowance( address owner, address spender ) public view returns (uint256) {
+686	 return _allowed[owner][spender];
+687	 }
+688	 function approve(address spender, uint256 value) public returns (bool) {
+689	 require(spender != address(0));
+690	 _allowed[msg.sender][spender] = value;
+691	 emit Approval(msg.sender, spender, value);
+692	 return true;
+693	 }
+694	 function increaseAllowance( address spender, uint256 addedValue ) public returns (bool) {
+695	 require(spender != address(0));
+696	 _allowed[msg.sender][spender] = ( _allowed[msg.sender][spender].add(addedValue));
+697	 emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
+698	 return true;
+699	 }
+700	 function decreaseAllowance( address spender, uint256 subtractedValue ) public returns (bool) {
+701	 require(spender != address(0));
+702	 _allowed[msg.sender][spender] = ( _allowed[msg.sender][spender].sub(subtractedValue));
+703	 emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
+704	 return true;
+705	 }
+706	 function addToWhiteList(address _member) public onlyOperator returns (bool) {
+707	 whiteListed[_member] = true;
+708	 emit WhiteListed(_member);
+709	 return true;
+710	 }
+711	 function removeFromWhiteList(address _member) public onlyOperator returns (bool) {
+712	 whiteListed[_member] = false;
+713	 emit BlackListed(_member);
+714	 return true;
+715	 }
+716	 function changeOperator(address _newOperator) public onlyOperator returns (bool) {
+717	 operator = _newOperator;
+718	 return true;
+719	 }
+720	 function burn(uint256 amount) public returns (bool) {
+721	 _burn(msg.sender, amount);
+722	 return true;
+723	 }
+724	 function burnFrom(address from, uint256 value) public returns (bool) {
+725	 _burnFrom(from, value);
+726	 return true;
+727	 }
+728	 function mint(address account, uint256 amount) public onlyOperator {
+729	 _mint(account, amount);
+730	 }
+731	 function transfer(address to, uint256 value) public canTransfer(to) returns (bool) {
+732	 require(isLockedForMV[msg.sender] < now);
+733	 require(value <= _balances[msg.sender]);
+734	 _transfer(to, value);
+735	 return true;
+736	 }
+737	 function operatorTransfer(address from, uint256 value) public onlyOperator returns (bool) {
+738	 require(value <= _balances[from]);
+739	 _transferFrom(from, operator, value);
+740	 return true;
+741	 }
+742	 function transferFrom( address from, address to, uint256 value ) public canTransfer(to) returns (bool) {
+743	 require(isLockedForMV[from] < now);
+744	 require(value <= _balances[from]);
+745	 require(value <= _allowed[from][msg.sender]);
+746	 _transferFrom(from, to, value);
+747	 return true;
+748	 }
+749	 function lockForMemberVote(address _of, uint _days) public onlyOperator {
+750	 if (_days.add(now) > isLockedForMV[_of]) isLockedForMV[_of] = _days.add(now);
+751	 }
+752	 function _transfer(address to, uint256 value) internal {
+753	 _balances[msg.sender] = _balances[msg.sender].sub(value);
+754	 _balances[to] = _balances[to].add(value);
+755	 emit Transfer(msg.sender, to, value);
+756	 }
+757	 function _transferFrom( address from, address to, uint256 value ) internal {
+758	 _balances[from] = _balances[from].sub(value);
+759	 _balances[to] = _balances[to].add(value);
+760	 _allowed[from][msg.sender] = _allowed[from][msg.sender].sub(value);
+761	 emit Transfer(from, to, value);
+762	 }
+763	 function _mint(address account, uint256 amount) internal {
+764	 require(account != address(0));
+765	 _totalSupply = _totalSupply.add(amount);
+766	 _balances[account] = _balances[account].add(amount);
+767	 emit Transfer(address(0), account, amount);
+768	 }
+769	 function _burn(address account, uint256 amount) internal {
+770	 require(amount <= _balances[account]);
+771	 _totalSupply = _totalSupply.sub(amount);
+772	 _balances[account] = _balances[account].sub(amount);
+773	 emit Transfer(account, address(0), amount);
+774	 }
+775	 function _burnFrom(address account, uint256 value) internal {
+776	 require(value <= _allowed[account][msg.sender]);
+777	 _allowed[account][msg.sender] = _allowed[account][msg.sender].sub( value);
+778	 _burn(account, value);
+779	 }
+780	 }
+781	 function changeDependentContractAddress() public {
+782	 token = NXMToken(ms.tokenAddress());
+783	 pooledStaking = IPooledStaking(ms.getLatestAddress("PS"));
+784	 }
+785	 function markCoverClaimOpen(uint coverId) external onlyInternal {
+786	 CoverInfo storage info = coverInfo[coverId];
+787	 uint16 claimCount;
+788	 bool hasOpenClaim;
+789	 bool hasAcceptedClaim;
+790	 (claimCount, hasOpenClaim, hasAcceptedClaim) = (info.claimCount, info.hasOpenClaim, info.hasAcceptedClaim);
+791	 claimCount = claimCount + 1;
+792	 require(claimCount <= 2, "TokenController: Max claim count exceeded");
+793	 require(hasOpenClaim == false, "TokenController: Cover already has an open claim");
+794	 require(hasAcceptedClaim == false, "TokenController: Cover already has accepted claims");
+795	 (info.claimCount, info.hasOpenClaim) = (claimCount, true);
+796	 }
+797	 function markCoverClaimClosed(uint coverId, bool isAccepted) external onlyInternal {
+798	 CoverInfo storage info = coverInfo[coverId];
+799	 require(info.hasOpenClaim == true, "TokenController: Cover claim is not marked as open");
+800	 (info.hasOpenClaim, info.hasAcceptedClaim) = (false, isAccepted);
+801	 }
+802	 function changeOperator(address _newOperator) public onlyInternal {
+803	 token.changeOperator(_newOperator);
+804	 }
+805	 function operatorTransfer(address _from, address _to, uint _value) external onlyInternal returns (bool) {
+806	 require(msg.sender == address(pooledStaking), "TokenController: Call is only allowed from PooledStaking address");
+807	 token.operatorTransfer(_from, _value);
+808	 token.transfer(_to, _value);
+809	 return true;
+810	 }
+811	 function lockClaimAssessmentTokens(uint256 _amount, uint256 _time) external checkPause {
+812	 require(minCALockTime <= _time, "TokenController: Must lock for minimum time");
+813	 require(_time <= 180 days, "TokenController: Tokens can be locked for 180 days maximum");
+814	 _lock(msg.sender, "CLA", _amount, _time);
+815	 }
+816	 function lockOf(address _of, bytes32 _reason, uint256 _amount, uint256 _time) public onlyInternal returns (bool) {
+817	 _lock(_of, _reason, _amount, _time);
+818	 return true;
+819	 }
+820	 function mintCoverNote( address _of, bytes32 _reason, uint256 _amount, uint256 _time ) external onlyInternal {
+821	 require(_tokensLocked(_of, _reason) == 0, "TokenController: An amount of tokens is already locked");
+822	 require(_amount != 0, "TokenController: Amount shouldn't be zero");
+823	 if (locked[_of][_reason].amount == 0) {
+824	 lockReason[_of].push(_reason);
+825	 }
+826	 token.mint(address(this), _amount);
+827	 uint256 lockedUntil = now.add(_time);
+828	 locked[_of][_reason] = LockToken(_amount, lockedUntil, false);
+829	 emit Locked(_of, _reason, _amount, lockedUntil);
+830	 }
+831	 function extendClaimAssessmentLock(uint256 _time) external checkPause {
+832	 uint256 validity = getLockedTokensValidity(msg.sender, "CLA");
+833	 require(validity.add(_time).sub(block.timestamp) <= 180 days, "TokenController: Tokens can be locked for 180 days maximum");
+834	 _extendLock(msg.sender, "CLA", _time);
+835	 }
+836	 function extendLockOf(address _of, bytes32 _reason, uint256 _time) public onlyInternal returns (bool) {
+837	 _extendLock(_of, _reason, _time);
+838	 return true;
+839	 }
+840	 function increaseClaimAssessmentLock(uint256 _amount) external checkPause {
+841	 require(_tokensLocked(msg.sender, "CLA") > 0, "TokenController: No tokens locked");
+842	 token.operatorTransfer(msg.sender, _amount);
+843	 locked[msg.sender]["CLA"].amount = locked[msg.sender]["CLA"].amount.add(_amount);
+844	 emit Locked(msg.sender, "CLA", _amount, locked[msg.sender]["CLA"].validity);
+845	 }
+846	 function burnFrom(address _of, uint amount) public onlyInternal returns (bool) {
+847	 return token.burnFrom(_of, amount);
+848	 }
+849	 function burnLockedTokens(address _of, bytes32 _reason, uint256 _amount) public onlyInternal {
+850	 _burnLockedTokens(_of, _reason, _amount);
+851	 }
+852	 function reduceLock(address _of, bytes32 _reason, uint256 _time) public onlyInternal {
+853	 _reduceLock(_of, _reason, _time);
+854	 }
+855	 function releaseLockedTokens(address _of, bytes32 _reason, uint256 _amount) public onlyInternal {
+856	 _releaseLockedTokens(_of, _reason, _amount);
+857	 }
+858	 function addToWhitelist(address _member) public onlyInternal {
+859	 token.addToWhiteList(_member);
+860	 }
+861	 function removeFromWhitelist(address _member) public onlyInternal {
+862	 token.removeFromWhiteList(_member);
+863	 }
+864	 function mint(address _member, uint _amount) public onlyInternal {
+865	 token.mint(_member, _amount);
+866	 }
+867	 function lockForMemberVote(address _of, uint _days) public onlyInternal {
+868	 token.lockForMemberVote(_of, _days);
+869	 }
+870	 function withdrawClaimAssessmentTokens(address _of) external checkPause {
+871	 uint256 withdrawableTokens = _tokensUnlockable(_of, "CLA");
+872	 if (withdrawableTokens > 0) {
+873	 locked[_of]["CLA"].claimed = true;
+874	 emit Unlocked(_of, "CLA", withdrawableTokens);
+875	 token.transfer(_of, withdrawableTokens);
+876	 }
+877	 }
+878	 function updateUintParameters(bytes8 code, uint value) external onlyGovernance {
+879	 if (code == "MNCLT") {
+880	 minCALockTime = value;
+881	 return;
+882	 }
+883	 if (code == "GRACEPER") {
+884	 claimSubmissionGracePeriod = value;
+885	 return;
+886	 }
+887	 revert("TokenController: invalid param code");
+888	 }
+889	 function getLockReasons(address _of) external view returns (bytes32[] memory reasons) {
+890	 return lockReason[_of];
+891	 }
+892	 function getLockedTokensValidity(address _of, bytes32 reason) public view returns (uint256 validity) {
+893	 validity = locked[_of][reason].validity;
+894	 }
+895	 function getUnlockableTokens(address _of) public view returns (uint256 unlockableTokens) {
+896	 for (uint256 i = 0; i < lockReason[_of].length; i++) {
+897	 unlockableTokens = unlockableTokens.add(_tokensUnlockable(_of, lockReason[_of][i]));
+898	 }
+899	 }
+900	 function tokensLocked(address _of, bytes32 _reason) public view returns (uint256 amount) {
+901	 return _tokensLocked(_of, _reason);
+902	 }
+903	 function tokensLockedWithValidity(address _of, bytes32 _reason) public view returns (uint256 amount, uint256 validity) {
+904	 bool claimed = locked[_of][_reason].claimed;
+905	 amount = locked[_of][_reason].amount;
+906	 validity = locked[_of][_reason].validity;
+907	 if (claimed) {
+908	 amount = 0;
+909	 }
+910	 }
+911	 function tokensUnlockable(address _of, bytes32 _reason) public view returns (uint256 amount) {
+912	 return _tokensUnlockable(_of, _reason);
+913	 }
+914	 function totalSupply() public view returns (uint256) {
+915	 return token.totalSupply();
+916	 }
+917	 function tokensLockedAtTime(address _of, bytes32 _reason, uint256 _time) public view returns (uint256 amount) {
+918	 return _tokensLockedAtTime(_of, _reason, _time);
+919	 }
+920	 function totalBalanceOf(address _of) public view returns (uint256 amount) {
+921	 amount = token.balanceOf(_of);
+922	 for (uint256 i = 0; i < lockReason[_of].length; i++) {
+923	 amount = amount.add(_tokensLocked(_of, lockReason[_of][i]));
+924	 }
+925	 uint stakerReward = pooledStaking.stakerReward(_of);
+926	 uint stakerDeposit = pooledStaking.stakerDeposit(_of);
+927	 amount = amount.add(stakerDeposit).add(stakerReward);
+928	 }
+929	 function totalLockedBalance(address _of) public view returns (uint256 amount) {
+930	 for (uint256 i = 0; i < lockReason[_of].length; i++) {
+931	 amount = amount.add(_tokensLocked(_of, lockReason[_of][i]));
+932	 }
+933	 amount = amount.add(pooledStaking.stakerDeposit(_of));
+934	 }
+935	 function _lock(address _of, bytes32 _reason, uint256 _amount, uint256 _time) internal {
+936	 require(_tokensLocked(_of, _reason) == 0, "TokenController: An amount of tokens is already locked");
+937	 require(_amount != 0, "TokenController: Amount shouldn't be zero");
+938	 if (locked[_of][_reason].amount == 0) {
+939	 lockReason[_of].push(_reason);
+940	 }
+941	 token.operatorTransfer(_of, _amount);
+942	 uint256 validUntil = now.add(_time);
+943	 locked[_of][_reason] = LockToken(_amount, validUntil, false);
+944	 emit Locked(_of, _reason, _amount, validUntil);
+945	 }
+946	 function _tokensLocked(address _of, bytes32 _reason) internal view returns (uint256 amount) {
+947	 if (!locked[_of][_reason].claimed) {
+948	 amount = locked[_of][_reason].amount;
+949	 }
+950	 }
+951	 function _tokensLockedAtTime(address _of, bytes32 _reason, uint256 _time) internal view returns (uint256 amount) {
+952	 if (locked[_of][_reason].validity > _time) {
+953	 amount = locked[_of][_reason].amount;
+954	 }
+955	 }
+956	 function _extendLock(address _of, bytes32 _reason, uint256 _time) internal {
+957	 require(_tokensLocked(_of, _reason) > 0, "TokenController: No tokens locked");
+958	 emit Unlocked(_of, _reason, locked[_of][_reason].amount);
+959	 locked[_of][_reason].validity = locked[_of][_reason].validity.add(_time);
+960	 emit Locked(_of, _reason, locked[_of][_reason].amount, locked[_of][_reason].validity);
+961	 }
+962	 function _reduceLock(address _of, bytes32 _reason, uint256 _time) internal {
+963	 require(_tokensLocked(_of, _reason) > 0, "TokenController: No tokens locked");
+964	 emit Unlocked(_of, _reason, locked[_of][_reason].amount);
+965	 locked[_of][_reason].validity = locked[_of][_reason].validity.sub(_time);
+966	 emit Locked(_of, _reason, locked[_of][_reason].amount, locked[_of][_reason].validity);
+967	 }
+968	 function _tokensUnlockable(address _of, bytes32 _reason) internal view returns (uint256 amount) {
+969	 if (locked[_of][_reason].validity <= now && !locked[_of][_reason].claimed) {
+970	 amount = locked[_of][_reason].amount;
+971	 }
+972	 }
+973	 function _burnLockedTokens(address _of, bytes32 _reason, uint256 _amount) internal {
+974	 uint256 amount = _tokensLocked(_of, _reason);
+975	 require(amount >= _amount, "TokenController: Amount exceedes locked tokens amount");
+976	 if (amount == _amount) {
+977	 locked[_of][_reason].claimed = true;
+978	 }
+979	 locked[_of][_reason].amount = locked[_of][_reason].amount.sub(_amount);
+980	 token.burn(_amount);
+981	 emit Burned(_of, _reason, _amount);
+982	 }
+983	 function _releaseLockedTokens(address _of, bytes32 _reason, uint256 _amount) internal {
+984	 uint256 amount = _tokensLocked(_of, _reason);
+985	 require(amount >= _amount, "TokenController: Amount exceedes locked tokens amount");
+986	 if (amount == _amount) {
+987	 locked[_of][_reason].claimed = true;
+988	 }
+989	 locked[_of][_reason].amount = locked[_of][_reason].amount.sub(_amount);
+990	 token.transfer(_of, _amount);
+991	 emit Unlocked(_of, _reason, _amount);
+992	 }
+993	 function withdrawCoverNote( address _of, uint[] calldata _coverIds, uint[] calldata _indexes ) external onlyInternal {
+994	 uint reasonCount = lockReason[_of].length;
+995	 uint lastReasonIndex = reasonCount.sub(1, "TokenController: No locked cover notes found");
+996	 uint totalAmount = 0;
+997	 for (uint i = _coverIds.length; i > 0; i--) {
+998	 bool hasOpenClaim = coverInfo[_coverIds[i - 1]].hasOpenClaim;
+999	 require(hasOpenClaim == false, "TokenController: Cannot withdraw for cover with an open claim");
+1000	 bytes32 _reason = keccak256(abi.encodePacked("CN", _of, _coverIds[i - 1]));
+1001	 uint _reasonIndex = _indexes[i - 1];
+1002	 require(lockReason[_of][_reasonIndex] == _reason, "TokenController: Bad reason index");
+1003	 uint amount = locked[_of][_reason].amount;
+1004	 totalAmount = totalAmount.add(amount);
+1005	 delete locked[_of][_reason];
+1006	 if (lastReasonIndex != _reasonIndex) {
+1007	 lockReason[_of][_reasonIndex] = lockReason[_of][lastReasonIndex];
+1008	 }
+1009	 lockReason[_of].pop();
+1010	 emit Unlocked(_of, _reason, amount);
+1011	 if (lastReasonIndex > 0) {
+1012	 lastReasonIndex = lastReasonIndex.sub(1, "TokenController: Reason count mismatch");
+1013	 }
+1014	 }
+1015	 token.transfer(_of, totalAmount);
+1016	 }
+1017	 function removeEmptyReason(address _of, bytes32 _reason, uint _index) external {
+1018	 _removeEmptyReason(_of, _reason, _index);
+1019	 }
+1020	 function removeMultipleEmptyReasons( address[] calldata _members, bytes32[] calldata _reasons, uint[] calldata _indexes ) external {
+1021	 require(_members.length == _reasons.length, "TokenController: members and reasons array lengths differ");
+1022	 require(_reasons.length == _indexes.length, "TokenController: reasons and indexes array lengths differ");
+1023	 for (uint i = _members.length; i > 0; i--) {
+1024	 uint idx = i - 1;
+1025	 _removeEmptyReason(_members[idx], _reasons[idx], _indexes[idx]);
+1026	 }
+1027	 }
+1028	 function _removeEmptyReason(address _of, bytes32 _reason, uint _index) internal {
+1029	 uint lastReasonIndex = lockReason[_of].length.sub(1, "TokenController: lockReason is empty");
+1030	 require(lockReason[_of][_index] == _reason, "TokenController: bad reason index");
+1031	 require(locked[_of][_reason].amount == 0, "TokenController: reason amount is not zero");
+1032	 if (lastReasonIndex != _index) {
+1033	 lockReason[_of][_index] = lockReason[_of][lastReasonIndex];
+1034	 }
+1035	 lockReason[_of].pop();
+1036	 }
+1037	 function initialize() external {
+1038	 require(claimSubmissionGracePeriod == 0, "TokenController: Already initialized");
+1039	 claimSubmissionGracePeriod = 120 days;
+1040	 migrate();
+1041	 }
+1042	 function migrate() internal {
+1043	 ClaimsData cd = ClaimsData(ms.getLatestAddress("CD"));
+1044	 uint totalClaims = cd.actualClaimLength() - 1;
+1045	 cd.changeFinalVerdict(20, -1);
+1046	 cd.setClaimStatus(20, 6);
+1047	 cd.changeFinalVerdict(21, -1);
+1048	 cd.setClaimStatus(21, 6);
+1049	 address payable[3] memory members = [ 0x4a9fA34da6d2378c8f3B9F6b83532B169beaEDFc, 0x6b5DCDA27b5c3d88e71867D6b10b35372208361F, 0x8B6D1e5b4db5B6f9aCcc659e2b9619B0Cd90D617 ];
+1050	 for (uint i = 0; i < members.length; i++) {
+1051	 if (locked[members[i]]["CLA"].validity > now + 180 days) {
+1052	 locked[members[i]]["CLA"].validity = now + 180 days;
+1053	 }
+1054	 }
+1055	 for (uint i = 1; i <= totalClaims; i++) {
+1056	 (, uint status) = cd.getClaimStatusNumber(i);
+1057	 (, uint coverId) = cd.getClaimCoverId(i);
+1058	 int8 verdict = cd.getFinalVerdict(i);
+1059	 CoverInfo memory info = coverInfo[coverId];
+1060	 info.claimCount = info.claimCount + 1;
+1061	 info.hasAcceptedClaim = (status == 14);
+1062	 info.hasOpenClaim = (verdict == 0);
+1063	 coverInfo[coverId] = info;
+1064	 }
+1065	 }
+1066	 }
+1067	 function changeDependentContractAddress() public {
+1068	 qd = QuotationData(master.getLatestAddress("QD"));
+1069	 pool = Pool(master.getLatestAddress("P1"));
+1070	 initialize();
+1071	 }
+1072	 function initialize() internal {
+1073	 address currentMCR = master.getLatestAddress("MC");
+1074	 if (address(previousMCR) == address(0) || currentMCR != address(this)) {
+1075	 return;
+1076	 }
+1077	 uint112 minCap = 7000 * 1e18;
+1078	 mcrFloor = uint112(previousMCR.variableMincap()) + minCap;
+1079	 mcr = uint112(previousMCR.getLastMCREther());
+1080	 desiredMCR = mcr;
+1081	 mcrFloorIncrementThreshold = uint24(previousMCR.dynamicMincapThresholdx100());
+1082	 maxMCRFloorIncrement = uint24(previousMCR.dynamicMincapIncrementx100());
+1083	 lastUpdateTime = uint32(block.timestamp);
+1084	 previousMCR = LegacyMCR(address(0));
+1085	 }
+1086	 function getAllSumAssurance() public view returns (uint) {
+1087	 PriceFeedOracle priceFeed = pool.priceFeedOracle();
+1088	 address daiAddress = priceFeed.daiAddress();
+1089	 uint ethAmount = qd.getTotalSumAssured("ETH").mul(1e18);
+1090	 uint daiAmount = qd.getTotalSumAssured("DAI").mul(1e18);
+1091	 uint daiRate = priceFeed.getAssetToEthRate(daiAddress);
+1092	 uint daiAmountInEth = daiAmount.mul(daiRate).div(1e18);
+1093	 return ethAmount.add(daiAmountInEth);
+1094	 }
+1095	 function updateMCR() public {
+1096	 _updateMCR(pool.getPoolValueInEth(), false);
+1097	 }
+1098	 function updateMCRInternal(uint poolValueInEth, bool forceUpdate) public onlyInternal {
+1099	 _updateMCR(poolValueInEth, forceUpdate);
+1100	 }
+1101	 function _updateMCR(uint poolValueInEth, bool forceUpdate) internal {
+1102	 uint _mcrFloorIncrementThreshold = mcrFloorIncrementThreshold;
+1103	 uint _maxMCRFloorIncrement = maxMCRFloorIncrement;
+1104	 uint _gearingFactor = gearingFactor;
+1105	 uint _minUpdateTime = minUpdateTime;
+1106	 uint _mcrFloor = mcrFloor;
+1107	 uint112 _mcr = mcr;
+1108	 uint112 _desiredMCR = desiredMCR;
+1109	 uint32 _lastUpdateTime = lastUpdateTime;
+1110	 if (!forceUpdate && _lastUpdateTime + _minUpdateTime > block.timestamp) {
+1111	 return;
+1112	 }
+1113	 if (block.timestamp > _lastUpdateTime && pool.calculateMCRRatio(poolValueInEth, _mcr) >= _mcrFloorIncrementThreshold) {
+1114	 uint basisPointsAdjustment = min( _maxMCRFloorIncrement.mul(block.timestamp - _lastUpdateTime).div(1 days), _maxMCRFloorIncrement );
+1115	 uint newMCRFloor = _mcrFloor.mul(basisPointsAdjustment.add(BASIS_PRECISION)).div(BASIS_PRECISION);
+1116	 require(newMCRFloor <= uint112(~0), 'MCR: newMCRFloor overflow');
+1117	 mcrFloor = uint112(newMCRFloor);
+1118	 }
+1119	 uint112 newMCR = uint112(getMCR());
+1120	 if (newMCR != _mcr) {
+1121	 mcr = newMCR;
+1122	 }
+1123	 uint totalSumAssured = getAllSumAssurance();
+1124	 uint gearedMCR = totalSumAssured.mul(BASIS_PRECISION).div(_gearingFactor);
+1125	 uint112 newDesiredMCR = uint112(max(gearedMCR, mcrFloor));
+1126	 if (newDesiredMCR != _desiredMCR) {
+1127	 desiredMCR = newDesiredMCR;
+1128	 }
+1129	 lastUpdateTime = uint32(block.timestamp);
+1130	 emit MCRUpdated(mcr, desiredMCR, mcrFloor, gearedMCR, totalSumAssured);
+1131	 }
+1132	 function getMCR() public view returns (uint) {
+1133	 uint _mcr = mcr;
+1134	 uint _desiredMCR = desiredMCR;
+1135	 uint _lastUpdateTime = lastUpdateTime;
+1136	 if (block.timestamp == _lastUpdateTime) {
+1137	 return _mcr;
+1138	 }
+1139	 uint _maxMCRIncrement = maxMCRIncrement;
+1140	 uint basisPointsAdjustment = _maxMCRIncrement.mul(block.timestamp - _lastUpdateTime).div(1 days);
+1141	 basisPointsAdjustment = min(basisPointsAdjustment, MAX_MCR_ADJUSTMENT);
+1142	 if (_desiredMCR > _mcr) {
+1143	 return min(_mcr.mul(basisPointsAdjustment.add(BASIS_PRECISION)).div(BASIS_PRECISION), _desiredMCR);
+1144	 }
+1145	 return max(_mcr.mul(BASIS_PRECISION - basisPointsAdjustment).div(BASIS_PRECISION), _desiredMCR);
+1146	 }
+1147	 function getGearedMCR() external view returns (uint) {
+1148	 return getAllSumAssurance().mul(BASIS_PRECISION).div(gearingFactor);
+1149	 }
+1150	 function min(uint x, uint y) pure internal returns (uint) {
+1151	 return x < y ? x : y;
+1152	 }
+1153	 function max(uint x, uint y) pure internal returns (uint) {
+1154	 return x > y ? x : y;
+1155	 }
+1156	 function updateUintParameters(bytes8 code, uint val) public {
+1157	 require(master.checkIsAuthToGoverned(msg.sender));
+1158	 if (code == "DMCT") {
+1159	 require(val <= UINT24_MAX, "MCR: value too large");
+1160	 mcrFloorIncrementThreshold = uint24(val);
+1161	 }
+1162	 else if (code == "DMCI") {
+1163	 require(val <= UINT24_MAX, "MCR: value too large");
+1164	 maxMCRFloorIncrement = uint24(val);
+1165	 }
+1166	 else if (code == "MMIC") {
+1167	 require(val <= UINT24_MAX, "MCR: value too large");
+1168	 maxMCRIncrement = uint24(val);
+1169	 }
+1170	 else if (code == "GEAR") {
+1171	 require(val <= UINT24_MAX, "MCR: value too large");
+1172	 gearingFactor = uint24(val);
+1173	 }
+1174	 else if (code == "MUTI") {
+1175	 require(val <= UINT24_MAX, "MCR: value too large");
+1176	 minUpdateTime = uint24(val);
+1177	 }
+1178	 else {
+1179	 revert("Invalid param code");
+1180	 }
+1181	 }
+1182	 }
+1183	 function claimAllPendingReward(uint records) public isMemberAndcheckPause {
+1184	 _claimRewardToBeDistributed(records);
+1185	 pooledStaking.withdrawReward(msg.sender);
+1186	 uint governanceRewards = gv.claimReward(msg.sender, records);
+1187	 if (governanceRewards > 0) {
+1188	 require(tk.transfer(msg.sender, governanceRewards));
+1189	 }
+1190	 }
+1191	 function getAllPendingRewardOfUser(address _add) public view returns (uint) {
+1192	 uint caReward = getRewardToBeDistributedByUser(_add);
+1193	 uint pooledStakingReward = pooledStaking.stakerReward(_add);
+1194	 uint governanceReward = gv.getPendingReward(_add);
+1195	 return caReward.add(pooledStakingReward).add(governanceReward);
+1196	 }
+1197	 function _rewardAgainstClaim(uint claimid, uint coverid, uint status) internal {
+1198	 uint premiumNXM = qd.getCoverPremiumNXM(coverid);
+1199	 uint distributableTokens = premiumNXM.mul(cd.claimRewardPerc()).div(100);
+1200	 uint percCA;
+1201	 uint percMV;
+1202	 (percCA, percMV) = cd.getRewardStatus(status);
+1203	 cd.setClaimRewardDetail(claimid, percCA, percMV, distributableTokens);
+1204	 if (percCA > 0 || percMV > 0) {
+1205	 tc.mint(address(this), distributableTokens);
+1206	 }
+1207	 if (status == 6 || status == 9 || status == 11) {
+1208	 cd.changeFinalVerdict(claimid, -1);
+1209	 tc.markCoverClaimClosed(coverid, false);
+1210	 _burnCoverNoteDeposit(coverid);
+1211	 }
+1212	 else if (status == 7 || status == 8 || status == 10) {
+1213	 cd.changeFinalVerdict(claimid, 1);
+1214	 tc.markCoverClaimClosed(coverid, true);
+1215	 _unlockCoverNote(coverid);
+1216	 bool payoutSucceeded = attemptClaimPayout(coverid);
+1217	 uint nextStatus = payoutSucceeded ? 14 : 12;
+1218	 c1.setClaimStatus(claimid, nextStatus);
+1219	 }
+1220	 }
+1221	 function _burnCoverNoteDeposit(uint coverId) internal {
+1222	 address _of = qd.getCoverMemberAddress(coverId);
+1223	 bytes32 reason = keccak256(abi.encodePacked("CN", _of, coverId));
+1224	 uint lockedAmount = tc.tokensLocked(_of, reason);
+1225	 (uint amount,) = td.depositedCN(coverId);
+1226	 amount = amount.div(2);
+1227	 uint burnAmount = lockedAmount < amount ? lockedAmount : amount;
+1228	 if (burnAmount != 0) {
+1229	 tc.burnLockedTokens(_of, reason, amount);
+1230	 }
+1231	 }
+1232	 function _unlockCoverNote(uint coverId) internal {
+1233	 address coverHolder = qd.getCoverMemberAddress(coverId);
+1234	 bytes32 reason = keccak256(abi.encodePacked("CN", coverHolder, coverId));
+1235	 uint lockedCN = tc.tokensLocked(coverHolder, reason);
+1236	 if (lockedCN != 0) {
+1237	 tc.releaseLockedTokens(coverHolder, reason, lockedCN);
+1238	 }
+1239	 }
+1240	 function _changeClaimStatusCA(uint claimid, uint coverid, uint status) internal {
+1241	 if (c1.checkVoteClosing(claimid) == 1) {
+1242	 uint caTokens = c1.getCATokens(claimid, 0);
+1243	 uint accept;
+1244	 uint deny;
+1245	 uint acceptAndDeny;
+1246	 bool rewardOrPunish;
+1247	 uint sumAssured;
+1248	 (, accept) = cd.getClaimVote(claimid, 1);
+1249	 (, deny) = cd.getClaimVote(claimid, - 1);
+1250	 acceptAndDeny = accept.add(deny);
+1251	 accept = accept.mul(100);
+1252	 deny = deny.mul(100);
+1253	 if (caTokens == 0) {
+1254	 status = 3;
+1255	 }
+1256	 else {
+1257	 sumAssured = qd.getCoverSumAssured(coverid).mul(DECIMAL1E18);
+1258	 if (caTokens > sumAssured.mul(5)) {
+1259	 if (accept.div(acceptAndDeny) > 70) {
+1260	 status = 7;
+1261	 qd.changeCoverStatusNo(coverid, uint8(QuotationData.CoverStatus.ClaimAccepted));
+1262	 rewardOrPunish = true;
+1263	 }
+1264	 else if (deny.div(acceptAndDeny) > 70) {
+1265	 status = 6;
+1266	 qd.changeCoverStatusNo(coverid, uint8(QuotationData.CoverStatus.ClaimDenied));
+1267	 rewardOrPunish = true;
+1268	 }
+1269	 else if (accept.div(acceptAndDeny) > deny.div(acceptAndDeny)) {
+1270	 status = 4;
+1271	 }
+1272	 else {
+1273	 status = 5;
+1274	 }
+1275	 }
+1276	 else {
+1277	 if (accept.div(acceptAndDeny) > deny.div(acceptAndDeny)) {
+1278	 status = 2;
+1279	 }
+1280	 else {
+1281	 status = 3;
+1282	 }
+1283	 }
+1284	 }
+1285	 c1.setClaimStatus(claimid, status);
+1286	 if (rewardOrPunish) {
+1287	 _rewardAgainstClaim(claimid, coverid, status);
+1288	 }
+1289	 }
+1290	 }
+1291	 function _changeClaimStatusMV(uint claimid, uint coverid, uint status) internal {
+1292	 if (c1.checkVoteClosing(claimid) == 1) {
+1293	 uint8 coverStatus;
+1294	 uint statusOrig = status;
+1295	 uint mvTokens = c1.getCATokens(claimid, 1);
+1296	 uint sumAssured = qd.getCoverSumAssured(coverid).mul(DECIMAL1E18);
+1297	 uint thresholdUnreached = 0;
+1298	 if (mvTokens < sumAssured.mul(5)) {
+1299	 thresholdUnreached = 1;
+1300	 }
+1301	 uint accept;
+1302	 (, accept) = cd.getClaimMVote(claimid, 1);
+1303	 uint deny;
+1304	 (, deny) = cd.getClaimMVote(claimid, - 1);
+1305	 if (accept.add(deny) > 0) {
+1306	 if (accept.mul(100).div(accept.add(deny)) >= 50 && statusOrig > 1 && statusOrig <= 5 && thresholdUnreached == 0) {
+1307	 status = 8;
+1308	 coverStatus = uint8(QuotationData.CoverStatus.ClaimAccepted);
+1309	 }
+1310	 else if (deny.mul(100).div(accept.add(deny)) >= 50 && statusOrig > 1 && statusOrig <= 5 && thresholdUnreached == 0) {
+1311	 status = 9;
+1312	 coverStatus = uint8(QuotationData.CoverStatus.ClaimDenied);
+1313	 }
+1314	 }
+1315	 if (thresholdUnreached == 1 && (statusOrig == 2 || statusOrig == 4)) {
+1316	 status = 10;
+1317	 coverStatus = uint8(QuotationData.CoverStatus.ClaimAccepted);
+1318	 }
+1319	 else if (thresholdUnreached == 1 && (statusOrig == 5 || statusOrig == 3 || statusOrig == 1)) {
+1320	 status = 11;
+1321	 coverStatus = uint8(QuotationData.CoverStatus.ClaimDenied);
+1322	 }
+1323	 c1.setClaimStatus(claimid, status);
+1324	 qd.changeCoverStatusNo(coverid, uint8(coverStatus));
+1325	 _rewardAgainstClaim(claimid, coverid, status);
+1326	 }
+1327	 }
+1328	 function _claimRewardToBeDistributed(uint _records) internal {
+1329	 uint lengthVote = cd.getVoteAddressCALength(msg.sender);
+1330	 uint voteid;
+1331	 uint lastIndex;
+1332	 (lastIndex,) = cd.getRewardDistributedIndex(msg.sender);
+1333	 uint total = 0;
+1334	 uint tokenForVoteId = 0;
+1335	 bool lastClaimedCheck;
+1336	 uint _days = td.lockCADays();
+1337	 bool claimed;
+1338	 uint counter = 0;
+1339	 uint claimId;
+1340	 uint perc;
+1341	 uint i;
+1342	 uint lastClaimed = lengthVote;
+1343	 for (i = lastIndex; i < lengthVote && counter < _records; i++) {
+1344	 voteid = cd.getVoteAddressCA(msg.sender, i);
+1345	 (tokenForVoteId, lastClaimedCheck, , perc) = getRewardToBeGiven(1, voteid, 0);
+1346	 if (lastClaimed == lengthVote && lastClaimedCheck == true) {
+1347	 lastClaimed = i;
+1348	 }
+1349	 (, claimId, , claimed) = cd.getVoteDetails(voteid);
+1350	 if (perc > 0 && !claimed) {
+1351	 counter++;
+1352	 cd.setRewardClaimed(voteid, true);
+1353	 }
+1354	 else if (perc == 0 && cd.getFinalVerdict(claimId) != 0 && !claimed) {
+1355	 (perc,,) = cd.getClaimRewardDetail(claimId);
+1356	 if (perc == 0) {
+1357	 counter++;
+1358	 }
+1359	 cd.setRewardClaimed(voteid, true);
+1360	 }
+1361	 if (tokenForVoteId > 0) {
+1362	 total = tokenForVoteId.add(total);
+1363	 }
+1364	 }
+1365	 if (lastClaimed == lengthVote) {
+1366	 cd.setRewardDistributedIndexCA(msg.sender, i);
+1367	 }
+1368	 else {
+1369	 cd.setRewardDistributedIndexCA(msg.sender, lastClaimed);
+1370	 }
+1371	 lengthVote = cd.getVoteAddressMemberLength(msg.sender);
+1372	 lastClaimed = lengthVote;
+1373	 _days = _days.mul(counter);
+1374	 if (tc.tokensLockedAtTime(msg.sender, "CLA", now) > 0) {
+1375	 tc.reduceLock(msg.sender, "CLA", _days);
+1376	 }
+1377	 (, lastIndex) = cd.getRewardDistributedIndex(msg.sender);
+1378	 lastClaimed = lengthVote;
+1379	 counter = 0;
+1380	 for (i = lastIndex; i < lengthVote && counter < _records; i++) {
+1381	 voteid = cd.getVoteAddressMember(msg.sender, i);
+1382	 (tokenForVoteId, lastClaimedCheck,,) = getRewardToBeGiven(0, voteid, 0);
+1383	 if (lastClaimed == lengthVote && lastClaimedCheck == true) {
+1384	 lastClaimed = i;
+1385	 }
+1386	 (, claimId, , claimed) = cd.getVoteDetails(voteid);
+1387	 if (claimed == false && cd.getFinalVerdict(claimId) != 0) {
+1388	 cd.setRewardClaimed(voteid, true);
+1389	 counter++;
+1390	 }
+1391	 if (tokenForVoteId > 0) {
+1392	 total = tokenForVoteId.add(total);
+1393	 }
+1394	 }
+1395	 if (total > 0) {
+1396	 require(tk.transfer(msg.sender, total));
+1397	 }
+1398	 if (lastClaimed == lengthVote) {
+1399	 cd.setRewardDistributedIndexMV(msg.sender, i);
+1400	 }
+1401	 else {
+1402	 cd.setRewardDistributedIndexMV(msg.sender, lastClaimed);
+1403	 }
+1404	 }
+1405	 function _claimStakeCommission(uint _records, address _user) external onlyInternal {
+1406	 uint total = 0;
+1407	 uint len = td.getStakerStakedContractLength(_user);
+1408	 uint lastCompletedStakeCommission = td.lastCompletedStakeCommission(_user);
+1409	 uint commissionEarned;
+1410	 uint commissionRedeemed;
+1411	 uint maxCommission;
+1412	 uint lastCommisionRedeemed = len;
+1413	 uint counter;
+1414	 uint i;
+1415	 for (i = lastCompletedStakeCommission; i < len && counter < _records; i++) {
+1416	 commissionRedeemed = td.getStakerRedeemedStakeCommission(_user, i);
+1417	 commissionEarned = td.getStakerEarnedStakeCommission(_user, i);
+1418	 maxCommission = td.getStakerInitialStakedAmountOnContract( _user, i).mul(td.stakerMaxCommissionPer()).div(100);
+1419	 if (lastCommisionRedeemed == len && maxCommission != commissionEarned) lastCommisionRedeemed = i;
+1420	 td.pushRedeemedStakeCommissions(_user, i, commissionEarned.sub(commissionRedeemed));
+1421	 total = total.add(commissionEarned.sub(commissionRedeemed));
+1422	 counter++;
+1423	 }
+1424	 if (lastCommisionRedeemed == len) {
+1425	 td.setLastCompletedStakeCommissionIndex(_user, i);
+1426	 }
+1427	 else {
+1428	 td.setLastCompletedStakeCommissionIndex(_user, lastCommisionRedeemed);
+1429	 }
+1430	 if (total > 0) require(tk.transfer(_user, total));
+1431	 }
+1432	 }
+1433	 , _coverOwner, productId, currency, sumAssured, ) = qd.getCoverDetailsByCoverID1(coverId);
+1434	 require(coverOwner == _coverOwner, "Incidents: Not cover owner");
+1435	 require(productId == incident.productId, "Incidents: Bad incident id");
+1436	 }
+1437	 {
+1438	 uint coverPeriod = uint(qd.getCoverPeriod(coverId)).mul(1 days);
+1439	 uint coverExpirationDate = qd.getValidityOfCover(coverId);
+1440	 uint coverStartDate = coverExpirationDate.sub(coverPeriod);
+1441	 require(coverStartDate <= incident.date, "Incidents: Cover start date is after the incident");
+1442	 require(coverExpirationDate >= incident.date, "Incidents: Cover end date is before the incident");
+1443	 uint gracePeriod = tokenController().claimSubmissionGracePeriod();
+1444	 require(coverExpirationDate.add(gracePeriod) >= block.timestamp, "Incidents: Grace period has expired");
+1445	 }
+1446	 {
+1447	 uint decimalPrecision = 1e18;
+1448	 uint maxAmount;
+1449	 uint coverAmount = sumAssured.mul(decimalPrecision);
+1450	 {
+1451	 uint deductiblePriceBefore = incident.priceBefore.mul(DEDUCTIBLE_RATIO).div(BASIS_PRECISION);
+1452	 maxAmount = coverAmount.mul(decimalPrecision).div(deductiblePriceBefore);
+1453	 require(coveredTokenAmount <= maxAmount, "Incidents: Amount exceeds sum assured");
+1454	 }
+1455	 payoutAmount = coveredTokenAmount.mul(coverAmount).div(maxAmount);
+1456	 }
+1457	 {
+1458	 TokenController tc = tokenController();
+1459	 tc.markCoverClaimOpen(coverId);
+1460	 tc.markCoverClaimClosed(coverId, true);
+1461	 ClaimsData cd = claimsData();
+1462	 claimId = cd.actualClaimLength();
+1463	 cd.addClaim(claimId, coverId, coverOwner, now);
+1464	 cd.callClaimEvent(coverId, coverOwner, claimId, now);
+1465	 cd.setClaimStatus(claimId, 14);
+1466	 qd.changeCoverStatusNo(coverId, uint8(QuotationData.CoverStatus.ClaimAccepted));
+1467	 claimPayout[claimId] = payoutAmount;
+1468	 }
+1469	 coverAsset = claimsReward().getCurrencyAssetAddress(currency);
+1470	 _sendPayoutAndPushBurn( incident.productId, address(uint160(coverOwner)), coveredTokenAmount, coverAsset, payoutAmount );
+1471	 qd.subFromTotalSumAssured(currency, sumAssured);
+1472	 qd.subFromTotalSumAssuredSC(incident.productId, currency, sumAssured);
+1473	 mcr().updateMCRInternal(pool().getPoolValueInEth(), true);
+1474	 }
+1475	 function pushBurns(address productId, uint maxIterations) external {
+1476	 uint burnAmount = accumulatedBurn[productId];
+1477	 delete accumulatedBurn[productId];
+1478	 require(burnAmount > 0, "Incidents: No burns to push");
+1479	 require(maxIterations >= 30, "Incidents: Pass at least 30 iterations");
+1480	 IPooledStaking ps = pooledStaking();
+1481	 ps.pushBurn(productId, burnAmount);
+1482	 ps.processPendingActions(maxIterations);
+1483	 }
+1484	 function withdrawAsset(address asset, address destination, uint amount) external onlyGovernance {
+1485	 IERC20 token = IERC20(asset);
+1486	 uint balance = token.balanceOf(address(this));
+1487	 uint transferAmount = amount > balance ? balance : amount;
+1488	 token.safeTransfer(destination, transferAmount);
+1489	 }
+1490	 function _sendPayoutAndPushBurn( address productId, address payable coverOwner, uint coveredTokenAmount, address coverAsset, uint payoutAmount ) internal {
+1491	 address _coveredToken = coveredToken[productId];
+1492	 IERC20(_coveredToken).safeTransferFrom(msg.sender, address(this), coveredTokenAmount);
+1493	 Pool p1 = pool();
+1494	 {
+1495	 address payable payoutAddress = memberRoles().getClaimPayoutAddress(coverOwner);
+1496	 bool success = p1.sendClaimPayout(coverAsset, payoutAddress, payoutAmount);
+1497	 require(success, "Incidents: Payout failed");
+1498	 }
+1499	 {
+1500	 uint decimalPrecision = 1e18;
+1501	 uint assetPerNxm = p1.getTokenPrice(coverAsset);
+1502	 uint maxBurnAmount = payoutAmount.mul(decimalPrecision).div(assetPerNxm);
+1503	 uint burnAmount = maxBurnAmount.mul(BURN_RATIO).div(BASIS_PRECISION);
+1504	 accumulatedBurn[productId] = accumulatedBurn[productId].add(burnAmount);
+1505	 }
+1506	 }
+1507	 function claimsData() internal view returns (ClaimsData) {
+1508	 return ClaimsData(internalContracts[uint(ID.CD)]);
+1509	 }
+1510	 function claimsReward() internal view returns (ClaimsReward) {
+1511	 return ClaimsReward(internalContracts[uint(ID.CR)]);
+1512	 }
+1513	 function quotationData() internal view returns (QuotationData) {
+1514	 return QuotationData(internalContracts[uint(ID.QD)]);
+1515	 }
+1516	 function tokenController() internal view returns (TokenController) {
+1517	 return TokenController(internalContracts[uint(ID.TC)]);
+1518	 }
+1519	 function memberRoles() internal view returns (MemberRoles) {
+1520	 return MemberRoles(internalContracts[uint(ID.MR)]);
+1521	 }
+1522	 function pool() internal view returns (Pool) {
+1523	 return Pool(internalContracts[uint(ID.P1)]);
+1524	 }
+1525	 function pooledStaking() internal view returns (IPooledStaking) {
+1526	 return IPooledStaking(internalContracts[uint(ID.PS)]);
+1527	 }
+1528	 function mcr() internal view returns (MCR) {
+1529	 return MCR(internalContracts[uint(ID.MC)]);
+1530	 }
+1531	 function updateUintParameters(bytes8 code, uint value) external onlyGovernance {
+1532	 if (code == "BURNRATE") {
+1533	 require(value <= BASIS_PRECISION, "Incidents: Burn ratio cannot exceed 10000");
+1534	 BURN_RATIO = value;
+1535	 return;
+1536	 }
+1537	 if (code == "DEDUCTIB") {
+1538	 require(value <= BASIS_PRECISION, "Incidents: Deductible ratio cannot exceed 10000");
+1539	 DEDUCTIBLE_RATIO = value;
+1540	 return;
+1541	 }
+1542	 revert("Incidents: Invalid parameter");
+1543	 }
+1544	 function changeDependentContractAddress() external {
+1545	 INXMMaster master = INXMMaster(master);
+1546	 internalContracts[uint(ID.CD)] = master.getLatestAddress("CD");
+1547	 internalContracts[uint(ID.CR)] = master.getLatestAddress("CR");
+1548	 internalContracts[uint(ID.QD)] = master.getLatestAddress("QD");
+1549	 internalContracts[uint(ID.TC)] = master.getLatestAddress("TC");
+1550	 internalContracts[uint(ID.MR)] = master.getLatestAddress("MR");
+1551	 internalContracts[uint(ID.P1)] = master.getLatestAddress("P1");
+1552	 internalContracts[uint(ID.PS)] = master.getLatestAddress("PS");
+1553	 internalContracts[uint(ID.MC)] = master.getLatestAddress("MC");
+1554	 }
+1555	 }
+1556	 mapping(address => Stake[]) public stakerStakedContracts;
+1557	 mapping(address => Staker[]) public stakedContractStakers;
+1558	 mapping(address => mapping(uint => StakeCommission)) public stakedContractStakeCommission;
+1559	 mapping(address => uint) public lastCompletedStakeCommission;
+1560	 mapping(address => uint) public stakedContractCurrentCommissionIndex;
+1561	 mapping(address => uint) public stakedContractCurrentBurnIndex;
+1562	 mapping(uint => CoverNote) public depositedCN;
+1563	 mapping(address => uint) internal isBookedTokens;
+1564	 event Commission( address indexed stakedContractAddress, address indexed stakerAddress, uint indexed scIndex, uint commissionAmount );
+1565	 constructor(address payable _walletAdd) public {
+1566	 walletAddress = _walletAdd;
+1567	 bookTime = 12 hours;
+1568	 joiningFee = 2000000000000000;
+1569	 lockTokenTimeAfterCoverExp = 35 days;
+1570	 scValidDays = 250;
+1571	 lockCADays = 7 days;
+1572	 lockMVDays = 2 days;
+1573	 stakerCommissionPer = 20;
+1574	 stakerMaxCommissionPer = 50;
+1575	 tokenExponent = 4;
+1576	 priceStep = 1000;
+1577	 }
+1578	 function changeWalletAddress(address payable _address) external onlyInternal {
+1579	 walletAddress = _address;
+1580	 }
+1581	 function getUintParameters(bytes8 code) external view returns (bytes8 codeVal, uint val) {
+1582	 codeVal = code;
+1583	 if (code == "TOKEXP") {
+1584	 val = tokenExponent;
+1585	 }
+1586	 else if (code == "TOKSTEP") {
+1587	 val = priceStep;
+1588	 }
+1589	 else if (code == "RALOCKT") {
+1590	 val = scValidDays;
+1591	 }
+1592	 else if (code == "RACOMM") {
+1593	 val = stakerCommissionPer;
+1594	 }
+1595	 else if (code == "RAMAXC") {
+1596	 val = stakerMaxCommissionPer;
+1597	 }
+1598	 else if (code == "CABOOKT") {
+1599	 val = bookTime / (1 hours);
+1600	 }
+1601	 else if (code == "CALOCKT") {
+1602	 val = lockCADays / (1 days);
+1603	 }
+1604	 else if (code == "MVLOCKT") {
+1605	 val = lockMVDays / (1 days);
+1606	 }
+1607	 else if (code == "QUOLOCKT") {
+1608	 val = lockTokenTimeAfterCoverExp / (1 days);
+1609	 }
+1610	 else if (code == "JOINFEE") {
+1611	 val = joiningFee;
+1612	 }
+1613	 }
+1614	 function changeDependentContractAddress() public {
+1615	 }
+1616	 function getStakerStakedContractByIndex( address _stakerAddress, uint _stakerIndex ) public view returns (address stakedContractAddress) {
+1617	 stakedContractAddress = stakerStakedContracts[ _stakerAddress][_stakerIndex].stakedContractAddress;
+1618	 }
+1619	 function getStakerStakedBurnedByIndex( address _stakerAddress, uint _stakerIndex ) public view returns (uint burnedAmount) {
+1620	 burnedAmount = stakerStakedContracts[ _stakerAddress][_stakerIndex].burnedAmount;
+1621	 }
+1622	 function getStakerStakedUnlockableBeforeLastBurnByIndex( address _stakerAddress, uint _stakerIndex ) public view returns (uint unlockable) {
+1623	 unlockable = stakerStakedContracts[ _stakerAddress][_stakerIndex].unLockableBeforeLastBurn;
+1624	 }
+1625	 function getStakerStakedContractIndex( address _stakerAddress, uint _stakerIndex ) public view returns (uint scIndex) {
+1626	 scIndex = stakerStakedContracts[ _stakerAddress][_stakerIndex].stakedContractIndex;
+1627	 }
+1628	 function getStakedContractStakerIndex( address _stakedContractAddress, uint _stakedContractIndex ) public view returns (uint sIndex) {
+1629	 sIndex = stakedContractStakers[ _stakedContractAddress][_stakedContractIndex].stakerIndex;
+1630	 }
+1631	 function getStakerInitialStakedAmountOnContract( address _stakerAddress, uint _stakerIndex ) public view returns (uint amount) {
+1632	 amount = stakerStakedContracts[ _stakerAddress][_stakerIndex].stakeAmount;
+1633	 }
+1634	 function getStakerStakedContractLength( address _stakerAddress ) public view returns (uint length) {
+1635	 length = stakerStakedContracts[_stakerAddress].length;
+1636	 }
+1637	 function getStakerUnlockedStakedTokens( address _stakerAddress, uint _stakerIndex ) public view returns (uint amount) {
+1638	 amount = stakerStakedContracts[ _stakerAddress][_stakerIndex].unlockedAmount;
+1639	 }
+1640	 function pushUnlockedStakedTokens( address _stakerAddress, uint _stakerIndex, uint _amount ) public onlyInternal {
+1641	 stakerStakedContracts[_stakerAddress][ _stakerIndex].unlockedAmount = stakerStakedContracts[_stakerAddress][ _stakerIndex].unlockedAmount.add(_amount);
+1642	 }
+1643	 function pushBurnedTokens( address _stakerAddress, uint _stakerIndex, uint _amount ) public onlyInternal {
+1644	 stakerStakedContracts[_stakerAddress][ _stakerIndex].burnedAmount = stakerStakedContracts[_stakerAddress][ _stakerIndex].burnedAmount.add(_amount);
+1645	 }
+1646	 function pushUnlockableBeforeLastBurnTokens( address _stakerAddress, uint _stakerIndex, uint _amount ) public onlyInternal {
+1647	 stakerStakedContracts[_stakerAddress][ _stakerIndex].unLockableBeforeLastBurn = stakerStakedContracts[_stakerAddress][ _stakerIndex].unLockableBeforeLastBurn.add(_amount);
+1648	 }
+1649	 function setUnlockableBeforeLastBurnTokens( address _stakerAddress, uint _stakerIndex, uint _amount ) public onlyInternal {
+1650	 stakerStakedContracts[_stakerAddress][ _stakerIndex].unLockableBeforeLastBurn = _amount;
+1651	 }
+1652	 function pushEarnedStakeCommissions( address _stakerAddress, address _stakedContractAddress, uint _stakedContractIndex, uint _commissionAmount ) public onlyInternal {
+1653	 stakedContractStakeCommission[_stakedContractAddress][_stakedContractIndex]. commissionEarned = stakedContractStakeCommission[_stakedContractAddress][ _stakedContractIndex].commissionEarned.add(_commissionAmount);
+1654	 emit Commission( _stakerAddress, _stakedContractAddress, _stakedContractIndex, _commissionAmount );
+1655	 }
+1656	 function pushRedeemedStakeCommissions( address _stakerAddress, uint _stakerIndex, uint _amount ) public onlyInternal {
+1657	 uint stakedContractIndex = stakerStakedContracts[ _stakerAddress][_stakerIndex].stakedContractIndex;
+1658	 address stakedContractAddress = stakerStakedContracts[ _stakerAddress][_stakerIndex].stakedContractAddress;
+1659	 stakedContractStakeCommission[stakedContractAddress][stakedContractIndex]. commissionRedeemed = stakedContractStakeCommission[ stakedContractAddress][stakedContractIndex].commissionRedeemed.add(_amount);
+1660	 }
+1661	 function getStakerEarnedStakeCommission( address _stakerAddress, uint _stakerIndex ) public view returns (uint) {
+1662	 return _getStakerEarnedStakeCommission(_stakerAddress, _stakerIndex);
+1663	 }
+1664	 function getStakerRedeemedStakeCommission( address _stakerAddress, uint _stakerIndex ) public view returns (uint) {
+1665	 return _getStakerRedeemedStakeCommission(_stakerAddress, _stakerIndex);
+1666	 }
+1667	 function getStakerTotalEarnedStakeCommission( address _stakerAddress ) public view returns (uint totalCommissionEarned) {
+1668	 totalCommissionEarned = 0;
+1669	 for (uint i = 0; i < stakerStakedContracts[_stakerAddress].length; i++) {
+1670	 totalCommissionEarned = totalCommissionEarned. add(_getStakerEarnedStakeCommission(_stakerAddress, i));
+1671	 }
+1672	 }
+1673	 function getStakerTotalReedmedStakeCommission( address _stakerAddress ) public view returns (uint totalCommissionRedeemed) {
+1674	 totalCommissionRedeemed = 0;
+1675	 for (uint i = 0; i < stakerStakedContracts[_stakerAddress].length; i++) {
+1676	 totalCommissionRedeemed = totalCommissionRedeemed.add( _getStakerRedeemedStakeCommission(_stakerAddress, i));
+1677	 }
+1678	 }
+1679	 function setDepositCN(uint coverId, bool flag) public onlyInternal {
+1680	 if (flag == true) {
+1681	 require(!depositedCN[coverId].isDeposited, "Cover note already deposited");
+1682	 }
+1683	 depositedCN[coverId].isDeposited = flag;
+1684	 }
+1685	 function setDepositCNAmount(uint coverId, uint amount) public onlyInternal {
+1686	 depositedCN[coverId].amount = amount;
+1687	 }
+1688	 function getStakedContractStakerByIndex( address _stakedContractAddress, uint _stakedContractIndex ) public view returns (address stakerAddress) {
+1689	 stakerAddress = stakedContractStakers[ _stakedContractAddress][_stakedContractIndex].stakerAddress;
+1690	 }
+1691	 function getStakedContractStakersLength( address _stakedContractAddress ) public view returns (uint length) {
+1692	 length = stakedContractStakers[_stakedContractAddress].length;
+1693	 }
+1694	 function addStake( address _stakerAddress, address _stakedContractAddress, uint _amount ) public onlyInternal returns (uint scIndex) {
+1695	 scIndex = (stakedContractStakers[_stakedContractAddress].push( Staker(_stakerAddress, stakerStakedContracts[_stakerAddress].length))).sub(1);
+1696	 stakerStakedContracts[_stakerAddress].push( Stake(_stakedContractAddress, scIndex, now, _amount, 0, 0, 0));
+1697	 }
+1698	 function bookCATokens(address _of) public onlyInternal {
+1699	 require(!isCATokensBooked(_of), "Tokens already booked");
+1700	 isBookedTokens[_of] = now.add(bookTime);
+1701	 }
+1702	 function isCATokensBooked(address _of) public view returns (bool res) {
+1703	 if (now < isBookedTokens[_of]) res = true;
+1704	 }
+1705	 function setStakedContractCurrentCommissionIndex( address _stakedContractAddress, uint _index ) public onlyInternal {
+1706	 stakedContractCurrentCommissionIndex[_stakedContractAddress] = _index;
+1707	 }
+1708	 function setLastCompletedStakeCommissionIndex( address _stakerAddress, uint _index ) public onlyInternal {
+1709	 lastCompletedStakeCommission[_stakerAddress] = _index;
+1710	 }
+1711	 function setStakedContractCurrentBurnIndex( address _stakedContractAddress, uint _index ) public onlyInternal {
+1712	 stakedContractCurrentBurnIndex[_stakedContractAddress] = _index;
+1713	 }
+1714	 function updateUintParameters(bytes8 code, uint val) public {
+1715	 require(ms.checkIsAuthToGoverned(msg.sender));
+1716	 if (code == "TOKEXP") {
+1717	 _setTokenExponent(val);
+1718	 }
+1719	 else if (code == "TOKSTEP") {
+1720	 _setPriceStep(val);
+1721	 }
+1722	 else if (code == "RALOCKT") {
+1723	 _changeSCValidDays(val);
+1724	 }
+1725	 else if (code == "RACOMM") {
+1726	 _setStakerCommissionPer(val);
+1727	 }
+1728	 else if (code == "RAMAXC") {
+1729	 _setStakerMaxCommissionPer(val);
+1730	 }
+1731	 else if (code == "CABOOKT") {
+1732	 _changeBookTime(val * 1 hours);
+1733	 }
+1734	 else if (code == "CALOCKT") {
+1735	 _changelockCADays(val * 1 days);
+1736	 }
+1737	 else if (code == "MVLOCKT") {
+1738	 _changelockMVDays(val * 1 days);
+1739	 }
+1740	 else if (code == "QUOLOCKT") {
+1741	 _setLockTokenTimeAfterCoverExp(val * 1 days);
+1742	 }
+1743	 else if (code == "JOINFEE") {
+1744	 _setJoiningFee(val);
+1745	 }
+1746	 else {
+1747	 revert("Invalid param code");
+1748	 }
+1749	 }
+1750	 function _getStakerEarnedStakeCommission( address _stakerAddress, uint _stakerIndex ) internal view returns (uint amount) {
+1751	 uint _stakedContractIndex;
+1752	 address _stakedContractAddress;
+1753	 _stakedContractAddress = stakerStakedContracts[ _stakerAddress][_stakerIndex].stakedContractAddress;
+1754	 _stakedContractIndex = stakerStakedContracts[ _stakerAddress][_stakerIndex].stakedContractIndex;
+1755	 amount = stakedContractStakeCommission[ _stakedContractAddress][_stakedContractIndex].commissionEarned;
+1756	 }
+1757	 function _getStakerRedeemedStakeCommission( address _stakerAddress, uint _stakerIndex ) internal view returns (uint amount) {
+1758	 uint _stakedContractIndex;
+1759	 address _stakedContractAddress;
+1760	 _stakedContractAddress = stakerStakedContracts[ _stakerAddress][_stakerIndex].stakedContractAddress;
+1761	 _stakedContractIndex = stakerStakedContracts[ _stakerAddress][_stakerIndex].stakedContractIndex;
+1762	 amount = stakedContractStakeCommission[ _stakedContractAddress][_stakedContractIndex].commissionRedeemed;
+1763	 }
+1764	 function _setStakerCommissionPer(uint _val) internal {
+1765	 stakerCommissionPer = _val;
+1766	 }
+1767	 function _setStakerMaxCommissionPer(uint _val) internal {
+1768	 stakerMaxCommissionPer = _val;
+1769	 }
+1770	 function _setTokenExponent(uint _val) internal {
+1771	 tokenExponent = _val;
+1772	 }
+1773	 function _setPriceStep(uint _val) internal {
+1774	 priceStep = _val;
+1775	 }
+1776	 function _changeSCValidDays(uint _days) internal {
+1777	 scValidDays = _days;
+1778	 }
+1779	 function _changeBookTime(uint _time) internal {
+1780	 bookTime = _time;
+1781	 }
+1782	 function _changelockCADays(uint _val) internal {
+1783	 lockCADays = _val;
+1784	 }
+1785	 function _changelockMVDays(uint _val) internal {
+1786	 lockMVDays = _val;
+1787	 }
+1788	 function _setLockTokenTimeAfterCoverExp(uint time) internal {
+1789	 lockTokenTimeAfterCoverExp = time;
+1790	 }
+1791	 function _setJoiningFee(uint _amount) internal {
+1792	 joiningFee = _amount;
+1793	 }
+1794	 }
+1795	 function setKycAuthAddress(address _add) external onlyInternal {
+1796	 kycAuthAddress = _add;
+1797	 }
+1798	 function changeAuthQuoteEngine(address _add) external onlyInternal {
+1799	 authQuoteEngine = _add;
+1800	 }
+1801	 function getUintParameters(bytes8 code) external view returns (bytes8 codeVal, uint val) {
+1802	 codeVal = code;
+1803	 if (code == "STLP") {
+1804	 val = stlp;
+1805	 }
+1806	 else if (code == "STL") {
+1807	 val = stl;
+1808	 }
+1809	 else if (code == "PM") {
+1810	 val = pm;
+1811	 }
+1812	 else if (code == "QUOMIND") {
+1813	 val = minDays;
+1814	 }
+1815	 else if (code == "QUOTOK") {
+1816	 val = tokensRetained;
+1817	 }
+1818	 }
+1819	 function getProductDetails() external view returns ( uint _minDays, uint _pm, uint _stl, uint _stlp ) {
+1820	 _minDays = minDays;
+1821	 _pm = pm;
+1822	 _stl = stl;
+1823	 _stlp = stlp;
+1824	 }
+1825	 function getCoverLength() external view returns (uint len) {
+1826	 return (allCovers.length);
+1827	 }
+1828	 function getAuthQuoteEngine() external view returns (address _add) {
+1829	 _add = authQuoteEngine;
+1830	 }
+1831	 function getTotalSumAssured(bytes4 _curr) external view returns (uint amount) {
+1832	 amount = currencyCSA[_curr];
+1833	 }
+1834	 function getAllCoversOfUser(address _add) external view returns (uint[] memory allCover) {
+1835	 return (userCover[_add]);
+1836	 }
+1837	 function getUserCoverLength(address _add) external view returns (uint len) {
+1838	 len = userCover[_add].length;
+1839	 }
+1840	 function getCoverStatusNo(uint _cid) external view returns (uint8) {
+1841	 return coverStatus[_cid];
+1842	 }
+1843	 function getCoverPeriod(uint _cid) external view returns (uint32 cp) {
+1844	 cp = allCovers[_cid].coverPeriod;
+1845	 }
+1846	 function getCoverSumAssured(uint _cid) external view returns (uint sa) {
+1847	 sa = allCovers[_cid].sumAssured;
+1848	 }
+1849	 function getCurrencyOfCover(uint _cid) external view returns (bytes4 curr) {
+1850	 curr = allCovers[_cid].currencyCode;
+1851	 }
+1852	 function getValidityOfCover(uint _cid) external view returns (uint date) {
+1853	 date = allCovers[_cid].validUntil;
+1854	 }
+1855	 function getscAddressOfCover(uint _cid) external view returns (uint, address) {
+1856	 return (_cid, allCovers[_cid].scAddress);
+1857	 }
+1858	 function getCoverMemberAddress(uint _cid) external view returns (address payable _add) {
+1859	 _add = allCovers[_cid].memberAddress;
+1860	 }
+1861	 function getCoverPremiumNXM(uint _cid) external view returns (uint _premiumNXM) {
+1862	 _premiumNXM = allCovers[_cid].premiumNXM;
+1863	 }
+1864	 function getCoverDetailsByCoverID1( uint _cid ) external view returns ( uint cid, address _memberAddress, address _scAddress, bytes4 _currencyCode, uint _sumAssured, uint premiumNXM ) {
+1865	 return ( _cid, allCovers[_cid].memberAddress, allCovers[_cid].scAddress, allCovers[_cid].currencyCode, allCovers[_cid].sumAssured, allCovers[_cid].premiumNXM );
+1866	 }
+1867	 function getCoverDetailsByCoverID2( uint _cid ) external view returns ( uint cid, uint8 status, uint sumAssured, uint16 coverPeriod, uint validUntil ) {
+1868	 return ( _cid, coverStatus[_cid], allCovers[_cid].sumAssured, allCovers[_cid].coverPeriod, allCovers[_cid].validUntil );
+1869	 }
+1870	 function getHoldedCoverDetailsByID1( uint _hcid ) external view returns ( uint hcid, address scAddress, bytes4 coverCurr, uint16 coverPeriod ) {
+1871	 return ( _hcid, allCoverHolded[_hcid].scAddress, allCoverHolded[_hcid].coverCurr, allCoverHolded[_hcid].coverPeriod );
+1872	 }
+1873	 function getUserHoldedCoverLength(address _add) external view returns (uint) {
+1874	 return userHoldedCover[_add].length;
+1875	 }
+1876	 function getUserHoldedCoverByIndex(address _add, uint index) external view returns (uint) {
+1877	 return userHoldedCover[_add][index];
+1878	 }
+1879	 function getHoldedCoverDetailsByID2( uint _hcid ) external view returns ( uint hcid, address payable memberAddress, uint[] memory coverDetails ) {
+1880	 return ( _hcid, allCoverHolded[_hcid].userAddress, allCoverHolded[_hcid].coverDetails );
+1881	 }
+1882	 function getTotalSumAssuredSC(address _add, bytes4 _curr) external view returns (uint amount) {
+1883	 amount = currencyCSAOfSCAdd[_add][_curr];
+1884	 }
+1885	 function changeDependentContractAddress() public {
+1886	 }
+1887	 function changeCoverStatusNo(uint _cid, uint8 _stat) public onlyInternal {
+1888	 coverStatus[_cid] = _stat;
+1889	 emit CoverStatusEvent(_cid, _stat);
+1890	 }
+1891	 function updateUintParameters(bytes8 code, uint val) public {
+1892	 require(ms.checkIsAuthToGoverned(msg.sender));
+1893	 if (code == "STLP") {
+1894	 _changeSTLP(val);
+1895	 }
+1896	 else if (code == "STL") {
+1897	 _changeSTL(val);
+1898	 }
+1899	 else if (code == "PM") {
+1900	 _changePM(val);
+1901	 }
+1902	 else if (code == "QUOMIND") {
+1903	 _changeMinDays(val);
+1904	 }
+1905	 else if (code == "QUOTOK") {
+1906	 _setTokensRetained(val);
+1907	 }
+1908	 else {
+1909	 revert("Invalid param code");
+1910	 }
+1911	 }
+1912	 function _changePM(uint _pm) internal {
+1913	 pm = _pm;
+1914	 }
+1915	 function _changeSTLP(uint _stlp) internal {
+1916	 stlp = _stlp;
+1917	 }
+1918	 function _changeSTL(uint _stl) internal {
+1919	 stl = _stl;
+1920	 }
+1921	 function _changeMinDays(uint _days) internal {
+1922	 minDays = _days;
+1923	 }
+1924	 function _setTokensRetained(uint val) internal {
+1925	 tokensRetained = val;
+1926	 }
+1927	 }
+1928	 pragma solidity ^0.5.0;
+1929	 library OZSafeMath {
+1930	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+1931	 if (a == 0) {
+1932	 return 0;
+1933	 }
+1934	 uint256 c = a * b;
+1935	 require(c / a == b);
+1936	 return c;
+1937	 }
+1938	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+1939	 require(b > 0);
+1940	 uint256 c = a / b;
+1941	 return c;
+1942	 }
+1943	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+1944	 require(b <= a);
+1945	 uint256 c = a - b;
+1946	 return c;
+1947	 }
+1948	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+1949	 uint256 c = a + b;
+1950	 require(c >= a);
+1951	 return c;
+1952	 }
+1953	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+1954	 require(b != 0);
+1955	 return a % b;
+1956	 }
+1957	 }
+1958	 pragma solidity ^0.5.0;
+1959	 interface IPooledStaking {
+1960	 function accumulateReward(address contractAddress, uint amount) external;
+1961	 function pushBurn(address contractAddress, uint amount) external;
+1962	 function hasPendingActions() external view returns (bool);
+1963	 function processPendingActions(uint maxIterations) external returns (bool finished);
+1964	 function contractStake(address contractAddress) external view returns (uint);
+1965	 function stakerReward(address staker) external view returns (uint);
+1966	 function stakerDeposit(address staker) external view returns (uint);
+1967	 function stakerContractStake(address staker, address contractAddress) external view returns (uint);
+1968	 function withdraw(uint amount) external;
+1969	 function stakerMaxWithdrawable(address stakerAddress) external view returns (uint);
+1970	 function withdrawReward(address stakerAddress) external;
+1971	 }
+1972	 function setpendingClaimStart(uint _start) external onlyInternal {
+1973	 require(pendingClaimStart <= _start);
+1974	 pendingClaimStart = _start;
+1975	 }
+1976	 function setRewardDistributedIndexCA(address _voter, uint caIndex) external onlyInternal {
+1977	 voterVoteRewardReceived[_voter].lastCAvoteIndex = caIndex;
+1978	 }
+1979	 function setUserClaimVotePausedOn(address user) external {
+1980	 require(ms.checkIsAuthToGoverned(msg.sender));
+1981	 userClaimVotePausedOn[user] = now;
+1982	 }
+1983	 function setRewardDistributedIndexMV(address _voter, uint mvIndex) external onlyInternal {
+1984	 voterVoteRewardReceived[_voter].lastMVvoteIndex = mvIndex;
+1985	 }
+1986	 function setClaimRewardDetail( uint claimid, uint percCA, uint percMV, uint tokens ) external onlyInternal {
+1987	 claimRewardDetail[claimid].percCA = percCA;
+1988	 claimRewardDetail[claimid].percMV = percMV;
+1989	 claimRewardDetail[claimid].tokenToBeDist = tokens;
+1990	 }
+1991	 function setRewardClaimed(uint _voteid, bool claimed) external onlyInternal {
+1992	 allvotes[_voteid].rewardClaimed = claimed;
+1993	 }
+1994	 function changeFinalVerdict(uint _claimId, int8 _verdict) external onlyInternal {
+1995	 claimVote[_claimId] = _verdict;
+1996	 }
+1997	 function addClaim( uint _claimId, uint _coverId, address _from, uint _nowtime ) external onlyInternal {
+1998	 allClaims.push(Claim(_coverId, _nowtime));
+1999	 allClaimsByAddress[_from].push(_claimId);
+2000	 }
+2001	 function addVote( address _voter, uint _tokens, uint claimId, int8 _verdict ) external onlyInternal {
+2002	 allvotes.push(Vote(_voter, _tokens, claimId, _verdict, false));
+2003	 }
+2004	 function addClaimVoteCA(uint _claimId, uint _voteid) external onlyInternal {
+2005	 claimVoteCA[_claimId].push(_voteid);
+2006	 }
+2007	 function setUserClaimVoteCA( address _from, uint _claimId, uint _voteid ) external onlyInternal {
+2008	 userClaimVoteCA[_from][_claimId] = _voteid;
+2009	 voteAddressCA[_from].push(_voteid);
+2010	 }
+2011	 function setClaimTokensCA(uint _claimId, int8 _vote, uint _tokens) external onlyInternal {
+2012	 if (_vote == 1) claimTokensCA[_claimId].accept = claimTokensCA[_claimId].accept.add(_tokens);
+2013	 if (_vote == - 1) claimTokensCA[_claimId].deny = claimTokensCA[_claimId].deny.add(_tokens);
+2014	 }
+2015	 function setClaimTokensMV(uint _claimId, int8 _vote, uint _tokens) external onlyInternal {
+2016	 if (_vote == 1) claimTokensMV[_claimId].accept = claimTokensMV[_claimId].accept.add(_tokens);
+2017	 if (_vote == - 1) claimTokensMV[_claimId].deny = claimTokensMV[_claimId].deny.add(_tokens);
+2018	 }
+2019	 function addClaimVotemember(uint _claimId, uint _voteid) external onlyInternal {
+2020	 claimVoteMember[_claimId].push(_voteid);
+2021	 }
+2022	 function setUserClaimVoteMember( address _from, uint _claimId, uint _voteid ) external onlyInternal {
+2023	 userClaimVoteMember[_from][_claimId] = _voteid;
+2024	 voteAddressMember[_from].push(_voteid);
+2025	 }
+2026	 function updateState12Count(uint _claimId, uint _cnt) external onlyInternal {
+2027	 claimState12Count[_claimId] = claimState12Count[_claimId].add(_cnt);
+2028	 }
+2029	 function setClaimStatus(uint _claimId, uint _stat) external onlyInternal {
+2030	 claimsStatus[_claimId] = _stat;
+2031	 }
+2032	 function setClaimdateUpd(uint _claimId, uint _dateUpd) external onlyInternal {
+2033	 allClaims[_claimId].dateUpd = _dateUpd;
+2034	 }
+2035	 function setClaimAtEmergencyPause( uint _coverId, uint _dateUpd, bool _submit ) external onlyInternal {
+2036	 claimPause.push(ClaimsPause(_coverId, _dateUpd, _submit));
+2037	 }
+2038	 function setClaimSubmittedAtEPTrue(uint _index, bool _submit) external onlyInternal {
+2039	 claimPause[_index].submit = _submit;
+2040	 }
+2041	 function setFirstClaimIndexToSubmitAfterEP( uint _firstClaimIndexToSubmit ) external onlyInternal {
+2042	 claimPauseLastsubmit = _firstClaimIndexToSubmit;
+2043	 }
+2044	 function setPendingClaimDetails( uint _claimId, uint _pendingTime, bool _voting ) external onlyInternal {
+2045	 claimPauseVotingEP.push(ClaimPauseVoting(_claimId, _pendingTime, _voting));
+2046	 }
+2047	 function setPendingClaimVoteStatus(uint _claimId, bool _vote) external onlyInternal {
+2048	 claimPauseVotingEP[_claimId].voting = _vote;
+2049	 }
+2050	 function setFirstClaimIndexToStartVotingAfterEP( uint _claimStartVotingFirstIndex ) external onlyInternal {
+2051	 claimStartVotingFirstIndex = _claimStartVotingFirstIndex;
+2052	 }
+2053	 function callVoteEvent( address _userAddress, uint _claimId, bytes4 _typeOf, uint _tokens, uint _submitDate, int8 _verdict ) external onlyInternal {
+2054	 emit VoteCast( _userAddress, _claimId, _typeOf, _tokens, _submitDate, _verdict );
+2055	 }
+2056	 function callClaimEvent( uint _coverId, address _userAddress, uint _claimId, uint _datesubmit ) external onlyInternal {
+2057	 emit ClaimRaise(_coverId, _userAddress, _claimId, _datesubmit);
+2058	 }
+2059	 function getUintParameters(bytes8 code) external view returns (bytes8 codeVal, uint val) {
+2060	 codeVal = code;
+2061	 if (code == "CAMAXVT") {
+2062	 val = maxVotingTime / (1 hours);
+2063	 }
+2064	 else if (code == "CAMINVT") {
+2065	 val = minVotingTime / (1 hours);
+2066	 }
+2067	 else if (code == "CAPRETRY") {
+2068	 val = payoutRetryTime / (1 hours);
+2069	 }
+2070	 else if (code == "CADEPT") {
+2071	 val = claimDepositTime / (1 days);
+2072	 }
+2073	 else if (code == "CAREWPER") {
+2074	 val = claimRewardPerc;
+2075	 }
+2076	 else if (code == "CAMINTH") {
+2077	 val = minVoteThreshold;
+2078	 }
+2079	 else if (code == "CAMAXTH") {
+2080	 val = maxVoteThreshold;
+2081	 }
+2082	 else if (code == "CACONPER") {
+2083	 val = majorityConsensus;
+2084	 }
+2085	 else if (code == "CAPAUSET") {
+2086	 val = pauseDaysCA / (1 days);
+2087	 }
+2088	 }
+2089	 function getClaimOfEmergencyPauseByIndex( uint _index ) external view returns ( uint coverId, uint dateUpd, bool submit ) {
+2090	 coverId = claimPause[_index].coverid;
+2091	 dateUpd = claimPause[_index].dateUpd;
+2092	 submit = claimPause[_index].submit;
+2093	 }
+2094	 function getAllClaimsByIndex( uint _claimId ) external view returns ( uint coverId, int8 vote, uint status, uint dateUpd, uint state12Count ) {
+2095	 return ( allClaims[_claimId].coverId, claimVote[_claimId], claimsStatus[_claimId], allClaims[_claimId].dateUpd, claimState12Count[_claimId] );
+2096	 }
+2097	 function getUserClaimVoteCA( address _add, uint _claimId ) external view returns (uint idVote) {
+2098	 return userClaimVoteCA[_add][_claimId];
+2099	 }
+2100	 function getUserClaimVoteMember( address _add, uint _claimId ) external view returns (uint idVote) {
+2101	 return userClaimVoteMember[_add][_claimId];
+2102	 }
+2103	 function getAllVoteLength() external view returns (uint voteCount) {
+2104	 return allvotes.length.sub(1);
+2105	 }
+2106	 function getClaimStatusNumber(uint _claimId) external view returns (uint claimId, uint statno) {
+2107	 return (_claimId, claimsStatus[_claimId]);
+2108	 }
+2109	 function getRewardStatus(uint statusNumber) external view returns (uint percCA, uint percMV) {
+2110	 return (rewardStatus[statusNumber].percCA, rewardStatus[statusNumber].percMV);
+2111	 }
+2112	 function getClaimState12Count(uint _claimId) external view returns (uint num) {
+2113	 num = claimState12Count[_claimId];
+2114	 }
+2115	 function getClaimDateUpd(uint _claimId) external view returns (uint dateupd) {
+2116	 dateupd = allClaims[_claimId].dateUpd;
+2117	 }
+2118	 function getAllClaimsByAddress(address _member) external view returns (uint[] memory claimarr) {
+2119	 return allClaimsByAddress[_member];
+2120	 }
+2121	 function getClaimsTokenCA( uint _claimId ) external view returns ( uint claimId, uint accept, uint deny ) {
+2122	 return ( _claimId, claimTokensCA[_claimId].accept, claimTokensCA[_claimId].deny );
+2123	 }
+2124	 function getClaimsTokenMV( uint _claimId ) external view returns ( uint claimId, uint accept, uint deny ) {
+2125	 return ( _claimId, claimTokensMV[_claimId].accept, claimTokensMV[_claimId].deny );
+2126	 }
+2127	 function getCaClaimVotesToken(uint _claimId) external view returns (uint claimId, uint cnt) {
+2128	 claimId = _claimId;
+2129	 cnt = 0;
+2130	 for (uint i = 0; i < claimVoteCA[_claimId].length; i++) {
+2131	 cnt = cnt.add(allvotes[claimVoteCA[_claimId][i]].tokens);
+2132	 }
+2133	 }
+2134	 function getMemberClaimVotesToken( uint _claimId ) external view returns (uint claimId, uint cnt) {
+2135	 claimId = _claimId;
+2136	 cnt = 0;
+2137	 for (uint i = 0; i < claimVoteMember[_claimId].length; i++) {
+2138	 cnt = cnt.add(allvotes[claimVoteMember[_claimId][i]].tokens);
+2139	 }
+2140	 }
+2141	 function getVoteDetails(uint _voteid) external view returns ( uint tokens, uint claimId, int8 verdict, bool rewardClaimed ) {
+2142	 return ( allvotes[_voteid].tokens, allvotes[_voteid].claimId, allvotes[_voteid].verdict, allvotes[_voteid].rewardClaimed );
+2143	 }
+2144	 function getVoterVote(uint _voteid) external view returns (address voter) {
+2145	 return allvotes[_voteid].voter;
+2146	 }
+2147	 function getClaim( uint _claimId ) external view returns ( uint claimId, uint coverId, int8 vote, uint status, uint dateUpd, uint state12Count ) {
+2148	 return ( _claimId, allClaims[_claimId].coverId, claimVote[_claimId], claimsStatus[_claimId], allClaims[_claimId].dateUpd, claimState12Count[_claimId] );
+2149	 }
+2150	 function getClaimVoteLength( uint _claimId, uint8 _ca ) external view returns (uint claimId, uint len) {
+2151	 claimId = _claimId;
+2152	 if (_ca == 1) len = claimVoteCA[_claimId].length;
+2153	 else len = claimVoteMember[_claimId].length;
+2154	 }
+2155	 function getVoteVerdict( uint _claimId, uint _index, uint8 _ca ) external view returns (int8 ver) {
+2156	 if (_ca == 1) ver = allvotes[claimVoteCA[_claimId][_index]].verdict;
+2157	 else ver = allvotes[claimVoteMember[_claimId][_index]].verdict;
+2158	 }
+2159	 function getVoteToken( uint _claimId, uint _index, uint8 _ca ) external view returns (uint tok) {
+2160	 if (_ca == 1) tok = allvotes[claimVoteCA[_claimId][_index]].tokens;
+2161	 else tok = allvotes[claimVoteMember[_claimId][_index]].tokens;
+2162	 }
+2163	 function getVoteVoter( uint _claimId, uint _index, uint8 _ca ) external view returns (address voter) {
+2164	 if (_ca == 1) voter = allvotes[claimVoteCA[_claimId][_index]].voter;
+2165	 else voter = allvotes[claimVoteMember[_claimId][_index]].voter;
+2166	 }
+2167	 function getUserClaimCount(address _add) external view returns (uint len) {
+2168	 len = allClaimsByAddress[_add].length;
+2169	 }
+2170	 function getClaimLength() external view returns (uint len) {
+2171	 len = allClaims.length.sub(pendingClaimStart);
+2172	 }
+2173	 function actualClaimLength() external view returns (uint len) {
+2174	 len = allClaims.length;
+2175	 }
+2176	 function getClaimFromNewStart( uint _index, address _add ) external view returns ( uint coverid, uint claimId, int8 voteCA, int8 voteMV, uint statusnumber ) {
+2177	 uint i = pendingClaimStart.add(_index);
+2178	 coverid = allClaims[i].coverId;
+2179	 claimId = i;
+2180	 if (userClaimVoteCA[_add][i] > 0) voteCA = allvotes[userClaimVoteCA[_add][i]].verdict;
+2181	 else voteCA = 0;
+2182	 if (userClaimVoteMember[_add][i] > 0) voteMV = allvotes[userClaimVoteMember[_add][i]].verdict;
+2183	 else voteMV = 0;
+2184	 statusnumber = claimsStatus[i];
+2185	 }
+2186	 function getUserClaimByIndex( uint _index, address _add ) external view returns ( uint status, uint coverid, uint claimId ) {
+2187	 claimId = allClaimsByAddress[_add][_index];
+2188	 status = claimsStatus[claimId];
+2189	 coverid = allClaims[claimId].coverId;
+2190	 }
+2191	 function getAllVotesForClaim( uint _claimId ) external view returns ( uint claimId, uint[] memory ca, uint[] memory mv ) {
+2192	 return (_claimId, claimVoteCA[_claimId], claimVoteMember[_claimId]);
+2193	 }
+2194	 function getTokensClaim( address _of, uint _claimId ) external view returns ( uint claimId, uint tokens ) {
+2195	 return (_claimId, allvotes[userClaimVoteCA[_of][_claimId]].tokens);
+2196	 }
+2197	 function getRewardDistributedIndex( address _voter ) external view returns ( uint lastCAvoteIndex, uint lastMVvoteIndex ) {
+2198	 return ( voterVoteRewardReceived[_voter].lastCAvoteIndex, voterVoteRewardReceived[_voter].lastMVvoteIndex );
+2199	 }
+2200	 function getClaimRewardDetail( uint claimid ) external view returns ( uint percCA, uint percMV, uint tokens ) {
+2201	 return ( claimRewardDetail[claimid].percCA, claimRewardDetail[claimid].percMV, claimRewardDetail[claimid].tokenToBeDist );
+2202	 }
+2203	 function getClaimCoverId(uint _claimId) external view returns (uint claimId, uint coverid) {
+2204	 return (_claimId, allClaims[_claimId].coverId);
+2205	 }
+2206	 function getClaimVote(uint _claimId, int8 _verdict) external view returns (uint claimId, uint token) {
+2207	 claimId = _claimId;
+2208	 token = 0;
+2209	 for (uint i = 0; i < claimVoteCA[_claimId].length; i++) {
+2210	 if (allvotes[claimVoteCA[_claimId][i]].verdict == _verdict) token = token.add(allvotes[claimVoteCA[_claimId][i]].tokens);
+2211	 }
+2212	 }
+2213	 function getClaimMVote(uint _claimId, int8 _verdict) external view returns (uint claimId, uint token) {
+2214	 claimId = _claimId;
+2215	 token = 0;
+2216	 for (uint i = 0; i < claimVoteMember[_claimId].length; i++) {
+2217	 if (allvotes[claimVoteMember[_claimId][i]].verdict == _verdict) token = token.add(allvotes[claimVoteMember[_claimId][i]].tokens);
+2218	 }
+2219	 }
+2220	 function getVoteAddressCA(address _voter, uint index) external view returns (uint) {
+2221	 return voteAddressCA[_voter][index];
+2222	 }
+2223	 function getVoteAddressMember(address _voter, uint index) external view returns (uint) {
+2224	 return voteAddressMember[_voter][index];
+2225	 }
+2226	 function getVoteAddressCALength(address _voter) external view returns (uint) {
+2227	 return voteAddressCA[_voter].length;
+2228	 }
+2229	 function getVoteAddressMemberLength(address _voter) external view returns (uint) {
+2230	 return voteAddressMember[_voter].length;
+2231	 }
+2232	 function getFinalVerdict(uint _claimId) external view returns (int8 verdict) {
+2233	 return claimVote[_claimId];
+2234	 }
+2235	 function getLengthOfClaimSubmittedAtEP() external view returns (uint len) {
+2236	 len = claimPause.length;
+2237	 }
+2238	 function getFirstClaimIndexToSubmitAfterEP() external view returns (uint indexToSubmit) {
+2239	 indexToSubmit = claimPauseLastsubmit;
+2240	 }
+2241	 function getLengthOfClaimVotingPause() external view returns (uint len) {
+2242	 len = claimPauseVotingEP.length;
+2243	 }
+2244	 function getPendingClaimDetailsByIndex( uint _index ) external view returns ( uint claimId, uint pendingTime, bool voting ) {
+2245	 claimId = claimPauseVotingEP[_index].claimid;
+2246	 pendingTime = claimPauseVotingEP[_index].pendingTime;
+2247	 voting = claimPauseVotingEP[_index].voting;
+2248	 }
+2249	 function getFirstClaimIndexToStartVotingAfterEP() external view returns (uint firstindex) {
+2250	 firstindex = claimStartVotingFirstIndex;
+2251	 }
+2252	 function updateUintParameters(bytes8 code, uint val) public {
+2253	 require(ms.checkIsAuthToGoverned(msg.sender));
+2254	 if (code == "CAMAXVT") {
+2255	 _setMaxVotingTime(val * 1 hours);
+2256	 }
+2257	 else if (code == "CAMINVT") {
+2258	 _setMinVotingTime(val * 1 hours);
+2259	 }
+2260	 else if (code == "CAPRETRY") {
+2261	 _setPayoutRetryTime(val * 1 hours);
+2262	 }
+2263	 else if (code == "CADEPT") {
+2264	 _setClaimDepositTime(val * 1 days);
+2265	 }
+2266	 else if (code == "CAREWPER") {
+2267	 _setClaimRewardPerc(val);
+2268	 }
+2269	 else if (code == "CAMINTH") {
+2270	 _setMinVoteThreshold(val);
+2271	 }
+2272	 else if (code == "CAMAXTH") {
+2273	 _setMaxVoteThreshold(val);
+2274	 }
+2275	 else if (code == "CACONPER") {
+2276	 _setMajorityConsensus(val);
+2277	 }
+2278	 else if (code == "CAPAUSET") {
+2279	 _setPauseDaysCA(val * 1 days);
+2280	 }
+2281	 else {
+2282	 revert("Invalid param code");
+2283	 }
+2284	 }
+2285	 function changeDependentContractAddress() public onlyInternal {
+2286	 }
+2287	 function _pushStatus(uint percCA, uint percMV) internal {
+2288	 rewardStatus.push(ClaimRewardStatus(percCA, percMV));
+2289	 }
+2290	 function _addRewardIncentive() internal {
+2291	 _pushStatus(0, 0);
+2292	 _pushStatus(0, 0);
+2293	 _pushStatus(0, 0);
+2294	 _pushStatus(0, 0);
+2295	 _pushStatus(0, 0);
+2296	 _pushStatus(0, 0);
+2297	 _pushStatus(100, 0);
+2298	 _pushStatus(100, 0);
+2299	 _pushStatus(0, 100);
+2300	 _pushStatus(0, 100);
+2301	 _pushStatus(0, 0);
+2302	 _pushStatus(0, 0);
+2303	 _pushStatus(0, 0);
+2304	 _pushStatus(0, 0);
+2305	 _pushStatus(0, 0);
+2306	 }
+2307	 function _setMaxVotingTime(uint _time) internal {
+2308	 maxVotingTime = _time;
+2309	 }
+2310	 function _setMinVotingTime(uint _time) internal {
+2311	 minVotingTime = _time;
+2312	 }
+2313	 function _setMinVoteThreshold(uint val) internal {
+2314	 minVoteThreshold = val;
+2315	 }
+2316	 function _setMaxVoteThreshold(uint val) internal {
+2317	 maxVoteThreshold = val;
+2318	 }
+2319	 function _setMajorityConsensus(uint val) internal {
+2320	 majorityConsensus = val;
+2321	 }
+2322	 function _setPayoutRetryTime(uint _time) internal {
+2323	 payoutRetryTime = _time;
+2324	 }
+2325	 function _setClaimRewardPerc(uint _val) internal {
+2326	 claimRewardPerc = _val;
+2327	 }
+2328	 function _setClaimDepositTime(uint _time) internal {
+2329	 claimDepositTime = _time;
+2330	 }
+2331	 function _setPauseDaysCA(uint val) internal {
+2332	 pauseDaysCA = val;
+2333	 }
+2334	 }
+2335	 pragma solidity ^0.5.0;
+2336	 interface LegacyMCR {
+2337	 function addMCRData(uint mcrP, uint mcrE, uint vF, bytes4[] calldata curr, uint[] calldata _threeDayAvg, uint64 onlyDate) external;
+2338	 function addLastMCRData(uint64 date) external;
+2339	 function changeDependentContractAddress() external;
+2340	 function getAllSumAssurance() external view returns (uint amount);
+2341	 function _calVtpAndMCRtp(uint poolBalance) external view returns (uint vtp, uint mcrtp);
+2342	 function calculateStepTokenPrice(bytes4 curr, uint mcrtp) external view returns (uint tokenPrice);
+2343	 function calculateTokenPrice(bytes4 curr) external view returns (uint tokenPrice);
+2344	 function calVtpAndMCRtp() external view returns (uint vtp, uint mcrtp);
+2345	 function calculateVtpAndMCRtp(uint poolBalance) external view returns (uint vtp, uint mcrtp);
+2346	 function getThresholdValues(uint vtp, uint vF, uint totalSA, uint minCap) external view returns (uint lowerThreshold, uint upperThreshold);
+2347	 function getMaxSellTokens() external view returns (uint maxTokens);
+2348	 function getUintParameters(bytes8 code) external view returns (bytes8 codeVal, uint val);
+2349	 function updateUintParameters(bytes8 code, uint val) external;
+2350	 function variableMincap() external view returns (uint);
+2351	 function dynamicMincapThresholdx100() external view returns (uint);
+2352	 function dynamicMincapIncrementx100() external view returns (uint);
+2353	 function getLastMCREther() external view returns (uint);
+2354	 }
+2355	 pragma solidity ^0.5.0;
+2356	 contract Governance is IGovernance, Iupgradable {
+2357	 using SafeMath for uint;
+2358	 enum ProposalStatus {
+2359	 Draft, AwaitingSolution, VotingStarted, Accepted, Rejected, Majority_Not_Reached_But_Accepted, Denied }
+2360	 struct ProposalData {
+2361	 uint propStatus;
+2362	 uint finalVerdict;
+2363	 uint category;
+2364	 uint commonIncentive;
+2365	 uint dateUpd;
+2366	 address owner;
+2367	 }
+2368	 struct ProposalVote {
+2369	 address voter;
+2370	 uint proposalId;
+2371	 uint dateAdd;
+2372	 }
+2373	 struct VoteTally {
+2374	 mapping(uint => uint) memberVoteValue;
+2375	 mapping(uint => uint) abVoteValue;
+2376	 uint voters;
+2377	 }
+2378	 struct DelegateVote {
+2379	 address follower;
+2380	 address leader;
+2381	 uint lastUpd;
+2382	 }
+2383	 ProposalVote[] internal allVotes;
+2384	 DelegateVote[] public allDelegation;
+2385	 mapping(uint => ProposalData) internal allProposalData;
+2386	 mapping(uint => bytes[]) internal allProposalSolutions;
+2387	 mapping(address => uint[]) internal allVotesByMember;
+2388	 mapping(uint => mapping(address => bool)) public rewardClaimed;
+2389	 mapping(address => mapping(uint => uint)) public memberProposalVote;
+2390	 mapping(address => uint) public followerDelegation;
+2391	 mapping(address => uint) internal followerCount;
+2392	 mapping(address => uint[]) internal leaderDelegation;
+2393	 mapping(uint => VoteTally) public proposalVoteTally;
+2394	 mapping(address => bool) public isOpenForDelegation;
+2395	 mapping(address => uint) public lastRewardClaimed;
+2396	 bool internal constructorCheck;
+2397	 uint public tokenHoldingTime;
+2398	 uint internal roleIdAllowedToCatgorize;
+2399	 uint internal maxVoteWeigthPer;
+2400	 uint internal specialResolutionMajPerc;
+2401	 uint internal maxFollowers;
+2402	 uint internal totalProposals;
+2403	 uint internal maxDraftTime;
+2404	 MemberRoles internal memberRole;
+2405	 ProposalCategory internal proposalCategory;
+2406	 TokenController internal tokenInstance;
+2407	 mapping(uint => uint) public proposalActionStatus;
+2408	 mapping(uint => uint) internal proposalExecutionTime;
+2409	 mapping(uint => mapping(address => bool)) public proposalRejectedByAB;
+2410	 mapping(uint => uint) internal actionRejectedCount;
+2411	 bool internal actionParamsInitialised;
+2412	 uint internal actionWaitingTime;
+2413	 uint constant internal AB_MAJ_TO_REJECT_ACTION = 3;
+2414	 enum ActionStatus {
+2415	 Pending, Accepted, Rejected, Executed, NoAction }
+2416	 event ActionFailed ( uint256 proposalId );
+2417	 event ActionRejected ( uint256 indexed proposalId, address rejectedBy );
+2418	 modifier onlyProposalOwner(uint _proposalId) {
+2419	 require(msg.sender == allProposalData[_proposalId].owner, "Not allowed");
+2420	 _;
+2421	 }
+2422	 modifier voteNotStarted(uint _proposalId) {
+2423	 require(allProposalData[_proposalId].propStatus < uint(ProposalStatus.VotingStarted));
+2424	 _;
+2425	 }
+2426	 modifier isAllowed(uint _categoryId) {
+2427	 require(allowedToCreateProposal(_categoryId), "Not allowed");
+2428	 _;
+2429	 }
+2430	 modifier isAllowedToCategorize() {
+2431	 require(memberRole.checkRole(msg.sender, roleIdAllowedToCatgorize), "Not allowed");
+2432	 _;
+2433	 }
+2434	 modifier checkPendingRewards {
+2435	 require(getPendingReward(msg.sender) == 0, "Claim reward");
+2436	 _;
+2437	 }
+2438	 event ProposalCategorized( uint indexed proposalId, address indexed categorizedBy, uint categoryId );
+2439	 function removeDelegation(address _add) external onlyInternal {
+2440	 _unDelegate(_add);
+2441	 }
+2442	 function createProposal( string calldata _proposalTitle, string calldata _proposalSD, string calldata _proposalDescHash, uint _categoryId ) external isAllowed(_categoryId) {
+2443	 require(ms.isMember(msg.sender), "Not Member");
+2444	 _createProposal(_proposalTitle, _proposalSD, _proposalDescHash, _categoryId);
+2445	 }
+2446	 function updateProposal( uint _proposalId, string calldata _proposalTitle, string calldata _proposalSD, string calldata _proposalDescHash ) external onlyProposalOwner(_proposalId) {
+2447	 require( allProposalSolutions[_proposalId].length < 2, "Not allowed" );
+2448	 allProposalData[_proposalId].propStatus = uint(ProposalStatus.Draft);
+2449	 allProposalData[_proposalId].category = 0;
+2450	 allProposalData[_proposalId].commonIncentive = 0;
+2451	 emit Proposal( allProposalData[_proposalId].owner, _proposalId, now, _proposalTitle, _proposalSD, _proposalDescHash );
+2452	 }
+2453	 function categorizeProposal( uint _proposalId, uint _categoryId, uint _incentive ) external voteNotStarted(_proposalId) isAllowedToCategorize {
+2454	 _categorizeProposal(_proposalId, _categoryId, _incentive);
+2455	 }
+2456	 function submitProposalWithSolution( uint _proposalId, string calldata _solutionHash, bytes calldata _action ) external onlyProposalOwner(_proposalId) {
+2457	 require(allProposalData[_proposalId].propStatus == uint(ProposalStatus.AwaitingSolution));
+2458	 _proposalSubmission(_proposalId, _solutionHash, _action);
+2459	 }
+2460	 function createProposalwithSolution( string calldata _proposalTitle, string calldata _proposalSD, string calldata _proposalDescHash, uint _categoryId, string calldata _solutionHash, bytes calldata _action ) external isAllowed(_categoryId) {
+2461	 uint proposalId = totalProposals;
+2462	 _createProposal(_proposalTitle, _proposalSD, _proposalDescHash, _categoryId);
+2463	 require(_categoryId > 0);
+2464	 _proposalSubmission( proposalId, _solutionHash, _action );
+2465	 }
+2466	 function submitVote(uint _proposalId, uint _solutionChosen) external {
+2467	 require(allProposalData[_proposalId].propStatus == uint(Governance.ProposalStatus.VotingStarted), "Not allowed");
+2468	 require(_solutionChosen < allProposalSolutions[_proposalId].length);
+2469	 _submitVote(_proposalId, _solutionChosen);
+2470	 }
+2471	 function closeProposal(uint _proposalId) external {
+2472	 uint category = allProposalData[_proposalId].category;
+2473	 uint _memberRole;
+2474	 if (allProposalData[_proposalId].dateUpd.add(maxDraftTime) <= now && allProposalData[_proposalId].propStatus < uint(ProposalStatus.VotingStarted)) {
+2475	 _updateProposalStatus(_proposalId, uint(ProposalStatus.Denied));
+2476	 }
+2477	 else {
+2478	 require(canCloseProposal(_proposalId) == 1);
+2479	 (, _memberRole,,,,,) = proposalCategory.category(allProposalData[_proposalId].category);
+2480	 if (_memberRole == uint(MemberRoles.Role.AdvisoryBoard)) {
+2481	 _closeAdvisoryBoardVote(_proposalId, category);
+2482	 }
+2483	 else {
+2484	 _closeMemberVote(_proposalId, category);
+2485	 }
+2486	 }
+2487	 }
+2488	 function claimReward(address _memberAddress, uint _maxRecords) external returns (uint pendingDAppReward) {
+2489	 uint voteId;
+2490	 address leader;
+2491	 uint lastUpd;
+2492	 require(msg.sender == ms.getLatestAddress("CR"));
+2493	 uint delegationId = followerDelegation[_memberAddress];
+2494	 DelegateVote memory delegationData = allDelegation[delegationId];
+2495	 if (delegationId > 0 && delegationData.leader != address(0)) {
+2496	 leader = delegationData.leader;
+2497	 lastUpd = delegationData.lastUpd;
+2498	 }
+2499	 else leader = _memberAddress;
+2500	 uint proposalId;
+2501	 uint totalVotes = allVotesByMember[leader].length;
+2502	 uint lastClaimed = totalVotes;
+2503	 uint j;
+2504	 uint i;
+2505	 for (i = lastRewardClaimed[_memberAddress]; i < totalVotes && j < _maxRecords; i++) {
+2506	 voteId = allVotesByMember[leader][i];
+2507	 proposalId = allVotes[voteId].proposalId;
+2508	 if (proposalVoteTally[proposalId].voters > 0 && (allVotes[voteId].dateAdd > ( lastUpd.add(tokenHoldingTime)) || leader == _memberAddress)) {
+2509	 if (allProposalData[proposalId].propStatus > uint(ProposalStatus.VotingStarted)) {
+2510	 if (!rewardClaimed[voteId][_memberAddress]) {
+2511	 pendingDAppReward = pendingDAppReward.add( allProposalData[proposalId].commonIncentive.div( proposalVoteTally[proposalId].voters ) );
+2512	 rewardClaimed[voteId][_memberAddress] = true;
+2513	 j++;
+2514	 }
+2515	 }
+2516	 else {
+2517	 if (lastClaimed == totalVotes) {
+2518	 lastClaimed = i;
+2519	 }
+2520	 }
+2521	 }
+2522	 }
+2523	 if (lastClaimed == totalVotes) {
+2524	 lastRewardClaimed[_memberAddress] = i;
+2525	 }
+2526	 else {
+2527	 lastRewardClaimed[_memberAddress] = lastClaimed;
+2528	 }
+2529	 if (j > 0) {
+2530	 emit RewardClaimed( _memberAddress, pendingDAppReward );
+2531	 }
+2532	 }
+2533	 function setDelegationStatus(bool _status) external isMemberAndcheckPause checkPendingRewards {
+2534	 isOpenForDelegation[msg.sender] = _status;
+2535	 }
+2536	 function delegateVote(address _add) external isMemberAndcheckPause checkPendingRewards {
+2537	 require(ms.masterInitialized());
+2538	 require(allDelegation[followerDelegation[_add]].leader == address(0));
+2539	 if (followerDelegation[msg.sender] > 0) {
+2540	 require((allDelegation[followerDelegation[msg.sender]].lastUpd).add(tokenHoldingTime) < now);
+2541	 }
+2542	 require(!alreadyDelegated(msg.sender));
+2543	 require(!memberRole.checkRole(msg.sender, uint(MemberRoles.Role.Owner)));
+2544	 require(!memberRole.checkRole(msg.sender, uint(MemberRoles.Role.AdvisoryBoard)));
+2545	 require(followerCount[_add] < maxFollowers);
+2546	 if (allVotesByMember[msg.sender].length > 0) {
+2547	 require((allVotes[allVotesByMember[msg.sender][allVotesByMember[msg.sender].length - 1]].dateAdd).add(tokenHoldingTime) < now);
+2548	 }
+2549	 require(ms.isMember(_add));
+2550	 require(isOpenForDelegation[_add]);
+2551	 allDelegation.push(DelegateVote(msg.sender, _add, now));
+2552	 followerDelegation[msg.sender] = allDelegation.length - 1;
+2553	 leaderDelegation[_add].push(allDelegation.length - 1);
+2554	 followerCount[_add]++;
+2555	 lastRewardClaimed[msg.sender] = allVotesByMember[_add].length;
+2556	 }
+2557	 function unDelegate() external isMemberAndcheckPause checkPendingRewards {
+2558	 _unDelegate(msg.sender);
+2559	 }
+2560	 function triggerAction(uint _proposalId) external {
+2561	 require(proposalActionStatus[_proposalId] == uint(ActionStatus.Accepted) && proposalExecutionTime[_proposalId] <= now, "Cannot trigger");
+2562	 _triggerAction(_proposalId, allProposalData[_proposalId].category);
+2563	 }
+2564	 function rejectAction(uint _proposalId) external {
+2565	 require(memberRole.checkRole(msg.sender, uint(MemberRoles.Role.AdvisoryBoard)) && proposalExecutionTime[_proposalId] > now);
+2566	 require(proposalActionStatus[_proposalId] == uint(ActionStatus.Accepted));
+2567	 require(!proposalRejectedByAB[_proposalId][msg.sender]);
+2568	 require( keccak256(proposalCategory.categoryActionHashes(allProposalData[_proposalId].category)) != keccak256(abi.encodeWithSignature("swapABMember(address,address)")) );
+2569	 proposalRejectedByAB[_proposalId][msg.sender] = true;
+2570	 actionRejectedCount[_proposalId]++;
+2571	 emit ActionRejected(_proposalId, msg.sender);
+2572	 if (actionRejectedCount[_proposalId] == AB_MAJ_TO_REJECT_ACTION) {
+2573	 proposalActionStatus[_proposalId] = uint(ActionStatus.Rejected);
+2574	 }
+2575	 }
+2576	 function setInitialActionParameters() external onlyOwner {
+2577	 require(!actionParamsInitialised);
+2578	 actionParamsInitialised = true;
+2579	 actionWaitingTime = 24 * 1 hours;
+2580	 }
+2581	 function getUintParameters(bytes8 code) external view returns (bytes8 codeVal, uint val) {
+2582	 codeVal = code;
+2583	 if (code == "GOVHOLD") {
+2584	 val = tokenHoldingTime / (1 days);
+2585	 }
+2586	 else if (code == "MAXFOL") {
+2587	 val = maxFollowers;
+2588	 }
+2589	 else if (code == "MAXDRFT") {
+2590	 val = maxDraftTime / (1 days);
+2591	 }
+2592	 else if (code == "EPTIME") {
+2593	 val = ms.pauseTime() / (1 days);
+2594	 }
+2595	 else if (code == "ACWT") {
+2596	 val = actionWaitingTime / (1 hours);
+2597	 }
+2598	 }
+2599	 function proposal(uint _proposalId) external view returns ( uint proposalId, uint category, uint status, uint finalVerdict, uint totalRewar ) {
+2600	 return ( _proposalId, allProposalData[_proposalId].category, allProposalData[_proposalId].propStatus, allProposalData[_proposalId].finalVerdict, allProposalData[_proposalId].commonIncentive );
+2601	 }
+2602	 function proposalDetails(uint _proposalId) external view returns (uint, uint, uint) {
+2603	 return ( _proposalId, allProposalSolutions[_proposalId].length, proposalVoteTally[_proposalId].voters );
+2604	 }
+2605	 function getSolutionAction(uint _proposalId, uint _solution) external view returns (uint, bytes memory) {
+2606	 return ( _solution, allProposalSolutions[_proposalId][_solution] );
+2607	 }
+2608	 function getProposalLength() external view returns (uint) {
+2609	 return totalProposals;
+2610	 }
+2611	 function getFollowers(address _add) external view returns (uint[] memory) {
+2612	 return leaderDelegation[_add];
+2613	 }
+2614	 function getPendingReward(address _memberAddress) public view returns (uint pendingDAppReward) {
+2615	 uint delegationId = followerDelegation[_memberAddress];
+2616	 address leader;
+2617	 uint lastUpd;
+2618	 DelegateVote memory delegationData = allDelegation[delegationId];
+2619	 if (delegationId > 0 && delegationData.leader != address(0)) {
+2620	 leader = delegationData.leader;
+2621	 lastUpd = delegationData.lastUpd;
+2622	 }
+2623	 else leader = _memberAddress;
+2624	 uint proposalId;
+2625	 for (uint i = lastRewardClaimed[_memberAddress]; i < allVotesByMember[leader].length; i++) {
+2626	 if (allVotes[allVotesByMember[leader][i]].dateAdd > ( lastUpd.add(tokenHoldingTime)) || leader == _memberAddress) {
+2627	 if (!rewardClaimed[allVotesByMember[leader][i]][_memberAddress]) {
+2628	 proposalId = allVotes[allVotesByMember[leader][i]].proposalId;
+2629	 if (proposalVoteTally[proposalId].voters > 0 && allProposalData[proposalId].propStatus > uint(ProposalStatus.VotingStarted)) {
+2630	 pendingDAppReward = pendingDAppReward.add( allProposalData[proposalId].commonIncentive.div( proposalVoteTally[proposalId].voters ) );
+2631	 }
+2632	 }
+2633	 }
+2634	 }
+2635	 }
+2636	 function updateUintParameters(bytes8 code, uint val) public {
+2637	 require(ms.checkIsAuthToGoverned(msg.sender));
+2638	 if (code == "GOVHOLD") {
+2639	 tokenHoldingTime = val * 1 days;
+2640	 }
+2641	 else if (code == "MAXFOL") {
+2642	 maxFollowers = val;
+2643	 }
+2644	 else if (code == "MAXDRFT") {
+2645	 maxDraftTime = val * 1 days;
+2646	 }
+2647	 else if (code == "EPTIME") {
+2648	 ms.updatePauseTime(val * 1 days);
+2649	 }
+2650	 else if (code == "ACWT") {
+2651	 actionWaitingTime = val * 1 hours;
+2652	 }
+2653	 else {
+2654	 revert("Invalid code");
+2655	 }
+2656	 }
+2657	 function changeDependentContractAddress() public {
+2658	 tokenInstance = TokenController(ms.dAppLocker());
+2659	 memberRole = MemberRoles(ms.getLatestAddress("MR"));
+2660	 proposalCategory = ProposalCategory(ms.getLatestAddress("PC"));
+2661	 }
+2662	 function allowedToCreateProposal(uint category) public view returns (bool check) {
+2663	 if (category == 0) return true;
+2664	 uint[] memory mrAllowed;
+2665	 (,,,, mrAllowed,,) = proposalCategory.category(category);
+2666	 for (uint i = 0; i < mrAllowed.length; i++) {
+2667	 if (mrAllowed[i] == 0 || memberRole.checkRole(msg.sender, mrAllowed[i])) return true;
+2668	 }
+2669	 }
+2670	 function alreadyDelegated(address _add) public view returns (bool delegated) {
+2671	 for (uint i = 0; i < leaderDelegation[_add].length; i++) {
+2672	 if (allDelegation[leaderDelegation[_add][i]].leader == _add) {
+2673	 return true;
+2674	 }
+2675	 }
+2676	 }
+2677	 function canCloseProposal(uint _proposalId) public view returns (uint) {
+2678	 uint dateUpdate;
+2679	 uint pStatus;
+2680	 uint _closingTime;
+2681	 uint _roleId;
+2682	 uint majority;
+2683	 pStatus = allProposalData[_proposalId].propStatus;
+2684	 dateUpdate = allProposalData[_proposalId].dateUpd;
+2685	 (, _roleId, majority, , , _closingTime,) = proposalCategory.category(allProposalData[_proposalId].category);
+2686	 if ( pStatus == uint(ProposalStatus.VotingStarted) ) {
+2687	 uint numberOfMembers = memberRole.numberOfMembers(_roleId);
+2688	 if (_roleId == uint(MemberRoles.Role.AdvisoryBoard)) {
+2689	 if (proposalVoteTally[_proposalId].abVoteValue[1].mul(100).div(numberOfMembers) >= majority || proposalVoteTally[_proposalId].abVoteValue[1].add(proposalVoteTally[_proposalId].abVoteValue[0]) == numberOfMembers || dateUpdate.add(_closingTime) <= now) {
+2690	 return 1;
+2691	 }
+2692	 }
+2693	 else {
+2694	 if (numberOfMembers == proposalVoteTally[_proposalId].voters || dateUpdate.add(_closingTime) <= now) return 1;
+2695	 }
+2696	 }
+2697	 else if (pStatus > uint(ProposalStatus.VotingStarted)) {
+2698	 return 2;
+2699	 }
+2700	 else {
+2701	 return 0;
+2702	 }
+2703	 }
+2704	 function allowedToCatgorize() public view returns (uint roleId) {
+2705	 return roleIdAllowedToCatgorize;
+2706	 }
+2707	 function voteTallyData(uint _proposalId, uint _solution) public view returns (uint, uint, uint) {
+2708	 return (proposalVoteTally[_proposalId].memberVoteValue[_solution], proposalVoteTally[_proposalId].abVoteValue[_solution], proposalVoteTally[_proposalId].voters);
+2709	 }
+2710	 function _createProposal( string memory _proposalTitle, string memory _proposalSD, string memory _proposalDescHash, uint _categoryId ) internal {
+2711	 require(proposalCategory.categoryABReq(_categoryId) == 0 || _categoryId == 0);
+2712	 uint _proposalId = totalProposals;
+2713	 allProposalData[_proposalId].owner = msg.sender;
+2714	 allProposalData[_proposalId].dateUpd = now;
+2715	 allProposalSolutions[_proposalId].push("");
+2716	 totalProposals++;
+2717	 emit Proposal( msg.sender, _proposalId, now, _proposalTitle, _proposalSD, _proposalDescHash );
+2718	 if (_categoryId > 0) _categorizeProposal(_proposalId, _categoryId, 0);
+2719	 }
+2720	 function _categorizeProposal( uint _proposalId, uint _categoryId, uint _incentive ) internal {
+2721	 require( _categoryId > 0 && _categoryId < proposalCategory.totalCategories(), "Invalid category" );
+2722	 allProposalData[_proposalId].category = _categoryId;
+2723	 allProposalData[_proposalId].commonIncentive = _incentive;
+2724	 allProposalData[_proposalId].propStatus = uint(ProposalStatus.AwaitingSolution);
+2725	 emit ProposalCategorized(_proposalId, msg.sender, _categoryId);
+2726	 }
+2727	 function _addSolution(uint _proposalId, bytes memory _action, string memory _solutionHash) internal {
+2728	 allProposalSolutions[_proposalId].push(_action);
+2729	 emit Solution(_proposalId, msg.sender, allProposalSolutions[_proposalId].length - 1, _solutionHash, now);
+2730	 }
+2731	 function _proposalSubmission( uint _proposalId, string memory _solutionHash, bytes memory _action ) internal {
+2732	 uint _categoryId = allProposalData[_proposalId].category;
+2733	 if (proposalCategory.categoryActionHashes(_categoryId).length == 0) {
+2734	 require(keccak256(_action) == keccak256(""));
+2735	 proposalActionStatus[_proposalId] = uint(ActionStatus.NoAction);
+2736	 }
+2737	 _addSolution( _proposalId, _action, _solutionHash );
+2738	 _updateProposalStatus(_proposalId, uint(ProposalStatus.VotingStarted));
+2739	 (, , , , , uint closingTime,) = proposalCategory.category(_categoryId);
+2740	 emit CloseProposalOnTime(_proposalId, closingTime.add(now));
+2741	 }
+2742	 function _submitVote(uint _proposalId, uint _solution) internal {
+2743	 uint delegationId = followerDelegation[msg.sender];
+2744	 uint mrSequence;
+2745	 uint majority;
+2746	 uint closingTime;
+2747	 (, mrSequence, majority, , , closingTime,) = proposalCategory.category(allProposalData[_proposalId].category);
+2748	 require(allProposalData[_proposalId].dateUpd.add(closingTime) > now, "Closed");
+2749	 require(memberProposalVote[msg.sender][_proposalId] == 0, "Not allowed");
+2750	 require((delegationId == 0) || (delegationId > 0 && allDelegation[delegationId].leader == address(0) && _checkLastUpd(allDelegation[delegationId].lastUpd)));
+2751	 require(memberRole.checkRole(msg.sender, mrSequence), "Not Authorized");
+2752	 uint totalVotes = allVotes.length;
+2753	 allVotesByMember[msg.sender].push(totalVotes);
+2754	 memberProposalVote[msg.sender][_proposalId] = totalVotes;
+2755	 allVotes.push(ProposalVote(msg.sender, _proposalId, now));
+2756	 emit Vote(msg.sender, _proposalId, totalVotes, now, _solution);
+2757	 if (mrSequence == uint(MemberRoles.Role.Owner)) {
+2758	 if (_solution == 1) _callIfMajReached(_proposalId, uint(ProposalStatus.Accepted), allProposalData[_proposalId].category, 1, MemberRoles.Role.Owner);
+2759	 else _updateProposalStatus(_proposalId, uint(ProposalStatus.Rejected));
+2760	 }
+2761	 else {
+2762	 uint numberOfMembers = memberRole.numberOfMembers(mrSequence);
+2763	 _setVoteTally(_proposalId, _solution, mrSequence);
+2764	 if (mrSequence == uint(MemberRoles.Role.AdvisoryBoard)) {
+2765	 if (proposalVoteTally[_proposalId].abVoteValue[1].mul(100).div(numberOfMembers) >= majority || (proposalVoteTally[_proposalId].abVoteValue[1].add(proposalVoteTally[_proposalId].abVoteValue[0])) == numberOfMembers) {
+2766	 emit VoteCast(_proposalId);
+2767	 }
+2768	 }
+2769	 else {
+2770	 if (numberOfMembers == proposalVoteTally[_proposalId].voters) emit VoteCast(_proposalId);
+2771	 }
+2772	 }
+2773	 }
+2774	 function _setVoteTally(uint _proposalId, uint _solution, uint mrSequence) internal {
+2775	 uint categoryABReq;
+2776	 uint isSpecialResolution;
+2777	 (, categoryABReq, isSpecialResolution) = proposalCategory.categoryExtendedData(allProposalData[_proposalId].category);
+2778	 if (memberRole.checkRole(msg.sender, uint(MemberRoles.Role.AdvisoryBoard)) && (categoryABReq > 0) || mrSequence == uint(MemberRoles.Role.AdvisoryBoard)) {
+2779	 proposalVoteTally[_proposalId].abVoteValue[_solution]++;
+2780	 }
+2781	 tokenInstance.lockForMemberVote(msg.sender, tokenHoldingTime);
+2782	 if (mrSequence != uint(MemberRoles.Role.AdvisoryBoard)) {
+2783	 uint voteWeight;
+2784	 uint voters = 1;
+2785	 uint tokenBalance = tokenInstance.totalBalanceOf(msg.sender);
+2786	 uint totalSupply = tokenInstance.totalSupply();
+2787	 if (isSpecialResolution == 1) {
+2788	 voteWeight = tokenBalance.add(10 ** 18);
+2789	 }
+2790	 else {
+2791	 voteWeight = (_minOf(tokenBalance, maxVoteWeigthPer.mul(totalSupply).div(100))).add(10 ** 18);
+2792	 }
+2793	 DelegateVote memory delegationData;
+2794	 for (uint i = 0; i < leaderDelegation[msg.sender].length; i++) {
+2795	 delegationData = allDelegation[leaderDelegation[msg.sender][i]];
+2796	 if (delegationData.leader == msg.sender && _checkLastUpd(delegationData.lastUpd)) {
+2797	 if (memberRole.checkRole(delegationData.follower, mrSequence)) {
+2798	 tokenBalance = tokenInstance.totalBalanceOf(delegationData.follower);
+2799	 tokenInstance.lockForMemberVote(delegationData.follower, tokenHoldingTime);
+2800	 voters++;
+2801	 if (isSpecialResolution == 1) {
+2802	 voteWeight = voteWeight.add(tokenBalance.add(10 ** 18));
+2803	 }
+2804	 else {
+2805	 voteWeight = voteWeight.add((_minOf(tokenBalance, maxVoteWeigthPer.mul(totalSupply).div(100))).add(10 ** 18));
+2806	 }
+2807	 }
+2808	 }
+2809	 }
+2810	 proposalVoteTally[_proposalId].memberVoteValue[_solution] = proposalVoteTally[_proposalId].memberVoteValue[_solution].add(voteWeight);
+2811	 proposalVoteTally[_proposalId].voters = proposalVoteTally[_proposalId].voters + voters;
+2812	 }
+2813	 }
+2814	 function _minOf(uint a, uint b) internal pure returns (uint res) {
+2815	 res = a;
+2816	 if (res > b) res = b;
+2817	 }
+2818	 function _checkLastUpd(uint _lastUpd) internal view returns (bool) {
+2819	 return (now - _lastUpd) > tokenHoldingTime;
+2820	 }
+2821	 function _checkForThreshold(uint _proposalId, uint _category) internal view returns (bool check) {
+2822	 uint categoryQuorumPerc;
+2823	 uint roleAuthorized;
+2824	 (, roleAuthorized, , categoryQuorumPerc, , ,) = proposalCategory.category(_category);
+2825	 check = ((proposalVoteTally[_proposalId].memberVoteValue[0] .add(proposalVoteTally[_proposalId].memberVoteValue[1])) .mul(100)) .div( tokenInstance.totalSupply().add( memberRole.numberOfMembers(roleAuthorized).mul(10 ** 18) ) ) >= categoryQuorumPerc;
+2826	 }
+2827	 function _callIfMajReached(uint _proposalId, uint _status, uint category, uint max, MemberRoles.Role role) internal {
+2828	 allProposalData[_proposalId].finalVerdict = max;
+2829	 _updateProposalStatus(_proposalId, _status);
+2830	 emit ProposalAccepted(_proposalId);
+2831	 if (proposalActionStatus[_proposalId] != uint(ActionStatus.NoAction)) {
+2832	 if (role == MemberRoles.Role.AdvisoryBoard) {
+2833	 _triggerAction(_proposalId, category);
+2834	 }
+2835	 else {
+2836	 proposalActionStatus[_proposalId] = uint(ActionStatus.Accepted);
+2837	 proposalExecutionTime[_proposalId] = actionWaitingTime.add(now);
+2838	 }
+2839	 }
+2840	 }
+2841	 function _triggerAction(uint _proposalId, uint _categoryId) internal {
+2842	 proposalActionStatus[_proposalId] = uint(ActionStatus.Executed);
+2843	 bytes2 contractName;
+2844	 address actionAddress;
+2845	 bytes memory _functionHash;
+2846	 (, actionAddress, contractName, , _functionHash) = proposalCategory.categoryActionDetails(_categoryId);
+2847	 if (contractName == "MS") {
+2848	 actionAddress = address(ms);
+2849	 }
+2850	 else if (contractName != "EX") {
+2851	 actionAddress = ms.getLatestAddress(contractName);
+2852	 }
+2853	 (bool actionStatus,) = actionAddress.call(abi.encodePacked(_functionHash, allProposalSolutions[_proposalId][1]));
+2854	 if (actionStatus) {
+2855	 emit ActionSuccess(_proposalId);
+2856	 }
+2857	 else {
+2858	 proposalActionStatus[_proposalId] = uint(ActionStatus.Accepted);
+2859	 emit ActionFailed(_proposalId);
+2860	 }
+2861	 }
+2862	 function _updateProposalStatus(uint _proposalId, uint _status) internal {
+2863	 if (_status == uint(ProposalStatus.Rejected) || _status == uint(ProposalStatus.Denied)) {
+2864	 proposalActionStatus[_proposalId] = uint(ActionStatus.NoAction);
+2865	 }
+2866	 allProposalData[_proposalId].dateUpd = now;
+2867	 allProposalData[_proposalId].propStatus = _status;
+2868	 }
+2869	 function _unDelegate(address _follower) internal {
+2870	 uint followerId = followerDelegation[_follower];
+2871	 if (followerId > 0) {
+2872	 followerCount[allDelegation[followerId].leader] = followerCount[allDelegation[followerId].leader].sub(1);
+2873	 allDelegation[followerId].leader = address(0);
+2874	 allDelegation[followerId].lastUpd = now;
+2875	 lastRewardClaimed[_follower] = allVotesByMember[_follower].length;
+2876	 }
+2877	 }
+2878	 function _closeMemberVote(uint _proposalId, uint category) internal {
+2879	 uint isSpecialResolution;
+2880	 uint abMaj;
+2881	 (, abMaj, isSpecialResolution) = proposalCategory.categoryExtendedData(category);
+2882	 if (isSpecialResolution == 1) {
+2883	 uint acceptedVotePerc = proposalVoteTally[_proposalId].memberVoteValue[1].mul(100) .div( tokenInstance.totalSupply().add( memberRole.numberOfMembers(uint(MemberRoles.Role.Member)).mul(10 ** 18) ));
+2884	 if (acceptedVotePerc >= specialResolutionMajPerc) {
+2885	 _callIfMajReached(_proposalId, uint(ProposalStatus.Accepted), category, 1, MemberRoles.Role.Member);
+2886	 }
+2887	 else {
+2888	 _updateProposalStatus(_proposalId, uint(ProposalStatus.Denied));
+2889	 }
+2890	 }
+2891	 else {
+2892	 if (_checkForThreshold(_proposalId, category)) {
+2893	 uint majorityVote;
+2894	 (,, majorityVote,,,,) = proposalCategory.category(category);
+2895	 if ( ((proposalVoteTally[_proposalId].memberVoteValue[1].mul(100)) .div(proposalVoteTally[_proposalId].memberVoteValue[0] .add(proposalVoteTally[_proposalId].memberVoteValue[1]) )) >= majorityVote ) {
+2896	 _callIfMajReached(_proposalId, uint(ProposalStatus.Accepted), category, 1, MemberRoles.Role.Member);
+2897	 }
+2898	 else {
+2899	 _updateProposalStatus(_proposalId, uint(ProposalStatus.Rejected));
+2900	 }
+2901	 }
+2902	 else {
+2903	 if (abMaj > 0 && proposalVoteTally[_proposalId].abVoteValue[1].mul(100) .div(memberRole.numberOfMembers(uint(MemberRoles.Role.AdvisoryBoard))) >= abMaj) {
+2904	 _callIfMajReached(_proposalId, uint(ProposalStatus.Accepted), category, 1, MemberRoles.Role.Member);
+2905	 }
+2906	 else {
+2907	 _updateProposalStatus(_proposalId, uint(ProposalStatus.Denied));
+2908	 }
+2909	 }
+2910	 }
+2911	 if (proposalVoteTally[_proposalId].voters > 0) {
+2912	 tokenInstance.mint(ms.getLatestAddress("CR"), allProposalData[_proposalId].commonIncentive);
+2913	 }
+2914	 }
+2915	 function _closeAdvisoryBoardVote(uint _proposalId, uint category) internal {
+2916	 uint _majorityVote;
+2917	 MemberRoles.Role _roleId = MemberRoles.Role.AdvisoryBoard;
+2918	 (,, _majorityVote,,,,) = proposalCategory.category(category);
+2919	 if (proposalVoteTally[_proposalId].abVoteValue[1].mul(100) .div(memberRole.numberOfMembers(uint(_roleId))) >= _majorityVote) {
+2920	 _callIfMajReached(_proposalId, uint(ProposalStatus.Accepted), category, 1, _roleId);
+2921	 }
+2922	 else {
+2923	 _updateProposalStatus(_proposalId, uint(ProposalStatus.Denied));
+2924	 }
+2925	 }
+2926	 }
+2927	 function getUserAllLockedCNTokens(address _of) external view returns (uint) {
+2928	 uint[] memory coverIds = qd.getAllCoversOfUser(_of);
+2929	 uint total;
+2930	 for (uint i = 0; i < coverIds.length; i++) {
+2931	 bytes32 reason = keccak256(abi.encodePacked("CN", _of, coverIds[i]));
+2932	 uint coverNote = tc.tokensLocked(_of, reason);
+2933	 total = total.add(coverNote);
+2934	 }
+2935	 return total;
+2936	 }
+2937	 function changeDependentContractAddress() public {
+2938	 tc = TokenController(master.getLatestAddress("TC"));
+2939	 tk = NXMToken(master.tokenAddress());
+2940	 qd = QuotationData(master.getLatestAddress("QD"));
+2941	 }
+2942	 function burnCAToken(uint claimid, uint _value, address _of) external onlyGovernance {
+2943	 tc.burnLockedTokens(_of, "CLA", _value);
+2944	 emit BurnCATokens(claimid, _of, _value);
+2945	 }
+2946	 function isLockedForMemberVote(address _of) public view returns (bool) {
+2947	 return now < tk.isLockedForMV(_of);
+2948	 }
+2949	 }
+2950	 function setClaimStatus(uint claimId, uint stat) external onlyInternal {
+2951	 _setClaimStatus(claimId, stat);
+2952	 }
+2953	 function getCATokens(uint claimId, uint member) external view returns (uint tokens) {
+2954	 uint coverId;
+2955	 (, coverId) = cd.getClaimCoverId(claimId);
+2956	 bytes4 currency = qd.getCurrencyOfCover(coverId);
+2957	 address asset = cr.getCurrencyAssetAddress(currency);
+2958	 uint tokenx1e18 = p1.getTokenPrice(asset);
+2959	 uint accept;
+2960	 uint deny;
+2961	 if (member == 0) {
+2962	 (, accept, deny) = cd.getClaimsTokenCA(claimId);
+2963	 }
+2964	 else {
+2965	 (, accept, deny) = cd.getClaimsTokenMV(claimId);
+2966	 }
+2967	 tokens = ((accept.add(deny)).mul(tokenx1e18)).div(DECIMAL1E18);
+2968	 }
+2969	 function changeDependentContractAddress() public onlyInternal {
+2970	 td = TokenData(ms.getLatestAddress("TD"));
+2971	 tc = TokenController(ms.getLatestAddress("TC"));
+2972	 p1 = Pool(ms.getLatestAddress("P1"));
+2973	 cr = ClaimsReward(ms.getLatestAddress("CR"));
+2974	 cd = ClaimsData(ms.getLatestAddress("CD"));
+2975	 qd = QuotationData(ms.getLatestAddress("QD"));
+2976	 incidents = Incidents(ms.getLatestAddress("IC"));
+2977	 }
+2978	 function submitClaim(uint coverId) external {
+2979	 _submitClaim(coverId, msg.sender);
+2980	 }
+2981	 function submitClaimForMember(uint coverId, address member) external onlyInternal {
+2982	 _submitClaim(coverId, member);
+2983	 }
+2984	 function _submitClaim(uint coverId, address member) internal {
+2985	 require(!ms.isPause(), "Claims: System is paused");
+2986	 (, address contractAddress) = qd.getscAddressOfCover(coverId);
+2987	 address token = incidents.coveredToken(contractAddress);
+2988	 require(token == address(0), "Claims: Product type does not allow claims");
+2989	 address coverOwner = qd.getCoverMemberAddress(coverId);
+2990	 require(coverOwner == member, "Claims: Not cover owner");
+2991	 uint expirationDate = qd.getValidityOfCover(coverId);
+2992	 uint gracePeriod = tc.claimSubmissionGracePeriod();
+2993	 require(expirationDate.add(gracePeriod) > now, "Claims: Grace period has expired");
+2994	 tc.markCoverClaimOpen(coverId);
+2995	 qd.changeCoverStatusNo(coverId, uint8(QuotationData.CoverStatus.ClaimSubmitted));
+2996	 uint claimId = cd.actualClaimLength();
+2997	 cd.addClaim(claimId, coverId, coverOwner, now);
+2998	 cd.callClaimEvent(coverId, coverOwner, claimId, now);
+2999	 }
+3000	 function submitClaimAfterEPOff() external pure {
+3001	 }
+3002	 function submitCAVote(uint claimId, int8 verdict) public isMemberAndcheckPause {
+3003	 require(checkVoteClosing(claimId) != 1);
+3004	 require(cd.userClaimVotePausedOn(msg.sender).add(cd.pauseDaysCA()) < now);
+3005	 uint tokens = tc.tokensLockedAtTime(msg.sender, "CLA", now.add(cd.claimDepositTime()));
+3006	 require(tokens > 0);
+3007	 uint stat;
+3008	 (, stat) = cd.getClaimStatusNumber(claimId);
+3009	 require(stat == 0);
+3010	 require(cd.getUserClaimVoteCA(msg.sender, claimId) == 0);
+3011	 td.bookCATokens(msg.sender);
+3012	 cd.addVote(msg.sender, tokens, claimId, verdict);
+3013	 cd.callVoteEvent(msg.sender, claimId, "CAV", tokens, now, verdict);
+3014	 uint voteLength = cd.getAllVoteLength();
+3015	 cd.addClaimVoteCA(claimId, voteLength);
+3016	 cd.setUserClaimVoteCA(msg.sender, claimId, voteLength);
+3017	 cd.setClaimTokensCA(claimId, verdict, tokens);
+3018	 tc.extendLockOf(msg.sender, "CLA", td.lockCADays());
+3019	 int close = checkVoteClosing(claimId);
+3020	 if (close == 1) {
+3021	 cr.changeClaimStatus(claimId);
+3022	 }
+3023	 }
+3024	 function submitMemberVote(uint claimId, int8 verdict) public isMemberAndcheckPause {
+3025	 require(checkVoteClosing(claimId) != 1);
+3026	 uint stat;
+3027	 uint tokens = tc.totalBalanceOf(msg.sender);
+3028	 (, stat) = cd.getClaimStatusNumber(claimId);
+3029	 require(stat >= 1 && stat <= 5);
+3030	 require(cd.getUserClaimVoteMember(msg.sender, claimId) == 0);
+3031	 cd.addVote(msg.sender, tokens, claimId, verdict);
+3032	 cd.callVoteEvent(msg.sender, claimId, "MV", tokens, now, verdict);
+3033	 tc.lockForMemberVote(msg.sender, td.lockMVDays());
+3034	 uint voteLength = cd.getAllVoteLength();
+3035	 cd.addClaimVotemember(claimId, voteLength);
+3036	 cd.setUserClaimVoteMember(msg.sender, claimId, voteLength);
+3037	 cd.setClaimTokensMV(claimId, verdict, tokens);
+3038	 int close = checkVoteClosing(claimId);
+3039	 if (close == 1) {
+3040	 cr.changeClaimStatus(claimId);
+3041	 }
+3042	 }
+3043	 function pauseAllPendingClaimsVoting() external pure {
+3044	 }
+3045	 function startAllPendingClaimsVoting() external pure {
+3046	 }
+3047	 function checkVoteClosing(uint claimId) public view returns (int8 close) {
+3048	 close = 0;
+3049	 uint status;
+3050	 (, status) = cd.getClaimStatusNumber(claimId);
+3051	 uint dateUpd = cd.getClaimDateUpd(claimId);
+3052	 if (status == 12 && dateUpd.add(cd.payoutRetryTime()) < now) {
+3053	 if (cd.getClaimState12Count(claimId) < 60) close = 1;
+3054	 }
+3055	 if (status > 5 && status != 12) {
+3056	 close = - 1;
+3057	 }
+3058	 else if (status != 12 && dateUpd.add(cd.maxVotingTime()) <= now) {
+3059	 close = 1;
+3060	 }
+3061	 else if (status != 12 && dateUpd.add(cd.minVotingTime()) >= now) {
+3062	 close = 0;
+3063	 }
+3064	 else if (status == 0 || (status >= 1 && status <= 5)) {
+3065	 close = _checkVoteClosingFinal(claimId, status);
+3066	 }
+3067	 }
+3068	 function _checkVoteClosingFinal(uint claimId, uint status) internal view returns (int8 close) {
+3069	 close = 0;
+3070	 uint coverId;
+3071	 (, coverId) = cd.getClaimCoverId(claimId);
+3072	 bytes4 currency = qd.getCurrencyOfCover(coverId);
+3073	 address asset = cr.getCurrencyAssetAddress(currency);
+3074	 uint tokenx1e18 = p1.getTokenPrice(asset);
+3075	 uint accept;
+3076	 uint deny;
+3077	 (, accept, deny) = cd.getClaimsTokenCA(claimId);
+3078	 uint caTokens = ((accept.add(deny)).mul(tokenx1e18)).div(DECIMAL1E18);
+3079	 (, accept, deny) = cd.getClaimsTokenMV(claimId);
+3080	 uint mvTokens = ((accept.add(deny)).mul(tokenx1e18)).div(DECIMAL1E18);
+3081	 uint sumassured = qd.getCoverSumAssured(coverId).mul(DECIMAL1E18);
+3082	 if (status == 0 && caTokens >= sumassured.mul(10)) {
+3083	 close = 1;
+3084	 }
+3085	 else if (status >= 1 && status <= 5 && mvTokens >= sumassured.mul(10)) {
+3086	 close = 1;
+3087	 }
+3088	 }
+3089	 function _setClaimStatus(uint claimId, uint stat) internal {
+3090	 uint origstat;
+3091	 uint state12Count;
+3092	 uint dateUpd;
+3093	 uint coverId;
+3094	 (, coverId, , origstat, dateUpd, state12Count) = cd.getClaim(claimId);
+3095	 (, origstat) = cd.getClaimStatusNumber(claimId);
+3096	 if (stat == 12 && origstat == 12) {
+3097	 cd.updateState12Count(claimId, 1);
+3098	 }
+3099	 cd.setClaimStatus(claimId, stat);
+3100	 if (state12Count >= 60 && stat == 12) {
+3101	 cd.setClaimStatus(claimId, 13);
+3102	 qd.changeCoverStatusNo(coverId, uint8(QuotationData.CoverStatus.ClaimDenied));
+3103	 }
+3104	 cd.setClaimdateUpd(claimId, now);
+3105	 }
+3106	 }
+3107	 function swapABMember( address _newABAddress, address _removeAB ) external checkRoleAuthority(uint(Role.AdvisoryBoard)) {
+3108	 _updateRole(_newABAddress, uint(Role.AdvisoryBoard), true);
+3109	 _updateRole(_removeAB, uint(Role.AdvisoryBoard), false);
+3110	 }
+3111	 function swapOwner( address _newOwnerAddress ) external {
+3112	 require(msg.sender == address(ms));
+3113	 _updateRole(ms.owner(), uint(Role.Owner), false);
+3114	 _updateRole(_newOwnerAddress, uint(Role.Owner), true);
+3115	 }
+3116	 function addInitialABMembers(address[] calldata abArray) external onlyOwner {
+3117	 require(ms.masterInitialized());
+3118	 require(maxABCount >= SafeMath.add(numberOfMembers(uint(Role.AdvisoryBoard)), abArray.length) );
+3119	 for (uint i = 0; i < abArray.length; i++) {
+3120	 require(checkRole(abArray[i], uint(MemberRoles.Role.Member)));
+3121	 _updateRole(abArray[i], uint(Role.AdvisoryBoard), true);
+3122	 }
+3123	 }
+3124	 function changeMaxABCount(uint _val) external onlyInternal {
+3125	 maxABCount = _val;
+3126	 }
+3127	 function changeDependentContractAddress() public {
+3128	 td = TokenData(ms.getLatestAddress("TD"));
+3129	 cr = ClaimsReward(ms.getLatestAddress("CR"));
+3130	 qd = QuotationData(ms.getLatestAddress("QD"));
+3131	 gv = Governance(ms.getLatestAddress("GV"));
+3132	 tf = TokenFunctions(ms.getLatestAddress("TF"));
+3133	 tk = NXMToken(ms.tokenAddress());
+3134	 tc = TokenController(ms.getLatestAddress("TC"));
+3135	 }
+3136	 function changeMasterAddress(address _masterAddress) public {
+3137	 if (masterAddress != address(0)) {
+3138	 require(masterAddress == msg.sender);
+3139	 }
+3140	 masterAddress = _masterAddress;
+3141	 ms = INXMMaster(_masterAddress);
+3142	 nxMasterAddress = _masterAddress;
+3143	 }
+3144	 function memberRolesInitiate(address _firstAB, address memberAuthority) public {
+3145	 require(!constructorCheck);
+3146	 _addInitialMemberRoles(_firstAB, memberAuthority);
+3147	 constructorCheck = true;
+3148	 }
+3149	 function addRole( bytes32 _roleName, string memory _roleDescription, address _authorized ) public onlyAuthorizedToGovern {
+3150	 _addRole(_roleName, _roleDescription, _authorized);
+3151	 }
+3152	 function updateRole( address _memberAddress, uint _roleId, bool _active ) public checkRoleAuthority(_roleId) {
+3153	 _updateRole(_memberAddress, _roleId, _active);
+3154	 }
+3155	 function addMembersBeforeLaunch(address[] memory userArray, uint[] memory tokens) public onlyOwner {
+3156	 require(!launched);
+3157	 for (uint i = 0; i < userArray.length; i++) {
+3158	 require(!ms.isMember(userArray[i]));
+3159	 tc.addToWhitelist(userArray[i]);
+3160	 _updateRole(userArray[i], uint(Role.Member), true);
+3161	 tc.mint(userArray[i], tokens[i]);
+3162	 }
+3163	 launched = true;
+3164	 launchedOn = now;
+3165	 }
+3166	 function payJoiningFee(address _userAddress) public payable {
+3167	 require(_userAddress != address(0));
+3168	 require(!ms.isPause(), "Emergency Pause Applied");
+3169	 if (msg.sender == address(ms.getLatestAddress("QT"))) {
+3170	 require(td.walletAddress() != address(0), "No walletAddress present");
+3171	 tc.addToWhitelist(_userAddress);
+3172	 _updateRole(_userAddress, uint(Role.Member), true);
+3173	 td.walletAddress().transfer(msg.value);
+3174	 }
+3175	 else {
+3176	 require(!qd.refundEligible(_userAddress));
+3177	 require(!ms.isMember(_userAddress));
+3178	 require(msg.value == td.joiningFee());
+3179	 qd.setRefundEligible(_userAddress, true);
+3180	 }
+3181	 }
+3182	 function kycVerdict(address payable _userAddress, bool verdict) public {
+3183	 require(msg.sender == qd.kycAuthAddress());
+3184	 require(!ms.isPause());
+3185	 require(_userAddress != address(0));
+3186	 require(!ms.isMember(_userAddress));
+3187	 require(qd.refundEligible(_userAddress));
+3188	 if (verdict) {
+3189	 qd.setRefundEligible(_userAddress, false);
+3190	 uint fee = td.joiningFee();
+3191	 tc.addToWhitelist(_userAddress);
+3192	 _updateRole(_userAddress, uint(Role.Member), true);
+3193	 td.walletAddress().transfer(fee);
+3194	 }
+3195	 else {
+3196	 qd.setRefundEligible(_userAddress, false);
+3197	 _userAddress.transfer(td.joiningFee());
+3198	 }
+3199	 }
+3200	 function withdrawMembership() public {
+3201	 require(!ms.isPause() && ms.isMember(msg.sender));
+3202	 require(tc.totalLockedBalance(msg.sender) == 0);
+3203	 require(!tf.isLockedForMemberVote(msg.sender));
+3204	 require(cr.getAllPendingRewardOfUser(msg.sender) == 0);
+3205	 gv.removeDelegation(msg.sender);
+3206	 tc.burnFrom(msg.sender, tk.balanceOf(msg.sender));
+3207	 _updateRole(msg.sender, uint(Role.Member), false);
+3208	 tc.removeFromWhitelist(msg.sender);
+3209	 if (claimPayoutAddress[msg.sender] != address(0)) {
+3210	 claimPayoutAddress[msg.sender] = address(0);
+3211	 emit ClaimPayoutAddressSet(msg.sender, address(0));
+3212	 }
+3213	 }
+3214	 function switchMembership(address newAddress) external {
+3215	 _switchMembership(msg.sender, newAddress);
+3216	 tk.transferFrom(msg.sender, newAddress, tk.balanceOf(msg.sender));
+3217	 }
+3218	 function switchMembershipOf(address member, address newAddress) external onlyInternal {
+3219	 _switchMembership(member, newAddress);
+3220	 }
+3221	 function _switchMembership(address member, address newAddress) internal {
+3222	 require(!ms.isPause() && ms.isMember(member) && !ms.isMember(newAddress));
+3223	 require(tc.totalLockedBalance(member) == 0);
+3224	 require(!tf.isLockedForMemberVote(member));
+3225	 require(cr.getAllPendingRewardOfUser(member) == 0);
+3226	 gv.removeDelegation(member);
+3227	 tc.addToWhitelist(newAddress);
+3228	 _updateRole(newAddress, uint(Role.Member), true);
+3229	 _updateRole(member, uint(Role.Member), false);
+3230	 tc.removeFromWhitelist(member);
+3231	 address payable previousPayoutAddress = claimPayoutAddress[member];
+3232	 if (previousPayoutAddress != address(0)) {
+3233	 address payable storedAddress = previousPayoutAddress == newAddress ? address(0) : previousPayoutAddress;
+3234	 claimPayoutAddress[member] = address(0);
+3235	 claimPayoutAddress[newAddress] = storedAddress;
+3236	 emit ClaimPayoutAddressSet(member, address(0));
+3237	 if (storedAddress != address(0)) {
+3238	 emit ClaimPayoutAddressSet(newAddress, storedAddress);
+3239	 }
+3240	 }
+3241	 emit switchedMembership(member, newAddress, now);
+3242	 }
+3243	 function getClaimPayoutAddress(address payable _member) external view returns (address payable) {
+3244	 address payable payoutAddress = claimPayoutAddress[_member];
+3245	 return payoutAddress != address(0) ? payoutAddress : _member;
+3246	 }
+3247	 function setClaimPayoutAddress(address payable _address) external {
+3248	 require(!ms.isPause(), "system is paused");
+3249	 require(ms.isMember(msg.sender), "sender is not a member");
+3250	 require(_address != msg.sender, "should be different than the member address");
+3251	 claimPayoutAddress[msg.sender] = _address;
+3252	 emit ClaimPayoutAddressSet(msg.sender, _address);
+3253	 }
+3254	 function totalRoles() public view returns (uint256) {
+3255	 return memberRoleData.length;
+3256	 }
+3257	 function changeAuthorized(uint _roleId, address _newAuthorized) public checkRoleAuthority(_roleId) {
+3258	 memberRoleData[_roleId].authorized = _newAuthorized;
+3259	 }
+3260	 function members(uint _memberRoleId) public view returns (uint, address[] memory memberArray) {
+3261	 uint length = memberRoleData[_memberRoleId].memberAddress.length;
+3262	 uint i;
+3263	 uint j = 0;
+3264	 memberArray = new address[](memberRoleData[_memberRoleId].memberCounter);
+3265	 for (i = 0; i < length; i++) {
+3266	 address member = memberRoleData[_memberRoleId].memberAddress[i];
+3267	 if (memberRoleData[_memberRoleId].memberActive[member] && !_checkMemberInArray(member, memberArray)) {
+3268	 memberArray[j] = member;
+3269	 j++;
+3270	 }
+3271	 }
+3272	 return (_memberRoleId, memberArray);
+3273	 }
+3274	 function numberOfMembers(uint _memberRoleId) public view returns (uint) {
+3275	 return memberRoleData[_memberRoleId].memberCounter;
+3276	 }
+3277	 function authorized(uint _memberRoleId) public view returns (address) {
+3278	 return memberRoleData[_memberRoleId].authorized;
+3279	 }
+3280	 function roles(address _memberAddress) public view returns (uint[] memory) {
+3281	 uint length = memberRoleData.length;
+3282	 uint[] memory assignedRoles = new uint[](length);
+3283	 uint counter = 0;
+3284	 for (uint i = 1; i < length; i++) {
+3285	 if (memberRoleData[i].memberActive[_memberAddress]) {
+3286	 assignedRoles[counter] = i;
+3287	 counter++;
+3288	 }
+3289	 }
+3290	 return assignedRoles;
+3291	 }
+3292	 function checkRole(address _memberAddress, uint _roleId) public view returns (bool) {
+3293	 if (_roleId == uint(Role.UnAssigned)) return true;
+3294	 else if (memberRoleData[_roleId].memberActive[_memberAddress]) return true;
+3295	 else return false;
+3296	 }
+3297	 function getMemberLengthForAllRoles() public view returns (uint[] memory totalMembers) {
+3298	 totalMembers = new uint[](memberRoleData.length);
+3299	 for (uint i = 0; i < memberRoleData.length; i++) {
+3300	 totalMembers[i] = numberOfMembers(i);
+3301	 }
+3302	 }
+3303	 function _updateRole(address _memberAddress, uint _roleId, bool _active) internal {
+3304	 if (_active) {
+3305	 require(!memberRoleData[_roleId].memberActive[_memberAddress]);
+3306	 memberRoleData[_roleId].memberCounter = SafeMath.add(memberRoleData[_roleId].memberCounter, 1);
+3307	 memberRoleData[_roleId].memberActive[_memberAddress] = true;
+3308	 memberRoleData[_roleId].memberAddress.push(_memberAddress);
+3309	 }
+3310	 else {
+3311	 require(memberRoleData[_roleId].memberActive[_memberAddress]);
+3312	 memberRoleData[_roleId].memberCounter = SafeMath.sub(memberRoleData[_roleId].memberCounter, 1);
+3313	 delete memberRoleData[_roleId].memberActive[_memberAddress];
+3314	 }
+3315	 }
+3316	 function _addRole( bytes32 _roleName, string memory _roleDescription, address _authorized ) internal {
+3317	 emit MemberRole(memberRoleData.length, _roleName, _roleDescription);
+3318	 memberRoleData.push(MemberRoleDetails(0, new address[](0), _authorized));
+3319	 }
+3320	 function _checkMemberInArray( address _memberAddress, address[] memory memberArray ) internal pure returns (bool memberExists) {
+3321	 uint i;
+3322	 for (i = 0; i < memberArray.length; i++) {
+3323	 if (memberArray[i] == _memberAddress) {
+3324	 memberExists = true;
+3325	 break;
+3326	 }
+3327	 }
+3328	 }
+3329	 function _addInitialMemberRoles(address _firstAB, address memberAuthority) internal {
+3330	 maxABCount = 5;
+3331	 _addRole("Unassigned", "Unassigned", address(0));
+3332	 _addRole( "Advisory Board", "Selected few members that are deeply entrusted by the dApp. An ideal advisory board should be a mix of skills of domain, governance, research, technology, consulting etc to improve the performance of the dApp.", address(0) );
+3333	 _addRole( "Member", "Represents all users of Mutual.", memberAuthority );
+3334	 _addRole( "Owner", "Represents Owner of Mutual.", address(0) );
+3335	 _updateRole(_firstAB, uint(Role.Owner), true);
+3336	 launchedOn = 0;
+3337	 }
+3338	 function memberAtIndex(uint _memberRoleId, uint index) external view returns (address, bool) {
+3339	 address memberAddress = memberRoleData[_memberRoleId].memberAddress[index];
+3340	 return (memberAddress, memberRoleData[_memberRoleId].memberActive[memberAddress]);
+3341	 }
+3342	 function membersLength(uint _memberRoleId) external view returns (uint) {
+3343	 return memberRoleData[_memberRoleId].memberAddress.length;
+3344	 }
+3345	 }
+3346	 function addCategory( string calldata _name, uint _memberRoleToVote, uint _majorityVotePerc, uint _quorumPerc, uint[] calldata _allowedToCreateProposal, uint _closingTime, string calldata _actionHash, address _contractAddress, bytes2 _contractName, uint[] calldata _incentives ) external {
+3347	 }
+3348	 function proposalCategoryInitiate() external {
+3349	 }
+3350	 function updateCategoryActionHashes() external onlyOwner {
+3351	 require(!categoryActionHashUpdated, "Category action hashes already updated");
+3352	 categoryActionHashUpdated = true;
+3353	 categoryActionHashes[1] = abi.encodeWithSignature("addRole(bytes32,string,address)");
+3354	 categoryActionHashes[2] = abi.encodeWithSignature("updateRole(address,uint256,bool)");
+3355	 categoryActionHashes[3] = abi.encodeWithSignature("newCategory(string,uint256,uint256,uint256,uint256[],uint256,string,address,bytes2,uint256[],string)");
+3356	 categoryActionHashes[4] = abi.encodeWithSignature("editCategory(uint256,string,uint256,uint256,uint256,uint256[],uint256,string,address,bytes2,uint256[],string)");
+3357	 categoryActionHashes[5] = abi.encodeWithSignature("upgradeContractImplementation(bytes2,address)");
+3358	 categoryActionHashes[6] = abi.encodeWithSignature("startEmergencyPause()");
+3359	 categoryActionHashes[7] = abi.encodeWithSignature("addEmergencyPause(bool,bytes4)");
+3360	 categoryActionHashes[8] = abi.encodeWithSignature("burnCAToken(uint256,uint256,address)");
+3361	 categoryActionHashes[9] = abi.encodeWithSignature("setUserClaimVotePausedOn(address)");
+3362	 categoryActionHashes[12] = abi.encodeWithSignature("transferEther(uint256,address)");
+3363	 categoryActionHashes[13] = abi.encodeWithSignature("addInvestmentAssetCurrency(bytes4,address,bool,uint64,uint64,uint8)");
+3364	 categoryActionHashes[14] = abi.encodeWithSignature("changeInvestmentAssetHoldingPerc(bytes4,uint64,uint64)");
+3365	 categoryActionHashes[15] = abi.encodeWithSignature("changeInvestmentAssetStatus(bytes4,bool)");
+3366	 categoryActionHashes[16] = abi.encodeWithSignature("swapABMember(address,address)");
+3367	 categoryActionHashes[17] = abi.encodeWithSignature("addCurrencyAssetCurrency(bytes4,address,uint256)");
+3368	 categoryActionHashes[20] = abi.encodeWithSignature("updateUintParameters(bytes8,uint256)");
+3369	 categoryActionHashes[21] = abi.encodeWithSignature("updateUintParameters(bytes8,uint256)");
+3370	 categoryActionHashes[22] = abi.encodeWithSignature("updateUintParameters(bytes8,uint256)");
+3371	 categoryActionHashes[23] = abi.encodeWithSignature("updateUintParameters(bytes8,uint256)");
+3372	 categoryActionHashes[24] = abi.encodeWithSignature("updateUintParameters(bytes8,uint256)");
+3373	 categoryActionHashes[25] = abi.encodeWithSignature("updateUintParameters(bytes8,uint256)");
+3374	 categoryActionHashes[26] = abi.encodeWithSignature("updateUintParameters(bytes8,uint256)");
+3375	 categoryActionHashes[27] = abi.encodeWithSignature("updateAddressParameters(bytes8,address)");
+3376	 categoryActionHashes[28] = abi.encodeWithSignature("updateOwnerParameters(bytes8,address)");
+3377	 categoryActionHashes[29] = abi.encodeWithSignature("upgradeMultipleContracts(bytes2[],address[])");
+3378	 categoryActionHashes[30] = abi.encodeWithSignature("changeCurrencyAssetAddress(bytes4,address)");
+3379	 categoryActionHashes[31] = abi.encodeWithSignature("changeCurrencyAssetBaseMin(bytes4,uint256)");
+3380	 categoryActionHashes[32] = abi.encodeWithSignature("changeInvestmentAssetAddressAndDecimal(bytes4,address,uint8)");
+3381	 categoryActionHashes[33] = abi.encodeWithSignature("externalLiquidityTrade()");
+3382	 }
+3383	 function totalCategories() external view returns (uint) {
+3384	 return allCategory.length;
+3385	 }
+3386	 function category(uint _categoryId) external view returns (uint, uint, uint, uint, uint[] memory, uint, uint) {
+3387	 return ( _categoryId, allCategory[_categoryId].memberRoleToVote, allCategory[_categoryId].majorityVotePerc, allCategory[_categoryId].quorumPerc, allCategory[_categoryId].allowedToCreateProposal, allCategory[_categoryId].closingTime, allCategory[_categoryId].minStake );
+3388	 }
+3389	 function categoryExtendedData(uint _categoryId) external view returns (uint, uint, uint) {
+3390	 return ( _categoryId, categoryABReq[_categoryId], isSpecialResolution[_categoryId] );
+3391	 }
+3392	 function categoryAction(uint _categoryId) external view returns (uint, address, bytes2, uint) {
+3393	 return ( _categoryId, categoryActionData[_categoryId].contractAddress, categoryActionData[_categoryId].contractName, categoryActionData[_categoryId].defaultIncentive );
+3394	 }
+3395	 function categoryActionDetails(uint _categoryId) external view returns (uint, address, bytes2, uint, bytes memory) {
+3396	 return ( _categoryId, categoryActionData[_categoryId].contractAddress, categoryActionData[_categoryId].contractName, categoryActionData[_categoryId].defaultIncentive, categoryActionHashes[_categoryId] );
+3397	 }
+3398	 function changeDependentContractAddress() public {
+3399	 mr = MemberRoles(ms.getLatestAddress("MR"));
+3400	 }
+3401	 function newCategory( string memory _name, uint _memberRoleToVote, uint _majorityVotePerc, uint _quorumPerc, uint[] memory _allowedToCreateProposal, uint _closingTime, string memory _actionHash, address _contractAddress, bytes2 _contractName, uint[] memory _incentives, string memory _functionHash ) public onlyAuthorizedToGovern {
+3402	 require(_quorumPerc <= 100 && _majorityVotePerc <= 100, "Invalid percentage");
+3403	 require((_contractName == "EX" && _contractAddress == address(0)) || bytes(_functionHash).length > 0);
+3404	 require(_incentives[3] <= 1, "Invalid special resolution flag");
+3405	 if (_incentives[3] == 1) {
+3406	 require(_memberRoleToVote == uint(MemberRoles.Role.Member));
+3407	 _majorityVotePerc = 0;
+3408	 _quorumPerc = 0;
+3409	 }
+3410	 _addCategory( _name, _memberRoleToVote, _majorityVotePerc, _quorumPerc, _allowedToCreateProposal, _closingTime, _actionHash, _contractAddress, _contractName, _incentives );
+3411	 if (bytes(_functionHash).length > 0 && abi.encodeWithSignature(_functionHash).length == 4) {
+3412	 categoryActionHashes[allCategory.length - 1] = abi.encodeWithSignature(_functionHash);
+3413	 }
+3414	 }
+3415	 function changeMasterAddress(address _masterAddress) public {
+3416	 if (masterAddress != address(0)) require(masterAddress == msg.sender);
+3417	 masterAddress = _masterAddress;
+3418	 ms = INXMMaster(_masterAddress);
+3419	 nxMasterAddress = _masterAddress;
+3420	 }
+3421	 function updateCategory( uint _categoryId, string memory _name, uint _memberRoleToVote, uint _majorityVotePerc, uint _quorumPerc, uint[] memory _allowedToCreateProposal, uint _closingTime, string memory _actionHash, address _contractAddress, bytes2 _contractName, uint[] memory _incentives ) public {
+3422	 }
+3423	 function editCategory( uint _categoryId, string memory _name, uint _memberRoleToVote, uint _majorityVotePerc, uint _quorumPerc, uint[] memory _allowedToCreateProposal, uint _closingTime, string memory _actionHash, address _contractAddress, bytes2 _contractName, uint[] memory _incentives, string memory _functionHash ) public onlyAuthorizedToGovern {
+3424	 require(_verifyMemberRoles(_memberRoleToVote, _allowedToCreateProposal) == 1, "Invalid Role");
+3425	 require(_quorumPerc <= 100 && _majorityVotePerc <= 100, "Invalid percentage");
+3426	 require((_contractName == "EX" && _contractAddress == address(0)) || bytes(_functionHash).length > 0);
+3427	 require(_incentives[3] <= 1, "Invalid special resolution flag");
+3428	 if (_incentives[3] == 1) {
+3429	 require(_memberRoleToVote == uint(MemberRoles.Role.Member));
+3430	 _majorityVotePerc = 0;
+3431	 _quorumPerc = 0;
+3432	 }
+3433	 delete categoryActionHashes[_categoryId];
+3434	 if (bytes(_functionHash).length > 0 && abi.encodeWithSignature(_functionHash).length == 4) {
+3435	 categoryActionHashes[_categoryId] = abi.encodeWithSignature(_functionHash);
+3436	 }
+3437	 allCategory[_categoryId].memberRoleToVote = _memberRoleToVote;
+3438	 allCategory[_categoryId].majorityVotePerc = _majorityVotePerc;
+3439	 allCategory[_categoryId].closingTime = _closingTime;
+3440	 allCategory[_categoryId].allowedToCreateProposal = _allowedToCreateProposal;
+3441	 allCategory[_categoryId].minStake = _incentives[0];
+3442	 allCategory[_categoryId].quorumPerc = _quorumPerc;
+3443	 categoryActionData[_categoryId].defaultIncentive = _incentives[1];
+3444	 categoryActionData[_categoryId].contractName = _contractName;
+3445	 categoryActionData[_categoryId].contractAddress = _contractAddress;
+3446	 categoryABReq[_categoryId] = _incentives[2];
+3447	 isSpecialResolution[_categoryId] = _incentives[3];
+3448	 emit Category(_categoryId, _name, _actionHash);
+3449	 }
+3450	 function _addCategory( string memory _name, uint _memberRoleToVote, uint _majorityVotePerc, uint _quorumPerc, uint[] memory _allowedToCreateProposal, uint _closingTime, string memory _actionHash, address _contractAddress, bytes2 _contractName, uint[] memory _incentives ) internal {
+3451	 require(_verifyMemberRoles(_memberRoleToVote, _allowedToCreateProposal) == 1, "Invalid Role");
+3452	 allCategory.push( CategoryStruct( _memberRoleToVote, _majorityVotePerc, _quorumPerc, _allowedToCreateProposal, _closingTime, _incentives[0] ) );
+3453	 uint categoryId = allCategory.length - 1;
+3454	 categoryActionData[categoryId] = CategoryAction(_incentives[1], _contractAddress, _contractName);
+3455	 categoryABReq[categoryId] = _incentives[2];
+3456	 isSpecialResolution[categoryId] = _incentives[3];
+3457	 emit Category(categoryId, _name, _actionHash);
+3458	 }
+3459	 function _verifyMemberRoles(uint _memberRoleToVote, uint[] memory _allowedToCreateProposal) internal view returns (uint) {
+3460	 uint totalRoles = mr.totalRoles();
+3461	 if (_memberRoleToVote >= totalRoles) {
+3462	 return 0;
+3463	 }
+3464	 for (uint i = 0; i < _allowedToCreateProposal.length; i++) {
+3465	 if (_allowedToCreateProposal[i] >= totalRoles) {
+3466	 return 0;
+3467	 }
+3468	 }
+3469	 return 1;
+3470	 }
+3471	 }

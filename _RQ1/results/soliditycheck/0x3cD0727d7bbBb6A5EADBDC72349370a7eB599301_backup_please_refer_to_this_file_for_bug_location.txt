@@ -1,0 +1,565 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.7.0;
+3	 contract DSMath {
+4	 uint constant WAD = 10 ** 18;
+5	 uint constant RAY = 10 ** 27;
+6	 function add(uint x, uint y) internal pure returns (uint z) {
+7	 z = SafeMath.add(x, y);
+8	 }
+9	 function sub(uint x, uint y) internal virtual pure returns (uint z) {
+10	 z = SafeMath.sub(x, y);
+11	 }
+12	 function mul(uint x, uint y) internal pure returns (uint z) {
+13	 z = SafeMath.mul(x, y);
+14	 }
+15	 function div(uint x, uint y) internal pure returns (uint z) {
+16	 z = SafeMath.div(x, y);
+17	 }
+18	 function wmul(uint x, uint y) internal pure returns (uint z) {
+19	 z = SafeMath.add(SafeMath.mul(x, y), WAD / 2) / WAD;
+20	 }
+21	 function wdiv(uint x, uint y) internal pure returns (uint z) {
+22	 z = SafeMath.add(SafeMath.mul(x, WAD), y / 2) / y;
+23	 }
+24	 function rdiv(uint x, uint y) internal pure returns (uint z) {
+25	 z = SafeMath.add(SafeMath.mul(x, RAY), y / 2) / y;
+26	 }
+27	 function rmul(uint x, uint y) internal pure returns (uint z) {
+28	 z = SafeMath.add(SafeMath.mul(x, y), RAY / 2) / RAY;
+29	 }
+30	 function toInt(uint x) internal pure returns (int y) {
+31	 y = int(x);
+32	 require(y >= 0, "int-overflow");
+33	 }
+34	 function toRad(uint wad) internal pure returns (uint rad) {
+35	 rad = mul(wad, 10 ** 27);
+36	 }
+37	 }
+38	 pragma solidity ^0.7.0;
+39	 abstract contract Stores {
+40	 address constant internal ethAddr = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+41	 address constant internal wethAddr = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+42	 MemoryInterface constant internal instaMemory = MemoryInterface(0x8a5419CfC711B2343c17a6ABf4B2bAFaBb06957F);
+43	 function getUint(uint getId, uint val) internal returns (uint returnVal) {
+44	 returnVal = getId == 0 ? val : instaMemory.getUint(getId);
+45	 }
+46	 function setUint(uint setId, uint val) virtual internal {
+47	 if (setId != 0) instaMemory.setUint(setId, val);
+48	 }
+49	 }
+50	 pragma solidity ^0.7.0;
+51	 contract Variables {
+52	 struct AaveDataRaw {
+53	 address targetDsa;
+54	 uint[] supplyAmts;
+55	 uint[] variableBorrowAmts;
+56	 uint[] stableBorrowAmts;
+57	 address[] supplyTokens;
+58	 address[] borrowTokens;
+59	 }
+60	 struct AaveData {
+61	 address targetDsa;
+62	 uint[] supplyAmts;
+63	 uint[] borrowAmts;
+64	 address[] supplyTokens;
+65	 address[] borrowTokens;
+66	 }
+67	 uint16 constant internal referralCode = 3228;
+68	 address constant internal polygonReceiver = 0x4A090897f47993C2504144419751D6A91D79AbF4;
+69	 FlashloanInterface constant internal flashloanContract = FlashloanInterface(0xd7e8E6f5deCc5642B77a5dD0e445965B128a585D);
+70	 address constant internal erc20Predicate = 0x40ec5B33f54e0E8A33A975908C5BA1c14e5BbbDf;
+71	 AaveLendingPoolProviderInterface constant internal aaveProvider = AaveLendingPoolProviderInterface(0xB53C1a33016B2DC2fF3653530bfF1848a515c8c5);
+72	 AaveDataProviderInterface constant internal aaveData = AaveDataProviderInterface(0x057835Ad21a177dbdd3090bB1CAE03EaCF78Fc6d);
+73	 AaveOracleInterface constant internal aaveOracle = AaveOracleInterface(0xA50ba011c48153De246E5192C8f9258A2ba79Ca9);
+74	 StateSenderInterface constant internal stateSender = StateSenderInterface(0x28e4F3a7f651294B9564800b2D01f35189A5bFbE);
+75	 IndexInterface public constant instaIndex = IndexInterface(0x2971AdFa57b20E5a416aE5a708A8655A9c74f723);
+76	 RootChainManagerInterface public constant rootChainManager = RootChainManagerInterface(0xA0c68C638235ee32657e8f720a23ceC1bFc77C77);
+77	 uint public safeRatioGap = 800000000000000000;
+78	 uint public fee = 998000000000000000;
+79	 mapping(address => bool) public isSupportedToken;
+80	 address[] public supportedTokens;
+81	 }
+82	 pragma solidity ^0.7.0;
+83	 abstract contract Helpers is DSMath, Stores, Variables {
+84	 using SafeERC20 for IERC20;
+85	 function _paybackBehalfOne(AaveInterface aave, address token, uint amt, uint rateMode, address user) private {
+86	 address _token = token == ethAddr ? wethAddr : token;
+87	 aave.repay(_token, amt, rateMode, user);
+88	 }
+89	 function _PaybackStable( uint _length, AaveInterface aave, address[] memory tokens, uint256[] memory amts, address user ) internal {
+90	 for (uint i = 0; i < _length; i++) {
+91	 if (amts[i] > 0) {
+92	 _paybackBehalfOne(aave, tokens[i], amts[i], 1, user);
+93	 }
+94	 }
+95	 }
+96	 function _PaybackVariable( uint _length, AaveInterface aave, address[] memory tokens, uint256[] memory amts, address user ) internal {
+97	 for (uint i = 0; i < _length; i++) {
+98	 if (amts[i] > 0) {
+99	 _paybackBehalfOne(aave, tokens[i], amts[i], 2, user);
+100	 }
+101	 }
+102	 }
+103	 function _PaybackCalculate( AaveInterface aave, AaveDataRaw memory _data, address sourceDsa ) internal returns ( uint[] memory stableBorrow, uint[] memory variableBorrow, uint[] memory totalBorrow ) {
+104	 uint _len = _data.borrowTokens.length;
+105	 stableBorrow = new uint256[](_len);
+106	 variableBorrow = new uint256[](_len);
+107	 totalBorrow = new uint256[](_len);
+108	 for (uint i = 0; i < _len; i++) {
+109	 require(isSupportedToken[_data.borrowTokens[i]], "token-not-enabled");
+110	 address _token = _data.borrowTokens[i] == ethAddr ? wethAddr : _data.borrowTokens[i];
+111	 _data.borrowTokens[i] = _token;
+112	 ( , uint stableDebt, uint variableDebt, ,,,,, ) = aaveData.getUserReserveData(_token, sourceDsa);
+113	 stableBorrow[i] = _data.stableBorrowAmts[i] == uint(-1) ? stableDebt : _data.stableBorrowAmts[i];
+114	 variableBorrow[i] = _data.variableBorrowAmts[i] == uint(-1) ? variableDebt : _data.variableBorrowAmts[i];
+115	 totalBorrow[i] = add(stableBorrow[i], variableBorrow[i]);
+116	 if (totalBorrow[i] > 0) {
+117	 IERC20(_token).safeApprove(address(aave), totalBorrow[i]);
+118	 }
+119	 aave.borrow(_token, totalBorrow[i], 2, 3288, address(this));
+120	 }
+121	 }
+122	 function _getAtokens( address dsa, address[] memory supplyTokens, uint[] memory supplyAmts ) internal returns ( uint[] memory finalAmts ) {
+123	 finalAmts = new uint256[](supplyTokens.length);
+124	 for (uint i = 0; i < supplyTokens.length; i++) {
+125	 require(isSupportedToken[supplyTokens[i]], "token-not-enabled");
+126	 address _token = supplyTokens[i] == ethAddr ? wethAddr : supplyTokens[i];
+127	 (address _aToken, ,) = aaveData.getReserveTokensAddresses(_token);
+128	 ATokenInterface aTokenContract = ATokenInterface(_aToken);
+129	 uint _finalAmt;
+130	 if (supplyAmts[i] == uint(-1)) {
+131	 _finalAmt = aTokenContract.balanceOf(dsa);
+132	 }
+133	 else {
+134	 _finalAmt = supplyAmts[i];
+135	 }
+136	 require(aTokenContract.transferFrom(dsa, address(this), _finalAmt), "_getAtokens: atokens transfer failed");
+137	 _finalAmt = wmul(_finalAmt, fee);
+138	 finalAmts[i] = _finalAmt;
+139	 }
+140	 }
+141	 function isPositionSafe() internal view returns (bool isOk) {
+142	 AaveInterface aave = AaveInterface(aaveProvider.getLendingPool());
+143	 (,,,,,uint healthFactor) = aave.getUserAccountData(address(this));
+144	 uint minLimit = wdiv(1e18, safeRatioGap);
+145	 isOk = healthFactor > minLimit;
+146	 require(isOk, "position-at-risk");
+147	 }
+148	 function getTokensPrices(address[] memory tokens) internal view returns(uint[] memory tokenPricesInEth) {
+149	 tokenPricesInEth = AavePriceOracle(aaveProvider.getPriceOracle()).getAssetsPrices(tokens);
+150	 }
+151	 function getTokenLt(address[] memory tokens) internal view returns (uint[] memory decimals, uint[] memory tokenLts) {
+152	 uint _len = tokens.length;
+153	 decimals = new uint[](_len);
+154	 tokenLts = new uint[](_len);
+155	 for (uint i = 0; i < _len; i++) {
+156	 (decimals[i],,tokenLts[i],,,,,,,) = aaveData.getReserveConfigurationData(tokens[i]);
+157	 }
+158	 }
+159	 function convertTo18(uint amount, uint decimal) internal pure returns (uint) {
+160	 return amount * (10 ** (18 - decimal));
+161	 }
+162	 function _checkRatio(AaveData memory data) public view {
+163	 uint[] memory supplyTokenPrices = getTokensPrices(data.supplyTokens);
+164	 (uint[] memory supplyDecimals, uint[] memory supplyLts) = getTokenLt(data.supplyTokens);
+165	 uint[] memory borrowTokenPrices = getTokensPrices(data.borrowTokens);
+166	 (uint[] memory borrowDecimals,) = getTokenLt(data.borrowTokens);
+167	 uint netSupply;
+168	 uint netBorrow;
+169	 uint liquidation;
+170	 for (uint i = 0; i < data.supplyTokens.length; i++) {
+171	 uint _amt = wmul(convertTo18(data.supplyAmts[i], supplyDecimals[i]), supplyTokenPrices[i]);
+172	 netSupply += _amt;
+173	 liquidation += (_amt * supplyLts[i]) / 10000;
+174	 }
+175	 for (uint i = 0; i < data.borrowTokens.length; i++) {
+176	 uint _amt = wmul(convertTo18(data.borrowAmts[i], borrowDecimals[i]), borrowTokenPrices[i]);
+177	 netBorrow += _amt;
+178	 }
+179	 uint _dif = wmul(netSupply, sub(1e18, safeRatioGap));
+180	 require(netBorrow < sub(liquidation, _dif), "position-is-risky-to-migrate");
+181	 }
+182	 }
+183	 pragma solidity >=0.7.0;
+184	 contract Events {
+185	 event LogSettle( address[] tokens, uint256[] amts );
+186	 event LogAaveV2Migrate( address indexed user, address indexed targetDsa, address[] supplyTokens, address[] borrowTokens, uint256[] supplyAmts, uint256[] variableBorrowAmts, uint256[] stableBorrowAmts );
+187	 event LogUpdateVariables( uint256 oldFee, uint256 newFee, uint256 oldSafeRatioGap, uint256 newSafeRatioGap );
+188	 event LogAddSupportedTokens( address[] tokens );
+189	 event LogVariablesUpdate(uint _safeRatioGap, uint _fee);
+190	 }
+191	 pragma solidity ^0.7.0;
+192	 contract LiquidityResolver is Helpers, Events {
+193	 using SafeERC20 for IERC20;
+194	 function updateVariables(uint _safeRatioGap, uint _fee) public {
+195	 require(msg.sender == instaIndex.master(), "not-master");
+196	 safeRatioGap = _safeRatioGap;
+197	 fee = _fee;
+198	 emit LogVariablesUpdate(safeRatioGap, fee);
+199	 }
+200	 function addTokenSupport(address[] memory _tokens) public {
+201	 require(msg.sender == instaIndex.master(), "not-master");
+202	 for (uint i = 0; i < supportedTokens.length; i++) {
+203	 delete isSupportedToken[supportedTokens[i]];
+204	 }
+205	 delete supportedTokens;
+206	 for (uint i = 0; i < _tokens.length; i++) {
+207	 require(!isSupportedToken[_tokens[i]], "already-added");
+208	 isSupportedToken[_tokens[i]] = true;
+209	 supportedTokens.push(_tokens[i]);
+210	 }
+211	 emit LogAddSupportedTokens(_tokens);
+212	 }
+213	 function spell(address _target, bytes memory _data) external {
+214	 require(msg.sender == instaIndex.master(), "not-master");
+215	 require(_target != address(0), "target-invalid");
+216	 assembly {
+217	 let succeeded := delegatecall(gas(), _target, add(_data, 0x20), mload(_data), 0, 0) switch iszero(succeeded) case 1 {
+218	 let size := returndatasize() returndatacopy(0x00, 0x00, size) revert(0x00, size) }
+219	 }
+220	 }
+221	 function settle(address[] calldata _tokens, uint[] calldata _amts) external {
+222	 AaveInterface aave = AaveInterface(aaveProvider.getLendingPool());
+223	 for (uint i = 0; i < supportedTokens.length; i++) {
+224	 address _token = supportedTokens[i];
+225	 if (_token == wethAddr) {
+226	 if (address(this).balance > 0) {
+227	 TokenInterface(wethAddr).deposit{
+228	 value: address(this).balance}
+229	 ();
+230	 }
+231	 }
+232	 IERC20 _tokenContract = IERC20(_token);
+233	 uint _tokenBal = _tokenContract.balanceOf(address(this));
+234	 if (_tokenBal > 0) {
+235	 _tokenContract.safeApprove(address(aave), _tokenBal);
+236	 aave.deposit(_token, _tokenBal, address(this), 3288);
+237	 }
+238	 ( uint supplyBal,, uint borrowBal, ,,,,, ) = aaveData.getUserReserveData(_token, address(this));
+239	 if (supplyBal != 0 && borrowBal != 0) {
+240	 if (supplyBal > borrowBal) {
+241	 aave.withdraw(_token, borrowBal, address(this));
+242	 IERC20(_token).safeApprove(address(aave), borrowBal);
+243	 aave.repay(_token, borrowBal, 2, address(this));
+244	 }
+245	 else {
+246	 aave.withdraw(_token, supplyBal, address(this));
+247	 IERC20(_token).safeApprove(address(aave), supplyBal);
+248	 aave.repay(_token, supplyBal, 2, address(this));
+249	 }
+250	 }
+251	 }
+252	 for (uint i = 0; i < _tokens.length; i++) {
+253	 address _token = _tokens[i] == ethAddr ? wethAddr : _tokens[i];
+254	 aave.withdraw(_token, _amts[i], address(this));
+255	 IERC20(_token).safeApprove(erc20Predicate, _amts[i]);
+256	 rootChainManager.depositFor(polygonReceiver, _token, abi.encode(_amts[i]));
+257	 isPositionSafe();
+258	 }
+259	 emit LogSettle(_tokens, _amts);
+260	 }
+261	 }
+262	 contract MigrateResolver is LiquidityResolver {
+263	 using SafeERC20 for IERC20;
+264	 function _migrate( AaveInterface aave, AaveDataRaw memory _data, address sourceDsa ) internal {
+265	 require(_data.supplyTokens.length > 0, "0-length-not-allowed");
+266	 require(_data.targetDsa != address(0), "invalid-address");
+267	 require(_data.supplyTokens.length == _data.supplyAmts.length, "invalid-length");
+268	 require( _data.borrowTokens.length == _data.variableBorrowAmts.length && _data.borrowTokens.length == _data.stableBorrowAmts.length, "invalid-length" );
+269	 for (uint i = 0; i < _data.supplyTokens.length; i++) {
+270	 address _token = _data.supplyTokens[i];
+271	 for (uint j = 0; j < _data.supplyTokens.length; j++) {
+272	 if (j != i) {
+273	 require(j != i, "token-repeated");
+274	 }
+275	 }
+276	 require(_token != ethAddr, "should-be-eth-address");
+277	 }
+278	 for (uint i = 0; i < _data.borrowTokens.length; i++) {
+279	 address _token = _data.borrowTokens[i];
+280	 for (uint j = 0; j < _data.borrowTokens.length; j++) {
+281	 if (j != i) {
+282	 require(j != i, "token-repeated");
+283	 }
+284	 }
+285	 require(_token != ethAddr, "should-be-eth-address");
+286	 }
+287	 (uint[] memory stableBorrows, uint[] memory variableBorrows, uint[] memory totalBorrows) = _PaybackCalculate(aave, _data, sourceDsa);
+288	 _PaybackStable(_data.borrowTokens.length, aave, _data.borrowTokens, stableBorrows, sourceDsa);
+289	 _PaybackVariable(_data.borrowTokens.length, aave, _data.borrowTokens, variableBorrows, sourceDsa);
+290	 (uint[] memory totalSupplies) = _getAtokens(sourceDsa, _data.supplyTokens, _data.supplyAmts);
+291	 AaveData memory data;
+292	 data.borrowTokens = _data.borrowTokens;
+293	 data.supplyAmts = totalSupplies;
+294	 data.supplyTokens = _data.supplyTokens;
+295	 data.targetDsa = _data.targetDsa;
+296	 data.borrowAmts = totalBorrows;
+297	 _checkRatio(data);
+298	 isPositionSafe();
+299	 stateSender.syncState(polygonReceiver, abi.encode(data));
+300	 emit LogAaveV2Migrate( sourceDsa, data.targetDsa, data.supplyTokens, data.borrowTokens, totalSupplies, variableBorrows, stableBorrows );
+301	 }
+302	 function migrateFlashCallback(AaveDataRaw calldata _data, address dsa, uint ethAmt) external {
+303	 require(msg.sender == address(flashloanContract), "not-flashloan-contract");
+304	 AaveInterface aave = AaveInterface(aaveProvider.getLendingPool());
+305	 TokenInterface wethContract = TokenInterface(wethAddr);
+306	 wethContract.approve(address(aave), ethAmt);
+307	 aave.deposit(wethAddr, ethAmt, address(this), 3288);
+308	 _migrate(aave, _data, dsa);
+309	 aave.withdraw(wethAddr, ethAmt, address(this));
+310	 require(wethContract.transfer(address(flashloanContract), ethAmt), "migrateFlashCallback: weth transfer failed to Instapool");
+311	 }
+312	 }
+313	 contract InstaAaveV2MigratorSenderImplementation is MigrateResolver {
+314	 function migrate(AaveDataRaw calldata _data) external {
+315	 AaveInterface aave = AaveInterface(aaveProvider.getLendingPool());
+316	 _migrate(aave, _data, msg.sender);
+317	 }
+318	 function migrateWithFlash(AaveDataRaw calldata _data, uint ethAmt) external {
+319	 bytes memory callbackData = abi.encodeWithSelector(bytes4(this.migrateFlashCallback.selector), _data, msg.sender, ethAmt);
+320	 bytes memory data = abi.encode(callbackData, ethAmt);
+321	 flashloanContract.initiateFlashLoan(data, ethAmt);
+322	 }
+323	 }
+324	 pragma solidity ^0.7.0;
+325	 library SafeERC20 {
+326	 using SafeMath for uint256;
+327	 using Address for address;
+328	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+329	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+330	 }
+331	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+332	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+333	 }
+334	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+335	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+336	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+337	 }
+338	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+339	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+340	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+341	 }
+342	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+343	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+344	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+345	 }
+346	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+347	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+348	 if (returndata.length > 0) {
+349	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+350	 }
+351	 }
+352	 }
+353	 pragma solidity ^0.7.0;
+354	 interface IERC20 {
+355	 function totalSupply() external view returns (uint256);
+356	 function balanceOf(address account) external view returns (uint256);
+357	 function transfer(address recipient, uint256 amount) external returns (bool);
+358	 function allowance(address owner, address spender) external view returns (uint256);
+359	 function approve(address spender, uint256 amount) external returns (bool);
+360	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+361	 event Transfer(address indexed from, address indexed to, uint256 value);
+362	 event Approval(address indexed owner, address indexed spender, uint256 value);
+363	 }
+364	 pragma solidity ^0.7.0;
+365	 interface TokenInterface {
+366	 function approve(address, uint256) external;
+367	 function transfer(address, uint) external returns (bool);
+368	 function transferFrom(address, address, uint) external;
+369	 function deposit() external payable;
+370	 function withdraw(uint) external;
+371	 function balanceOf(address) external view returns (uint);
+372	 function decimals() external view returns (uint);
+373	 }
+374	 interface MemoryInterface {
+375	 function getUint(uint id) external returns (uint num);
+376	 function setUint(uint id, uint val) external;
+377	 }
+378	 interface AccountInterface {
+379	 function enable(address) external;
+380	 function disable(address) external;
+381	 function isAuth(address) external view returns (bool);
+382	 function cast( string[] calldata _targets, bytes[] calldata _datas, address _origin ) external payable returns (bytes32);
+383	 }
+384	 pragma solidity >=0.7.0;
+385	 interface AaveInterface {
+386	 function deposit(address _asset, uint256 _amount, address _onBehalfOf, uint16 _referralCode) external;
+387	 function withdraw(address _asset, uint256 _amount, address _to) external;
+388	 function borrow( address _asset, uint256 _amount, uint256 _interestRateMode, uint16 _referralCode, address _onBehalfOf ) external;
+389	 function repay(address _asset, uint256 _amount, uint256 _rateMode, address _onBehalfOf) external;
+390	 function setUserUseReserveAsCollateral(address _asset, bool _useAsCollateral) external;
+391	 function getUserAccountData(address user) external view returns ( uint256 totalCollateralETH, uint256 totalDebtETH, uint256 availableBorrowsETH, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor );
+392	 }
+393	 interface AaveLendingPoolProviderInterface {
+394	 function getLendingPool() external view returns (address);
+395	 function getPriceOracle() external view returns (address);
+396	 }
+397	 interface AaveDataProviderInterface {
+398	 function getReserveTokensAddresses(address _asset) external view returns ( address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress );
+399	 function getUserReserveData(address _asset, address _user) external view returns ( uint256 currentATokenBalance, uint256 currentStableDebt, uint256 currentVariableDebt, uint256 principalStableDebt, uint256 scaledVariableDebt, uint256 stableBorrowRate, uint256 liquidityRate, uint40 stableRateLastUpdated, bool usageAsCollateralEnabled );
+400	 function getReserveConfigurationData(address asset) external view returns ( uint256 decimals, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus, uint256 reserveFactor, bool usageAsCollateralEnabled, bool borrowingEnabled, bool stableBorrowRateEnabled, bool isActive, bool isFrozen );
+401	 }
+402	 interface AaveAddressProviderRegistryInterface {
+403	 function getAddressesProvidersList() external view returns (address[] memory);
+404	 }
+405	 interface ATokenInterface {
+406	 function scaledBalanceOf(address _user) external view returns (uint256);
+407	 function isTransferAllowed(address _user, uint256 _amount) external view returns (bool);
+408	 function balanceOf(address _user) external view returns(uint256);
+409	 function transferFrom(address, address, uint) external returns (bool);
+410	 function approve(address, uint256) external;
+411	 }
+412	 interface AaveOracleInterface {
+413	 function getAssetPrice(address _asset) external view returns (uint256);
+414	 function getAssetsPrices(address[] calldata _assets) external view returns(uint256[] memory);
+415	 function getSourceOfAsset(address _asset) external view returns(address);
+416	 function getFallbackOracle() external view returns(address);
+417	 }
+418	 interface StateSenderInterface {
+419	 function syncState(address receiver, bytes calldata data) external;
+420	 function register(address sender, address receiver) external;
+421	 }
+422	 interface IndexInterface {
+423	 function master() external view returns (address);
+424	 }
+425	 interface FlashloanInterface {
+426	 function initiateFlashLoan(bytes memory data, uint ethAmt) external;
+427	 }
+428	 interface AavePriceOracle {
+429	 function getAssetPrice(address _asset) external view returns(uint256);
+430	 function getAssetsPrices(address[] calldata _assets) external view returns(uint256[] memory);
+431	 function getSourceOfAsset(address _asset) external view returns(uint256);
+432	 function getFallbackOracle() external view returns(uint256);
+433	 }
+434	 interface ChainLinkInterface {
+435	 function latestAnswer() external view returns (int256);
+436	 function decimals() external view returns (uint256);
+437	 }
+438	 interface RootChainManagerInterface {
+439	 function depositFor(address user, address token, bytes calldata depositData) external;
+440	 }
+441	 pragma solidity ^0.7.0;
+442	 library SafeMath {
+443	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+444	 uint256 c = a + b;
+445	 if (c < a) return (false, 0);
+446	 return (true, c);
+447	 }
+448	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+449	 if (b > a) return (false, 0);
+450	 return (true, a - b);
+451	 }
+452	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+453	 if (a == 0) return (true, 0);
+454	 uint256 c = a * b;
+455	 if (c / a != b) return (false, 0);
+456	 return (true, c);
+457	 }
+458	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+459	 if (b == 0) return (false, 0);
+460	 return (true, a / b);
+461	 }
+462	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+463	 if (b == 0) return (false, 0);
+464	 return (true, a % b);
+465	 }
+466	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+467	 uint256 c = a + b;
+468	 require(c >= a, "SafeMath: addition overflow");
+469	 return c;
+470	 }
+471	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+472	 require(b <= a, "SafeMath: subtraction overflow");
+473	 return a - b;
+474	 }
+475	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+476	 if (a == 0) return 0;
+477	 uint256 c = a * b;
+478	 require(c / a == b, "SafeMath: multiplication overflow");
+479	 return c;
+480	 }
+481	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+482	 require(b > 0, "SafeMath: division by zero");
+483	 return a / b;
+484	 }
+485	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+486	 require(b > 0, "SafeMath: modulo by zero");
+487	 return a % b;
+488	 }
+489	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+490	 require(b <= a, errorMessage);
+491	 return a - b;
+492	 }
+493	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+494	 require(b > 0, errorMessage);
+495	 return a / b;
+496	 }
+497	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+498	 require(b > 0, errorMessage);
+499	 return a % b;
+500	 }
+501	 }
+502	 pragma solidity ^0.7.0;
+503	 library Address {
+504	 function isContract(address account) internal view returns (bool) {
+505	 uint256 size;
+506	 assembly {
+507	 size := extcodesize(account) }
+508	 return size > 0;
+509	 }
+510	 function sendValue(address payable recipient, uint256 amount) internal {
+511	 require(address(this).balance >= amount, "Address: insufficient balance");
+512	 (bool success, ) = recipient.call{
+513	 value: amount }
+514	 ("");
+515	 require(success, "Address: unable to send value, recipient may have reverted");
+516	 }
+517	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+518	 return functionCall(target, data, "Address: low-level call failed");
+519	 }
+520	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+521	 return functionCallWithValue(target, data, 0, errorMessage);
+522	 }
+523	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+524	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+525	 }
+526	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+527	 require(address(this).balance >= value, "Address: insufficient balance for call");
+528	 require(isContract(target), "Address: call to non-contract");
+529	 (bool success, bytes memory returndata) = target.call{
+530	 value: value }
+531	 (data);
+532	 return _verifyCallResult(success, returndata, errorMessage);
+533	 }
+534	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+535	 return functionStaticCall(target, data, "Address: low-level static call failed");
+536	 }
+537	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+538	 require(isContract(target), "Address: static call to non-contract");
+539	 (bool success, bytes memory returndata) = target.staticcall(data);
+540	 return _verifyCallResult(success, returndata, errorMessage);
+541	 }
+542	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+543	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+544	 }
+545	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+546	 require(isContract(target), "Address: delegate call to non-contract");
+547	 (bool success, bytes memory returndata) = target.delegatecall(data);
+548	 return _verifyCallResult(success, returndata, errorMessage);
+549	 }
+550	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+551	 if (success) {
+552	 return returndata;
+553	 }
+554	 else {
+555	 if (returndata.length > 0) {
+556	 assembly {
+557	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+558	 }
+559	 else {
+560	 revert(errorMessage);
+561	 }
+562	 }
+563	 }
+564	 }

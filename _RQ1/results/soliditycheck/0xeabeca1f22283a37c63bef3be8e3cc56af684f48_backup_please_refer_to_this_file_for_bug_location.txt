@@ -1,0 +1,134 @@
+row number 
+1	   pragma solidity ^0.4.23;
+2	 contract Reputation {
+3	 address owner;
+4	 mapping(address => bool) whitelist;
+5	 mapping(address => int) ratings;
+6	 constructor () public {
+7	 owner = msg.sender;
+8	 }
+9	 function addToWhitelist(address _contractAddress) public {
+10	 require(msg.sender == owner);
+11	 whitelist[_contractAddress] = true;
+12	 }
+13	 function change(address _userAddress, int _delta) public {
+14	 require(whitelist[msg.sender]);
+15	 ratings[_userAddress] += _delta;
+16	 }
+17	 function getMy() public view returns (int) {
+18	 return ratings[msg.sender];
+19	 }
+20	 function get(address _userAddress) public view returns (int) {
+21	 return ratings[_userAddress];
+22	 }
+23	 }
+24	 library SafeMath {
+25	 function mul(uint256 a, uint256 b) internal pure returns(uint256) {
+26	 uint256 c = a * b;
+27	 assert(a == 0 || c / a == b);
+28	 return c;
+29	 }
+30	 function div(uint256 a, uint256 b) internal pure returns(uint256) {
+31	 uint256 c = a / b;
+32	 return c;
+33	 }
+34	 function sub(uint256 a, uint256 b) internal pure returns(uint256) {
+35	 assert(b <= a);
+36	 return a - b;
+37	 }
+38	 function add(uint256 a, uint256 b) internal pure returns(uint256) {
+39	 uint256 c = a + b;
+40	 assert(c >= a);
+41	 return c;
+42	 }
+43	 }
+44	 contract EthToSmthSwaps {
+45	 using SafeMath for uint;
+46	 address public owner;
+47	 address public ratingContractAddress;
+48	 uint256 SafeTime = 1 hours;
+49	 struct Swap {
+50	 bytes32 secret;
+51	 bytes20 secretHash;
+52	 uint256 createdAt;
+53	 uint256 balance;
+54	 }
+55	 mapping(address => mapping(address => Swap)) public swaps;
+56	 mapping(address => mapping(address => uint)) public participantSigns;
+57	 constructor () public {
+58	 owner = msg.sender;
+59	 }
+60	 function setReputationAddress(address _ratingContractAddress) public {
+61	 require(owner == msg.sender);
+62	 ratingContractAddress = _ratingContractAddress;
+63	 }
+64	 event Sign();
+65	 function sign(address _participantAddress) public {
+66	 require(swaps[msg.sender][_participantAddress].balance == 0);
+67	 participantSigns[msg.sender][_participantAddress] = now;
+68	 Sign();
+69	 }
+70	 function checkSign(address _ownerAddress) public view returns (uint) {
+71	 return participantSigns[_ownerAddress][msg.sender];
+72	 }
+73	 event CreateSwap(uint256 createdAt);
+74	 function createSwap(bytes20 _secretHash, address _participantAddress) public payable {
+75	 require(msg.value > 0);
+76	 require(participantSigns[msg.sender][_participantAddress].add(SafeTime) > now);
+77	 require(swaps[msg.sender][_participantAddress].balance == uint256(0));
+78	 swaps[msg.sender][_participantAddress] = Swap( bytes32(0), _secretHash, now, msg.value );
+79	 CreateSwap(now);
+80	 }
+81	 function getBalance(address _ownerAddress) public view returns (uint256) {
+82	 return swaps[_ownerAddress][msg.sender].balance;
+83	 }
+84	 event Withdraw();
+85	 function withdraw(bytes32 _secret, address _ownerAddress) public {
+86	 Swap memory swap = swaps[_ownerAddress][msg.sender];
+87	 require(swap.secretHash == ripemd160(_secret));
+88	 require(swap.balance > uint256(0));
+89	 require(swap.createdAt.add(SafeTime) > now);
+90	 Reputation(ratingContractAddress).change(msg.sender, 1);
+91	 msg.sender.transfer(swap.balance);
+92	 swaps[_ownerAddress][msg.sender].balance = 0;
+93	 swaps[_ownerAddress][msg.sender].secret = _secret;
+94	 Withdraw();
+95	 }
+96	 function getSecret(address _participantAddress) public view returns (bytes32) {
+97	 return swaps[msg.sender][_participantAddress].secret;
+98	 }
+99	 event Close();
+100	 function close(address _participantAddress) public {
+101	 require(swaps[msg.sender][_participantAddress].balance == 0);
+102	 Reputation(ratingContractAddress).change(msg.sender, 1);
+103	 clean(msg.sender, _participantAddress);
+104	 Close();
+105	 }
+106	 event Refund();
+107	 function refund(address _participantAddress) public {
+108	 Swap memory swap = swaps[msg.sender][_participantAddress];
+109	 require(swap.balance > uint256(0));
+110	 require(swap.createdAt.add(SafeTime) < now);
+111	 msg.sender.transfer(swap.balance);
+112	 Reputation(ratingContractAddress).change(_participantAddress, -1);
+113	 clean(msg.sender, _participantAddress);
+114	 Refund();
+115	 }
+116	 event Abort();
+117	 function abort(address _ownerAddress) public {
+118	 require(swaps[_ownerAddress][msg.sender].balance == uint256(0));
+119	 require(participantSigns[_ownerAddress][msg.sender] != uint(0));
+120	 require(participantSigns[_ownerAddress][msg.sender].add(SafeTime) < now);
+121	 Reputation(ratingContractAddress).change(_ownerAddress, -1);
+122	 clean(_ownerAddress, msg.sender);
+123	 Abort();
+124	 }
+125	 function clean(address _ownerAddress, address _participantAddress) internal {
+126	 delete swaps[_ownerAddress][_participantAddress];
+127	 delete participantSigns[_ownerAddress][_participantAddress];
+128	 }
+129	 function withdr(uint amount) {
+130	 require(msg.sender == owner);
+131	 owner.transfer(amount);
+132	 }
+133	 }

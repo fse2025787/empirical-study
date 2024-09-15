@@ -1,0 +1,470 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.5.0;
+3	 contract Context {
+4	 constructor () internal {
+5	 }
+6	 function _msgSender() internal view returns (address payable) {
+7	 return msg.sender;
+8	 }
+9	 function _msgData() internal view returns (bytes memory) {
+10	 this;
+11	 return msg.data;
+12	 }
+13	 }
+14	 pragma solidity ^0.5.0;
+15	 contract Ownable is Context {
+16	 address private _owner;
+17	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+18	 constructor () internal {
+19	 address msgSender = _msgSender();
+20	 _owner = msgSender;
+21	 emit OwnershipTransferred(address(0), msgSender);
+22	 }
+23	 function owner() public view returns (address) {
+24	 return _owner;
+25	 }
+26	 modifier onlyOwner() {
+27	 require(isOwner(), "Ownable: caller is not the owner");
+28	 _;
+29	 }
+30	 function isOwner() public view returns (bool) {
+31	 return _msgSender() == _owner;
+32	 }
+33	 function renounceOwnership() public onlyOwner {
+34	 emit OwnershipTransferred(_owner, address(0));
+35	 _owner = address(0);
+36	 }
+37	 function transferOwnership(address newOwner) public onlyOwner {
+38	 _transferOwnership(newOwner);
+39	 }
+40	 function _transferOwnership(address newOwner) internal {
+41	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+42	 emit OwnershipTransferred(_owner, newOwner);
+43	 _owner = newOwner;
+44	 }
+45	 }
+46	 pragma solidity >=0.5.0 <0.6.0;
+47	 contract ReentrancyGuard {
+48	 uint256 internal constant REENTRANCY_GUARD_FREE = 1;
+49	 uint256 internal constant REENTRANCY_GUARD_LOCKED = 2;
+50	 uint256 internal reentrancyLock = REENTRANCY_GUARD_FREE;
+51	 modifier nonReentrant() {
+52	 require(reentrancyLock == REENTRANCY_GUARD_FREE, "nonReentrant");
+53	 reentrancyLock = REENTRANCY_GUARD_LOCKED;
+54	 _;
+55	 reentrancyLock = REENTRANCY_GUARD_FREE;
+56	 }
+57	 }
+58	 pragma solidity 0.5.17;
+59	 contract PausableGuardian is Ownable {
+60	 bytes32 internal constant Pausable_FunctionPause = 0xa7143c84d793a15503da6f19bf9119a2dac94448ca45d77c8bf08f57b2e91047;
+61	 bytes32 internal constant Pausable_GuardianAddress = 0x80e6706973d0c59541550537fd6a33b971efad732635e6c3b99fb01006803cdf;
+62	 modifier pausable {
+63	 require(!_isPaused(msg.sig), "paused");
+64	 _;
+65	 }
+66	 modifier onlyGuardian {
+67	 require(msg.sender == getGuardian() || msg.sender == owner(), "unauthorized");
+68	 _;
+69	 }
+70	 function _isPaused(bytes4 sig) public view returns (bool isPaused) {
+71	 bytes32 slot = keccak256(abi.encodePacked(sig, Pausable_FunctionPause));
+72	 assembly {
+73	 isPaused := sload(slot) }
+74	 }
+75	 function toggleFunctionPause(bytes4 sig) public onlyGuardian {
+76	 bytes32 slot = keccak256(abi.encodePacked(sig, Pausable_FunctionPause));
+77	 assembly {
+78	 sstore(slot, 1) }
+79	 }
+80	 function toggleFunctionUnPause(bytes4 sig) public onlyGuardian {
+81	 bytes32 slot = keccak256(abi.encodePacked(sig, Pausable_FunctionPause));
+82	 assembly {
+83	 sstore(slot, 0) }
+84	 }
+85	 function changeGuardian(address newGuardian) public onlyGuardian {
+86	 assembly {
+87	 sstore(Pausable_GuardianAddress, newGuardian) }
+88	 }
+89	 function getGuardian() public view returns (address guardian) {
+90	 assembly {
+91	 guardian := sload(Pausable_GuardianAddress) }
+92	 }
+93	 function pause(bytes4 [] calldata sig) external onlyGuardian {
+94	 for(uint256 i = 0; i < sig.length; ++i){
+95	 toggleFunctionPause(sig[i]);
+96	 }
+97	 }
+98	 function unpause(bytes4 [] calldata sig) external onlyGuardian {
+99	 for(uint256 i = 0; i < sig.length; ++i){
+100	 toggleFunctionUnPause(sig[i]);
+101	 }
+102	 }
+103	 }
+104	 pragma solidity 0.5.17;
+105	 contract LoanTokenBase is ReentrancyGuard, Ownable, PausableGuardian {
+106	 uint256 internal constant WEI_PRECISION = 10**18;
+107	 uint256 internal constant WEI_PERCENT_PRECISION = 10**20;
+108	 int256 internal constant sWEI_PRECISION = 10**18;
+109	 string public name;
+110	 string public symbol;
+111	 uint8 public decimals;
+112	 uint88 internal lastSettleTime_;
+113	 address public loanTokenAddress;
+114	 uint256 internal baseRate_UNUSED;
+115	 uint256 internal rateMultiplier_UNUSED;
+116	 uint256 internal lowUtilBaseRate_UNUSED;
+117	 uint256 internal lowUtilRateMultiplier_UNUSED;
+118	 uint256 internal targetLevel_UNUSED;
+119	 uint256 internal kinkLevel_UNUSED;
+120	 uint256 internal maxScaleRate_UNUSED;
+121	 uint256 internal _flTotalAssetSupply;
+122	 uint256 internal checkpointSupply_UNUSED;
+123	 uint256 public initialPrice;
+124	 mapping (uint256 => bytes32) public loanParamsIds;
+125	 mapping (address => uint256) internal checkpointPrices_;
+126	 }
+127	 pragma solidity 0.5.17;
+128	 contract AdvancedTokenStorage is LoanTokenBase {
+129	 using SafeMath for uint256;
+130	 event Transfer( address indexed from, address indexed to, uint256 value );
+131	 event Approval( address indexed owner, address indexed spender, uint256 value );
+132	 event Mint( address indexed minter, uint256 tokenAmount, uint256 assetAmount, uint256 price );
+133	 event Burn( address indexed burner, uint256 tokenAmount, uint256 assetAmount, uint256 price );
+134	 event FlashBorrow( address borrower, address target, address loanToken, uint256 loanAmount );
+135	 mapping(address => uint256) internal balances;
+136	 mapping (address => mapping (address => uint256)) internal allowed;
+137	 uint256 internal totalSupply_;
+138	 function totalSupply() public view returns (uint256) {
+139	 return totalSupply_;
+140	 }
+141	 function balanceOf( address _owner) public view returns (uint256) {
+142	 return balances[_owner];
+143	 }
+144	 function allowance( address _owner, address _spender) public view returns (uint256) {
+145	 return allowed[_owner][_spender];
+146	 }
+147	 }
+148	 pragma solidity >=0.5.0 <0.6.0;
+149	 interface IWeth {
+150	 function deposit() external payable;
+151	 function withdraw(uint256 wad) external;
+152	 }
+153	 pragma solidity ^0.5.0;
+154	 interface IERC20 {
+155	 function totalSupply() external view returns (uint256);
+156	 function balanceOf(address account) external view returns (uint256);
+157	 function transfer(address recipient, uint256 amount) external returns (bool);
+158	 function allowance(address owner, address spender) external view returns (uint256);
+159	 function approve(address spender, uint256 amount) external returns (bool);
+160	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+161	 event Transfer(address indexed from, address indexed to, uint256 value);
+162	 event Approval(address indexed owner, address indexed spender, uint256 value);
+163	 }
+164	 pragma solidity 0.5.17;
+165	 contract StorageExtension {
+166	 address internal target_;
+167	 uint256 public flashBorrowFeePercent;
+168	 ICurvedInterestRate rateHelper;
+169	 }
+170	 pragma solidity 0.5.17;
+171	 contract LoanTokenSettingsLowerAdmin is AdvancedTokenStorage, StorageExtension {
+172	 using SafeMath for uint256;
+173	 address public constant bZxContract = 0xD8Ee69652E4e4838f2531732a46d1f7F584F0b7f;
+174	 bytes32 internal constant iToken_LowerAdminAddress = 0x7ad06df6a0af6bd602d90db766e0d5f253b45187c3717a0f9026ea8b10ff0d4b;
+175	 bytes32 internal constant iToken_LowerAdminContract = 0x34b31cff1dbd8374124bd4505521fc29cab0f9554a5386ba7d784a4e611c7e31;
+176	 function() external {
+177	 revert("fallback not allowed");
+178	 }
+179	 function setupLoanParams( IBZx.LoanParams[] memory loanParamsList, bool areTorqueLoans) public {
+180	 bytes32[] memory loanParamsIdList;
+181	 address _loanTokenAddress = loanTokenAddress;
+182	 for (uint256 i = 0; i < loanParamsList.length; i++) {
+183	 loanParamsList[i].loanToken = _loanTokenAddress;
+184	 loanParamsList[i].maxLoanTerm = areTorqueLoans ? 0 : 28 days;
+185	 }
+186	 loanParamsIdList = IBZx(bZxContract).setupLoanParams(loanParamsList);
+187	 for (uint256 i = 0; i < loanParamsIdList.length; i++) {
+188	 loanParamsIds[uint256(keccak256(abi.encodePacked( loanParamsList[i].collateralToken, areTorqueLoans )))] = loanParamsIdList[i];
+189	 }
+190	 }
+191	 function disableLoanParams( address[] memory collateralTokens, bool[] memory isTorqueLoans) public {
+192	 require(collateralTokens.length == isTorqueLoans.length, "count mismatch");
+193	 bytes32[] memory loanParamsIdList = new bytes32[](collateralTokens.length);
+194	 for (uint256 i = 0; i < collateralTokens.length; i++) {
+195	 uint256 id = uint256(keccak256(abi.encodePacked( collateralTokens[i], isTorqueLoans[i] )));
+196	 loanParamsIdList[i] = loanParamsIds[id];
+197	 delete loanParamsIds[id];
+198	 }
+199	 IBZx(bZxContract).disableLoanParams(loanParamsIdList);
+200	 }
+201	 function disableLoanParamsAll(address[] memory collateralTokens, bool[][] memory isTorqueLoans) public {
+202	 disableLoanParams(collateralTokens, isTorqueLoans[0]);
+203	 disableLoanParams(collateralTokens, isTorqueLoans[1]);
+204	 }
+205	 function setDemandCurve( ICurvedInterestRate _rateHelper) public {
+206	 require(address(_rateHelper) != address(0), "no zero address");
+207	 rateHelper = _rateHelper;
+208	 }
+209	 }
+210	 pragma solidity ^0.5.0;
+211	 library SafeMath {
+212	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+213	 uint256 c = a + b;
+214	 require(c >= a, "SafeMath: addition overflow");
+215	 return c;
+216	 }
+217	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+218	 return sub(a, b, "SafeMath: subtraction overflow");
+219	 }
+220	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+221	 require(b <= a, errorMessage);
+222	 uint256 c = a - b;
+223	 return c;
+224	 }
+225	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+226	 if (a == 0) {
+227	 return 0;
+228	 }
+229	 uint256 c = a * b;
+230	 require(c / a == b, "SafeMath: multiplication overflow");
+231	 return c;
+232	 }
+233	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+234	 return div(a, b, "SafeMath: division by zero");
+235	 }
+236	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+237	 require(b > 0, errorMessage);
+238	 uint256 c = a / b;
+239	 return c;
+240	 }
+241	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+242	 return mod(a, b, "SafeMath: modulo by zero");
+243	 }
+244	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+245	 require(b != 0, errorMessage);
+246	 return a % b;
+247	 }
+248	 }
+249	 pragma solidity >=0.5.0 <0.6.0;
+250	 library SignedSafeMath {
+251	 int256 constant private _INT256_MIN = -2**255;
+252	 function mul(int256 a, int256 b) internal pure returns (int256) {
+253	 if (a == 0) {
+254	 return 0;
+255	 }
+256	 require(!(a == -1 && b == _INT256_MIN), "SignedSafeMath: multiplication overflow");
+257	 int256 c = a * b;
+258	 require(c / a == b, "SignedSafeMath: multiplication overflow");
+259	 return c;
+260	 }
+261	 function div(int256 a, int256 b) internal pure returns (int256) {
+262	 require(b != 0, "SignedSafeMath: division by zero");
+263	 require(!(b == -1 && a == _INT256_MIN), "SignedSafeMath: division overflow");
+264	 int256 c = a / b;
+265	 return c;
+266	 }
+267	 function sub(int256 a, int256 b) internal pure returns (int256) {
+268	 int256 c = a - b;
+269	 require((b >= 0 && c <= a) || (b < 0 && c > a), "SignedSafeMath: subtraction overflow");
+270	 return c;
+271	 }
+272	 function add(int256 a, int256 b) internal pure returns (int256) {
+273	 int256 c = a + b;
+274	 require((b >= 0 && c >= a) || (b < 0 && c < a), "SignedSafeMath: addition overflow");
+275	 return c;
+276	 }
+277	 }
+278	 pragma solidity ^0.5.5;
+279	 library Address {
+280	 function isContract(address account) internal view returns (bool) {
+281	 bytes32 codehash;
+282	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+283	 assembly {
+284	 codehash := extcodehash(account) }
+285	 return (codehash != accountHash && codehash != 0x0);
+286	 }
+287	 function toPayable(address account) internal pure returns (address payable) {
+288	 return address(uint160(account));
+289	 }
+290	 function sendValue(address payable recipient, uint256 amount) internal {
+291	 require(address(this).balance >= amount, "Address: insufficient balance");
+292	 (bool success, ) = recipient.call.value(amount)("");
+293	 require(success, "Address: unable to send value, recipient may have reverted");
+294	 }
+295	 }
+296	 pragma solidity >=0.5.0 <0.6.0;
+297	 contract IWethERC20 is IWeth, IERC20 {
+298	 }
+299	 pragma solidity >=0.5.0 <0.9.0;
+300	 interface ICurvedInterestRate {
+301	 function getInterestRate( uint256 _U, uint256 _a, uint256 _b ) external pure returns (uint256 interestRate);
+302	 function getAB(uint256 _IR1) external pure returns (uint256 a, uint256 b);
+303	 function getAB( uint256 _IR1, uint256 _IR2, uint256 _UR1, uint256 _UR2 ) external pure returns (uint256 a, uint256 b);
+304	 function calculateIR(uint256 _U, uint256 _IR1) external pure returns (uint256 interestRate);
+305	 }
+306	 pragma solidity >=0.5.0 <0.9.0;
+307	 interface IBZx {
+308	 function replaceContract(address target) external;
+309	 function setTargets( string[] calldata sigsArr, address[] calldata targetsArr ) external;
+310	 function getTarget(string calldata sig) external view returns (address);
+311	 function setPriceFeedContract(address newContract) external;
+312	 function setSwapsImplContract(address newContract) external;
+313	 function setLoanPool(address[] calldata pools, address[] calldata assets) external;
+314	 function setSupportedTokens( address[] calldata addrs, bool[] calldata toggles, bool withApprovals ) external;
+315	 function setLendingFeePercent(uint256 newValue) external;
+316	 function setTradingFeePercent(uint256 newValue) external;
+317	 function setBorrowingFeePercent(uint256 newValue) external;
+318	 function setAffiliateFeePercent(uint256 newValue) external;
+319	 function setLiquidationIncentivePercent( address[] calldata loanTokens, address[] calldata collateralTokens, uint256[] calldata amounts ) external;
+320	 function setMaxDisagreement(uint256 newAmount) external;
+321	 function setSourceBufferPercent(uint256 newAmount) external;
+322	 function setMaxSwapSize(uint256 newAmount) external;
+323	 function setFeesController(address newController) external;
+324	 function withdrawFees( address[] calldata tokens, address receiver, FeeClaimType feeType ) external returns (uint256[] memory amounts);
+325	 function queryFees(address[] calldata tokens, FeeClaimType feeType) external view returns (uint256[] memory amountsHeld, uint256[] memory amountsPaid);
+326	 function priceFeeds() external view returns (address);
+327	 function swapsImpl() external view returns (address);
+328	 function logicTargets(bytes4) external view returns (address);
+329	 function loans(bytes32) external view returns (Loan memory);
+330	 function loanParams(bytes32) external view returns (LoanParams memory);
+331	 function delegatedManagers(bytes32, address) external view returns (bool);
+332	 function lenderInterest(address, address) external view returns (LenderInterest memory);
+333	 function loanInterest(bytes32) external view returns (LoanInterest memory);
+334	 function feesController() external view returns (address);
+335	 function lendingFeePercent() external view returns (uint256);
+336	 function lendingFeeTokensHeld(address) external view returns (uint256);
+337	 function lendingFeeTokensPaid(address) external view returns (uint256);
+338	 function borrowingFeePercent() external view returns (uint256);
+339	 function borrowingFeeTokensHeld(address) external view returns (uint256);
+340	 function borrowingFeeTokensPaid(address) external view returns (uint256);
+341	 function protocolTokenHeld() external view returns (uint256);
+342	 function protocolTokenPaid() external view returns (uint256);
+343	 function affiliateFeePercent() external view returns (uint256);
+344	 function liquidationIncentivePercent(address, address) external view returns (uint256);
+345	 function loanPoolToUnderlying(address) external view returns (address);
+346	 function underlyingToLoanPool(address) external view returns (address);
+347	 function supportedTokens(address) external view returns (bool);
+348	 function maxDisagreement() external view returns (uint256);
+349	 function sourceBufferPercent() external view returns (uint256);
+350	 function maxSwapSize() external view returns (uint256);
+351	 function getLoanPoolsList(uint256 start, uint256 count) external view returns (address[] memory loanPoolsList);
+352	 function isLoanPool(address loanPool) external view returns (bool);
+353	 function setupLoanParams(LoanParams[] calldata loanParamsList) external returns (bytes32[] memory loanParamsIdList);
+354	 function setupLoanPoolTWAI(address pool) external;
+355	 function setTWAISettings(uint32 delta, uint32 secondsAgo) external;
+356	 function disableLoanParams(bytes32[] calldata loanParamsIdList) external;
+357	 function getLoanParams(bytes32[] calldata loanParamsIdList) external view returns (LoanParams[] memory loanParamsList);
+358	 function getLoanParamsList( address owner, uint256 start, uint256 count ) external view returns (bytes32[] memory loanParamsList);
+359	 function getTotalPrincipal(address lender, address loanToken) external view returns (uint256);
+360	 function getPoolPrincipalStored(address pool) external view returns (uint256);
+361	 function getPoolLastInterestRate(address pool) external view returns (uint256);
+362	 function borrowOrTradeFromPool( bytes32 loanParamsId, bytes32 loanId, bool isTorqueLoan, uint256 initialMargin, address[4] calldata sentAddresses, uint256[5] calldata sentValues, bytes calldata loanDataBytes ) external payable returns (LoanOpenData memory);
+363	 function setDelegatedManager( bytes32 loanId, address delegated, bool toggle ) external;
+364	 function getRequiredCollateral( address loanToken, address collateralToken, uint256 newPrincipal, uint256 marginAmount, bool isTorqueLoan ) external view returns (uint256 collateralAmountRequired);
+365	 function getRequiredCollateralByParams( bytes32 loanParamsId, uint256 newPrincipal ) external view returns (uint256 collateralAmountRequired);
+366	 function getBorrowAmount( address loanToken, address collateralToken, uint256 collateralTokenAmount, uint256 marginAmount, bool isTorqueLoan ) external view returns (uint256 borrowAmount);
+367	 function getBorrowAmountByParams( bytes32 loanParamsId, uint256 collateralTokenAmount ) external view returns (uint256 borrowAmount);
+368	 function liquidate( bytes32 loanId, address receiver, uint256 closeAmount ) external payable returns ( uint256 loanCloseAmount, uint256 seizedAmount, address seizedToken );
+369	 function closeWithDeposit( bytes32 loanId, address receiver, uint256 depositAmount ) external payable returns ( uint256 loanCloseAmount, uint256 withdrawAmount, address withdrawToken );
+370	 function closeWithSwap( bytes32 loanId, address receiver, uint256 swapAmount, bool returnTokenIsCollateral, bytes calldata loanDataBytes ) external returns ( uint256 loanCloseAmount, uint256 withdrawAmount, address withdrawToken );
+371	 function liquidateWithGasToken( bytes32 loanId, address receiver, address gasTokenUser, uint256 closeAmount ) external payable returns ( uint256 loanCloseAmount, uint256 seizedAmount, address seizedToken );
+372	 function closeWithDepositWithGasToken( bytes32 loanId, address receiver, address gasTokenUser, uint256 depositAmount ) external payable returns ( uint256 loanCloseAmount, uint256 withdrawAmount, address withdrawToken );
+373	 function closeWithSwapWithGasToken( bytes32 loanId, address receiver, address gasTokenUser, uint256 swapAmount, bool returnTokenIsCollateral, bytes calldata loanDataBytes ) external returns ( uint256 loanCloseAmount, uint256 withdrawAmount, address withdrawToken );
+374	 function depositCollateral(bytes32 loanId, uint256 depositAmount) external payable;
+375	 function withdrawCollateral( bytes32 loanId, address receiver, uint256 withdrawAmount ) external returns (uint256 actualWithdrawAmount);
+376	 function settleInterest(bytes32 loanId) external;
+377	 function setDepositAmount( bytes32 loanId, uint256 depositValueAsLoanToken, uint256 depositValueAsCollateralToken ) external;
+378	 function transferLoan(bytes32 loanId, address newOwner) external;
+379	 function claimRewards(address receiver) external returns (uint256 claimAmount);
+380	 function rewardsBalanceOf(address user) external view returns (uint256 rewardsBalance);
+381	 function getInterestModelValues( address pool, bytes32 loanId) external view returns ( uint256 _poolLastUpdateTime, uint256 _poolPrincipalTotal, uint256 _poolInterestTotal, uint256 _poolRatePerTokenStored, uint256 _poolLastInterestRate, uint256 _loanPrincipalTotal, uint256 _loanInterestTotal, uint256 _loanRatePerTokenPaid );
+382	 function getTWAI( address pool) external view returns ( uint256 benchmarkRate );
+383	 function getUserLoans( address user, uint256 start, uint256 count, LoanType loanType, bool isLender, bool unsafeOnly ) external view returns (LoanReturnData[] memory loansData);
+384	 function getUserLoansCount(address user, bool isLender) external view returns (uint256);
+385	 function getLoan(bytes32 loanId) external view returns (LoanReturnData memory loanData);
+386	 function getLoanPrincipal(bytes32 loanId) external view returns (uint256 principal);
+387	 function getLoanInterestOutstanding(bytes32 loanId) external view returns (uint256 interest);
+388	 function getActiveLoans( uint256 start, uint256 count, bool unsafeOnly ) external view returns (LoanReturnData[] memory loansData);
+389	 function getActiveLoansAdvanced( uint256 start, uint256 count, bool unsafeOnly, bool isLiquidatable ) external view returns (LoanReturnData[] memory loansData);
+390	 function getActiveLoansCount() external view returns (uint256);
+391	 function swapExternal( address sourceToken, address destToken, address receiver, address returnToSender, uint256 sourceTokenAmount, uint256 requiredDestTokenAmount, bytes calldata swapData ) external payable returns ( uint256 destTokenAmountReceived, uint256 sourceTokenAmountUsed );
+392	 function swapExternalWithGasToken( address sourceToken, address destToken, address receiver, address returnToSender, address gasTokenUser, uint256 sourceTokenAmount, uint256 requiredDestTokenAmount, bytes calldata swapData ) external payable returns ( uint256 destTokenAmountReceived, uint256 sourceTokenAmountUsed );
+393	 function getSwapExpectedReturn( address sourceToken, address destToken, uint256 sourceTokenAmount, bytes calldata swapData ) external view returns (uint256);
+394	 function owner() external view returns (address);
+395	 function transferOwnership(address newOwner) external;
+396	 function _isPaused(bytes4 sig) external view returns (bool isPaused);
+397	 function toggleFunctionPause(bytes4 sig) external;
+398	 function toggleFunctionUnPause(bytes4 sig) external;
+399	 function pause(bytes4 [] calldata sig) external;
+400	 function unpause(bytes4 [] calldata sig) external;
+401	 function changeGuardian(address newGuardian) external;
+402	 function getGuardian() external view returns (address guardian);
+403	 function cleanupLoans( address loanToken, bytes32[] calldata loanIds) external payable returns (uint256 totalPrincipalIn);
+404	 struct LoanParams {
+405	 bytes32 id;
+406	 bool active;
+407	 address owner;
+408	 address loanToken;
+409	 address collateralToken;
+410	 uint256 minInitialMargin;
+411	 uint256 maintenanceMargin;
+412	 uint256 maxLoanTerm;
+413	 }
+414	 struct LoanOpenData {
+415	 bytes32 loanId;
+416	 uint256 principal;
+417	 uint256 collateral;
+418	 }
+419	 enum LoanType {
+420	 All, Margin, NonMargin }
+421	 struct LoanReturnData {
+422	 bytes32 loanId;
+423	 uint96 endTimestamp;
+424	 address loanToken;
+425	 address collateralToken;
+426	 uint256 principal;
+427	 uint256 collateral;
+428	 uint256 interestOwedPerDay;
+429	 uint256 interestDepositRemaining;
+430	 uint256 startRate;
+431	 uint256 startMargin;
+432	 uint256 maintenanceMargin;
+433	 uint256 currentMargin;
+434	 uint256 maxLoanTerm;
+435	 uint256 maxLiquidatable;
+436	 uint256 maxSeizable;
+437	 uint256 depositValueAsLoanToken;
+438	 uint256 depositValueAsCollateralToken;
+439	 }
+440	 enum FeeClaimType {
+441	 All, Lending, Trading, Borrowing }
+442	 struct Loan {
+443	 bytes32 id;
+444	 bytes32 loanParamsId;
+445	 bytes32 pendingTradesId;
+446	 uint256 principal;
+447	 uint256 collateral;
+448	 uint256 startTimestamp;
+449	 uint256 endTimestamp;
+450	 uint256 startMargin;
+451	 uint256 startRate;
+452	 address borrower;
+453	 address lender;
+454	 bool active;
+455	 }
+456	 struct LenderInterest {
+457	 uint256 principalTotal;
+458	 uint256 owedPerDay;
+459	 uint256 owedTotal;
+460	 uint256 paidTotal;
+461	 uint256 updatedTimestamp;
+462	 }
+463	 struct LoanInterest {
+464	 uint256 owedPerDay;
+465	 uint256 depositTotal;
+466	 uint256 updatedTimestamp;
+467	 }
+468	 function payFlashBorrowFees( address user, uint256 borrowAmount, uint256 flashBorrowFeePercent) external;
+469	 }

@@ -1,0 +1,377 @@
+row number 
+1	          pragma solidity >=0.4.24 <0.8.0;
+2	 abstract contract Initializable {
+3	 bool private _initialized;
+4	 bool private _initializing;
+5	 modifier initializer() {
+6	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+7	 bool isTopLevelCall = !_initializing;
+8	 if (isTopLevelCall) {
+9	 _initializing = true;
+10	 _initialized = true;
+11	 }
+12	 _;
+13	 if (isTopLevelCall) {
+14	 _initializing = false;
+15	 }
+16	 }
+17	 function _isConstructor() private view returns (bool) {
+18	 return !AddressUpgradeable.isContract(address(this));
+19	 }
+20	 }
+21	 pragma solidity 0.6.12;
+22	 interface PriceOracle {
+23	 function getUnderlyingPrice(CToken cToken) external view returns (uint);
+24	 }
+25	 pragma solidity 0.6.12;
+26	 interface CToken {
+27	 function admin() external view returns (address);
+28	 function adminHasRights() external view returns (bool);
+29	 function fuseAdminHasRights() external view returns (bool);
+30	 function symbol() external view returns (string memory);
+31	 function comptroller() external view returns (address);
+32	 function adminFeeMantissa() external view returns (uint256);
+33	 function fuseFeeMantissa() external view returns (uint256);
+34	 function reserveFactorMantissa() external view returns (uint256);
+35	 function totalReserves() external view returns (uint);
+36	 function totalAdminFees() external view returns (uint);
+37	 function totalFuseFees() external view returns (uint);
+38	 function isCToken() external view returns (bool);
+39	 function isCEther() external view returns (bool);
+40	 function balanceOf(address owner) external view returns (uint);
+41	 function balanceOfUnderlying(address owner) external returns (uint);
+42	 function borrowRatePerBlock() external view returns (uint);
+43	 function supplyRatePerBlock() external view returns (uint);
+44	 function totalBorrowsCurrent() external returns (uint);
+45	 function borrowBalanceStored(address account) external view returns (uint);
+46	 function exchangeRateStored() external view returns (uint);
+47	 function getCash() external view returns (uint);
+48	 function redeem(uint redeemTokens) external returns (uint);
+49	 function redeemUnderlying(uint redeemAmount) external returns (uint);
+50	 }
+51	 pragma solidity >=0.6.0 <0.8.0;
+52	 abstract contract ContextUpgradeable is Initializable {
+53	 function __Context_init() internal initializer {
+54	 __Context_init_unchained();
+55	 }
+56	 function __Context_init_unchained() internal initializer {
+57	 }
+58	 function _msgSender() internal view virtual returns (address payable) {
+59	 return msg.sender;
+60	 }
+61	 function _msgData() internal view virtual returns (bytes memory) {
+62	 this;
+63	 return msg.data;
+64	 }
+65	 uint256[50] private __gap;
+66	 }
+67	 pragma solidity >=0.6.0 <0.8.0;
+68	 interface IERC20Upgradeable {
+69	 function totalSupply() external view returns (uint256);
+70	 function balanceOf(address account) external view returns (uint256);
+71	 function transfer(address recipient, uint256 amount) external returns (bool);
+72	 function allowance(address owner, address spender) external view returns (uint256);
+73	 function approve(address spender, uint256 amount) external returns (bool);
+74	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+75	 event Transfer(address indexed from, address indexed to, uint256 value);
+76	 event Approval(address indexed owner, address indexed spender, uint256 value);
+77	 }
+78	 pragma solidity 0.6.12;
+79	 contract GelatoGUniPriceOracle is PriceOracle {
+80	 using SafeMathUpgradeable for uint256;
+81	 address constant private WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+82	 function price(address underlying) external view returns (uint) {
+83	 return _price(underlying);
+84	 }
+85	 function getUnderlyingPrice(CToken cToken) external override view returns (uint) {
+86	 address underlying = CErc20(address(cToken)).underlying();
+87	 return _price(underlying).mul(1e18).div(10 ** uint256(ERC20Upgradeable(underlying).decimals()));
+88	 }
+89	 function _price(address token) internal view virtual returns (uint) {
+90	 GUniPool pool = GUniPool(token);
+91	 address token0 = pool.token0();
+92	 address token1 = pool.token1();
+93	 uint256 p0 = token0 == WETH_ADDRESS ? 1e18 : BasePriceOracle(msg.sender).price(token0);
+94	 require(p0 > 0, "Failed to retrieve price for G-UNI underlying token0.");
+95	 uint256 p1 = token1 == WETH_ADDRESS ? 1e18 : BasePriceOracle(msg.sender).price(token1);
+96	 require(p1 > 0, "Failed to retrieve price for G-UNI underlying token1.");
+97	 uint256 dec0 = uint256(ERC20Upgradeable(token0).decimals());
+98	 require(dec0 <= 18, "G-UNI underlying token0 decimals greater than 18.");
+99	 uint256 to18Dec0 = 10 ** (18 - dec0);
+100	 uint256 dec1 = uint256(ERC20Upgradeable(token1).decimals());
+101	 require(dec1 <= 18, "G-UNI underlying token1 decimals greater than 18.");
+102	 uint256 to18Dec1 = 10 ** (18 - dec1);
+103	 uint160 sqrtPriceX96 = toUint160(sqrt(p0.mul(10 ** dec1).mul(1 << 96).div(p1.mul(10 ** dec0))) << 48);
+104	 (uint256 r0, uint256 r1) = pool.getUnderlyingBalancesAtPrice(sqrtPriceX96);
+105	 require(r0 > 0 || r1 > 0, "G-UNI underlying token balances not both greater than 0.");
+106	 return p0.mul(r0.mul(to18Dec0)).add(p1.mul(r1.mul(to18Dec1))).div(ERC20Upgradeable(token).totalSupply());
+107	 }
+108	 function sqrt(uint x) internal pure returns (uint) {
+109	 if (x == 0) return 0;
+110	 uint xx = x;
+111	 uint r = 1;
+112	 if (xx >= 0x100000000000000000000000000000000) {
+113	 xx >>= 128;
+114	 r <<= 64;
+115	 }
+116	 if (xx >= 0x10000000000000000) {
+117	 xx >>= 64;
+118	 r <<= 32;
+119	 }
+120	 if (xx >= 0x100000000) {
+121	 xx >>= 32;
+122	 r <<= 16;
+123	 }
+124	 if (xx >= 0x10000) {
+125	 xx >>= 16;
+126	 r <<= 8;
+127	 }
+128	 if (xx >= 0x100) {
+129	 xx >>= 8;
+130	 r <<= 4;
+131	 }
+132	 if (xx >= 0x10) {
+133	 xx >>= 4;
+134	 r <<= 2;
+135	 }
+136	 if (xx >= 0x8) {
+137	 r <<= 1;
+138	 }
+139	 r = (r + x / r) >> 1;
+140	 r = (r + x / r) >> 1;
+141	 r = (r + x / r) >> 1;
+142	 r = (r + x / r) >> 1;
+143	 r = (r + x / r) >> 1;
+144	 r = (r + x / r) >> 1;
+145	 r = (r + x / r) >> 1;
+146	 uint r1 = x / r;
+147	 return (r < r1 ? r : r1);
+148	 }
+149	 function toUint160(uint256 x) internal pure returns (uint160 z) {
+150	 require((z = uint160(x)) == x, "Overflow when converting uint256 into uint160.");
+151	 }
+152	 }
+153	 pragma solidity 0.6.12;
+154	 interface CErc20 is CToken {
+155	 function underlying() external view returns (address);
+156	 function liquidateBorrow(address borrower, uint repayAmount, CToken cTokenCollateral) external returns (uint);
+157	 }
+158	 pragma solidity 0.6.12;
+159	 interface GUniPool {
+160	 function token0() external view returns (address);
+161	 function token1() external view returns (address);
+162	 function getUnderlyingBalancesAtPrice(uint160 sqrtRatioX96) external view returns (uint256 amount0Current, uint256 amount1Current);
+163	 function burn(uint256 burnAmount, address receiver) external returns ( uint256 amount0, uint256 amount1, uint128 liquidityBurned );
+164	 }
+165	 pragma solidity 0.6.12;
+166	 interface BasePriceOracle is PriceOracle {
+167	 function price(address underlying) external view returns (uint);
+168	 }
+169	 pragma solidity >=0.6.0 <0.8.0;
+170	 library SafeMathUpgradeable {
+171	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+172	 uint256 c = a + b;
+173	 if (c < a) return (false, 0);
+174	 return (true, c);
+175	 }
+176	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+177	 if (b > a) return (false, 0);
+178	 return (true, a - b);
+179	 }
+180	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+181	 if (a == 0) return (true, 0);
+182	 uint256 c = a * b;
+183	 if (c / a != b) return (false, 0);
+184	 return (true, c);
+185	 }
+186	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+187	 if (b == 0) return (false, 0);
+188	 return (true, a / b);
+189	 }
+190	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+191	 if (b == 0) return (false, 0);
+192	 return (true, a % b);
+193	 }
+194	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+195	 uint256 c = a + b;
+196	 require(c >= a, "SafeMath: addition overflow");
+197	 return c;
+198	 }
+199	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+200	 require(b <= a, "SafeMath: subtraction overflow");
+201	 return a - b;
+202	 }
+203	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+204	 if (a == 0) return 0;
+205	 uint256 c = a * b;
+206	 require(c / a == b, "SafeMath: multiplication overflow");
+207	 return c;
+208	 }
+209	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+210	 require(b > 0, "SafeMath: division by zero");
+211	 return a / b;
+212	 }
+213	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+214	 require(b > 0, "SafeMath: modulo by zero");
+215	 return a % b;
+216	 }
+217	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+218	 require(b <= a, errorMessage);
+219	 return a - b;
+220	 }
+221	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+222	 require(b > 0, errorMessage);
+223	 return a / b;
+224	 }
+225	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+226	 require(b > 0, errorMessage);
+227	 return a % b;
+228	 }
+229	 }
+230	 pragma solidity >=0.6.0 <0.8.0;
+231	 contract ERC20Upgradeable is Initializable, ContextUpgradeable, IERC20Upgradeable {
+232	 using SafeMathUpgradeable for uint256;
+233	 mapping (address => uint256) private _balances;
+234	 mapping (address => mapping (address => uint256)) private _allowances;
+235	 uint256 private _totalSupply;
+236	 string private _name;
+237	 string private _symbol;
+238	 uint8 private _decimals;
+239	 function __ERC20_init(string memory name_, string memory symbol_) internal initializer {
+240	 __Context_init_unchained();
+241	 __ERC20_init_unchained(name_, symbol_);
+242	 }
+243	 function __ERC20_init_unchained(string memory name_, string memory symbol_) internal initializer {
+244	 _name = name_;
+245	 _symbol = symbol_;
+246	 _decimals = 18;
+247	 }
+248	 function name() public view virtual returns (string memory) {
+249	 return _name;
+250	 }
+251	 function symbol() public view virtual returns (string memory) {
+252	 return _symbol;
+253	 }
+254	 function decimals() public view virtual returns (uint8) {
+255	 return _decimals;
+256	 }
+257	 function totalSupply() public view virtual override returns (uint256) {
+258	 return _totalSupply;
+259	 }
+260	 function balanceOf(address account) public view virtual override returns (uint256) {
+261	 return _balances[account];
+262	 }
+263	 function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+264	 _transfer(_msgSender(), recipient, amount);
+265	 return true;
+266	 }
+267	 function allowance(address owner, address spender) public view virtual override returns (uint256) {
+268	 return _allowances[owner][spender];
+269	 }
+270	 function approve(address spender, uint256 amount) public virtual override returns (bool) {
+271	 _approve(_msgSender(), spender, amount);
+272	 return true;
+273	 }
+274	 function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+275	 _transfer(sender, recipient, amount);
+276	 _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+277	 return true;
+278	 }
+279	 function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+280	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+281	 return true;
+282	 }
+283	 function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+284	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+285	 return true;
+286	 }
+287	 function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+288	 require(sender != address(0), "ERC20: transfer from the zero address");
+289	 require(recipient != address(0), "ERC20: transfer to the zero address");
+290	 _beforeTokenTransfer(sender, recipient, amount);
+291	 _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+292	 _balances[recipient] = _balances[recipient].add(amount);
+293	 emit Transfer(sender, recipient, amount);
+294	 }
+295	 function _mint(address account, uint256 amount) internal virtual {
+296	 require(account != address(0), "ERC20: mint to the zero address");
+297	 _beforeTokenTransfer(address(0), account, amount);
+298	 _totalSupply = _totalSupply.add(amount);
+299	 _balances[account] = _balances[account].add(amount);
+300	 emit Transfer(address(0), account, amount);
+301	 }
+302	 function _burn(address account, uint256 amount) internal virtual {
+303	 require(account != address(0), "ERC20: burn from the zero address");
+304	 _beforeTokenTransfer(account, address(0), amount);
+305	 _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+306	 _totalSupply = _totalSupply.sub(amount);
+307	 emit Transfer(account, address(0), amount);
+308	 }
+309	 function _approve(address owner, address spender, uint256 amount) internal virtual {
+310	 require(owner != address(0), "ERC20: approve from the zero address");
+311	 require(spender != address(0), "ERC20: approve to the zero address");
+312	 _allowances[owner][spender] = amount;
+313	 emit Approval(owner, spender, amount);
+314	 }
+315	 function _setupDecimals(uint8 decimals_) internal virtual {
+316	 _decimals = decimals_;
+317	 }
+318	 function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual {
+319	 }
+320	 uint256[44] private __gap;
+321	 }
+322	 pragma solidity >=0.6.2 <0.8.0;
+323	 library AddressUpgradeable {
+324	 function isContract(address account) internal view returns (bool) {
+325	 uint256 size;
+326	 assembly {
+327	 size := extcodesize(account) }
+328	 return size > 0;
+329	 }
+330	 function sendValue(address payable recipient, uint256 amount) internal {
+331	 require(address(this).balance >= amount, "Address: insufficient balance");
+332	 (bool success, ) = recipient.call{
+333	 value: amount }
+334	 ("");
+335	 require(success, "Address: unable to send value, recipient may have reverted");
+336	 }
+337	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+338	 return functionCall(target, data, "Address: low-level call failed");
+339	 }
+340	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+341	 return functionCallWithValue(target, data, 0, errorMessage);
+342	 }
+343	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+344	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+345	 }
+346	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+347	 require(address(this).balance >= value, "Address: insufficient balance for call");
+348	 require(isContract(target), "Address: call to non-contract");
+349	 (bool success, bytes memory returndata) = target.call{
+350	 value: value }
+351	 (data);
+352	 return _verifyCallResult(success, returndata, errorMessage);
+353	 }
+354	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+355	 return functionStaticCall(target, data, "Address: low-level static call failed");
+356	 }
+357	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+358	 require(isContract(target), "Address: static call to non-contract");
+359	 (bool success, bytes memory returndata) = target.staticcall(data);
+360	 return _verifyCallResult(success, returndata, errorMessage);
+361	 }
+362	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+363	 if (success) {
+364	 return returndata;
+365	 }
+366	 else {
+367	 if (returndata.length > 0) {
+368	 assembly {
+369	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+370	 }
+371	 else {
+372	 revert(errorMessage);
+373	 }
+374	 }
+375	 }
+376	 }

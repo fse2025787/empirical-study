@@ -1,0 +1,173 @@
+row number 
+1	             pragma solidity >=0.5.15 >=0.6.12;
+2	 contract Auth {
+3	 mapping (address => uint256) public wards;
+4	 event Rely(address indexed usr);
+5	 event Deny(address indexed usr);
+6	 function rely(address usr) external auth {
+7	 wards[usr] = 1;
+8	 emit Rely(usr);
+9	 }
+10	 function deny(address usr) external auth {
+11	 wards[usr] = 0;
+12	 emit Deny(usr);
+13	 }
+14	 modifier auth {
+15	 require(wards[msg.sender] == 1, "not-authorized");
+16	 _;
+17	 }
+18	 }
+19	 contract Math {
+20	 uint256 constant ONE = 10 ** 27;
+21	 function safeAdd(uint x, uint y) public pure returns (uint z) {
+22	 require((z = x + y) >= x, "safe-add-failed");
+23	 }
+24	 function safeSub(uint x, uint y) public pure returns (uint z) {
+25	 require((z = x - y) <= x, "safe-sub-failed");
+26	 }
+27	 function safeMul(uint x, uint y) public pure returns (uint z) {
+28	 require(y == 0 || (z = x * y) / y == x, "safe-mul-failed");
+29	 }
+30	 function safeDiv(uint x, uint y) public pure returns (uint z) {
+31	 z = x / y;
+32	 }
+33	 function rmul(uint x, uint y) public pure returns (uint z) {
+34	 z = safeMul(x, y) / ONE;
+35	 }
+36	 function rdiv(uint x, uint y) public pure returns (uint z) {
+37	 require(y > 0, "division by zero");
+38	 z = safeAdd(safeMul(x, ONE), y / 2) / y;
+39	 }
+40	 function rdivup(uint x, uint y) internal pure returns (uint z) {
+41	 require(y > 0, "division by zero");
+42	 z = safeAdd(safeMul(x, ONE), safeSub(y, 1)) / y;
+43	 }
+44	 }
+45	 interface ERC20Like_2 {
+46	 function balanceOf(address) external view returns (uint256);
+47	 function transferFrom(address, address, uint) external returns (bool);
+48	 function mint(address, uint256) external;
+49	 function burn(address, uint256) external;
+50	 function totalSupply() external view returns (uint256);
+51	 function approve(address, uint) external;
+52	 }
+53	 interface ShelfLike_3 {
+54	 function balanceRequest() external returns (bool requestWant, uint256 amount);
+55	 }
+56	 interface LendingAdapter_2 {
+57	 function remainingCredit() external view returns (uint);
+58	 function draw(uint amount) external;
+59	 function wipe(uint amount) external;
+60	 function debt() external returns(uint);
+61	 function activated() external view returns(bool);
+62	 }
+63	 contract Reserve is Math, Auth {
+64	 ERC20Like_2 public currency;
+65	 ShelfLike_3 public shelf;
+66	 LendingAdapter_2 public lending;
+67	 uint256 public currencyAvailable;
+68	 address pot;
+69	 uint public balance_;
+70	 event File(bytes32 indexed what, uint amount);
+71	 event Depend(bytes32 contractName, address addr);
+72	 constructor(address currency_) {
+73	 currency = ERC20Like_2(currency_);
+74	 pot = address(this);
+75	 currency.approve(pot, type(uint256).max);
+76	 wards[msg.sender] = 1;
+77	 emit Rely(msg.sender);
+78	 }
+79	 function file(bytes32 what, uint amount) public auth {
+80	 if (what == "currencyAvailable") {
+81	 currencyAvailable = amount;
+82	 }
+83	 else revert();
+84	 emit File(what, amount);
+85	 }
+86	 function depend(bytes32 contractName, address addr) public auth {
+87	 if (contractName == "shelf") {
+88	 shelf = ShelfLike_3(addr);
+89	 }
+90	 else if (contractName == "currency") {
+91	 currency = ERC20Like_2(addr);
+92	 if (pot == address(this)) {
+93	 currency.approve(pot, type(uint256).max);
+94	 }
+95	 }
+96	 else if (contractName == "pot") {
+97	 pot = addr;
+98	 }
+99	 else if (contractName == "lending") {
+100	 lending = LendingAdapter_2(addr);
+101	 }
+102	 else revert();
+103	 emit Depend(contractName, addr);
+104	 }
+105	 function totalBalance() public view returns (uint) {
+106	 return balance_;
+107	 }
+108	 function totalBalanceAvailable() public view returns (uint) {
+109	 if(address(lending) == address(0)) {
+110	 return balance_;
+111	 }
+112	 return safeAdd(balance_, lending.remainingCredit());
+113	 }
+114	 function deposit(uint currencyAmount) public auth {
+115	 if(currencyAmount == 0) return;
+116	 _deposit(msg.sender, currencyAmount);
+117	 }
+118	 function hardDeposit(uint currencyAmount) public auth {
+119	 _depositAction(msg.sender, currencyAmount);
+120	 }
+121	 function _depositAction(address usr, uint currencyAmount) internal {
+122	 require(currency.transferFrom(usr, pot, currencyAmount), "reserve-deposit-failed");
+123	 balance_ = safeAdd(balance_, currencyAmount);
+124	 }
+125	 function _deposit(address usr, uint currencyAmount) internal {
+126	 _depositAction(usr, currencyAmount);
+127	 if(address(lending) != address(0) && lending.debt() > 0 && lending.activated()) {
+128	 uint wipeAmount = lending.debt();
+129	 uint available = balance_;
+130	 if(available < wipeAmount) {
+131	 wipeAmount = available;
+132	 }
+133	 lending.wipe(wipeAmount);
+134	 }
+135	 }
+136	 function payout(uint currencyAmount) public auth {
+137	 if(currencyAmount == 0) return;
+138	 _payout(msg.sender, currencyAmount);
+139	 }
+140	 function _payoutAction(address usr, uint currencyAmount) internal {
+141	 require(currency.transferFrom(pot, usr, currencyAmount), "reserve-payout-failed");
+142	 balance_ = safeSub(balance_, currencyAmount);
+143	 }
+144	 function hardPayout(uint currencyAmount) public auth {
+145	 _payoutAction(msg.sender, currencyAmount);
+146	 }
+147	 function _payout(address usr, uint currencyAmount) internal {
+148	 uint reserveBalance = balance_;
+149	 if (currencyAmount > reserveBalance && address(lending) != address(0) && lending.activated()) {
+150	 uint drawAmount = safeSub(currencyAmount, reserveBalance);
+151	 uint left = lending.remainingCredit();
+152	 if(drawAmount > left) {
+153	 drawAmount = left;
+154	 }
+155	 lending.draw(drawAmount);
+156	 }
+157	 _payoutAction(usr, currencyAmount);
+158	 }
+159	 function balance() public {
+160	 (bool requestWant, uint256 currencyAmount) = shelf.balanceRequest();
+161	 if(currencyAmount == 0) {
+162	 return;
+163	 }
+164	 if (requestWant) {
+165	 require( currencyAvailable >= currencyAmount, "not-enough-currency-reserve" );
+166	 currencyAvailable = safeSub(currencyAvailable, currencyAmount);
+167	 _payout(address(shelf), currencyAmount);
+168	 return;
+169	 }
+170	 _deposit(address(shelf), currencyAmount);
+171	 }
+172	 }

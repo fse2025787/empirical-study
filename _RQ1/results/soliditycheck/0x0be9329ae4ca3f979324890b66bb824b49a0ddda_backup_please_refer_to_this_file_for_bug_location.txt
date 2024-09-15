@@ -1,0 +1,572 @@
+row number 
+1	            pragma solidity ^0.6.12;
+2	 interface ERC165 {
+3	 function supportsInterface(bytes4 _interfaceId) external view returns (bool);
+4	 }
+5	 interface ERC721Basic is ERC165 {
+6	 event Transfer( address indexed _from, address indexed _to, uint256 indexed _tokenId );
+7	 event Approval( address indexed _owner, address indexed _approved, uint256 indexed _tokenId );
+8	 event ApprovalForAll( address indexed _owner, address indexed _operator, bool _approved );
+9	 function balanceOf(address _owner) external view returns (uint256 _balance);
+10	 function ownerOf(uint256 _tokenId) external view returns (address _owner);
+11	 function exists(uint256 _tokenId) external view returns (bool _exists);
+12	 function approve(address _to, uint256 _tokenId) external;
+13	 function getApproved(uint256 _tokenId) external view returns (address _operator);
+14	 function setApprovalForAll(address _operator, bool _approved) external;
+15	 function isApprovedForAll(address _owner, address _operator) external view returns (bool);
+16	 function transferFrom(address _from, address _to, uint256 _tokenId) external;
+17	 function safeTransferFrom(address _from, address _to, uint256 _tokenId) external;
+18	 function safeTransferFrom( address _from, address _to, uint256 _tokenId, bytes memory _data ) external;
+19	 }
+20	 interface ERC721Receiver {
+21	 function onERC721Received( address _operator, address _from, uint256 _tokenId, bytes memory _data ) external returns(bytes4);
+22	 }
+23	 library SafeMath {
+24	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+25	 c = a + b;
+26	 require(c >= a);
+27	 }
+28	 function sub(uint256 a, uint256 b) internal pure returns (uint256 c) {
+29	 require(b <= a);
+30	 c = a - b;
+31	 }
+32	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+33	 c = a * b;
+34	 require(a == 0 || c / a == b);
+35	 }
+36	 function div(uint256 a, uint256 b) internal pure returns (uint256 c) {
+37	 require(b > 0);
+38	 c = a / b;
+39	 }
+40	 function max(uint256 a, uint256 b) internal pure returns (uint256 c) {
+41	 c = a >= b ? a : b;
+42	 }
+43	 function min(uint256 a, uint256 b) internal pure returns (uint256 c) {
+44	 c = a <= b ? a : b;
+45	 }
+46	 function mod(uint256 a, uint256 b) internal pure returns (uint256 c) {
+47	 require(b != 0);
+48	 c = a % b;
+49	 }
+50	 }
+51	 library AddressUtils {
+52	 function isContract(address _addr) internal view returns (bool) {
+53	 uint256 size;
+54	 assembly {
+55	 size := extcodesize(_addr) }
+56	 return size > 0;
+57	 }
+58	 }
+59	 contract SupportsInterfaceWithLookup is ERC165 {
+60	 bytes4 public constant InterfaceId_ERC165 = 0x01ffc9a7;
+61	 mapping(bytes4 => bool) internal supportedInterfaces;
+62	 constructor() public {
+63	 _registerInterface(InterfaceId_ERC165);
+64	 }
+65	 function supportsInterface(bytes4 _interfaceId) external override view returns (bool) {
+66	 return supportedInterfaces[_interfaceId];
+67	 }
+68	 function _registerInterface(bytes4 _interfaceId) internal {
+69	 require(_interfaceId != 0xffffffff);
+70	 supportedInterfaces[_interfaceId] = true;
+71	 }
+72	 }
+73	 interface IERC721Enumerable is ERC721Basic {
+74	 function totalSupply() external view returns (uint256);
+75	 }
+76	 contract ERC721BasicToken is SupportsInterfaceWithLookup, ERC721Basic {
+77	 using SafeMath for uint256;
+78	 using AddressUtils for address;
+79	 bytes4 private constant ERC721_RECEIVED = 0x150b7a02;
+80	 bytes4 internal constant InterfaceId_ERC721 = 0x80ac58cd;
+81	 bytes4 internal constant InterfaceId_ERC721Exists = 0x4f558e79;
+82	 bytes4 internal constant InterfaceId_ERC721Enumerable = 0x780e9d63;
+83	 bytes4 internal constant InterfaceId_ERC721Metadata = 0x5b5e139f;
+84	 mapping (uint256 => address) internal tokenOwner;
+85	 mapping (uint256 => address) internal tokenApprovals;
+86	 mapping (address => uint256) internal ownedTokensCount;
+87	 mapping (address => mapping (address => bool)) internal operatorApprovals;
+88	 constructor() public {
+89	 _registerInterface(InterfaceId_ERC721);
+90	 _registerInterface(InterfaceId_ERC721Exists);
+91	 }
+92	 function balanceOf(address _owner) public view override returns (uint256) {
+93	 require(_owner != address(0));
+94	 return ownedTokensCount[_owner];
+95	 }
+96	 function ownerOf(uint256 _tokenId) public view override returns (address) {
+97	 address owner = tokenOwner[_tokenId];
+98	 require(owner != address(0));
+99	 return owner;
+100	 }
+101	 function exists(uint256 _tokenId) public view override returns (bool) {
+102	 address owner = tokenOwner[_tokenId];
+103	 return owner != address(0);
+104	 }
+105	 function approve(address _to, uint256 _tokenId) override public {
+106	 address owner = ownerOf(_tokenId);
+107	 require(_to != owner);
+108	 require(msg.sender == owner || isApprovedForAll(owner, msg.sender));
+109	 tokenApprovals[_tokenId] = _to;
+110	 emit Approval(owner, _to, _tokenId);
+111	 }
+112	 function getApproved(uint256 _tokenId) public view override returns (address) {
+113	 return tokenApprovals[_tokenId];
+114	 }
+115	 function setApprovalForAll(address _to, bool _approved) override public {
+116	 require(_to != msg.sender);
+117	 operatorApprovals[msg.sender][_to] = _approved;
+118	 emit ApprovalForAll(msg.sender, _to, _approved);
+119	 }
+120	 function isApprovedForAll( address _owner, address _operator ) public view override returns (bool) {
+121	 return operatorApprovals[_owner][_operator];
+122	 }
+123	 function transferFrom( address _from, address _to, uint256 _tokenId ) public override {
+124	 require(isApprovedOrOwner(msg.sender, _tokenId));
+125	 require(_from != address(0));
+126	 require(_to != address(0));
+127	 clearApproval(_from, _tokenId);
+128	 removeTokenFrom(_from, _tokenId);
+129	 addTokenTo(_to, _tokenId);
+130	 emit Transfer(_from, _to, _tokenId);
+131	 }
+132	 function safeTransferFrom( address _from, address _to, uint256 _tokenId ) public override {
+133	 safeTransferFrom(_from, _to, _tokenId, "");
+134	 }
+135	 function safeTransferFrom( address _from, address _to, uint256 _tokenId, bytes memory _data ) override public {
+136	 transferFrom(_from, _to, _tokenId);
+137	 require(checkAndCallSafeTransfer(_from, _to, _tokenId, _data));
+138	 }
+139	 function isApprovedOrOwner( address _spender, uint256 _tokenId ) internal view returns (bool) {
+140	 address owner = ownerOf(_tokenId);
+141	 return ( _spender == owner || getApproved(_tokenId) == _spender || isApprovedForAll(owner, _spender) );
+142	 }
+143	 function _mint(address _to, uint256 _tokenId) virtual internal {
+144	 require(_to != address(0));
+145	 addTokenTo(_to, _tokenId);
+146	 emit Transfer(address(0), _to, _tokenId);
+147	 }
+148	 function _burn(address _owner, uint256 _tokenId) virtual internal {
+149	 clearApproval(_owner, _tokenId);
+150	 removeTokenFrom(_owner, _tokenId);
+151	 emit Transfer(_owner, address(0), _tokenId);
+152	 }
+153	 function clearApproval(address _owner, uint256 _tokenId) internal {
+154	 require(ownerOf(_tokenId) == _owner);
+155	 if (tokenApprovals[_tokenId] != address(0)) {
+156	 tokenApprovals[_tokenId] = address(0);
+157	 }
+158	 }
+159	 function addTokenTo(address _to, uint256 _tokenId) virtual internal {
+160	 require(tokenOwner[_tokenId] == address(0));
+161	 tokenOwner[_tokenId] = _to;
+162	 ownedTokensCount[_to] = ownedTokensCount[_to].add(1);
+163	 }
+164	 function removeTokenFrom(address _from, uint256 _tokenId) virtual internal {
+165	 require(ownerOf(_tokenId) == _from);
+166	 ownedTokensCount[_from] = ownedTokensCount[_from].sub(1);
+167	 tokenOwner[_tokenId] = address(0);
+168	 }
+169	 function checkAndCallSafeTransfer( address _from, address _to, uint256 _tokenId, bytes memory _data ) internal returns (bool) {
+170	 if (!_to.isContract()) {
+171	 return true;
+172	 }
+173	 bytes4 retval = ERC721Receiver(_to).onERC721Received( msg.sender, _from, _tokenId, _data);
+174	 return (retval == ERC721_RECEIVED);
+175	 }
+176	 }
+177	 contract Owned {
+178	 address payable public owner;
+179	 address public newOwner;
+180	 bool private initialised;
+181	 event OwnershipTransferred(address indexed from, address indexed to);
+182	 function initOwned(address _owner) internal {
+183	 require(!initialised);
+184	 owner = address(uint160(_owner));
+185	 initialised = true;
+186	 }
+187	 function transferOwnership(address _newOwner) public {
+188	 require(msg.sender == owner);
+189	 newOwner = _newOwner;
+190	 }
+191	 function acceptOwnership() public {
+192	 require(msg.sender == newOwner);
+193	 emit OwnershipTransferred(owner, newOwner);
+194	 owner = address(uint160(newOwner));
+195	 newOwner = address(0);
+196	 }
+197	 modifier onlyOwner() {
+198	 require(owner == msg.sender, "Owned: caller is not the owner");
+199	 _;
+200	 }
+201	 }
+202	 contract MyERC721Metadata is ERC165, ERC721BasicToken, Owned {
+203	 string private _name;
+204	 string private _symbol;
+205	 uint256 public _max_supply;
+206	 mapping(uint256 => string) private _tokenURIs;
+207	 bytes4 private constant _INTERFACE_ID_ERC721_METADATA = 0x5b5e139f;
+208	 string public baseURI = "http: constructor (string memory name, string memory symbol, uint256 maxSupply) public {
+209	 initOwned(msg.sender);
+210	 _name = name;
+211	 _symbol = symbol;
+212	 _max_supply = maxSupply;
+213	 _registerInterface(_INTERFACE_ID_ERC721_METADATA);
+214	 }
+215	 function uintToBytes(uint256 num) internal pure returns (bytes memory b) {
+216	 if (num == 0) {
+217	 b = new bytes(1);
+218	 b[0] = byte(uint8(48));
+219	 }
+220	 else {
+221	 uint256 j = num;
+222	 uint256 length;
+223	 while (j != 0) {
+224	 length++;
+225	 j /= 10;
+226	 }
+227	 b = new bytes(length);
+228	 uint k = length - 1;
+229	 while (num != 0) {
+230	 b[k--] = byte(uint8(48 + num % 10));
+231	 num /= 10;
+232	 }
+233	 }
+234	 }
+235	 function setBaseURI(string memory uri) public onlyOwner {
+236	 baseURI = uri;
+237	 }
+238	 function name() external view returns (string memory) {
+239	 return _name;
+240	 }
+241	 function symbol() external view returns (string memory) {
+242	 return _symbol;
+243	 }
+244	 function maxSupply() external view returns (uint256) {
+245	 return _max_supply;
+246	 }
+247	 function tokenURI(uint256 tokenId) external view returns (string memory) {
+248	 require(exists(tokenId), "ERC721Metadata: URI query for nonexistent token");
+249	 string memory url = _tokenURIs[tokenId];
+250	 bytes memory urlAsBytes = bytes(url);
+251	 if (urlAsBytes.length == 0) {
+252	 bytes memory baseURIAsBytes = bytes(baseURI);
+253	 bytes memory tokenIdAsBytes = uintToBytes(tokenId);
+254	 bytes memory b = new bytes(baseURIAsBytes.length + tokenIdAsBytes.length);
+255	 uint256 i;
+256	 uint256 j;
+257	 for (i = 0; i < baseURIAsBytes.length; i++) {
+258	 b[j++] = baseURIAsBytes[i];
+259	 }
+260	 for (i = 0; i < tokenIdAsBytes.length; i++) {
+261	 b[j++] = tokenIdAsBytes[i];
+262	 }
+263	 return string(b);
+264	 }
+265	 else {
+266	 return _tokenURIs[tokenId];
+267	 }
+268	 }
+269	 function _setTokenURI(uint256 tokenId, string memory uri) internal {
+270	 require(exists(tokenId), "ERC721Metadata: URI set of nonexistent token");
+271	 _tokenURIs[tokenId] = uri;
+272	 }
+273	 function _burn(address owner, uint256 tokenId) override internal {
+274	 super._burn(owner,tokenId);
+275	 if (bytes(_tokenURIs[tokenId]).length != 0) {
+276	 delete _tokenURIs[tokenId];
+277	 }
+278	 }
+279	 }
+280	 library Accounts {
+281	 struct Account {
+282	 uint timestamp;
+283	 uint index;
+284	 address account;
+285	 }
+286	 struct Data {
+287	 bool initialised;
+288	 mapping(address => Account) entries;
+289	 address[] index;
+290	 }
+291	 event AccountAdded(address owner, address account, uint totalAfter);
+292	 event AccountRemoved(address owner, address account, uint totalAfter);
+293	 function init(Data storage self) internal {
+294	 require(!self.initialised);
+295	 self.initialised = true;
+296	 }
+297	 function hasKey(Data storage self, address account) internal view returns (bool) {
+298	 return self.entries[account].timestamp > 0;
+299	 }
+300	 function add(Data storage self, address owner, address account) internal {
+301	 require(self.entries[account].timestamp == 0);
+302	 self.index.push(account);
+303	 self.entries[account] = Account(block.timestamp, self.index.length - 1, account);
+304	 emit AccountAdded(owner, account, self.index.length);
+305	 }
+306	 function remove(Data storage self, address owner, address account) internal {
+307	 require(self.entries[account].timestamp > 0);
+308	 uint removeIndex = self.entries[account].index;
+309	 emit AccountRemoved(owner, account, self.index.length - 1);
+310	 uint lastIndex = self.index.length - 1;
+311	 address lastIndexKey = self.index[lastIndex];
+312	 self.index[removeIndex] = lastIndexKey;
+313	 self.entries[lastIndexKey].index = removeIndex;
+314	 delete self.entries[account];
+315	 if (self.index.length > 0) {
+316	 self.index.pop();
+317	 }
+318	 }
+319	 function removeAll(Data storage self, address owner) internal {
+320	 if (self.initialised) {
+321	 while (self.index.length > 0) {
+322	 uint lastIndex = self.index.length - 1;
+323	 address lastIndexKey = self.index[lastIndex];
+324	 emit AccountRemoved(owner, lastIndexKey, lastIndex);
+325	 delete self.entries[lastIndexKey];
+326	 self.index.pop();
+327	 }
+328	 }
+329	 }
+330	 function length(Data storage self) internal view returns (uint) {
+331	 return self.index.length;
+332	 }
+333	 }
+334	 library Attributes {
+335	 struct Value {
+336	 uint timestamp;
+337	 uint index;
+338	 string value;
+339	 }
+340	 struct Data {
+341	 bool initialised;
+342	 mapping(string => Value) entries;
+343	 string[] index;
+344	 }
+345	 event AttributeAdded(uint256 indexed tokenId, string key, string value, uint totalAfter);
+346	 event AttributeRemoved(uint256 indexed tokenId, string key, uint totalAfter);
+347	 event AttributeUpdated(uint256 indexed tokenId, string key, string value);
+348	 function init(Data storage self) internal {
+349	 require(!self.initialised);
+350	 self.initialised = true;
+351	 }
+352	 function hasKey(Data storage self, string memory key) internal view returns (bool) {
+353	 return self.entries[key].timestamp > 0;
+354	 }
+355	 function add(Data storage self, uint256 tokenId, string memory key, string memory value) internal {
+356	 require(self.entries[key].timestamp == 0);
+357	 self.index.push(key);
+358	 self.entries[key] = Value(block.timestamp, self.index.length - 1, value);
+359	 emit AttributeAdded(tokenId, key, value, self.index.length);
+360	 }
+361	 function remove(Data storage self, uint256 tokenId, string memory key) internal {
+362	 require(self.entries[key].timestamp > 0);
+363	 uint removeIndex = self.entries[key].index;
+364	 emit AttributeRemoved(tokenId, key, self.index.length - 1);
+365	 uint lastIndex = self.index.length - 1;
+366	 string memory lastIndexKey = self.index[lastIndex];
+367	 self.index[removeIndex] = lastIndexKey;
+368	 self.entries[lastIndexKey].index = removeIndex;
+369	 delete self.entries[key];
+370	 if (self.index.length > 0) {
+371	 self.index.pop();
+372	 }
+373	 }
+374	 function removeAll(Data storage self, uint256 tokenId) internal {
+375	 if (self.initialised) {
+376	 while (self.index.length > 0) {
+377	 uint lastIndex = self.index.length - 1;
+378	 string memory lastIndexKey = self.index[lastIndex];
+379	 emit AttributeRemoved(tokenId, lastIndexKey, lastIndex);
+380	 delete self.entries[lastIndexKey];
+381	 self.index.pop();
+382	 }
+383	 }
+384	 }
+385	 function setValue(Data storage self, uint256 tokenId, string memory key, string memory value) internal {
+386	 Value storage _value = self.entries[key];
+387	 require(_value.timestamp > 0);
+388	 _value.timestamp = block.timestamp;
+389	 emit AttributeUpdated(tokenId, key, value);
+390	 _value.value = value;
+391	 }
+392	 function length(Data storage self) internal view returns (uint) {
+393	 return self.index.length;
+394	 }
+395	 }
+396	 library Counters {
+397	 using SafeMath for uint256;
+398	 struct Counter {
+399	 uint256 _value;
+400	 }
+401	 function current(Counter storage counter) internal view returns (uint256) {
+402	 return counter._value;
+403	 }
+404	 function increment(Counter storage counter) internal {
+405	 counter._value += 1;
+406	 }
+407	 function decrement(Counter storage counter) internal {
+408	 counter._value = counter._value.sub(1);
+409	 }
+410	 }
+411	 contract MetaCultureNFT is MyERC721Metadata,IERC721Enumerable {
+412	 using Attributes for Attributes.Data;
+413	 using Attributes for Attributes.Value;
+414	 using Counters for Counters.Counter;
+415	 using Accounts for Accounts.Data;
+416	 using Accounts for Accounts.Account;
+417	 string public constant TYPE_KEY = "type";
+418	 string public constant SUBTYPE_KEY = "subtype";
+419	 string public constant NAME_KEY = "name";
+420	 string public constant DESCRIPTION_KEY = "description";
+421	 string public constant TAGS_KEY = "tags";
+422	 mapping(uint256 => Attributes.Data) private attributesByTokenIds;
+423	 Counters.Counter private _tokenIds;
+424	 mapping(address => Accounts.Data) private secondaryAccounts;
+425	 event AttributeAdded(uint256 indexed tokenId, string key, string value, uint totalAfter);
+426	 event AttributeRemoved(uint256 indexed tokenId, string key, uint totalAfter);
+427	 event AttributeUpdated(uint256 indexed tokenId, string key, string value);
+428	 event AccountAdded(address owner, address account, uint totalAfter);
+429	 event AccountRemoved(address owner, address account, uint totalAfter);
+430	 constructor() MyERC721Metadata("MetaCulture", "MTC", 10000000) public {
+431	 }
+432	 function mint(address _to,uint256 amount) public returns (uint256) {
+433	 require(_tokenIds.current() + amount < _max_supply, "maximum quantity reached");
+434	 require(amount > 0, "You must buy at least one .");
+435	 uint256 newTokenId = 1;
+436	 for (uint256 i = 0; i < amount; i++) {
+437	 _tokenIds.increment();
+438	 newTokenId = _tokenIds.current();
+439	 _mint(_to, newTokenId);
+440	 Attributes.Data storage attributes = attributesByTokenIds[newTokenId];
+441	 attributes.init();
+442	 }
+443	 return newTokenId;
+444	 }
+445	 function burn(uint256 tokenId) public {
+446	 _burn(msg.sender, tokenId);
+447	 Attributes.Data storage attributes = attributesByTokenIds[tokenId];
+448	 if (attributes.initialised) {
+449	 attributes.removeAll(tokenId);
+450	 delete attributesByTokenIds[tokenId];
+451	 }
+452	 }
+453	 function numberOfAttributes(uint256 tokenId) public view returns (uint) {
+454	 Attributes.Data storage attributes = attributesByTokenIds[tokenId];
+455	 if (!attributes.initialised) {
+456	 return 0;
+457	 }
+458	 else {
+459	 return attributes.length();
+460	 }
+461	 }
+462	 function getKey(uint256 tokenId, uint _index) public view returns (string memory) {
+463	 Attributes.Data storage attributes = attributesByTokenIds[tokenId];
+464	 if (attributes.initialised) {
+465	 if (_index < attributes.index.length) {
+466	 return attributes.index[_index];
+467	 }
+468	 }
+469	 return "";
+470	 }
+471	 function getValue(uint256 tokenId, string memory key) public view returns (uint _exists, uint _index, string memory _value) {
+472	 Attributes.Data storage attributes = attributesByTokenIds[tokenId];
+473	 if (!attributes.initialised) {
+474	 return (0, 0, "");
+475	 }
+476	 else {
+477	 Attributes.Value memory attribute = attributes.entries[key];
+478	 return (attribute.timestamp, attribute.index, attribute.value);
+479	 }
+480	 }
+481	 function getAttributeByIndex(uint256 tokenId, uint256 _index) public view returns (string memory _key, string memory _value, uint timestamp) {
+482	 Attributes.Data storage attributes = attributesByTokenIds[tokenId];
+483	 if (attributes.initialised) {
+484	 if (_index < attributes.index.length) {
+485	 string memory key = attributes.index[_index];
+486	 bytes memory keyInBytes = bytes(key);
+487	 if (keyInBytes.length > 0) {
+488	 Attributes.Value memory attribute = attributes.entries[key];
+489	 return (key, attribute.value, attribute.timestamp);
+490	 }
+491	 }
+492	 }
+493	 return ("", "", 0);
+494	 }
+495	 function addAttribute(uint256 tokenId, string memory key, string memory value) public {
+496	 require(isOwnerOf(tokenId, msg.sender), "DreamChannelNFT: add attribute of token that is not own");
+497	 require(keccak256(abi.encodePacked(key)) != keccak256(abi.encodePacked(TYPE_KEY)));
+498	 Attributes.Data storage attributes = attributesByTokenIds[tokenId];
+499	 if (!attributes.initialised) {
+500	 attributes.init();
+501	 }
+502	 require(attributes.entries[key].timestamp == 0);
+503	 attributes.add(tokenId, key, value);
+504	 }
+505	 function setAttribute(uint256 tokenId, string memory key, string memory value) public {
+506	 require(isOwnerOf(tokenId, msg.sender), "DreamChannelNFT: set attribute of token that is not own");
+507	 require(keccak256(abi.encodePacked(key)) != keccak256(abi.encodePacked(TYPE_KEY)));
+508	 Attributes.Data storage attributes = attributesByTokenIds[tokenId];
+509	 if (!attributes.initialised) {
+510	 attributes.init();
+511	 }
+512	 if (attributes.entries[key].timestamp > 0) {
+513	 attributes.setValue(tokenId, key, value);
+514	 }
+515	 else {
+516	 attributes.add(tokenId, key, value);
+517	 }
+518	 }
+519	 function removeAttribute(uint256 tokenId, string memory key) public {
+520	 require(isOwnerOf(tokenId, msg.sender), "DreamChannelNFT: remove attribute of token that is not own");
+521	 require(keccak256(abi.encodePacked(key)) != keccak256(abi.encodePacked(TYPE_KEY)));
+522	 Attributes.Data storage attributes = attributesByTokenIds[tokenId];
+523	 require(attributes.initialised);
+524	 attributes.remove(tokenId, key);
+525	 }
+526	 function updateAttribute(uint256 tokenId, string memory key, string memory value) public {
+527	 require(isOwnerOf(tokenId, msg.sender), "DreamChannelNFT: update attribute of token that is not own");
+528	 require(keccak256(abi.encodePacked(key)) != keccak256(abi.encodePacked(TYPE_KEY)));
+529	 Attributes.Data storage attributes = attributesByTokenIds[tokenId];
+530	 require(attributes.initialised);
+531	 require(attributes.entries[key].timestamp > 0);
+532	 attributes.setValue(tokenId, key, value);
+533	 }
+534	 function isOwnerOf(uint tokenId, address account) public view returns (bool) {
+535	 address owner = ownerOf(tokenId);
+536	 if (owner == account) {
+537	 return true;
+538	 }
+539	 else {
+540	 Accounts.Data storage accounts = secondaryAccounts[owner];
+541	 if (accounts.initialised) {
+542	 if (accounts.hasKey(account)) {
+543	 return true;
+544	 }
+545	 }
+546	 }
+547	 return false;
+548	 }
+549	 function addSecondaryAccount(address account) public {
+550	 require(account != address(0), "DreamChannelNFT: cannot add null secondary account");
+551	 Accounts.Data storage accounts = secondaryAccounts[msg.sender];
+552	 if (!accounts.initialised) {
+553	 accounts.init();
+554	 }
+555	 require(accounts.entries[account].timestamp == 0);
+556	 accounts.add(msg.sender, account);
+557	 }
+558	 function removeSecondaryAccount(address account) public {
+559	 require(account != address(0), "DreamChannelNFT: cannot remove null secondary account");
+560	 Accounts.Data storage accounts = secondaryAccounts[msg.sender];
+561	 require(accounts.initialised);
+562	 accounts.remove(msg.sender, account);
+563	 }
+564	 function setTokenURI(uint256 tokenId, string memory _tokenURI) public{
+565	 require(isOwnerOf(tokenId, msg.sender), "DreamChannelNFT: set Token URI of token that is not own");
+566	 _setTokenURI(tokenId, _tokenURI);
+567	 }
+568	 function totalSupply() public view virtual override returns (uint256) {
+569	 return _tokenIds.current();
+570	 }
+571	 }

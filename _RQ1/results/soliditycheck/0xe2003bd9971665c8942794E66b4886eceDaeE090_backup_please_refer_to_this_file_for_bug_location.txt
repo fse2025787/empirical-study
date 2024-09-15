@@ -1,0 +1,438 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity >=0.6.0 <0.8.0;
+3	 interface IERC20 {
+4	 function totalSupply() external view returns (uint256);
+5	 function balanceOf(address account) external view returns (uint256);
+6	 function transfer(address recipient, uint256 amount) external returns (bool);
+7	 function allowance(address owner, address spender) external view returns (uint256);
+8	 function approve(address spender, uint256 amount) external returns (bool);
+9	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+10	 event Transfer(address indexed from, address indexed to, uint256 value);
+11	 event Approval(address indexed owner, address indexed spender, uint256 value);
+12	 }
+13	 pragma solidity >=0.6.0 <0.8.0;
+14	 abstract contract Context {
+15	 function _msgSender() internal view virtual returns (address payable) {
+16	 return msg.sender;
+17	 }
+18	 function _msgData() internal view virtual returns (bytes memory) {
+19	 this;
+20	 return msg.data;
+21	 }
+22	 }
+23	 pragma solidity ^0.7.3;
+24	 library ZapLib {
+25	 using SafeMath for uint256;
+26	 using SafeERC20 for IERC20;
+27	 struct ZapData {
+28	 address curve;
+29	 address base;
+30	 address quote;
+31	 uint256 zapAmount;
+32	 uint256 curveBaseBal;
+33	 uint8 curveBaseDecimals;
+34	 uint256 curveQuoteBal;
+35	 }
+36	 struct DepositData {
+37	 address curve;
+38	 address base;
+39	 address quote;
+40	 uint256 curBaseAmount;
+41	 uint256 curQuoteAmount;
+42	 uint256 maxBaseAmount;
+43	 uint256 maxQuoteAmount;
+44	 }
+45	 function zap( address _curve, uint256 _zapAmount, uint256 _deadline, uint256 _minLPAmount, bool isFromBase ) public {
+46	 address base = ICurve(_curve).reserves(0);
+47	 address quote = ICurve(_curve).reserves(1);
+48	 uint256 swapAmount = calcSwapAmountForZap( _curve, base, quote, _zapAmount, isFromBase );
+49	 if (isFromBase) {
+50	 IERC20(base).safeTransferFrom( msg.sender, address(this), _zapAmount );
+51	 IERC20(base).safeApprove(_curve, 0);
+52	 IERC20(base).safeApprove(_curve, swapAmount);
+53	 ICurve(_curve).originSwap(base, quote, swapAmount, 0, _deadline);
+54	 }
+55	 else {
+56	 IERC20(quote).safeTransferFrom( msg.sender, address(this), _zapAmount );
+57	 IERC20(quote).safeApprove(_curve, 0);
+58	 IERC20(quote).safeApprove(_curve, swapAmount);
+59	 ICurve(_curve).originSwap(quote, base, swapAmount, 0, _deadline);
+60	 }
+61	 uint256 baseAmount = IERC20(base).balanceOf(address(this));
+62	 uint256 quoteAmount = IERC20(quote).balanceOf(address(this));
+63	 (uint256 depositAmount, , ) = _calcDepositAmount( DepositData({
+64	 curve: _curve, base: base, quote: quote, curBaseAmount: baseAmount, curQuoteAmount: quoteAmount, maxBaseAmount: baseAmount, maxQuoteAmount: quoteAmount }
+65	 ) );
+66	 IERC20(base).safeApprove(_curve, 0);
+67	 IERC20(base).safeApprove(_curve, baseAmount);
+68	 IERC20(quote).safeApprove(_curve, 0);
+69	 IERC20(quote).safeApprove(_curve, quoteAmount);
+70	 (uint256 lpAmount, ) = ICurve(_curve).deposit(depositAmount, _deadline);
+71	 require(lpAmount >= _minLPAmount, "ZapLib/not-enough-lp-amount");
+72	 }
+73	 function calcSwapAmountForZap( address _curve, address _base, address _quote, uint256 _zapAmount, bool isFromBase ) public view returns (uint256) {
+74	 uint256 curveBaseBal = IERC20(_base).balanceOf(_curve);
+75	 uint8 curveBaseDecimals = ERC20(_base).decimals();
+76	 uint256 curveQuoteBal = IERC20(_quote).balanceOf(_curve);
+77	 uint256 initialSwapAmount = _zapAmount.div(2);
+78	 if (isFromBase) {
+79	 return ( _calcBaseSwapAmount( initialSwapAmount, ZapData({
+80	 curve: _curve, base: _base, quote: _quote, zapAmount: _zapAmount, curveBaseBal: curveBaseBal, curveBaseDecimals: curveBaseDecimals, curveQuoteBal: curveQuoteBal }
+81	 ) ) );
+82	 }
+83	 return ( _calcQuoteSwapAmount( initialSwapAmount, ZapData({
+84	 curve: _curve, base: _base, quote: _quote, zapAmount: _zapAmount, curveBaseBal: curveBaseBal, curveBaseDecimals: curveBaseDecimals, curveQuoteBal: curveQuoteBal }
+85	 ) ) );
+86	 }
+87	 function _calcQuoteSwapAmount( uint256 initialSwapAmount, ZapData memory zapData ) public view returns (uint256) {
+88	 uint256 swapAmount = initialSwapAmount;
+89	 uint256 delta = initialSwapAmount.div(2);
+90	 uint256 recvAmount;
+91	 uint256 curveRatio;
+92	 uint256 userRatio;
+93	 for (uint256 i = 0; i < 32; i++) {
+94	 recvAmount = ICurve(zapData.curve).viewOriginSwap( zapData.quote, zapData.base, swapAmount );
+95	 userRatio = recvAmount .mul(10**(36 - uint256(zapData.curveBaseDecimals))) .div(zapData.zapAmount.sub(swapAmount).mul(1e12));
+96	 curveRatio = zapData .curveBaseBal .sub(recvAmount) .mul(10**(36 - uint256(zapData.curveBaseDecimals))) .div(zapData.curveQuoteBal.add(swapAmount).mul(1e12));
+97	 if (userRatio.div(1e16) == curveRatio.div(1e16)) {
+98	 return swapAmount;
+99	 }
+100	 else if (userRatio > curveRatio) {
+101	 swapAmount = swapAmount.sub(delta);
+102	 }
+103	 else if (userRatio < curveRatio) {
+104	 swapAmount = swapAmount.add(delta);
+105	 }
+106	 if (swapAmount > zapData.zapAmount) {
+107	 swapAmount = zapData.zapAmount - 1;
+108	 }
+109	 delta = delta.div(2);
+110	 }
+111	 revert("ZapLib/not-converging");
+112	 }
+113	 function _calcBaseSwapAmount( uint256 initialSwapAmount, ZapData memory zapData ) public view returns (uint256) {
+114	 uint256 swapAmount = initialSwapAmount;
+115	 uint256 delta = initialSwapAmount.div(2);
+116	 uint256 recvAmount;
+117	 uint256 curveRatio;
+118	 uint256 userRatio;
+119	 for (uint256 i = 0; i < 32; i++) {
+120	 recvAmount = ICurve(zapData.curve).viewOriginSwap( zapData.base, zapData.quote, swapAmount );
+121	 userRatio = zapData .zapAmount .sub(swapAmount) .mul(10**(36 - uint256(zapData.curveBaseDecimals))) .div(recvAmount.mul(1e12));
+122	 curveRatio = zapData .curveBaseBal .add(swapAmount) .mul(10**(36 - uint256(zapData.curveBaseDecimals))) .div(zapData.curveQuoteBal.sub(recvAmount).mul(1e12));
+123	 if (userRatio.div(1e16) == curveRatio.div(1e16)) {
+124	 return swapAmount;
+125	 }
+126	 else if (userRatio > curveRatio) {
+127	 swapAmount = swapAmount.add(delta);
+128	 }
+129	 else if (userRatio < curveRatio) {
+130	 swapAmount = swapAmount.sub(delta);
+131	 }
+132	 if (swapAmount > zapData.zapAmount) {
+133	 swapAmount = zapData.zapAmount - 1;
+134	 }
+135	 delta = delta.div(2);
+136	 }
+137	 revert("ZapLib/not-converging");
+138	 }
+139	 function _calcDepositAmount(DepositData memory dd) public view returns ( uint256, uint256, uint256[] memory ) {
+140	 uint8 curveBaseDecimals = ERC20(dd.base).decimals();
+141	 uint256 curveRatio = IERC20(dd.base) .balanceOf(dd.curve) .mul(10**(36 - uint256(curveBaseDecimals))) .div(IERC20(dd.quote).balanceOf(dd.curve).mul(1e12));
+142	 uint256 usdcDepositAmount = dd.curQuoteAmount.mul(1e12);
+143	 uint256 baseDepositAmount = dd.curBaseAmount.mul( 10**(18 - uint256(curveBaseDecimals)) );
+144	 uint256 depositAmount = usdcDepositAmount.add( baseDepositAmount.mul(1e18).div(curveRatio) );
+145	 depositAmount = _roundDown(depositAmount);
+146	 (uint256 lps, uint256[] memory outs) = ICurve(dd.curve).viewDeposit( depositAmount );
+147	 uint256 baseDelta = outs[0] > dd.maxBaseAmount ? outs[0].sub(dd.curBaseAmount) : 0;
+148	 uint256 usdcDelta = outs[1] > dd.maxQuoteAmount ? outs[1].sub(dd.curQuoteAmount) : 0;
+149	 if (baseDelta > 0 || usdcDelta > 0) {
+150	 dd.curBaseAmount = _roundDown(dd.curBaseAmount.sub(baseDelta));
+151	 dd.curQuoteAmount = _roundDown(dd.curQuoteAmount.sub(usdcDelta));
+152	 return _calcDepositAmount(dd);
+153	 }
+154	 return (depositAmount, lps, outs);
+155	 }
+156	 function _roundDown(uint256 a) public pure returns (uint256) {
+157	 return a.mul(99999999).div(100000000);
+158	 }
+159	 }
+160	 pragma solidity >=0.6.0 <0.8.0;
+161	 library SafeMath {
+162	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+163	 uint256 c = a + b;
+164	 if (c < a) return (false, 0);
+165	 return (true, c);
+166	 }
+167	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+168	 if (b > a) return (false, 0);
+169	 return (true, a - b);
+170	 }
+171	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+172	 if (a == 0) return (true, 0);
+173	 uint256 c = a * b;
+174	 if (c / a != b) return (false, 0);
+175	 return (true, c);
+176	 }
+177	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+178	 if (b == 0) return (false, 0);
+179	 return (true, a / b);
+180	 }
+181	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+182	 if (b == 0) return (false, 0);
+183	 return (true, a % b);
+184	 }
+185	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+186	 uint256 c = a + b;
+187	 require(c >= a, "SafeMath: addition overflow");
+188	 return c;
+189	 }
+190	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+191	 require(b <= a, "SafeMath: subtraction overflow");
+192	 return a - b;
+193	 }
+194	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+195	 if (a == 0) return 0;
+196	 uint256 c = a * b;
+197	 require(c / a == b, "SafeMath: multiplication overflow");
+198	 return c;
+199	 }
+200	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+201	 require(b > 0, "SafeMath: division by zero");
+202	 return a / b;
+203	 }
+204	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+205	 require(b > 0, "SafeMath: modulo by zero");
+206	 return a % b;
+207	 }
+208	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+209	 require(b <= a, errorMessage);
+210	 return a - b;
+211	 }
+212	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+213	 require(b > 0, errorMessage);
+214	 return a / b;
+215	 }
+216	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+217	 require(b > 0, errorMessage);
+218	 return a % b;
+219	 }
+220	 }
+221	 pragma solidity >=0.6.0 <0.8.0;
+222	 contract ERC20 is Context, IERC20 {
+223	 using SafeMath for uint256;
+224	 mapping (address => uint256) private _balances;
+225	 mapping (address => mapping (address => uint256)) private _allowances;
+226	 uint256 private _totalSupply;
+227	 string private _name;
+228	 string private _symbol;
+229	 uint8 private _decimals;
+230	 constructor (string memory name_, string memory symbol_) public {
+231	 _name = name_;
+232	 _symbol = symbol_;
+233	 _decimals = 18;
+234	 }
+235	 function name() public view virtual returns (string memory) {
+236	 return _name;
+237	 }
+238	 function symbol() public view virtual returns (string memory) {
+239	 return _symbol;
+240	 }
+241	 function decimals() public view virtual returns (uint8) {
+242	 return _decimals;
+243	 }
+244	 function totalSupply() public view virtual override returns (uint256) {
+245	 return _totalSupply;
+246	 }
+247	 function balanceOf(address account) public view virtual override returns (uint256) {
+248	 return _balances[account];
+249	 }
+250	 function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+251	 _transfer(_msgSender(), recipient, amount);
+252	 return true;
+253	 }
+254	 function allowance(address owner, address spender) public view virtual override returns (uint256) {
+255	 return _allowances[owner][spender];
+256	 }
+257	 function approve(address spender, uint256 amount) public virtual override returns (bool) {
+258	 _approve(_msgSender(), spender, amount);
+259	 return true;
+260	 }
+261	 function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+262	 _transfer(sender, recipient, amount);
+263	 _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+264	 return true;
+265	 }
+266	 function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+267	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+268	 return true;
+269	 }
+270	 function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+271	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+272	 return true;
+273	 }
+274	 function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+275	 require(sender != address(0), "ERC20: transfer from the zero address");
+276	 require(recipient != address(0), "ERC20: transfer to the zero address");
+277	 _beforeTokenTransfer(sender, recipient, amount);
+278	 _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+279	 _balances[recipient] = _balances[recipient].add(amount);
+280	 emit Transfer(sender, recipient, amount);
+281	 }
+282	 function _mint(address account, uint256 amount) internal virtual {
+283	 require(account != address(0), "ERC20: mint to the zero address");
+284	 _beforeTokenTransfer(address(0), account, amount);
+285	 _totalSupply = _totalSupply.add(amount);
+286	 _balances[account] = _balances[account].add(amount);
+287	 emit Transfer(address(0), account, amount);
+288	 }
+289	 function _burn(address account, uint256 amount) internal virtual {
+290	 require(account != address(0), "ERC20: burn from the zero address");
+291	 _beforeTokenTransfer(account, address(0), amount);
+292	 _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+293	 _totalSupply = _totalSupply.sub(amount);
+294	 emit Transfer(account, address(0), amount);
+295	 }
+296	 function _approve(address owner, address spender, uint256 amount) internal virtual {
+297	 require(owner != address(0), "ERC20: approve from the zero address");
+298	 require(spender != address(0), "ERC20: approve to the zero address");
+299	 _allowances[owner][spender] = amount;
+300	 emit Approval(owner, spender, amount);
+301	 }
+302	 function _setupDecimals(uint8 decimals_) internal virtual {
+303	 _decimals = decimals_;
+304	 }
+305	 function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual {
+306	 }
+307	 }
+308	 pragma solidity >=0.6.0 <0.8.0;
+309	 library SafeERC20 {
+310	 using SafeMath for uint256;
+311	 using Address for address;
+312	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+313	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+314	 }
+315	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+316	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+317	 }
+318	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+319	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+320	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+321	 }
+322	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+323	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+324	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+325	 }
+326	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+327	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+328	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+329	 }
+330	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+331	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+332	 if (returndata.length > 0) {
+333	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+334	 }
+335	 }
+336	 }
+337	 pragma solidity ^0.7.6;
+338	 interface ICurve {
+339	 function allowance(address _owner, address _spender) external view returns (uint256 allowance_);
+340	 function approve(address _spender, uint256 _amount) external returns (bool success_);
+341	 function assimilator(address _derivative) external view returns (address assimilator_);
+342	 function balanceOf(address _account) external view returns (uint256 balance_);
+343	 function curve() external view returns ( int128 alpha_, int128 beta_, int128 delta_, int128 epsilon_, int128 lambda_, uint256 cap_, uint256 totalSupply_ );
+344	 function decimals() external view returns (uint8);
+345	 function deposit(uint256 _deposit, uint256 _deadline) external returns (uint256, uint256[] memory);
+346	 function derivatives(uint256) external view returns (address);
+347	 function emergency() external view returns (bool);
+348	 function emergencyWithdraw(uint256 _curvesToBurn, uint256 _deadline) external returns (uint256[] memory withdrawals_);
+349	 function excludeDerivative(address _derivative) external;
+350	 function frozen() external view returns (bool);
+351	 function liquidity() external view returns (uint256 total_, uint256[] memory individual_);
+352	 function name() external view returns (string memory);
+353	 function numeraires(uint256) external view returns (address);
+354	 function originSwap( address _origin, address _target, uint256 _originAmount, uint256 _minTargetAmount, uint256 _deadline ) external returns (uint256 targetAmount_);
+355	 function owner() external view returns (address);
+356	 function reserves(uint256) external view returns (address);
+357	 function setCap(uint256 _cap) external;
+358	 function setEmergency(bool _emergency) external;
+359	 function setFrozen(bool _toFreezeOrNotToFreeze) external;
+360	 function setParams( uint256 _alpha, uint256 _beta, uint256 _feeAtHalt, uint256 _epsilon, uint256 _lambda ) external;
+361	 function supportsInterface(bytes4 _interface) external pure returns (bool supports_);
+362	 function symbol() external view returns (string memory);
+363	 function targetSwap( address _origin, address _target, uint256 _maxOriginAmount, uint256 _targetAmount, uint256 _deadline ) external returns (uint256 originAmount_);
+364	 function totalSupply() external view returns (uint256 totalSupply_);
+365	 function transfer(address _recipient, uint256 _amount) external returns (bool success_);
+366	 function transferFrom( address _sender, address _recipient, uint256 _amount ) external returns (bool success_);
+367	 function transferOwnership(address _newOwner) external;
+368	 function viewCurve() external view returns ( uint256 alpha_, uint256 beta_, uint256 delta_, uint256 epsilon_, uint256 lambda_ );
+369	 function viewDeposit(uint256 _deposit) external view returns (uint256, uint256[] memory);
+370	 function viewOriginSwap( address _origin, address _target, uint256 _originAmount ) external view returns (uint256 targetAmount_);
+371	 function viewTargetSwap( address _origin, address _target, uint256 _targetAmount ) external view returns (uint256 originAmount_);
+372	 function viewWithdraw(uint256 _curvesToBurn) external view returns (uint256[] memory);
+373	 function withdraw(uint256 _curvesToBurn, uint256 _deadline) external returns (uint256[] memory withdrawals_);
+374	 }
+375	 pragma solidity >=0.6.2 <0.8.0;
+376	 library Address {
+377	 function isContract(address account) internal view returns (bool) {
+378	 uint256 size;
+379	 assembly {
+380	 size := extcodesize(account) }
+381	 return size > 0;
+382	 }
+383	 function sendValue(address payable recipient, uint256 amount) internal {
+384	 require(address(this).balance >= amount, "Address: insufficient balance");
+385	 (bool success, ) = recipient.call{
+386	 value: amount }
+387	 ("");
+388	 require(success, "Address: unable to send value, recipient may have reverted");
+389	 }
+390	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+391	 return functionCall(target, data, "Address: low-level call failed");
+392	 }
+393	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+394	 return functionCallWithValue(target, data, 0, errorMessage);
+395	 }
+396	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+397	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+398	 }
+399	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+400	 require(address(this).balance >= value, "Address: insufficient balance for call");
+401	 require(isContract(target), "Address: call to non-contract");
+402	 (bool success, bytes memory returndata) = target.call{
+403	 value: value }
+404	 (data);
+405	 return _verifyCallResult(success, returndata, errorMessage);
+406	 }
+407	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+408	 return functionStaticCall(target, data, "Address: low-level static call failed");
+409	 }
+410	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+411	 require(isContract(target), "Address: static call to non-contract");
+412	 (bool success, bytes memory returndata) = target.staticcall(data);
+413	 return _verifyCallResult(success, returndata, errorMessage);
+414	 }
+415	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+416	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+417	 }
+418	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+419	 require(isContract(target), "Address: delegate call to non-contract");
+420	 (bool success, bytes memory returndata) = target.delegatecall(data);
+421	 return _verifyCallResult(success, returndata, errorMessage);
+422	 }
+423	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+424	 if (success) {
+425	 return returndata;
+426	 }
+427	 else {
+428	 if (returndata.length > 0) {
+429	 assembly {
+430	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+431	 }
+432	 else {
+433	 revert(errorMessage);
+434	 }
+435	 }
+436	 }
+437	 }

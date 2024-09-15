@@ -1,0 +1,1310 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity 0.6.12;
+3	 contract BBronze {
+4	 function getColor() external pure returns (bytes32) {
+5	 return bytes32("BRONZE");
+6	 }
+7	 }
+8	 pragma solidity 0.6.12;
+9	 contract Const is BBronze {
+10	 uint public constant BONE = 10**18;
+11	 uint public constant MIN_BOUND_TOKENS = 1;
+12	 uint public constant MAX_BOUND_TOKENS = 16;
+13	 uint public constant MIN_FEE = BONE / 10**6;
+14	 uint public constant MAX_FEE = BONE / 10;
+15	 uint public constant EXIT_FEE = 0;
+16	 uint public constant MIN_WEIGHT = BONE;
+17	 uint public constant MAX_WEIGHT = BONE * 50;
+18	 uint public constant MAX_TOTAL_WEIGHT = BONE * 50;
+19	 uint public constant MIN_BALANCE = 0;
+20	 uint public constant INIT_POOL_SUPPLY = BONE * 100;
+21	 uint public constant MIN_BPOW_BASE = 1 wei;
+22	 uint public constant MAX_BPOW_BASE = (2 * BONE) - 1 wei;
+23	 uint public constant BPOW_PRECISION = BONE / 10**10;
+24	 uint public constant MAX_IN_RATIO = BONE / 2;
+25	 uint public constant MAX_OUT_RATIO = (BONE / 3) + 1 wei;
+26	 }
+27	 pragma solidity 0.6.12;
+28	 contract Num is Const {
+29	 function btoi(uint a) internal pure returns (uint) {
+30	 return a / BONE;
+31	 }
+32	 function bfloor(uint a) internal pure returns (uint) {
+33	 return btoi(a) * BONE;
+34	 }
+35	 function badd(uint a, uint b) internal pure returns (uint) {
+36	 uint c = a + b;
+37	 require(c >= a, "ERR_ADD_OVERFLOW");
+38	 return c;
+39	 }
+40	 function bsub(uint a, uint b) internal pure returns (uint) {
+41	 (uint c, bool flag) = bsubSign(a, b);
+42	 require(!flag, "ERR_SUB_UNDERFLOW");
+43	 return c;
+44	 }
+45	 function bsubSign(uint a, uint b) internal pure returns (uint, bool) {
+46	 if (a >= b) {
+47	 return (a - b, false);
+48	 }
+49	 else {
+50	 return (b - a, true);
+51	 }
+52	 }
+53	 function bmul(uint a, uint b) internal pure returns (uint) {
+54	 uint c0 = a * b;
+55	 require(a == 0 || c0 / a == b, "ERR_MUL_OVERFLOW");
+56	 uint c1 = c0 + (BONE / 2);
+57	 require(c1 >= c0, "ERR_MUL_OVERFLOW");
+58	 uint c2 = c1 / BONE;
+59	 return c2;
+60	 }
+61	 function bdiv(uint a, uint b) internal pure returns (uint) {
+62	 require(b != 0, "ERR_DIV_ZERO");
+63	 uint c0 = a * BONE;
+64	 require(a == 0 || c0 / a == BONE, "ERR_DIV_INTERNAL");
+65	 uint c1 = c0 + (b / 2);
+66	 require(c1 >= c0, "ERR_DIV_INTERNAL");
+67	 uint c2 = c1 / b;
+68	 return c2;
+69	 }
+70	 function bpowi(uint a, uint n) internal pure returns (uint) {
+71	 uint z = n % 2 != 0 ? a : BONE;
+72	 for (n /= 2; n != 0; n /= 2) {
+73	 a = bmul(a, a);
+74	 if (n % 2 != 0) {
+75	 z = bmul(z, a);
+76	 }
+77	 }
+78	 return z;
+79	 }
+80	 function bpow(uint base, uint exp) internal pure returns (uint) {
+81	 require(base >= MIN_BPOW_BASE, "ERR_BPOW_BASE_TOO_LOW");
+82	 require(base <= MAX_BPOW_BASE, "ERR_BPOW_BASE_TOO_HIGH");
+83	 uint whole = bfloor(exp);
+84	 uint remain = bsub(exp, whole);
+85	 uint wholePow = bpowi(base, btoi(whole));
+86	 if (remain == 0) {
+87	 return wholePow;
+88	 }
+89	 uint partialResult = bpowApprox(base, remain, BPOW_PRECISION);
+90	 return bmul(wholePow, partialResult);
+91	 }
+92	 function bpowApprox( uint base, uint exp, uint precision ) internal pure returns (uint) {
+93	 uint a = exp;
+94	 (uint x, bool xneg) = bsubSign(base, BONE);
+95	 uint term = BONE;
+96	 uint sum = term;
+97	 bool negative = false;
+98	 for (uint i = 1; term >= precision; i++) {
+99	 uint bigK = i * BONE;
+100	 (uint c, bool cneg) = bsubSign(a, bsub(bigK, BONE));
+101	 term = bmul(term, bmul(c, x));
+102	 term = bdiv(term, bigK);
+103	 if (term == 0) break;
+104	 if (xneg) negative = !negative;
+105	 if (cneg) negative = !negative;
+106	 if (negative) {
+107	 sum = bsub(sum, term);
+108	 }
+109	 else {
+110	 sum = badd(sum, term);
+111	 }
+112	 }
+113	 return sum;
+114	 }
+115	 }
+116	 pragma solidity 0.6.12;
+117	 contract LpTokenBase is Num {
+118	 mapping(address => uint) internal _balance;
+119	 mapping(address => mapping(address => uint)) internal _allowance;
+120	 uint internal _totalSupply;
+121	 event Approval(address indexed src, address indexed dst, uint amt);
+122	 event Transfer(address indexed src, address indexed dst, uint amt);
+123	 function _mint(uint amt) internal {
+124	 _balance[address(this)] = badd(_balance[address(this)], amt);
+125	 _totalSupply = badd(_totalSupply, amt);
+126	 emit Transfer(address(0), address(this), amt);
+127	 }
+128	 function _burn(uint amt) internal {
+129	 require(_balance[address(this)] >= amt, "ERR_INSUFFICIENT_BAL");
+130	 _balance[address(this)] = bsub(_balance[address(this)], amt);
+131	 _totalSupply = bsub(_totalSupply, amt);
+132	 emit Transfer(address(this), address(0), amt);
+133	 }
+134	 function _move( address src, address dst, uint amt ) internal {
+135	 require(_balance[src] >= amt, "ERR_INSUFFICIENT_BAL");
+136	 _balance[src] = bsub(_balance[src], amt);
+137	 _balance[dst] = badd(_balance[dst], amt);
+138	 emit Transfer(src, dst, amt);
+139	 }
+140	 function _push(address to, uint amt) internal {
+141	 _move(address(this), to, amt);
+142	 }
+143	 function _pull(address from, uint amt) internal {
+144	 _move(from, address(this), amt);
+145	 }
+146	 }
+147	 pragma solidity 0.6.12;
+148	 interface IERC20 {
+149	 event Approval(address indexed owner, address indexed spender, uint value);
+150	 event Transfer(address indexed from, address indexed to, uint value);
+151	 function totalSupply() external view returns (uint);
+152	 function balanceOf(address account) external view returns (uint);
+153	 function decimals() external view returns (uint8);
+154	 function symbol() external view returns (string memory);
+155	 function allowance(address owner, address spender) external view returns (uint);
+156	 function approve(address spender, uint amount) external returns (bool);
+157	 function transfer(address recipient, uint amount) external returns (bool);
+158	 function transferFrom( address sender, address recipient, uint amount ) external returns (bool);
+159	 }
+160	 pragma solidity 0.6.12;
+161	 contract WhiteToken {
+162	 event LOG_WHITELIST(address indexed spender, uint indexed sort, address indexed caller, address token);
+163	 event LOG_DEL_WHITELIST(address indexed spender, uint indexed sort, address indexed caller, address token);
+164	 uint private _whiteTokenCount;
+165	 mapping(address => bool) private _isTokenWhitelisted;
+166	 mapping(uint => mapping(address => bool)) private _tokenWhitelistedInfo;
+167	 function _queryIsTokenWhitelisted(address token) internal view returns (bool) {
+168	 return _isTokenWhitelisted[token];
+169	 }
+170	 function _isTokenWhitelistedForVerify(uint sort, address token) internal view returns (bool) {
+171	 return _tokenWhitelistedInfo[sort][token];
+172	 }
+173	 function _addTokenToWhitelist(uint sort, address token) internal {
+174	 require(token != address(0), "ERR_INVALID_TOKEN_ADDRESS");
+175	 require(_queryIsTokenWhitelisted(token) == false, "ERR_HAS_BEEN_ADDED_WHITE");
+176	 _tokenWhitelistedInfo[sort][token] = true;
+177	 _isTokenWhitelisted[token] = true;
+178	 _whiteTokenCount++;
+179	 emit LOG_WHITELIST(address(this), sort, msg.sender, token);
+180	 }
+181	 function _removeTokenFromWhitelist(uint sort, address token) internal {
+182	 require(_queryIsTokenWhitelisted(token) == true, "ERR_NOT_WHITE_TOKEN");
+183	 require(_tokenWhitelistedInfo[sort][token], "ERR_SORT_NOT_MATCHED");
+184	 _tokenWhitelistedInfo[sort][token] = false;
+185	 _isTokenWhitelisted[token] = false;
+186	 _whiteTokenCount--;
+187	 emit LOG_DEL_WHITELIST(address(this), sort, msg.sender, token);
+188	 }
+189	 function _initWhiteTokenState() internal view returns (bool) {
+190	 return _whiteTokenCount == 0 ? false : true;
+191	 }
+192	 }
+193	 contract LpToken is LpTokenBase, IERC20 {
+194	 string private _name = "Desyn Pool Token";
+195	 string private _symbol = "DPT";
+196	 uint8 private _decimals = 18;
+197	 function name() external view returns (string memory) {
+198	 return _name;
+199	 }
+200	 function symbol() external view override returns (string memory) {
+201	 return _symbol;
+202	 }
+203	 function decimals() external view override returns (uint8) {
+204	 return _decimals;
+205	 }
+206	 function allowance(address src, address dst) external view override returns (uint) {
+207	 return _allowance[src][dst];
+208	 }
+209	 function balanceOf(address whom) external view override returns (uint) {
+210	 return _balance[whom];
+211	 }
+212	 function totalSupply() external view override returns (uint) {
+213	 return _totalSupply;
+214	 }
+215	 function approve(address dst, uint amt) external override returns (bool) {
+216	 _allowance[msg.sender][dst] = amt;
+217	 emit Approval(msg.sender, dst, amt);
+218	 return true;
+219	 }
+220	 function increaseApproval(address dst, uint amt) external returns (bool) {
+221	 _allowance[msg.sender][dst] = badd(_allowance[msg.sender][dst], amt);
+222	 emit Approval(msg.sender, dst, _allowance[msg.sender][dst]);
+223	 return true;
+224	 }
+225	 function decreaseApproval(address dst, uint amt) external returns (bool) {
+226	 uint oldValue = _allowance[msg.sender][dst];
+227	 if (amt > oldValue) {
+228	 _allowance[msg.sender][dst] = 0;
+229	 }
+230	 else {
+231	 _allowance[msg.sender][dst] = bsub(oldValue, amt);
+232	 }
+233	 emit Approval(msg.sender, dst, _allowance[msg.sender][dst]);
+234	 return true;
+235	 }
+236	 function transfer(address dst, uint amt) external override returns (bool) {
+237	 require(dst != address(0),"ERR_BAD_RECIVER");
+238	 _move(msg.sender, dst, amt);
+239	 return true;
+240	 }
+241	 function transferFrom( address src, address dst, uint amt ) external override returns (bool) {
+242	 require(dst != address(0),"ERR_BAD_RECIVER");
+243	 require(msg.sender == src || amt <= _allowance[src][msg.sender], "ERR_LPTOKEN_BAD_CALLER");
+244	 _move(src, dst, amt);
+245	 if (msg.sender != src && _allowance[src][msg.sender] != uint(-1)) {
+246	 _allowance[src][msg.sender] = bsub(_allowance[src][msg.sender], amt);
+247	 emit Approval(src, msg.sender, _allowance[src][msg.sender]);
+248	 }
+249	 return true;
+250	 }
+251	 }
+252	 pragma solidity 0.6.12;
+253	 contract Math is BBronze, Const, Num {
+254	 function calcSpotPrice( uint tokenBalanceIn, uint tokenWeightIn, uint tokenBalanceOut, uint tokenWeightOut, uint swapFee ) external pure returns (uint spotPrice) {
+255	 uint numer = bdiv(tokenBalanceIn, tokenWeightIn);
+256	 uint denom = bdiv(tokenBalanceOut, tokenWeightOut);
+257	 uint ratio = bdiv(numer, denom);
+258	 uint scale = bdiv(BONE, bsub(BONE, swapFee));
+259	 return (spotPrice = bmul(ratio, scale));
+260	 }
+261	 function calcOutGivenIn( uint tokenBalanceIn, uint tokenWeightIn, uint tokenBalanceOut, uint tokenWeightOut, uint tokenAmountIn, uint swapFee ) external pure returns (uint tokenAmountOut) {
+262	 uint weightRatio = bdiv(tokenWeightIn, tokenWeightOut);
+263	 uint adjustedIn = bsub(BONE, swapFee);
+264	 adjustedIn = bmul(tokenAmountIn, adjustedIn);
+265	 uint y = bdiv(tokenBalanceIn, badd(tokenBalanceIn, adjustedIn));
+266	 uint foo = bpow(y, weightRatio);
+267	 uint bar = bsub(BONE, foo);
+268	 tokenAmountOut = bmul(tokenBalanceOut, bar);
+269	 return tokenAmountOut;
+270	 }
+271	 function calcInGivenOut( uint tokenBalanceIn, uint tokenWeightIn, uint tokenBalanceOut, uint tokenWeightOut, uint tokenAmountOut, uint swapFee ) external pure returns (uint tokenAmountIn) {
+272	 uint weightRatio = bdiv(tokenWeightOut, tokenWeightIn);
+273	 uint diff = bsub(tokenBalanceOut, tokenAmountOut);
+274	 uint y = bdiv(tokenBalanceOut, diff);
+275	 uint foo = bpow(y, weightRatio);
+276	 foo = bsub(foo, BONE);
+277	 tokenAmountIn = bsub(BONE, swapFee);
+278	 tokenAmountIn = bdiv(bmul(tokenBalanceIn, foo), tokenAmountIn);
+279	 return tokenAmountIn;
+280	 }
+281	 function calcPoolOutGivenSingleIn( uint tokenBalanceIn, uint tokenWeightIn, uint poolSupply, uint totalWeight, uint tokenAmountIn, uint swapFee ) external pure returns (uint poolAmountOut) {
+282	 uint normalizedWeight = bdiv(tokenWeightIn, totalWeight);
+283	 uint zaz = bmul(bsub(BONE, normalizedWeight), swapFee);
+284	 uint tokenAmountInAfterFee = bmul(tokenAmountIn, bsub(BONE, zaz));
+285	 uint newTokenBalanceIn = badd(tokenBalanceIn, tokenAmountInAfterFee);
+286	 uint tokenInRatio = bdiv(newTokenBalanceIn, tokenBalanceIn);
+287	 uint poolRatio = bpow(tokenInRatio, normalizedWeight);
+288	 uint newPoolSupply = bmul(poolRatio, poolSupply);
+289	 poolAmountOut = bsub(newPoolSupply, poolSupply);
+290	 return poolAmountOut;
+291	 }
+292	 function calcSingleInGivenPoolOut( uint tokenBalanceIn, uint tokenWeightIn, uint poolSupply, uint totalWeight, uint poolAmountOut, uint swapFee ) external pure returns (uint tokenAmountIn) {
+293	 uint normalizedWeight = bdiv(tokenWeightIn, totalWeight);
+294	 uint newPoolSupply = badd(poolSupply, poolAmountOut);
+295	 uint poolRatio = bdiv(newPoolSupply, poolSupply);
+296	 uint boo = bdiv(BONE, normalizedWeight);
+297	 uint tokenInRatio = bpow(poolRatio, boo);
+298	 uint newTokenBalanceIn = bmul(tokenInRatio, tokenBalanceIn);
+299	 uint tokenAmountInAfterFee = bsub(newTokenBalanceIn, tokenBalanceIn);
+300	 uint zar = bmul(bsub(BONE, normalizedWeight), swapFee);
+301	 tokenAmountIn = bdiv(tokenAmountInAfterFee, bsub(BONE, zar));
+302	 return tokenAmountIn;
+303	 }
+304	 function calcSingleOutGivenPoolIn( uint tokenBalanceOut, uint tokenWeightOut, uint poolSupply, uint totalWeight, uint poolAmountIn, uint swapFee ) external pure returns (uint tokenAmountOut) {
+305	 uint normalizedWeight = bdiv(tokenWeightOut, totalWeight);
+306	 uint poolAmountInAfterExitFee = bmul(poolAmountIn, bsub(BONE, EXIT_FEE));
+307	 uint newPoolSupply = bsub(poolSupply, poolAmountInAfterExitFee);
+308	 uint poolRatio = bdiv(newPoolSupply, poolSupply);
+309	 uint tokenOutRatio = bpow(poolRatio, bdiv(BONE, normalizedWeight));
+310	 uint newTokenBalanceOut = bmul(tokenOutRatio, tokenBalanceOut);
+311	 uint tokenAmountOutBeforeSwapFee = bsub(tokenBalanceOut, newTokenBalanceOut);
+312	 uint zaz = bmul(bsub(BONE, normalizedWeight), swapFee);
+313	 tokenAmountOut = bmul(tokenAmountOutBeforeSwapFee, bsub(BONE, zaz));
+314	 return tokenAmountOut;
+315	 }
+316	 function calcPoolInGivenSingleOut( uint tokenBalanceOut, uint tokenWeightOut, uint poolSupply, uint totalWeight, uint tokenAmountOut, uint swapFee ) external pure returns (uint poolAmountIn) {
+317	 uint normalizedWeight = bdiv(tokenWeightOut, totalWeight);
+318	 uint zoo = bsub(BONE, normalizedWeight);
+319	 uint zar = bmul(zoo, swapFee);
+320	 uint tokenAmountOutBeforeSwapFee = bdiv(tokenAmountOut, bsub(BONE, zar));
+321	 uint newTokenBalanceOut = bsub(tokenBalanceOut, tokenAmountOutBeforeSwapFee);
+322	 uint tokenOutRatio = bdiv(newTokenBalanceOut, tokenBalanceOut);
+323	 uint poolRatio = bpow(tokenOutRatio, normalizedWeight);
+324	 uint newPoolSupply = bmul(poolRatio, poolSupply);
+325	 uint poolAmountInAfterExitFee = bsub(poolSupply, newPoolSupply);
+326	 poolAmountIn = bdiv(poolAmountInAfterExitFee, bsub(BONE, EXIT_FEE));
+327	 return poolAmountIn;
+328	 }
+329	 }
+330	 pragma solidity 0.6.12;
+331	 contract Factory is BBronze, WhiteToken {
+332	 using SafeERC20 for IERC20;
+333	 event LOG_NEW_POOL(address indexed caller, address indexed pool);
+334	 event LOG_BLABS(address indexed caller, address indexed blabs);
+335	 event LOG_ROUTER(address indexed caller, address indexed router);
+336	 event LOG_VAULT(address indexed vault, address indexed caller);
+337	 event LOG_USER_VAULT(address indexed vault, address indexed caller);
+338	 event LOG_MANAGER(address indexed manager, address indexed caller);
+339	 event LOG_ORACLE(address indexed caller, address indexed oracle);
+340	 event MODULE_STATUS_CHANGE(address etf, address module, bool status);
+341	 event PAUSED_STATUS(bool state);
+342	 mapping(address => bool) private _isLiquidityPool;
+343	 mapping(address => mapping(address => bool)) private _isModuleRegistered;
+344	 uint private counters;
+345	 bytes public bytecodes = type(LiquidityPool).creationCode;
+346	 bool public isPaused;
+347	 function addTokenToWhitelist(uint[] memory sort, address[] memory token) external onlyBlabs {
+348	 require(sort.length == token.length, "ERR_SORT_TOKEN_MISMATCH");
+349	 for (uint i = 0; i < sort.length; i++) {
+350	 _addTokenToWhitelist(sort[i], token[i]);
+351	 }
+352	 }
+353	 function removeTokenFromWhitelist(uint[] memory sort, address[] memory token) external onlyBlabs {
+354	 require(sort.length == token.length, "ERR_SORT_TOKEN_MISMATCH");
+355	 for (uint i = 0; i < sort.length; i++) {
+356	 _removeTokenFromWhitelist(sort[i], token[i]);
+357	 }
+358	 }
+359	 function isTokenWhitelistedForVerify(uint sort, address token) external view returns (bool) {
+360	 return _isTokenWhitelistedForVerify(sort, token);
+361	 }
+362	 function isTokenWhitelistedForVerify(address token) external view returns (bool) {
+363	 return _queryIsTokenWhitelisted(token);
+364	 }
+365	 function isLiquidityPool(address b) external view returns (bool) {
+366	 return _isLiquidityPool[b];
+367	 }
+368	 function createPool() internal returns (address base) {
+369	 bytes memory bytecode = bytecodes;
+370	 bytes32 salt = keccak256(abi.encodePacked(counters++));
+371	 assembly {
+372	 base := create2(0, add(bytecode, 32), mload(bytecode), salt) if iszero(extcodesize(base)) {
+373	 revert(0, 0) }
+374	 }
+375	 counters++;
+376	 }
+377	 function newLiquidityPool() external returns (IBPool) {
+378	 address lpool = createPool();
+379	 _isLiquidityPool[lpool] = true;
+380	 emit LOG_NEW_POOL(msg.sender, lpool);
+381	 IBPool(lpool).setController(msg.sender);
+382	 return IBPool(lpool);
+383	 }
+384	 address private _blabs;
+385	 address private _swapRouter;
+386	 address private _vault;
+387	 address private _oracle;
+388	 address private _managerOwner;
+389	 address private _vaultAddress;
+390	 address private _userVaultAddress;
+391	 constructor() public {
+392	 _blabs = msg.sender;
+393	 }
+394	 function getBLabs() external view returns (address) {
+395	 return _blabs;
+396	 }
+397	 function setBLabs(address b) external onlyBlabs {
+398	 require(b != address(0),"ERR_ZERO_ADDRESS");
+399	 emit LOG_BLABS(msg.sender, b);
+400	 _blabs = b;
+401	 }
+402	 function getSwapRouter() external view returns (address) {
+403	 return _swapRouter;
+404	 }
+405	 function getModuleStatus(address etf, address module) external view returns (bool) {
+406	 return _isModuleRegistered[etf][module];
+407	 }
+408	 function getOracleAddress() external view returns (address) {
+409	 return _oracle;
+410	 }
+411	 function setSwapRouter(address router) external onlyBlabs {
+412	 require(router != address(0),"ERR_ZERO_ADDRESS");
+413	 emit LOG_ROUTER(msg.sender, router);
+414	 _swapRouter = router;
+415	 }
+416	 function registerModule(address etf, address module) external onlyBlabs {
+417	 require(etf != address(0), "ZERO ETF ADDRESS");
+418	 require(module != address(0), "ZERO ADDRESS");
+419	 _isModuleRegistered[etf][module] = true;
+420	 emit MODULE_STATUS_CHANGE(etf, module, true);
+421	 }
+422	 function removeModule(address etf, address module) external onlyBlabs {
+423	 require(etf != address(0), "ZERO ETF ADDRESS");
+424	 require(module != address(0), "ZERO ADDRESS");
+425	 _isModuleRegistered[etf][module] = false;
+426	 emit MODULE_STATUS_CHANGE(etf, module, false);
+427	 }
+428	 function setOracle(address oracle) external onlyBlabs {
+429	 require(oracle != address(0),"ERR_ZERO_ADDRESS");
+430	 emit LOG_ORACLE(msg.sender, oracle);
+431	 _oracle = oracle;
+432	 }
+433	 function collect(IERC20 token) external onlyBlabs {
+434	 uint collected = token.balanceOf(address(this));
+435	 token.safeTransfer(_blabs, collected);
+436	 }
+437	 function getVault() external view returns (address) {
+438	 return _vaultAddress;
+439	 }
+440	 function setVault(address newVault) external onlyBlabs {
+441	 require(newVault != address(0),"ERR_ZERO_ADDRESS");
+442	 _vaultAddress = newVault;
+443	 emit LOG_VAULT(newVault, msg.sender);
+444	 }
+445	 function getUserVault() external view returns (address) {
+446	 return _userVaultAddress;
+447	 }
+448	 function setUserVault(address newVault) external onlyBlabs {
+449	 require(newVault != address(0),"ERR_ZERO_ADDRESS");
+450	 _userVaultAddress = newVault;
+451	 emit LOG_USER_VAULT(newVault, msg.sender);
+452	 }
+453	 function getManagerOwner() external view returns (address) {
+454	 return _managerOwner;
+455	 }
+456	 function setManagerOwner(address newManagerOwner) external onlyBlabs {
+457	 require(newManagerOwner != address(0),"ERR_ZERO_ADDRESS");
+458	 _managerOwner = newManagerOwner;
+459	 emit LOG_MANAGER(newManagerOwner, msg.sender);
+460	 }
+461	 function setProtocolPaused(bool state) external onlyBlabs {
+462	 isPaused = state;
+463	 emit PAUSED_STATUS(state);
+464	 }
+465	 modifier onlyBlabs() {
+466	 require(msg.sender == _blabs, "ERR_NOT_BLABS");
+467	 _;
+468	 }
+469	 }
+470	 pragma solidity 0.6.12;
+471	 contract LiquidityPool is BBronze, LpToken, Math {
+472	 using Address for address;
+473	 using SafeERC20 for IERC20;
+474	 struct Record {
+475	 bool bound;
+476	 uint index;
+477	 uint denorm;
+478	 uint balance;
+479	 }
+480	 event LOG_JOIN(address indexed caller, address indexed tokenIn, uint tokenAmountIn);
+481	 event LOG_EXIT(address indexed caller, address indexed tokenOut, uint tokenAmountOut);
+482	 event LOG_REBALANCE(address indexed tokenA, address indexed tokenB, uint newWeightA, uint newWeightB, uint newBalanceA, uint newBalanceB, bool isSoldout);
+483	 event LOG_CALL(bytes4 indexed sig, address indexed caller, bytes data) anonymous;
+484	 modifier _logs_() {
+485	 emit LOG_CALL(msg.sig, msg.sender, msg.data);
+486	 _;
+487	 }
+488	 modifier _lock_() {
+489	 require(!_mutex, "ERR_REENTRY");
+490	 _mutex = true;
+491	 _;
+492	 _mutex = false;
+493	 }
+494	 modifier _viewlock_() {
+495	 require(!_mutex, "ERR_REENTRY");
+496	 _;
+497	 }
+498	 bool private _mutex;
+499	 IBFactory private _factory;
+500	 address private _controller;
+501	 bool private _publicSwap;
+502	 uint private _swapFee;
+503	 bool private _finalized;
+504	 address[] private _tokens;
+505	 mapping(address => Record) private _records;
+506	 uint private _totalWeight;
+507	 Oracles private oracle;
+508	 constructor() public {
+509	 _controller = msg.sender;
+510	 _factory = IBFactory(msg.sender);
+511	 _swapFee = MIN_FEE;
+512	 _publicSwap = false;
+513	 _finalized = false;
+514	 oracle = Oracles(_factory.getOracleAddress());
+515	 }
+516	 function isPublicSwap() external view returns (bool) {
+517	 return _publicSwap;
+518	 }
+519	 function isFinalized() external view returns (bool) {
+520	 return _finalized;
+521	 }
+522	 function isBound(address t) external view returns (bool) {
+523	 return _records[t].bound;
+524	 }
+525	 function getNumTokens() external view returns (uint) {
+526	 return _tokens.length;
+527	 }
+528	 function getCurrentTokens() external view _viewlock_ returns (address[] memory tokens) {
+529	 return _tokens;
+530	 }
+531	 function getFinalTokens() external view _viewlock_ returns (address[] memory tokens) {
+532	 require(_finalized, "ERR_NOT_FINALIZED");
+533	 return _tokens;
+534	 }
+535	 function getDenormalizedWeight(address token) external view _viewlock_ returns (uint) {
+536	 require(_records[token].bound, "ERR_NOT_BOUND");
+537	 return _records[token].denorm;
+538	 }
+539	 function getTotalDenormalizedWeight() external view _viewlock_ returns (uint) {
+540	 return _totalWeight;
+541	 }
+542	 function getNormalizedWeight(address token) external _viewlock_ returns (uint) {
+543	 require(_records[token].bound, "ERR_NOT_BOUND");
+544	 uint denorm = _records[token].denorm;
+545	 uint price = oracle.getPrice(token);
+546	 uint[] memory _balances = new uint[](_tokens.length);
+547	 for (uint i = 0; i < _tokens.length; i++) {
+548	 _balances[i] = getBalance(_tokens[i]);
+549	 }
+550	 uint totalValue = oracle.getAllPrice(_tokens, _balances);
+551	 uint currentValue = bmul(price, getBalance(token));
+552	 return bdiv(currentValue, totalValue);
+553	 }
+554	 function getBalance(address token) public view _viewlock_ returns (uint) {
+555	 require(_records[token].bound, "ERR_NOT_BOUND");
+556	 return _records[token].balance;
+557	 }
+558	 function getSwapFee() external view _viewlock_ returns (uint) {
+559	 return _swapFee;
+560	 }
+561	 function getController() external view _viewlock_ returns (address) {
+562	 return _controller;
+563	 }
+564	 function setSwapFee(uint swapFee) external _logs_ _lock_ {
+565	 require(!_finalized, "ERR_IS_FINALIZED");
+566	 require(msg.sender == _controller, "ERR_NOT_CONTROLLER");
+567	 require(swapFee >= MIN_FEE, "ERR_MIN_FEE");
+568	 require(swapFee <= MAX_FEE, "ERR_MAX_FEE");
+569	 _swapFee = swapFee;
+570	 }
+571	 function setController(address manager) external _logs_ _lock_ {
+572	 require(msg.sender == _controller, "ERR_NOT_CONTROLLER");
+573	 require(manager != address(0),"ERR_ZERO_ADDRESS");
+574	 _controller = manager;
+575	 }
+576	 function setPublicSwap(bool public_) external _logs_ _lock_ {
+577	 require(!_finalized, "ERR_IS_FINALIZED");
+578	 require(msg.sender == _controller, "ERR_NOT_CONTROLLER");
+579	 _publicSwap = public_;
+580	 }
+581	 function finalize() external _logs_ _lock_ {
+582	 require(msg.sender == _controller, "ERR_NOT_CONTROLLER");
+583	 require(!_finalized, "ERR_IS_FINALIZED");
+584	 require(_tokens.length >= MIN_BOUND_TOKENS, "ERR_MIN_TOKENS");
+585	 _finalized = true;
+586	 _publicSwap = true;
+587	 _mintPoolShare(INIT_POOL_SUPPLY);
+588	 _pushPoolShare(msg.sender, INIT_POOL_SUPPLY);
+589	 }
+590	 function bind( address token, uint balance, uint denorm ) external _logs_ {
+591	 require(msg.sender == _controller, "ERR_NOT_CONTROLLER");
+592	 require(!_records[token].bound, "ERR_IS_BOUND");
+593	 require(!_finalized, "ERR_IS_FINALIZED");
+594	 require(_tokens.length < MAX_BOUND_TOKENS, "ERR_MAX_TOKENS");
+595	 _records[token] = Record({
+596	 bound: true, index: _tokens.length, denorm: 0, balance: 0 }
+597	 );
+598	 _tokens.push(token);
+599	 rebind(token, balance, denorm);
+600	 }
+601	 function rebind( address token, uint balance, uint denorm ) public _logs_ _lock_ {
+602	 require(msg.sender == _controller, "ERR_NOT_CONTROLLER");
+603	 require(_records[token].bound, "ERR_NOT_BOUND");
+604	 require(!_finalized, "ERR_IS_FINALIZED");
+605	 require(denorm >= MIN_WEIGHT, "ERR_MIN_WEIGHT");
+606	 require(denorm <= MAX_WEIGHT, "ERR_MAX_WEIGHT");
+607	 require(balance >= MIN_BALANCE, "ERR_MIN_BALANCE");
+608	 uint oldWeight = _records[token].denorm;
+609	 if (denorm > oldWeight) {
+610	 _totalWeight = badd(_totalWeight, bsub(denorm, oldWeight));
+611	 require(_totalWeight <= MAX_TOTAL_WEIGHT, "ERR_MAX_TOTAL_WEIGHT");
+612	 }
+613	 else if (denorm < oldWeight) {
+614	 _totalWeight = bsub(_totalWeight, bsub(oldWeight, denorm));
+615	 }
+616	 _records[token].denorm = denorm;
+617	 uint oldBalance = _records[token].balance;
+618	 _records[token].balance = balance;
+619	 if (balance > oldBalance) {
+620	 _pullUnderlying(token, msg.sender, bsub(balance, oldBalance));
+621	 }
+622	 else if (balance < oldBalance) {
+623	 uint tokenBalanceWithdrawn = bsub(oldBalance, balance);
+624	 _pushUnderlying(token, msg.sender, tokenBalanceWithdrawn);
+625	 }
+626	 }
+627	 function rebindSmart( address tokenA, address tokenB, uint deltaWeight, uint deltaBalance, bool isSoldout, uint minAmountOut ) external _logs_ _lock_ {
+628	 require(msg.sender == _controller, "ERR_NOT_CONTROLLER");
+629	 require(!_finalized, "ERR_IS_FINALIZED");
+630	 address[] memory paths = new address[](2);
+631	 paths[0] = tokenA;
+632	 paths[1] = tokenB;
+633	 IUniswapV2Router02 swapRouter = IUniswapV2Router02(_factory.getSwapRouter());
+634	 if (_records[tokenB].bound) {
+635	 uint oldWeightB = _records[tokenB].denorm;
+636	 uint oldBalanceB = _records[tokenB].balance;
+637	 uint newWeightB = badd(oldWeightB, deltaWeight);
+638	 require(newWeightB <= MAX_WEIGHT, "ERR_MAX_WEIGHT_B");
+639	 if (isSoldout) {
+640	 require(_tokens.length >= MIN_BOUND_TOKENS, "ERR_MIN_TOKENS");
+641	 }
+642	 else {
+643	 require(_records[tokenA].bound, "ERR_NOT_BOUND_A");
+644	 uint newWeightA = bsub(_records[tokenA].denorm, deltaWeight);
+645	 uint newBalanceA = bsub(_records[tokenA].balance, deltaBalance);
+646	 require(newWeightA >= MIN_WEIGHT, "ERR_MIN_WEIGHT_A");
+647	 require(newBalanceA >= MIN_BALANCE, "ERR_MIN_BALANCE_A");
+648	 _records[tokenA].balance = newBalanceA;
+649	 _records[tokenA].denorm = newWeightA;
+650	 }
+651	 uint balanceBBefore = IERC20(tokenB).balanceOf(address(this));
+652	 _safeApprove(IERC20(tokenA), address(swapRouter), uint(-1));
+653	 swapRouter.swapExactTokensForTokens(deltaBalance, minAmountOut, paths, address(this), badd(block.timestamp, 1800));
+654	 uint balanceBAfter = IERC20(tokenB).balanceOf(address(this));
+655	 uint newBalanceB = badd(oldBalanceB, bsub(balanceBAfter, balanceBBefore));
+656	 _records[tokenB].balance = newBalanceB;
+657	 _records[tokenB].denorm = newWeightB;
+658	 }
+659	 else {
+660	 if (!isSoldout) {
+661	 require(_records[tokenA].bound, "ERR_NOT_BOUND_A");
+662	 uint newWeightA = bsub(_records[tokenA].denorm, deltaWeight);
+663	 uint newBalanceA = bsub(_records[tokenA].balance, deltaBalance);
+664	 require(newWeightA >= MIN_WEIGHT, "ERR_MIN_WEIGHT_A");
+665	 require(newBalanceA >= MIN_BALANCE, "ERR_MIN_BALANCE_A");
+666	 require(_tokens.length < MAX_BOUND_TOKENS, "ERR_MAX_TOKENS");
+667	 _records[tokenA].balance = newBalanceA;
+668	 _records[tokenA].denorm = newWeightA;
+669	 }
+670	 uint balanceBBefore = IERC20(tokenB).balanceOf(address(this));
+671	 _safeApprove(IERC20(tokenA), address(swapRouter), uint(-1));
+672	 swapRouter.swapExactTokensForTokens(deltaBalance, minAmountOut, paths, address(this), badd(block.timestamp, 1800));
+673	 uint balanceBAfter = IERC20(tokenB).balanceOf(address(this));
+674	 uint newBalanceB = bsub(balanceBAfter, balanceBBefore);
+675	 require(newBalanceB >= MIN_BALANCE, "ERR_MIN_BALANCE");
+676	 require(deltaWeight >= MIN_WEIGHT, "ERR_MIN_WEIGHT_DELTA");
+677	 _records[tokenB] = Record({
+678	 bound: true, index: _tokens.length, denorm: deltaWeight, balance: newBalanceB}
+679	 );
+680	 _tokens.push(tokenB);
+681	 }
+682	 emit LOG_REBALANCE(tokenA, tokenB, _records[tokenA].denorm, _records[tokenB].denorm, _records[tokenA].balance, _records[tokenB].balance, isSoldout);
+683	 }
+684	 function execute( address _target, uint _value, bytes calldata _data ) external _logs_ _lock_ returns (bytes memory _returnValue) {
+685	 require(msg.sender == _controller, "ERR_NOT_CONTROLLER");
+686	 require(!_finalized, "ERR_IS_FINALIZED");
+687	 _returnValue = _target.functionCallWithValue(_data, _value);
+688	 return _returnValue;
+689	 }
+690	 function unbind(address token) external _logs_ _lock_ {
+691	 require(msg.sender == _controller, "ERR_NOT_CONTROLLER");
+692	 require(_records[token].bound, "ERR_NOT_BOUND");
+693	 require(!_finalized, "ERR_IS_FINALIZED");
+694	 uint tokenBalance = _records[token].balance;
+695	 _totalWeight = bsub(_totalWeight, _records[token].denorm);
+696	 uint index = _records[token].index;
+697	 uint last = _tokens.length - 1;
+698	 _tokens[index] = _tokens[last];
+699	 _records[_tokens[index]].index = index;
+700	 _tokens.pop();
+701	 _records[token] = Record({
+702	 bound: false, index: 0, denorm: 0, balance: 0}
+703	 );
+704	 _pushUnderlying(token, msg.sender, tokenBalance);
+705	 }
+706	 function unbindPure(address token) external _logs_ _lock_ {
+707	 require(msg.sender == _controller, "ERR_NOT_CONTROLLER");
+708	 require(_records[token].bound, "ERR_NOT_BOUND");
+709	 require(!_finalized, "ERR_IS_FINALIZED");
+710	 uint index = _records[token].index;
+711	 uint last = _tokens.length - 1;
+712	 _tokens[index] = _tokens[last];
+713	 _records[_tokens[index]].index = index;
+714	 _tokens.pop();
+715	 _records[token] = Record({
+716	 bound: false, index: 0, denorm: 0, balance: 0}
+717	 );
+718	 }
+719	 function gulp(address token) external _logs_ _lock_ {
+720	 require(_records[token].bound, "ERR_NOT_BOUND");
+721	 _records[token].balance = IERC20(token).balanceOf(address(this));
+722	 }
+723	 function joinPool(uint poolAmountOut, uint[] calldata maxAmountsIn) external _logs_ _lock_ {
+724	 require(_finalized, "ERR_NOT_FINALIZED");
+725	 uint poolTotal = this.totalSupply();
+726	 uint ratio = bdiv(poolAmountOut, poolTotal);
+727	 require(ratio != 0, "ERR_MATH_APPROX");
+728	 for (uint i = 0; i < _tokens.length; i++) {
+729	 address t = _tokens[i];
+730	 uint bal = _records[t].balance;
+731	 uint tokenAmountIn = bmul(ratio, bal);
+732	 require(tokenAmountIn != 0, "ERR_MATH_APPROX");
+733	 require(tokenAmountIn <= maxAmountsIn[i], "ERR_LIMIT_IN");
+734	 _records[t].balance = badd(_records[t].balance, tokenAmountIn);
+735	 emit LOG_JOIN(msg.sender, t, tokenAmountIn);
+736	 _pullUnderlying(t, msg.sender, tokenAmountIn);
+737	 }
+738	 _mintPoolShare(poolAmountOut);
+739	 _pushPoolShare(msg.sender, poolAmountOut);
+740	 }
+741	 function exitPool(uint poolAmountIn, uint[] calldata minAmountsOut) external _logs_ _lock_ {
+742	 require(_finalized, "ERR_NOT_FINALIZED");
+743	 uint poolTotal = this.totalSupply();
+744	 uint ratio = bdiv(poolAmountIn, poolTotal);
+745	 require(ratio != 0, "ERR_MATH_APPROX");
+746	 _pullPoolShare(msg.sender, poolAmountIn);
+747	 _burnPoolShare(poolAmountIn);
+748	 for (uint i = 0; i < _tokens.length; i++) {
+749	 address t = _tokens[i];
+750	 uint bal = _records[t].balance;
+751	 uint tokenAmountOut = bmul(ratio, bal);
+752	 require(tokenAmountOut != 0, "ERR_MATH_APPROX");
+753	 require(tokenAmountOut >= minAmountsOut[i], "ERR_LIMIT_OUT");
+754	 _records[t].balance = bsub(_records[t].balance, tokenAmountOut);
+755	 emit LOG_EXIT(msg.sender, t, tokenAmountOut);
+756	 _pushUnderlying(t, msg.sender, tokenAmountOut);
+757	 }
+758	 }
+759	 function _safeApprove( IERC20 token, address spender, uint amount ) internal {
+760	 if (token.allowance(address(this), spender) > 0) {
+761	 token.approve(spender, 0);
+762	 }
+763	 token.approve(spender, amount);
+764	 }
+765	 function _pullUnderlying( address erc20, address from, uint amount ) internal {
+766	 IERC20(erc20).safeTransferFrom(from, address(this), amount);
+767	 }
+768	 function _pushUnderlying( address erc20, address to, uint amount ) internal {
+769	 IERC20(erc20).safeTransfer(to, amount);
+770	 }
+771	 function _pullPoolShare(address from, uint amount) internal {
+772	 _pull(from, amount);
+773	 }
+774	 function _pushPoolShare(address to, uint amount) internal {
+775	 _push(to, amount);
+776	 }
+777	 function _mintPoolShare(uint amount) internal {
+778	 _mint(amount);
+779	 }
+780	 function _burnPoolShare(uint amount) internal {
+781	 _burn(amount);
+782	 }
+783	 receive() external payable {
+784	 }
+785	 }
+786	 pragma solidity 0.6.12;
+787	 library SafeERC20 {
+788	 using SafeMath for uint;
+789	 using Address for address;
+790	 function safeTransfer( IERC20 token, address to, uint value ) internal {
+791	 callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+792	 }
+793	 function safeTransferFrom( IERC20 token, address from, address to, uint value ) internal {
+794	 callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+795	 }
+796	 function safeApprove( IERC20 token, address spender, uint value ) internal {
+797	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance");
+798	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+799	 }
+800	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+801	 require(address(token).isContract(), "SafeERC20: call to non-contract");
+802	 (bool success, bytes memory returndata) = address(token).call(data);
+803	 require(success, "SafeERC20: low-level call failed");
+804	 if (returndata.length > 0) {
+805	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+806	 }
+807	 }
+808	 }
+809	 pragma solidity 0.6.12;
+810	 interface IBPool {
+811	 function rebind( address token, uint balance, uint denorm ) external;
+812	 function rebindSmart( address tokenA, address tokenB, uint deltaWeight, uint deltaBalance, bool isSoldout, uint minAmountOut ) external;
+813	 function execute( address _target, uint _value, bytes calldata _data ) external returns (bytes memory _returnValue);
+814	 function bind( address token, uint balance, uint denorm ) external;
+815	 function unbind(address token) external;
+816	 function unbindPure(address token) external;
+817	 function isBound(address token) external view returns (bool);
+818	 function getBalance(address token) external view returns (uint);
+819	 function totalSupply() external view returns (uint);
+820	 function getSwapFee() external view returns (uint);
+821	 function isPublicSwap() external view returns (bool);
+822	 function getDenormalizedWeight(address token) external view returns (uint);
+823	 function getTotalDenormalizedWeight() external view returns (uint);
+824	 function EXIT_FEE() external view returns (uint);
+825	 function getCurrentTokens() external view returns (address[] memory tokens);
+826	 function setController(address owner) external;
+827	 }
+828	 interface IBFactory {
+829	 function newLiquidityPool() external returns (IBPool);
+830	 function setBLabs(address b) external;
+831	 function collect(IBPool pool) external;
+832	 function isBPool(address b) external view returns (bool);
+833	 function getBLabs() external view returns (address);
+834	 function getSwapRouter() external view returns (address);
+835	 function getVault() external view returns (address);
+836	 function getUserVault() external view returns (address);
+837	 function getVaultAddress() external view returns (address);
+838	 function getOracleAddress() external view returns (address);
+839	 function getManagerOwner() external view returns (address);
+840	 function isTokenWhitelistedForVerify(uint sort, address token) external view returns (bool);
+841	 function isTokenWhitelistedForVerify(address token) external view returns (bool);
+842	 function getModuleStatus(address etf, address module) external view returns (bool);
+843	 function isPaused() external view returns (bool);
+844	 }
+845	 interface IVault {
+846	 function depositManagerToken(address[] calldata poolTokens, uint[] calldata tokensAmount) external;
+847	 function depositIssueRedeemPToken( address[] calldata poolTokens, uint[] calldata tokensAmount, uint[] calldata tokensAmountP, bool isPerfermance ) external;
+848	 function managerClaim(address pool) external;
+849	 function getManagerClaimBool(address pool) external view returns (bool);
+850	 }
+851	 interface IUserVault {
+852	 function recordTokenInfo( address kol, address user, address[] calldata poolTokens, uint[] calldata tokensAmount ) external;
+853	 }
+854	 interface Oracles {
+855	 function getPrice(address tokenAddress) external returns (uint price);
+856	 function getAllPrice(address[] calldata poolTokens, uint[] calldata tokensAmount) external returns (uint);
+857	 }
+858	 pragma solidity 0.6.12;
+859	 interface IUniswapV2Router02 {
+860	 function swapExactTokensForETH( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external returns (uint[] memory amounts);
+861	 function swapExactTokensForTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external returns (uint[] memory amounts);
+862	 function swapTokensForExactTokens( uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline ) external returns (uint[] memory amounts);
+863	 }
+864	 pragma solidity 0.6.12;
+865	 library Address {
+866	 function isContract(address account) internal view returns (bool) {
+867	 bytes32 codehash;
+868	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+869	 assembly {
+870	 codehash := extcodehash(account) }
+871	 return (codehash != accountHash && codehash != 0x0);
+872	 }
+873	 function sendValue(address payable recipient, uint amount) internal {
+874	 require(address(this).balance >= amount, "Address: insufficient balance");
+875	 (bool success, ) = recipient.call{
+876	 value: amount}
+877	 ("");
+878	 require(success, "Address: unable to send value, recipient may have reverted");
+879	 }
+880	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+881	 return functionCall(target, data, "Address: low-level call failed");
+882	 }
+883	 function functionCall( address target, bytes memory data, string memory errorMessage ) internal returns (bytes memory) {
+884	 return _functionCallWithValue(target, data, 0, errorMessage);
+885	 }
+886	 function functionCallWithValue( address target, bytes memory data, uint value ) internal returns (bytes memory) {
+887	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+888	 }
+889	 function functionCallWithValue( address target, bytes memory data, uint value, string memory errorMessage ) internal returns (bytes memory) {
+890	 require(address(this).balance >= value, "Address: insufficient balance for call");
+891	 return _functionCallWithValue(target, data, value, errorMessage);
+892	 }
+893	 function _functionCallWithValue( address target, bytes memory data, uint weiValue, string memory errorMessage ) private returns (bytes memory) {
+894	 require(isContract(target), "Address: call to non-contract");
+895	 (bool success, bytes memory returndata) = target.call{
+896	 value: weiValue}
+897	 (data);
+898	 if (success) {
+899	 return returndata;
+900	 }
+901	 else {
+902	 if (returndata.length > 0) {
+903	 assembly {
+904	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+905	 }
+906	 else {
+907	 revert(errorMessage);
+908	 }
+909	 }
+910	 }
+911	 }
+912	 pragma solidity 0.6.12;
+913	 library SmartPoolManager {
+914	 using DesynSafeMath for uint;
+915	 using SafeMath for uint;
+916	 using SafeERC20 for IERC20;
+917	 struct levelParams {
+918	 uint level;
+919	 uint ratio;
+920	 }
+921	 struct feeParams {
+922	 levelParams firstLevel;
+923	 levelParams secondLevel;
+924	 levelParams thirdLevel;
+925	 levelParams fourLevel;
+926	 }
+927	 struct KolPoolParams {
+928	 feeParams managerFee;
+929	 feeParams issueFee;
+930	 feeParams redeemFee;
+931	 feeParams perfermanceFee;
+932	 }
+933	 enum Etypes {
+934	 OPENED, CLOSED }
+935	 enum Period {
+936	 HALF, ONE, TWO }
+937	 struct Status {
+938	 uint collectPeriod;
+939	 uint collectEndTime;
+940	 uint closurePeriod;
+941	 uint closureEndTime;
+942	 uint upperCap;
+943	 uint floorCap;
+944	 uint managerFee;
+945	 uint redeemFee;
+946	 uint issueFee;
+947	 uint perfermanceFee;
+948	 uint startClaimFeeTime;
+949	 }
+950	 struct PoolParams {
+951	 string poolTokenSymbol;
+952	 string poolTokenName;
+953	 address[] constituentTokens;
+954	 uint[] tokenBalances;
+955	 uint[] tokenWeights;
+956	 uint swapFee;
+957	 uint managerFee;
+958	 uint redeemFee;
+959	 uint issueFee;
+960	 uint perfermanceFee;
+961	 Etypes etype;
+962	 }
+963	 struct PoolTokenRange {
+964	 uint bspFloor;
+965	 uint bspCap;
+966	 }
+967	 struct Fund {
+968	 uint etfAmount;
+969	 uint fundAmount;
+970	 }
+971	 function initRequire( uint swapFee, uint managerFee, uint issueFee, uint redeemFee, uint perfermanceFee, uint tokenBalancesLength, uint tokenWeightsLength, uint constituentTokensLength, bool initBool ) external pure {
+972	 require(!initBool, "Init fail");
+973	 require(swapFee >= DesynConstants.MIN_FEE, "ERR_INVALID_SWAP_FEE");
+974	 require(swapFee <= DesynConstants.MAX_FEE, "ERR_INVALID_SWAP_FEE");
+975	 require(managerFee >= DesynConstants.MANAGER_MIN_FEE, "ERR_INVALID_MANAGER_FEE");
+976	 require(managerFee <= DesynConstants.MANAGER_MAX_FEE, "ERR_INVALID_MANAGER_FEE");
+977	 require(issueFee >= DesynConstants.ISSUE_MIN_FEE, "ERR_INVALID_ISSUE_MIN_FEE");
+978	 require(issueFee <= DesynConstants.ISSUE_MAX_FEE, "ERR_INVALID_ISSUE_MAX_FEE");
+979	 require(redeemFee >= DesynConstants.REDEEM_MIN_FEE, "ERR_INVALID_REDEEM_MIN_FEE");
+980	 require(redeemFee <= DesynConstants.REDEEM_MAX_FEE, "ERR_INVALID_REDEEM_MAX_FEE");
+981	 require(perfermanceFee >= DesynConstants.PERFERMANCE_MIN_FEE, "ERR_INVALID_PERFERMANCE_MIN_FEE");
+982	 require(perfermanceFee <= DesynConstants.PERFERMANCE_MAX_FEE, "ERR_INVALID_PERFERMANCE_MAX_FEE");
+983	 require(tokenBalancesLength == constituentTokensLength, "ERR_START_BALANCES_MISMATCH");
+984	 require(tokenWeightsLength == constituentTokensLength, "ERR_START_WEIGHTS_MISMATCH");
+985	 require(constituentTokensLength >= DesynConstants.MIN_ASSET_LIMIT, "ERR_TOO_FEW_TOKENS");
+986	 require(constituentTokensLength <= DesynConstants.MAX_ASSET_LIMIT, "ERR_TOO_MANY_TOKENS");
+987	 }
+988	 function rebalance( IConfigurableRightsPool self, IBPool bPool, address tokenA, address tokenB, uint deltaWeight, uint minAmountOut ) external {
+989	 uint currentWeightA = bPool.getDenormalizedWeight(tokenA);
+990	 uint currentBalanceA = bPool.getBalance(tokenA);
+991	 require(deltaWeight <= currentWeightA, "ERR_DELTA_WEIGHT_TOO_BIG");
+992	 uint deltaBalanceA = DesynSafeMath.bmul(currentBalanceA, DesynSafeMath.bdiv(deltaWeight, currentWeightA));
+993	 bool soldout;
+994	 if (deltaWeight == currentWeightA) {
+995	 bPool.unbindPure(tokenA);
+996	 soldout = true;
+997	 }
+998	 bPool.rebindSmart(tokenA, tokenB, deltaWeight, deltaBalanceA, soldout, minAmountOut);
+999	 }
+1000	 function verifyTokenCompliance(address token) external {
+1001	 verifyTokenComplianceInternal(token);
+1002	 }
+1003	 function verifyTokenCompliance(address[] calldata tokens) external {
+1004	 for (uint i = 0; i < tokens.length; i++) {
+1005	 verifyTokenComplianceInternal(tokens[i]);
+1006	 }
+1007	 }
+1008	 function createPoolInternalHandle(IBPool bPool, uint initialSupply) external view {
+1009	 require(initialSupply >= DesynConstants.MIN_POOL_SUPPLY, "ERR_INIT_SUPPLY_MIN");
+1010	 require(initialSupply <= DesynConstants.MAX_POOL_SUPPLY, "ERR_INIT_SUPPLY_MAX");
+1011	 require(bPool.EXIT_FEE() == 0, "ERR_NONZERO_EXIT_FEE");
+1012	 require(DesynConstants.EXIT_FEE == 0, "ERR_NONZERO_EXIT_FEE");
+1013	 }
+1014	 function createPoolHandle( uint collectPeriod, uint upperCap, uint initialSupply ) external pure {
+1015	 require(collectPeriod <= DesynConstants.MAX_COLLECT_PERIOD, "ERR_EXCEEDS_FUND_RAISING_PERIOD");
+1016	 require(upperCap >= initialSupply, "ERR_CAP_BIGGER_THAN_INITSUPPLY");
+1017	 }
+1018	 function exitPoolHandle( uint _endEtfAmount, uint _endFundAmount, uint _beginEtfAmount, uint _beginFundAmount, uint poolAmountIn, uint totalEnd ) external pure returns ( uint endEtfAmount, uint endFundAmount, uint profitRate ) {
+1019	 endEtfAmount = DesynSafeMath.badd(_endEtfAmount, poolAmountIn);
+1020	 endFundAmount = DesynSafeMath.badd(_endFundAmount, totalEnd);
+1021	 uint amount1 = DesynSafeMath.bdiv(endFundAmount, endEtfAmount);
+1022	 uint amount2 = DesynSafeMath.bdiv(_beginFundAmount, _beginEtfAmount);
+1023	 if (amount1 > amount2) {
+1024	 profitRate = DesynSafeMath.bdiv( DesynSafeMath.bmul(DesynSafeMath.bsub(DesynSafeMath.bdiv(endFundAmount, endEtfAmount), DesynSafeMath.bdiv(_beginFundAmount, _beginEtfAmount)), poolAmountIn), totalEnd );
+1025	 }
+1026	 }
+1027	 function exitPoolHandleA( IConfigurableRightsPool self, IBPool bPool, address poolToken, uint _tokenAmountOut, uint redeemFee, uint profitRate, uint perfermanceFee ) external returns ( uint redeemAndPerformanceFeeReceived, uint finalAmountOut, uint redeemFeeReceived ) {
+1028	 redeemFeeReceived = DesynSafeMath.bmul(_tokenAmountOut, redeemFee);
+1029	 uint performanceFeeReceived = DesynSafeMath.bmul(DesynSafeMath.bmul(_tokenAmountOut, profitRate), perfermanceFee);
+1030	 redeemAndPerformanceFeeReceived = DesynSafeMath.badd(performanceFeeReceived, redeemFeeReceived);
+1031	 finalAmountOut = DesynSafeMath.bsub(_tokenAmountOut, redeemAndPerformanceFeeReceived);
+1032	 _pushUnderlying(bPool, poolToken, msg.sender, finalAmountOut);
+1033	 if (redeemFee != 0 || (profitRate > 0 && perfermanceFee != 0)) {
+1034	 _pushUnderlying(bPool, poolToken, address(this), redeemAndPerformanceFeeReceived);
+1035	 IERC20(poolToken).safeApprove(self.vaultAddress(), 0);
+1036	 IERC20(poolToken).safeApprove(self.vaultAddress(), redeemAndPerformanceFeeReceived);
+1037	 }
+1038	 }
+1039	 function exitPoolHandleB( IConfigurableRightsPool self, bool bools, bool isCompletedCollect, uint closureEndTime, uint collectEndTime, uint _etfAmount, uint _fundAmount, uint poolAmountIn ) external view returns (uint etfAmount, uint fundAmount, uint actualPoolAmountIn) {
+1040	 actualPoolAmountIn = poolAmountIn;
+1041	 if (bools) {
+1042	 bool isCloseEtfCollectEndWithFailure = isCompletedCollect == false && block.timestamp >= collectEndTime;
+1043	 bool isCloseEtfClosureEnd = block.timestamp >= closureEndTime;
+1044	 require(isCloseEtfCollectEndWithFailure || isCloseEtfClosureEnd, "ERR_CLOSURE_TIME_NOT_ARRIVED!");
+1045	 actualPoolAmountIn = self.balanceOf(msg.sender);
+1046	 }
+1047	 fundAmount = _fundAmount;
+1048	 etfAmount = _etfAmount;
+1049	 }
+1050	 function joinPoolHandle( bool canWhitelistLPs, bool isList, bool bools, uint collectEndTime ) external view {
+1051	 require(!canWhitelistLPs || isList, "ERR_NOT_ON_WHITELIST");
+1052	 if (bools) {
+1053	 require(block.timestamp <= collectEndTime, "ERR_COLLECT_PERIOD_FINISHED!");
+1054	 }
+1055	 }
+1056	 function rebalanceHandle( IBPool bPool, bool isCompletedCollect, bool bools, uint collectEndTime, uint closureEndTime, bool canChangeWeights, address tokenA, address tokenB ) external {
+1057	 require(bPool.isBound(tokenA), "ERR_TOKEN_NOT_BOUND");
+1058	 if (bools) {
+1059	 require(isCompletedCollect, "ERROR_COLLECTION_FAILED");
+1060	 require(block.timestamp > collectEndTime && block.timestamp < closureEndTime, "ERR_NOT_REBALANCE_PERIOD");
+1061	 }
+1062	 if (!bPool.isBound(tokenB)) {
+1063	 IERC20(tokenB).safeApprove(address(bPool), 0);
+1064	 IERC20(tokenB).safeApprove(address(bPool), DesynConstants.MAX_UINT);
+1065	 }
+1066	 require(canChangeWeights, "ERR_NOT_CONFIGURABLE_WEIGHTS");
+1067	 require(tokenA != tokenB, "ERR_TOKENS_SAME");
+1068	 }
+1069	 function joinPool( IConfigurableRightsPool self, IBPool bPool, uint poolAmountOut, uint[] calldata maxAmountsIn, uint issueFee ) external view returns (uint[] memory actualAmountsIn) {
+1070	 address[] memory tokens = bPool.getCurrentTokens();
+1071	 require(maxAmountsIn.length == tokens.length, "ERR_AMOUNTS_MISMATCH");
+1072	 uint poolTotal = self.totalSupply();
+1073	 uint ratio = DesynSafeMath.bdiv(poolAmountOut, DesynSafeMath.bsub(poolTotal, 1));
+1074	 require(ratio != 0, "ERR_MATH_APPROX");
+1075	 actualAmountsIn = new uint[](tokens.length);
+1076	 uint issueFeeRate = issueFee.bmul(1000);
+1077	 for (uint i = 0; i < tokens.length; i++) {
+1078	 address t = tokens[i];
+1079	 uint bal = bPool.getBalance(t);
+1080	 uint base = bal.badd(1).bmul(poolAmountOut * uint(1000));
+1081	 uint tokenAmountIn = base.bdiv(poolTotal.bsub(1) * (uint(1000).bsub(issueFeeRate)));
+1082	 require(tokenAmountIn != 0, "ERR_MATH_APPROX");
+1083	 require(tokenAmountIn <= maxAmountsIn[i], "ERR_LIMIT_IN");
+1084	 actualAmountsIn[i] = tokenAmountIn;
+1085	 }
+1086	 }
+1087	 function exitPool( IConfigurableRightsPool self, IBPool bPool, uint poolAmountIn, uint[] calldata minAmountsOut ) external view returns (uint[] memory actualAmountsOut) {
+1088	 address[] memory tokens = bPool.getCurrentTokens();
+1089	 require(minAmountsOut.length == tokens.length, "ERR_AMOUNTS_MISMATCH");
+1090	 uint poolTotal = self.totalSupply();
+1091	 uint ratio = DesynSafeMath.bdiv(poolAmountIn, DesynSafeMath.badd(poolTotal, 1));
+1092	 require(ratio != 0, "ERR_MATH_APPROX");
+1093	 actualAmountsOut = new uint[](tokens.length);
+1094	 for (uint i = 0; i < tokens.length; i++) {
+1095	 address t = tokens[i];
+1096	 uint bal = bPool.getBalance(t);
+1097	 uint tokenAmountOut = DesynSafeMath.bmul(ratio, DesynSafeMath.bsub(bal, 1));
+1098	 require(tokenAmountOut != 0, "ERR_MATH_APPROX");
+1099	 require(tokenAmountOut >= minAmountsOut[i], "ERR_LIMIT_OUT");
+1100	 actualAmountsOut[i] = tokenAmountOut;
+1101	 }
+1102	 }
+1103	 function verifyTokenComplianceInternal(address token) internal {
+1104	 IERC20(token).safeTransfer(msg.sender, 0);
+1105	 }
+1106	 function handleTransferInTokens( IConfigurableRightsPool self, IBPool bPool, address poolToken, uint actualAmountIn, uint _actualIssueFee ) external returns (uint issueFeeReceived) {
+1107	 issueFeeReceived = DesynSafeMath.bmul(actualAmountIn, _actualIssueFee);
+1108	 uint amount = DesynSafeMath.bsub(actualAmountIn, issueFeeReceived);
+1109	 _pullUnderlying(bPool, poolToken, msg.sender, amount);
+1110	 if (_actualIssueFee != 0) {
+1111	 IERC20(poolToken).safeTransferFrom(msg.sender, address(this), issueFeeReceived);
+1112	 IERC20(poolToken).safeApprove(self.vaultAddress(), 0);
+1113	 IERC20(poolToken).safeApprove(self.vaultAddress(), issueFeeReceived);
+1114	 }
+1115	 }
+1116	 function handleClaim( IConfigurableRightsPool self, IBPool bPool, address[] calldata poolTokens, uint managerFee, uint timeElapsed, uint claimPeriod ) external returns (uint[] memory) {
+1117	 uint[] memory tokensAmount = new uint[](poolTokens.length);
+1118	 for (uint i = 0; i < poolTokens.length; i++) {
+1119	 address t = poolTokens[i];
+1120	 uint tokenBalance = bPool.getBalance(t);
+1121	 uint tokenAmountOut = tokenBalance.bmul(managerFee).mul(timeElapsed).div(claimPeriod).div(12);
+1122	 _pushUnderlying(bPool, t, address(this), tokenAmountOut);
+1123	 IERC20(t).safeApprove(self.vaultAddress(), 0);
+1124	 IERC20(t).safeApprove(self.vaultAddress(), tokenAmountOut);
+1125	 tokensAmount[i] = tokenAmountOut;
+1126	 }
+1127	 return tokensAmount;
+1128	 }
+1129	 function handleCollectionCompleted( IConfigurableRightsPool self, IBPool bPool, address[] calldata poolTokens, uint issueFee ) external {
+1130	 if (issueFee != 0) {
+1131	 uint[] memory tokensAmount = new uint[](poolTokens.length);
+1132	 for (uint i = 0; i < poolTokens.length; i++) {
+1133	 address t = poolTokens[i];
+1134	 uint currentAmount = bPool.getBalance(t);
+1135	 uint currentAmountFee = DesynSafeMath.bmul(currentAmount, issueFee);
+1136	 _pushUnderlying(bPool, t, address(this), currentAmountFee);
+1137	 tokensAmount[i] = currentAmountFee;
+1138	 IERC20(t).safeApprove(self.vaultAddress(), 0);
+1139	 IERC20(t).safeApprove(self.vaultAddress(), currentAmountFee);
+1140	 }
+1141	 IVault(self.vaultAddress()).depositIssueRedeemPToken(poolTokens, tokensAmount, tokensAmount, false);
+1142	 }
+1143	 }
+1144	 function WhitelistHandle( bool bool1, bool bool2, address adr ) external pure {
+1145	 require(bool1, "ERR_CANNOT_WHITELIST_LPS");
+1146	 require(bool2, "ERR_LP_NOT_WHITELISTED");
+1147	 require(adr != address(0), "ERR_INVALID_ADDRESS");
+1148	 }
+1149	 function _pullUnderlying( IBPool bPool, address erc20, address from, uint amount ) internal {
+1150	 uint tokenBalance = bPool.getBalance(erc20);
+1151	 uint tokenWeight = bPool.getDenormalizedWeight(erc20);
+1152	 IERC20(erc20).safeTransferFrom(from, address(this), amount);
+1153	 bPool.rebind(erc20, DesynSafeMath.badd(tokenBalance, amount), tokenWeight);
+1154	 }
+1155	 function _pushUnderlying( IBPool bPool, address erc20, address to, uint amount ) internal {
+1156	 uint tokenBalance = bPool.getBalance(erc20);
+1157	 uint tokenWeight = bPool.getDenormalizedWeight(erc20);
+1158	 bPool.rebind(erc20, DesynSafeMath.bsub(tokenBalance, amount), tokenWeight);
+1159	 IERC20(erc20).safeTransfer(to, amount);
+1160	 }
+1161	 }
+1162	 pragma solidity 0.6.12;
+1163	 library DesynSafeMath {
+1164	 function badd(uint a, uint b) internal pure returns (uint) {
+1165	 uint c = a + b;
+1166	 require(c >= a, "ERR_ADD_OVERFLOW");
+1167	 return c;
+1168	 }
+1169	 function bsub(uint a, uint b) internal pure returns (uint) {
+1170	 (uint c, bool negativeResult) = bsubSign(a, b);
+1171	 require(!negativeResult, "ERR_SUB_UNDERFLOW");
+1172	 return c;
+1173	 }
+1174	 function bsubSign(uint a, uint b) internal pure returns (uint, bool) {
+1175	 if (b <= a) {
+1176	 return (a - b, false);
+1177	 }
+1178	 else {
+1179	 return (b - a, true);
+1180	 }
+1181	 }
+1182	 function bmul(uint a, uint b) internal pure returns (uint) {
+1183	 if (a == 0) {
+1184	 return 0;
+1185	 }
+1186	 uint c0 = a * b;
+1187	 require(c0 / a == b, "ERR_MUL_OVERFLOW");
+1188	 uint c1 = c0 + (DesynConstants.BONE / 2);
+1189	 require(c1 >= c0, "ERR_MUL_OVERFLOW");
+1190	 uint c2 = c1 / DesynConstants.BONE;
+1191	 return c2;
+1192	 }
+1193	 function bdiv(uint dividend, uint divisor) internal pure returns (uint) {
+1194	 require(divisor != 0, "ERR_DIV_ZERO");
+1195	 if (dividend == 0) {
+1196	 return 0;
+1197	 }
+1198	 uint c0 = dividend * DesynConstants.BONE;
+1199	 require(c0 / dividend == DesynConstants.BONE, "ERR_DIV_INTERNAL");
+1200	 uint c1 = c0 + (divisor / 2);
+1201	 require(c1 >= c0, "ERR_DIV_INTERNAL");
+1202	 uint c2 = c1 / divisor;
+1203	 return c2;
+1204	 }
+1205	 function bmod(uint dividend, uint divisor) internal pure returns (uint) {
+1206	 require(divisor != 0, "ERR_MODULO_BY_ZERO");
+1207	 return dividend % divisor;
+1208	 }
+1209	 function bmax(uint a, uint b) internal pure returns (uint) {
+1210	 return a >= b ? a : b;
+1211	 }
+1212	 function bmin(uint a, uint b) internal pure returns (uint) {
+1213	 return a < b ? a : b;
+1214	 }
+1215	 function baverage(uint a, uint b) internal pure returns (uint) {
+1216	 return (a / 2) + (b / 2) + (((a % 2) + (b % 2)) / 2);
+1217	 }
+1218	 function sqrt(uint y) internal pure returns (uint z) {
+1219	 if (y > 3) {
+1220	 z = y;
+1221	 uint x = y / 2 + 1;
+1222	 while (x < z) {
+1223	 z = x;
+1224	 x = (y / x + x) / 2;
+1225	 }
+1226	 }
+1227	 else if (y != 0) {
+1228	 z = 1;
+1229	 }
+1230	 }
+1231	 }
+1232	 pragma solidity 0.6.12;
+1233	 interface IConfigurableRightsPool {
+1234	 function mintPoolShareFromLib(uint amount) external;
+1235	 function pushPoolShareFromLib(address to, uint amount) external;
+1236	 function pullPoolShareFromLib(address from, uint amount) external;
+1237	 function burnPoolShareFromLib(uint amount) external;
+1238	 function balanceOf(address account) external view returns (uint);
+1239	 function totalSupply() external view returns (uint);
+1240	 function getController() external view returns (address);
+1241	 function vaultAddress() external view returns (address);
+1242	 }
+1243	 pragma solidity 0.6.12;
+1244	 library SafeMath {
+1245	 function add(uint a, uint b) internal pure returns (uint) {
+1246	 uint c = a + b;
+1247	 require(c >= a, "SafeMath: addition overflow");
+1248	 return c;
+1249	 }
+1250	 function sub(uint a, uint b) internal pure returns (uint) {
+1251	 return sub(a, b, "SafeMath: subtraction overflow");
+1252	 }
+1253	 function sub( uint a, uint b, string memory errorMessage ) internal pure returns (uint) {
+1254	 require(b <= a, errorMessage);
+1255	 uint c = a - b;
+1256	 return c;
+1257	 }
+1258	 function mul(uint a, uint b) internal pure returns (uint) {
+1259	 if (a == 0) {
+1260	 return 0;
+1261	 }
+1262	 uint c = a * b;
+1263	 require(c / a == b, "SafeMath: multiplication overflow");
+1264	 return c;
+1265	 }
+1266	 function div(uint a, uint b) internal pure returns (uint) {
+1267	 return div(a, b, "SafeMath: division by zero");
+1268	 }
+1269	 function div( uint a, uint b, string memory errorMessage ) internal pure returns (uint) {
+1270	 require(b > 0, errorMessage);
+1271	 uint c = a / b;
+1272	 return c;
+1273	 }
+1274	 function mod(uint a, uint b) internal pure returns (uint) {
+1275	 return mod(a, b, "SafeMath: modulo by zero");
+1276	 }
+1277	 function mod( uint a, uint b, string memory errorMessage ) internal pure returns (uint) {
+1278	 require(b != 0, errorMessage);
+1279	 return a % b;
+1280	 }
+1281	 }
+1282	 pragma solidity 0.6.12;
+1283	 library DesynConstants {
+1284	 uint public constant BONE = 10**18;
+1285	 uint public constant MIN_WEIGHT = BONE;
+1286	 uint public constant MAX_WEIGHT = BONE * 50;
+1287	 uint public constant MAX_TOTAL_WEIGHT = BONE * 50;
+1288	 uint public constant MIN_BALANCE = 0;
+1289	 uint public constant MAX_BALANCE = BONE * 10**12;
+1290	 uint public constant MIN_POOL_SUPPLY = BONE * 100;
+1291	 uint public constant MAX_POOL_SUPPLY = BONE * 10**9;
+1292	 uint public constant MIN_FEE = BONE / 10**6;
+1293	 uint public constant MAX_FEE = BONE / 10;
+1294	 uint public constant MANAGER_MIN_FEE = 0;
+1295	 uint public constant MANAGER_MAX_FEE = BONE / 10;
+1296	 uint public constant ISSUE_MIN_FEE = BONE / 1000;
+1297	 uint public constant ISSUE_MAX_FEE = BONE / 10;
+1298	 uint public constant REDEEM_MIN_FEE = 0;
+1299	 uint public constant REDEEM_MAX_FEE = BONE / 10;
+1300	 uint public constant PERFERMANCE_MIN_FEE = 0;
+1301	 uint public constant PERFERMANCE_MAX_FEE = BONE / 2;
+1302	 uint public constant EXIT_FEE = 0;
+1303	 uint public constant MAX_IN_RATIO = BONE / 2;
+1304	 uint public constant MAX_OUT_RATIO = (BONE / 3) + 1 wei;
+1305	 uint public constant MIN_ASSET_LIMIT = 1;
+1306	 uint public constant MAX_ASSET_LIMIT = 16;
+1307	 uint public constant MAX_UINT = uint(-1);
+1308	 uint public constant MAX_COLLECT_PERIOD = 60 days;
+1309	 }

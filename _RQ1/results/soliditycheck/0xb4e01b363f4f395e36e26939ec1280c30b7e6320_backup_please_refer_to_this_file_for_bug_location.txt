@@ -1,0 +1,272 @@
+row number 
+1	                   pragma solidity ^0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes calldata) {
+7	 return msg.data;
+8	 }
+9	 }
+10	 pragma solidity ^0.8.0;
+11	 abstract contract Ownable is Context {
+12	 address private _owner;
+13	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+14	 constructor() {
+15	 _transferOwnership(_msgSender());
+16	 }
+17	 function owner() public view virtual returns (address) {
+18	 return _owner;
+19	 }
+20	 modifier onlyOwner() {
+21	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+22	 _;
+23	 }
+24	 function renounceOwnership() public virtual onlyOwner {
+25	 _transferOwnership(address(0));
+26	 }
+27	 function transferOwnership(address newOwner) public virtual onlyOwner {
+28	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+29	 _transferOwnership(newOwner);
+30	 }
+31	 function _transferOwnership(address newOwner) internal virtual {
+32	 address oldOwner = _owner;
+33	 _owner = newOwner;
+34	 emit OwnershipTransferred(oldOwner, newOwner);
+35	 }
+36	 }
+37	 pragma solidity ^0.8.0;
+38	 interface IMain {
+39	 function transferFrom( address from, address to, uint256 tokenId) external;
+40	 function ownerOf( uint _tokenid) external view returns (address);
+41	 }
+42	 interface IRewardtoken{
+43	 function burn(address holder, uint amount) external;
+44	 function mint(address _address , uint amount) external;
+45	 function balanceOf(address _address) external returns (uint);
+46	 function transferFrom( address from, address to, uint256 amount) external;
+47	 }
+48	 contract WobblesStaking is Ownable{
+49	 uint16 public totalNFTStaked ;
+50	 struct stakeOwner{
+51	 uint16[] tokens ;
+52	 uint rewards;
+53	 }
+54	 struct tokenInfo{
+55	 uint64 stakingstartingtime ;
+56	 uint64 rewardstartingtime ;
+57	 uint8 period;
+58	 }
+59	 mapping(address => stakeOwner) public stakeOwners ;
+60	 mapping(uint16 => tokenInfo) public tokensInfo ;
+61	 uint dailyRewardforFS = 1 ether;
+62	 uint dailyRewardforLS1 = 2 ether;
+63	 uint dailyRewardforLS3 = 4 ether;
+64	 uint dailyRewardforLS6 = 6 ether;
+65	 address public mainAddress = 0x1CdC0F5F615431d2FBDABd76E0Ac88F2419d1541;
+66	 address public rewardtokencontract = 0x32D552205B4E40fB5Cf090bEca0941D980d8b232;
+67	 IMain Main = IMain(mainAddress) ;
+68	 IRewardtoken rewardtoken = IRewardtoken(rewardtokencontract);
+69	 constructor() {
+70	 }
+71	 function buyMerch(uint amount) external {
+72	 require(rewardtoken.balanceOf(msg.sender) >= amount , " Insufficient balance");
+73	 rewardtoken.burn(msg.sender , amount);
+74	 }
+75	 function checkTime (uint16 _tokenID) public view returns (uint64) {
+76	 return uint64(block.timestamp) - tokensInfo[_tokenID].rewardstartingtime;
+77	 }
+78	 function stake(uint16 [] calldata data , uint8 _period) external {
+79	 uint16 _number= uint16(data.length );
+80	 require(_number > 0 , "No NFTs selected to stake");
+81	 totalNFTStaked += _number;
+82	 storeTokens( data , _period);
+83	 for(uint16 i ; i< _number ; i++) {
+84	 require(Main.ownerOf(data[i]) == msg.sender, "Not the owner");
+85	 Main.transferFrom( msg.sender, address(this),data[i]);
+86	 }
+87	 }
+88	 function storeTokens( uint16 [] calldata data , uint8 _period ) internal {
+89	 uint16 tokenID;
+90	 for(uint16 i; i< data.length ; i++) {
+91	 tokenID=data[i];
+92	 stakeOwners[ msg.sender].tokens.push(tokenID);
+93	 tokensInfo[tokenID].rewardstartingtime = uint64(block.timestamp);
+94	 tokensInfo[tokenID].stakingstartingtime= uint64(block.timestamp);
+95	 tokensInfo[tokenID].period = _period;
+96	 }
+97	 delete tokenID;
+98	 }
+99	 function getFulltokenOf(address _address) external view returns(uint16 [] memory) {
+100	 return stakeOwners[_address].tokens;
+101	 }
+102	 function checkIfStaked(address _address) external view returns (bool){
+103	 if(stakeOwners[_address].tokens.length > 0){
+104	 return true;
+105	 }
+106	 else return false;
+107	 }
+108	 function checkHowManyStaked(address _address) external view returns(uint){
+109	 return stakeOwners[_address].tokens.length;
+110	 }
+111	 function getStakingEndTime(uint16 _tokenID) public view returns(uint64){
+112	 if(tokensInfo[_tokenID].period == 1) {
+113	 return tokensInfo[_tokenID].stakingstartingtime + 30 days ;
+114	 }
+115	 else if(tokensInfo[_tokenID].period == 3) {
+116	 return tokensInfo[_tokenID].stakingstartingtime + 90 days;
+117	 }
+118	 else if(tokensInfo[_tokenID].period == 6) {
+119	 return tokensInfo[_tokenID].stakingstartingtime + 180 days;
+120	 }
+121	 else {
+122	 return 0;
+123	 }
+124	 }
+125	 function calculateReward(address _address) public view returns (uint){
+126	 uint _reward;
+127	 for( uint i ; i < stakeOwners[_address].tokens.length ; i++) {
+128	 uint16 _tokenID = stakeOwners[_address].tokens[i];
+129	 if (tokensInfo[_tokenID].period == 0) {
+130	 _reward = _reward + ( (dailyRewardforFS/86400) * checkTime(_tokenID));
+131	 }
+132	 else if (tokensInfo[_tokenID].period == 1) {
+133	 _reward = _reward + ( (dailyRewardforLS1/86400) * checkTime(_tokenID));
+134	 }
+135	 else if (tokensInfo[_tokenID].period == 3) {
+136	 _reward = _reward + ( (dailyRewardforLS3/86400) * checkTime(_tokenID));
+137	 }
+138	 else if (tokensInfo[_tokenID].period == 6) {
+139	 _reward = _reward + ( (dailyRewardforLS6/86400) * checkTime(_tokenID));
+140	 }
+141	 }
+142	 return _reward;
+143	 }
+144	 function calculateRewardfortoken(uint16 _tokenID) public view returns (uint){
+145	 uint _reward;
+146	 if (tokensInfo[_tokenID].period == 0) {
+147	 _reward = _reward + ( (dailyRewardforFS/86400) * checkTime(_tokenID));
+148	 }
+149	 else if (tokensInfo[_tokenID].period == 1) {
+150	 _reward = _reward + ( (dailyRewardforLS1/86400) * checkTime(_tokenID));
+151	 }
+152	 else if (tokensInfo[_tokenID].period == 3) {
+153	 _reward = _reward + ( (dailyRewardforLS3/86400) * checkTime(_tokenID));
+154	 }
+155	 else if (tokensInfo[_tokenID].period == 6) {
+156	 _reward = _reward + ( (dailyRewardforLS6/86400) * checkTime(_tokenID));
+157	 }
+158	 return _reward ;
+159	 }
+160	 function checkStakingPeriod(uint8 _tokenID) public view returns (uint8){
+161	 if(tokensInfo[_tokenID].period == 1) {
+162	 return 1;
+163	 }
+164	 else if(tokensInfo[_tokenID].period == 3) {
+165	 return 3;
+166	 }
+167	 else if(tokensInfo[_tokenID].period == 6) {
+168	 return 6;
+169	 }
+170	 else {
+171	 return 0;
+172	 }
+173	 }
+174	 function claimtoken(uint16 _tokenID) external {
+175	 require(stakeOwners[ msg.sender].tokens.length> 0, "You have not staked any NFTs");
+176	 uint _reward = calculateRewardfortoken(_tokenID);
+177	 require(_reward > 0 , "No balance to claim");
+178	 tokensInfo[_tokenID].rewardstartingtime = uint64 (block.timestamp);
+179	 rewardtoken.mint(msg.sender, _reward );
+180	 }
+181	 function claimAlltokens(address _address) external {
+182	 require(stakeOwners[_address].tokens.length> 0, "You have not staked any NFTs");
+183	 uint _reward = calculateReward(_address);
+184	 require(_reward > 0 , "No balance to claim");
+185	 toggleRewardStartingTime(_address);
+186	 rewardtoken.mint(_address, _reward );
+187	 }
+188	 function toggleRewardStartingTime(address _address) internal {
+189	 for( uint i ; i < stakeOwners[_address].tokens.length ; i++) {
+190	 uint16 _tokenID = stakeOwners[_address].tokens[i];
+191	 tokensInfo[_tokenID].rewardstartingtime = uint64 (block.timestamp);
+192	 }
+193	 }
+194	 function getRewardforUnstaking(address _address) internal {
+195	 uint _reward = calculateReward(_address);
+196	 require(_reward > 0 , "No balance to claim");
+197	 rewardtoken.mint(msg.sender, _reward);
+198	 }
+199	 function checkIfPeriodOver(uint16 [] calldata data) public view returns (bool) {
+200	 uint64 currenttime = uint64(block.timestamp);
+201	 bool period = true;
+202	 for (uint i ; i < data.length ; i ++) {
+203	 uint16 _token= data[i];
+204	 if(tokensInfo[_token].period == 0) {
+205	 period = true;
+206	 }
+207	 else if(tokensInfo[_token].period == 1) {
+208	 uint64 endtime =tokensInfo[_token].stakingstartingtime + 30 days;
+209	 if(endtime >= currenttime ) {
+210	 period = false;
+211	 break;
+212	 }
+213	 }
+214	 else if(tokensInfo[_token].period == 2) {
+215	 uint64 endtime =tokensInfo[_token].stakingstartingtime + 90 days;
+216	 if(endtime >= currenttime ) {
+217	 period =false;
+218	 break;
+219	 }
+220	 }
+221	 else if(tokensInfo[_token].period == 2) {
+222	 uint64 endtime =tokensInfo[_token].stakingstartingtime + 180 days;
+223	 if(endtime >= currenttime ) {
+224	 period = false;
+225	 break;
+226	 }
+227	 }
+228	 }
+229	 return period;
+230	 }
+231	 function unstake(uint16 [] calldata data) external {
+232	 require(stakeOwners[ msg.sender].tokens.length> 0, "You have not staked any NFTs");
+233	 uint16 tokens =uint16(data.length);
+234	 require(tokens > 0 , "No NFTs selected to unstake");
+235	 bool periodOver = checkIfPeriodOver(data);
+236	 require( periodOver , "Staking Period is still not over");
+237	 getRewardforUnstaking(msg.sender);
+238	 uint16 tokenID;
+239	 for(uint16 i; i<tokens; i++) {
+240	 tokenID=data[i];
+241	 Main.transferFrom(address(this),msg.sender,tokenID);
+242	 removeToken(tokenID);
+243	 delete tokensInfo[tokenID];
+244	 }
+245	 totalNFTStaked -= tokens;
+246	 delete tokenID;
+247	 }
+248	 function removeToken(uint16 token) internal {
+249	 uint x= stakeOwners[ msg.sender].tokens.length ;
+250	 if (token == stakeOwners[ msg.sender].tokens[x-1]) {
+251	 stakeOwners[ msg.sender].tokens.pop();
+252	 }
+253	 else{
+254	 for (uint i ; i < stakeOwners[ msg.sender].tokens.length ; i ++) {
+255	 if(token == stakeOwners[ msg.sender].tokens[i] ) {
+256	 uint16 temp = stakeOwners[ msg.sender].tokens[x-1];
+257	 stakeOwners[ msg.sender].tokens[x-1] = stakeOwners[ msg.sender].tokens[i];
+258	 stakeOwners[ msg.sender].tokens[i] = temp;
+259	 stakeOwners[ msg.sender].tokens.pop();
+260	 }
+261	 }
+262	 }
+263	 }
+264	 function setMainAddress(address contractAddr) external onlyOwner {
+265	 mainAddress = contractAddr;
+266	 Main= IMain(mainAddress);
+267	 }
+268	 function setRewardTokenAddress (address contractAddr) external onlyOwner {
+269	 rewardtoken= IRewardtoken(contractAddr) ;
+270	 }
+271	 }

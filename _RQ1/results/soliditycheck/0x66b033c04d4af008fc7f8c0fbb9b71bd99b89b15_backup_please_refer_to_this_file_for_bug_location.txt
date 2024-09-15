@@ -1,0 +1,179 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 library SafeMath {
+3	 function add(uint a, uint b) internal pure returns (uint c) {
+4	 c = a + b;
+5	 require(c >= a);
+6	 }
+7	 function sub(uint a, uint b) internal pure returns (uint c) {
+8	 require(b <= a);
+9	 c = a - b;
+10	 }
+11	 function mul(uint a, uint b) internal pure returns (uint c) {
+12	 c = a * b;
+13	 require(a == 0 || c / a == b);
+14	 }
+15	 function div(uint a, uint b) internal pure returns (uint c) {
+16	 require(b > 0);
+17	 c = a / b;
+18	 }
+19	 }
+20	 contract ERC20Interface {
+21	 function totalSupply() public constant returns (uint);
+22	 function balanceOf(address tokenOwner) public constant returns (uint balance);
+23	 function allowance(address tokenOwner, address spender) public constant returns (uint remaining);
+24	 function transfer(address to, uint tokens) public returns (bool success);
+25	 function approve(address spender, uint tokens) public returns (bool success);
+26	 function transferFrom(address from, address to, uint tokens) public returns (bool success);
+27	 event Transfer(address indexed from, address indexed to, uint tokens);
+28	 event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+29	 }
+30	 contract ApproveAndCallFallBack {
+31	 function receiveApproval(address from, uint256 tokens, address token, bytes data) public;
+32	 }
+33	 contract Owned {
+34	 address public owner;
+35	 address public newOwner;
+36	 event OwnershipTransferred(address indexed _from, address indexed _to);
+37	 constructor() public {
+38	 owner = msg.sender;
+39	 }
+40	 modifier onlyOwner {
+41	 require(msg.sender == owner);
+42	 _;
+43	 }
+44	 function transferOwnership(address _newOwner) public onlyOwner {
+45	 newOwner = _newOwner;
+46	 }
+47	 function acceptOwnership() public {
+48	 require(msg.sender == newOwner);
+49	 emit OwnershipTransferred(owner, newOwner);
+50	 owner = newOwner;
+51	 newOwner = address(0);
+52	 }
+53	 }
+54	 contract TOT is ERC20Interface, Owned {
+55	 using SafeMath for uint;
+56	 string public symbol;
+57	 string public name;
+58	 uint8 public decimals;
+59	 uint _totalSupply;
+60	 mapping(address => uint) balances;
+61	 mapping(address => mapping(address => uint)) allowed;
+62	 modifier onlyWhitelist() {
+63	 require(blacklist[msg.sender] == false);
+64	 _;
+65	 }
+66	 modifier canDistr() {
+67	 require(!distributionFinished);
+68	 _;
+69	 }
+70	 modifier onlyOwner() {
+71	 require(msg.sender == owner);
+72	 _;
+73	 }
+74	 modifier onlyPayloadSize(uint size) {
+75	 assert(msg.data.length >= size + 4);
+76	 _;
+77	 }
+78	 uint256 public _airdropAmount;
+79	 uint256 public _airdropTotal;
+80	 uint256 public _airdropSupply;
+81	 uint256 public _totalRemaining;
+82	 mapping(address => bool) initialized;
+83	 bool public distributionFinished = false;
+84	 mapping (address => bool) public blacklist;
+85	 event Distr(address indexed to, uint256 amount);
+86	 event DistrFinished();
+87	 constructor() public {
+88	 symbol = "TOT";
+89	 name = "The Ocean Token";
+90	 decimals = 18;
+91	 _totalSupply = 1000000000 * 10 ** uint256(decimals);
+92	 _airdropAmount = 35000 * 10 ** uint256(decimals);
+93	 _airdropSupply = 300000000 * 10 ** uint256(decimals);
+94	 _totalRemaining = _airdropSupply;
+95	 balances[owner] = _totalSupply.sub(_airdropSupply);
+96	 emit Transfer(address(0), owner, _totalSupply);
+97	 }
+98	 function totalSupply() public view returns (uint) {
+99	 return _totalSupply.sub(balances[address(0)]);
+100	 }
+101	 function balanceOf(address tokenOwner) public view returns (uint balance) {
+102	 return balances[tokenOwner];
+103	 }
+104	 function transfer(address to, uint tokens) onlyPayloadSize(2 * 32) public returns (bool success) {
+105	 require(to != address(0));
+106	 require(tokens <= balances[msg.sender]);
+107	 balances[msg.sender] = balances[msg.sender].sub(tokens);
+108	 balances[to] = balances[to].add(tokens);
+109	 emit Transfer(msg.sender, to, tokens);
+110	 return true;
+111	 }
+112	 function approve(address spender, uint tokens) public returns (bool success) {
+113	 allowed[msg.sender][spender] = tokens;
+114	 emit Approval(msg.sender, spender, tokens);
+115	 return true;
+116	 }
+117	 function transferFrom(address from, address to, uint tokens) onlyPayloadSize(3 * 32) public returns (bool success) {
+118	 require(tokens <= balances[from]);
+119	 require(tokens <= allowed[from][msg.sender]);
+120	 require(to != address(0));
+121	 balances[from] = balances[from].sub(tokens);
+122	 balances[to] = balances[to].add(tokens);
+123	 allowed[from][msg.sender] = allowed[from][msg.sender].sub(tokens);
+124	 emit Transfer(from, to, tokens);
+125	 return true;
+126	 }
+127	 function allowance(address tokenOwner, address spender) public view returns (uint remaining) {
+128	 return allowed[tokenOwner][spender];
+129	 }
+130	 function approveAndCall(address spender, uint tokens, bytes data) public returns (bool success) {
+131	 allowed[msg.sender][spender] = tokens;
+132	 emit Approval(msg.sender, spender, tokens);
+133	 ApproveAndCallFallBack(spender).receiveApproval(msg.sender, tokens, this, data);
+134	 return true;
+135	 }
+136	 function transferAnyERC20Token(address tokenAddress, uint tokens) public onlyOwner returns (bool success) {
+137	 return ERC20Interface(tokenAddress).transfer(owner, tokens);
+138	 }
+139	 function getBalance(address _address) internal returns (uint256) {
+140	 if (_airdropTotal < _airdropSupply && !initialized[_address]) {
+141	 return balances[_address] + _airdropAmount;
+142	 }
+143	 else {
+144	 return balances[_address];
+145	 }
+146	 }
+147	 function distr(address _to, uint256 _amount) canDistr private returns (bool) {
+148	 _airdropTotal = _airdropTotal.add(_amount);
+149	 _totalRemaining = _totalRemaining.sub(_amount);
+150	 balances[_to] = balances[_to].add(_amount);
+151	 emit Distr(_to, _amount);
+152	 emit Transfer(address(0), _to, _amount);
+153	 if (_airdropTotal >= _airdropSupply) {
+154	 distributionFinished = true;
+155	 }
+156	 }
+157	 function () external payable {
+158	 getTokens();
+159	 }
+160	 function getTokens() payable canDistr onlyWhitelist public {
+161	 if (_airdropAmount > _totalRemaining) {
+162	 _airdropAmount = _totalRemaining;
+163	 }
+164	 require(_totalRemaining <= _totalRemaining);
+165	 distr(msg.sender, _airdropAmount);
+166	 if (_airdropAmount > 0) {
+167	 blacklist[msg.sender] = true;
+168	 }
+169	 if (_airdropTotal >= _airdropSupply) {
+170	 distributionFinished = true;
+171	 }
+172	 _airdropAmount = _airdropAmount.div(100000).mul(99999);
+173	 uint256 etherBalance = this.balance;
+174	 if (etherBalance > 0) {
+175	 owner.transfer(etherBalance);
+176	 }
+177	 }
+178	 }

@@ -1,0 +1,618 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.7.6;
+3	 contract Dibbler {
+4	 using SafeMath for uint256;
+5	 using SafeMath for uint32;
+6	 using Decimal for Decimal.D256;
+7	 AppStorage internal s;
+8	 uint32 private constant MAX_UINT32 = 2**32-1;
+9	 event Sow(address indexed account, uint256 index, uint256 beans, uint256 pods);
+10	 function _sow(uint256 amount, address account) internal returns (uint256) {
+11	 require(amount > 0, "Field: Must purchase non-zero amount.");
+12	 s.f.soil = s.f.soil.sub(amount, "Field: Not enough outstanding Soil.");
+13	 uint256 pods = beansToPods(amount, s.w.yield);
+14	 sowPlot(account, amount, pods);
+15	 s.f.pods = s.f.pods.add(pods);
+16	 saveSowTime();
+17	 return pods;
+18	 }
+19	 function _sowNoSoil(uint256 amount, address account) internal returns (uint256) {
+20	 require(amount > 0, "Field: Must purchase non-zero amount.");
+21	 uint256 pods = beansToPods(amount, s.w.yield);
+22	 sowPlot(account, amount, pods);
+23	 s.f.pods = s.f.pods.add(pods);
+24	 saveSowTime();
+25	 return pods;
+26	 }
+27	 function sowPlot(address account, uint256 beans, uint256 pods) internal {
+28	 s.a[account].field.plots[s.f.pods] = pods;
+29	 emit Sow(account, s.f.pods, beans, pods);
+30	 }
+31	 function beansToPods(uint256 beanstalks, uint256 y) internal pure returns (uint256) {
+32	 Decimal.D256 memory rate = Decimal.ratio(y, 100).add(Decimal.one());
+33	 return Decimal.from(beanstalks).mul(rate).asUint256();
+34	 }
+35	 function bean() internal view returns (IBean) {
+36	 return IBean(s.c.bean);
+37	 }
+38	 function saveSowTime() private {
+39	 uint256 totalBeanSupply = bean().totalSupply();
+40	 if (s.f.soil >= totalBeanSupply.div(C.getComplexWeatherDenominator())) return;
+41	 uint256 sowTime = block.timestamp.sub(s.season.timestamp);
+42	 s.w.nextSowTime = uint32(sowTime);
+43	 uint96 soilPercent = uint96(s.f.soil.mul(1e18).div(totalBeanSupply));
+44	 if (!s.w.didSowBelowMin) s.w.didSowBelowMin = true;
+45	 if ( soilPercent <= C.getUpperBoundPodRate().mul(s.w.lastSoilPercent).asUint256() && !s.w.didSowFaster && s.w.lastSowTime != MAX_UINT32 && s.w.lastDSoil != 0 ) {
+46	 uint256 deltaSoil = s.w.startSoil.sub(s.f.soil);
+47	 if (Decimal.ratio(deltaSoil, s.w.lastDSoil).greaterThan(C.getLowerBoundDPD())) {
+48	 uint256 fasterTime = s.w.lastSowTime > C.getSteadySowTime() ? s.w.lastSowTime.sub(C.getSteadySowTime()) : 0;
+49	 if (sowTime < fasterTime) s.w.didSowFaster = true;
+50	 else s.w.lastSowTime = MAX_UINT32;
+51	 }
+52	 }
+53	 }
+54	 }
+55	 pragma solidity >=0.6.0 <0.8.0;
+56	 interface IERC20 {
+57	 function totalSupply() external view returns (uint256);
+58	 function balanceOf(address account) external view returns (uint256);
+59	 function transfer(address recipient, uint256 amount) external returns (bool);
+60	 function allowance(address owner, address spender) external view returns (uint256);
+61	 function approve(address spender, uint256 amount) external returns (bool);
+62	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+63	 event Transfer(address indexed from, address indexed to, uint256 value);
+64	 event Approval(address indexed owner, address indexed spender, uint256 value);
+65	 }
+66	 pragma solidity ^0.7.6;
+67	 contract BudgetFacet is Dibbler {
+68	 using SafeMath for uint256;
+69	 function budgetSow(uint256 amount) public returns (uint256) {
+70	 require(isBudget(msg.sender), "Budget: sender must be budget.");
+71	 bean().burnFrom(msg.sender, amount);
+72	 decreaseSoil(amount);
+73	 return _sowNoSoil(amount, msg.sender);
+74	 }
+75	 function isBudget(address account) public view returns (bool) {
+76	 return s.isBudget[account];
+77	 }
+78	 function decreaseSoil(uint256 amount) private {
+79	 uint256 soil = s.f.soil;
+80	 if (soil > amount) s.f.soil = soil.sub(amount);
+81	 else if (soil > 0) s.f.soil = 0;
+82	 }
+83	 }
+84	 pragma solidity ^0.7.6;
+85	 library C {
+86	 using Decimal for Decimal.D256;
+87	 using SafeMath for uint256;
+88	 uint256 private constant CHAIN_ID = 1;
+89	 uint256 private constant CURRENT_SEASON_PERIOD = 3600;
+90	 uint256 private constant HARVESET_PERCENTAGE = 5e17;
+91	 uint256 private constant POD_RATE_LOWER_BOUND = 5e16;
+92	 uint256 private constant OPTIMAL_POD_RATE = 15e16;
+93	 uint256 private constant POD_RATE_UPPER_BOUND = 25e16;
+94	 uint256 private constant DELTA_POD_DEMAND_LOWER_BOUND = 95e16;
+95	 uint256 private constant DELTA_POD_DEMAND_UPPER_BOUND = 105e16;
+96	 uint256 private constant STEADY_SOW_TIME = 60;
+97	 uint256 private constant RAIN_TIME = 24;
+98	 uint32 private constant GOVERNANCE_PERIOD = 168;
+99	 uint32 private constant GOVERNANCE_EMERGENCY_PERIOD = 86400;
+100	 uint256 private constant GOVERNANCE_PASS_THRESHOLD = 5e17;
+101	 uint256 private constant GOVERNANCE_EMERGENCY_THRESHOLD_NUMERATOR = 2;
+102	 uint256 private constant GOVERNANCE_EMERGENCY_THRESHOLD_DEMONINATOR = 3;
+103	 uint32 private constant GOVERNANCE_EXPIRATION = 24;
+104	 uint256 private constant GOVERNANCE_PROPOSAL_THRESHOLD = 1e15;
+105	 uint256 private constant BASE_COMMIT_INCENTIVE = 1e8;
+106	 uint256 private constant MAX_PROPOSITIONS = 5;
+107	 uint256 private constant BASE_ADVANCE_INCENTIVE = 1e8;
+108	 uint32 private constant WITHDRAW_TIME = 25;
+109	 uint256 private constant SEEDS_PER_BEAN = 2;
+110	 uint256 private constant SEEDS_PER_LP_BEAN = 4;
+111	 uint256 private constant STALK_PER_BEAN = 10000;
+112	 uint256 private constant ROOTS_BASE = 1e12;
+113	 uint256 private constant MAX_SOIL_DENOMINATOR = 4;
+114	 uint256 private constant COMPLEX_WEATHER_DENOMINATOR = 1000;
+115	 function getSeasonPeriod() internal pure returns (uint256) {
+116	 return CURRENT_SEASON_PERIOD;
+117	 }
+118	 function getGovernancePeriod() internal pure returns (uint32) {
+119	 return GOVERNANCE_PERIOD;
+120	 }
+121	 function getGovernanceEmergencyPeriod() internal pure returns (uint32) {
+122	 return GOVERNANCE_EMERGENCY_PERIOD;
+123	 }
+124	 function getGovernanceExpiration() internal pure returns (uint256) {
+125	 return GOVERNANCE_EXPIRATION;
+126	 }
+127	 function getGovernancePassThreshold() internal pure returns (Decimal.D256 memory) {
+128	 return Decimal.D256({
+129	 value: GOVERNANCE_PASS_THRESHOLD}
+130	 );
+131	 }
+132	 function getGovernanceEmergencyThreshold() internal pure returns (Decimal.D256 memory) {
+133	 return Decimal.ratio(GOVERNANCE_EMERGENCY_THRESHOLD_NUMERATOR,GOVERNANCE_EMERGENCY_THRESHOLD_DEMONINATOR);
+134	 }
+135	 function getGovernanceProposalThreshold() internal pure returns (Decimal.D256 memory) {
+136	 return Decimal.D256({
+137	 value: GOVERNANCE_PROPOSAL_THRESHOLD}
+138	 );
+139	 }
+140	 function getAdvanceIncentive() internal pure returns (uint256) {
+141	 return BASE_ADVANCE_INCENTIVE;
+142	 }
+143	 function getCommitIncentive() internal pure returns (uint256) {
+144	 return BASE_COMMIT_INCENTIVE;
+145	 }
+146	 function getSiloWithdrawSeasons() internal pure returns (uint32) {
+147	 return WITHDRAW_TIME;
+148	 }
+149	 function getComplexWeatherDenominator() internal pure returns (uint256) {
+150	 return COMPLEX_WEATHER_DENOMINATOR;
+151	 }
+152	 function getMaxSoilDenominator() internal pure returns (uint256) {
+153	 return MAX_SOIL_DENOMINATOR;
+154	 }
+155	 function getHarvestPercentage() internal pure returns (uint256) {
+156	 return HARVESET_PERCENTAGE;
+157	 }
+158	 function getChainId() internal pure returns (uint256) {
+159	 return CHAIN_ID;
+160	 }
+161	 function getOptimalPodRate() internal pure returns (Decimal.D256 memory) {
+162	 return Decimal.ratio(OPTIMAL_POD_RATE,1e18);
+163	 }
+164	 function getUpperBoundPodRate() internal pure returns (Decimal.D256 memory) {
+165	 return Decimal.ratio(POD_RATE_UPPER_BOUND,1e18);
+166	 }
+167	 function getLowerBoundPodRate() internal pure returns (Decimal.D256 memory) {
+168	 return Decimal.ratio(POD_RATE_LOWER_BOUND,1e18);
+169	 }
+170	 function getUpperBoundDPD() internal pure returns (Decimal.D256 memory) {
+171	 return Decimal.ratio(DELTA_POD_DEMAND_UPPER_BOUND,1e18);
+172	 }
+173	 function getLowerBoundDPD() internal pure returns (Decimal.D256 memory) {
+174	 return Decimal.ratio(DELTA_POD_DEMAND_LOWER_BOUND,1e18);
+175	 }
+176	 function getSteadySowTime() internal pure returns (uint256) {
+177	 return STEADY_SOW_TIME;
+178	 }
+179	 function getRainTime() internal pure returns (uint256) {
+180	 return RAIN_TIME;
+181	 }
+182	 function getMaxPropositions() internal pure returns (uint256) {
+183	 return MAX_PROPOSITIONS;
+184	 }
+185	 function getSeedsPerBean() internal pure returns (uint256) {
+186	 return SEEDS_PER_BEAN;
+187	 }
+188	 function getSeedsPerLPBean() internal pure returns (uint256) {
+189	 return SEEDS_PER_LP_BEAN;
+190	 }
+191	 function getStalkPerBean() internal pure returns (uint256) {
+192	 return STALK_PER_BEAN;
+193	 }
+194	 function getStalkPerLPSeed() internal pure returns (uint256) {
+195	 return STALK_PER_BEAN/SEEDS_PER_LP_BEAN;
+196	 }
+197	 function getRootsBase() internal pure returns (uint256) {
+198	 return ROOTS_BASE;
+199	 }
+200	 }
+201	 pragma solidity ^0.7.6;
+202	 abstract contract IBean is IERC20 {
+203	 function burn(uint256 amount) public virtual;
+204	 function burnFrom(address account, uint256 amount) public virtual;
+205	 function mint(address account, uint256 amount) public virtual returns (bool);
+206	 }
+207	 pragma solidity ^0.7.6;
+208	 library Decimal {
+209	 using SafeMath for uint256;
+210	 uint256 constant BASE = 10**18;
+211	 struct D256 {
+212	 uint256 value;
+213	 }
+214	 function zero() internal pure returns (D256 memory) {
+215	 return D256({
+216	 value: 0 }
+217	 );
+218	 }
+219	 function one() internal pure returns (D256 memory) {
+220	 return D256({
+221	 value: BASE }
+222	 );
+223	 }
+224	 function from( uint256 a ) internal pure returns (D256 memory) {
+225	 return D256({
+226	 value: a.mul(BASE) }
+227	 );
+228	 }
+229	 function ratio( uint256 a, uint256 b ) internal pure returns (D256 memory) {
+230	 return D256({
+231	 value: getPartial(a, BASE, b) }
+232	 );
+233	 }
+234	 function add( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+235	 return D256({
+236	 value: self.value.add(b.mul(BASE)) }
+237	 );
+238	 }
+239	 function sub( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+240	 return D256({
+241	 value: self.value.sub(b.mul(BASE)) }
+242	 );
+243	 }
+244	 function sub( D256 memory self, uint256 b, string memory reason ) internal pure returns (D256 memory) {
+245	 return D256({
+246	 value: self.value.sub(b.mul(BASE), reason) }
+247	 );
+248	 }
+249	 function mul( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+250	 return D256({
+251	 value: self.value.mul(b) }
+252	 );
+253	 }
+254	 function div( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+255	 return D256({
+256	 value: self.value.div(b) }
+257	 );
+258	 }
+259	 function pow( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+260	 if (b == 0) {
+261	 return from(1);
+262	 }
+263	 D256 memory temp = D256({
+264	 value: self.value }
+265	 );
+266	 for (uint256 i = 1; i < b; i++) {
+267	 temp = mul(temp, self);
+268	 }
+269	 return temp;
+270	 }
+271	 function add( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+272	 return D256({
+273	 value: self.value.add(b.value) }
+274	 );
+275	 }
+276	 function sub( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+277	 return D256({
+278	 value: self.value.sub(b.value) }
+279	 );
+280	 }
+281	 function sub( D256 memory self, D256 memory b, string memory reason ) internal pure returns (D256 memory) {
+282	 return D256({
+283	 value: self.value.sub(b.value, reason) }
+284	 );
+285	 }
+286	 function mul( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+287	 return D256({
+288	 value: getPartial(self.value, b.value, BASE) }
+289	 );
+290	 }
+291	 function div( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+292	 return D256({
+293	 value: getPartial(self.value, BASE, b.value) }
+294	 );
+295	 }
+296	 function equals(D256 memory self, D256 memory b) internal pure returns (bool) {
+297	 return self.value == b.value;
+298	 }
+299	 function greaterThan(D256 memory self, D256 memory b) internal pure returns (bool) {
+300	 return compareTo(self, b) == 2;
+301	 }
+302	 function lessThan(D256 memory self, D256 memory b) internal pure returns (bool) {
+303	 return compareTo(self, b) == 0;
+304	 }
+305	 function greaterThanOrEqualTo(D256 memory self, D256 memory b) internal pure returns (bool) {
+306	 return compareTo(self, b) > 0;
+307	 }
+308	 function lessThanOrEqualTo(D256 memory self, D256 memory b) internal pure returns (bool) {
+309	 return compareTo(self, b) < 2;
+310	 }
+311	 function isZero(D256 memory self) internal pure returns (bool) {
+312	 return self.value == 0;
+313	 }
+314	 function asUint256(D256 memory self) internal pure returns (uint256) {
+315	 return self.value.div(BASE);
+316	 }
+317	 function getPartial( uint256 target, uint256 numerator, uint256 denominator ) private pure returns (uint256) {
+318	 return target.mul(numerator).div(denominator);
+319	 }
+320	 function compareTo( D256 memory a, D256 memory b ) private pure returns (uint256) {
+321	 if (a.value == b.value) {
+322	 return 1;
+323	 }
+324	 return a.value > b.value ? 2 : 0;
+325	 }
+326	 }
+327	 pragma solidity ^0.7.6;
+328	 library LibCheck {
+329	 using SafeMath for uint256;
+330	 function beanBalanceCheck() internal view {
+331	 AppStorage storage s = LibAppStorage.diamondStorage();
+332	 require( IBean(s.c.bean).balanceOf(address(this)) >= s.f.harvestable.sub(s.f.harvested).add(s.bean.deposited).add(s.bean.withdrawn), "Check: Bean balance fail." );
+333	 }
+334	 function lpBalanceCheck() internal view {
+335	 AppStorage storage s = LibAppStorage.diamondStorage();
+336	 require( IUniswapV2Pair(s.c.pair).balanceOf(address(this)) >= s.lp.deposited.add(s.lp.withdrawn), "Check: LP balance fail." );
+337	 }
+338	 function balanceCheck() internal view {
+339	 AppStorage storage s = LibAppStorage.diamondStorage();
+340	 require( IBean(s.c.bean).balanceOf(address(this)) >= s.f.harvestable.sub(s.f.harvested).add(s.bean.deposited).add(s.bean.withdrawn), "Check: Bean balance fail." );
+341	 require( IUniswapV2Pair(s.c.pair).balanceOf(address(this)) >= s.lp.deposited.add(s.lp.withdrawn), "Check: LP balance fail." );
+342	 }
+343	 }
+344	 pragma solidity >=0.6.0 <0.8.0;
+345	 library SafeMath {
+346	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+347	 uint256 c = a + b;
+348	 if (c < a) return (false, 0);
+349	 return (true, c);
+350	 }
+351	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+352	 if (b > a) return (false, 0);
+353	 return (true, a - b);
+354	 }
+355	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+356	 if (a == 0) return (true, 0);
+357	 uint256 c = a * b;
+358	 if (c / a != b) return (false, 0);
+359	 return (true, c);
+360	 }
+361	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+362	 if (b == 0) return (false, 0);
+363	 return (true, a / b);
+364	 }
+365	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+366	 if (b == 0) return (false, 0);
+367	 return (true, a % b);
+368	 }
+369	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+370	 uint256 c = a + b;
+371	 require(c >= a, "SafeMath: addition overflow");
+372	 return c;
+373	 }
+374	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+375	 require(b <= a, "SafeMath: subtraction overflow");
+376	 return a - b;
+377	 }
+378	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+379	 if (a == 0) return 0;
+380	 uint256 c = a * b;
+381	 require(c / a == b, "SafeMath: multiplication overflow");
+382	 return c;
+383	 }
+384	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+385	 require(b > 0, "SafeMath: division by zero");
+386	 return a / b;
+387	 }
+388	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+389	 require(b > 0, "SafeMath: modulo by zero");
+390	 return a % b;
+391	 }
+392	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+393	 require(b <= a, errorMessage);
+394	 return a - b;
+395	 }
+396	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+397	 require(b > 0, errorMessage);
+398	 return a / b;
+399	 }
+400	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+401	 require(b > 0, errorMessage);
+402	 return a % b;
+403	 }
+404	 }
+405	 pragma solidity >=0.5.0;
+406	 interface IUniswapV2Pair {
+407	 event Approval(address indexed owner, address indexed spender, uint value);
+408	 event Transfer(address indexed from, address indexed to, uint value);
+409	 function name() external pure returns (string memory);
+410	 function symbol() external pure returns (string memory);
+411	 function decimals() external pure returns (uint8);
+412	 function totalSupply() external view returns (uint);
+413	 function balanceOf(address owner) external view returns (uint);
+414	 function allowance(address owner, address spender) external view returns (uint);
+415	 function approve(address spender, uint value) external returns (bool);
+416	 function transfer(address to, uint value) external returns (bool);
+417	 function transferFrom(address from, address to, uint value) external returns (bool);
+418	 function DOMAIN_SEPARATOR() external view returns (bytes32);
+419	 function PERMIT_TYPEHASH() external pure returns (bytes32);
+420	 function nonces(address owner) external view returns (uint);
+421	 function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+422	 event Mint(address indexed sender, uint amount0, uint amount1);
+423	 event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+424	 event Swap( address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to );
+425	 event Sync(uint112 reserve0, uint112 reserve1);
+426	 function MINIMUM_LIQUIDITY() external pure returns (uint);
+427	 function factory() external view returns (address);
+428	 function token0() external view returns (address);
+429	 function token1() external view returns (address);
+430	 function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+431	 function price0CumulativeLast() external view returns (uint);
+432	 function price1CumulativeLast() external view returns (uint);
+433	 function kLast() external view returns (uint);
+434	 function mint(address to) external returns (uint liquidity);
+435	 function burn(address to) external returns (uint amount0, uint amount1);
+436	 function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+437	 function skim(address to) external;
+438	 function sync() external;
+439	 function initialize(address, address) external;
+440	 }
+441	 pragma solidity ^0.7.6;
+442	 library LibAppStorage {
+443	 function diamondStorage() internal pure returns (AppStorage storage ds) {
+444	 assembly {
+445	 ds.slot := 0 }
+446	 }
+447	 }
+448	 pragma solidity ^0.7.6;
+449	 contract Account {
+450	 struct Field {
+451	 mapping(uint256 => uint256) plots;
+452	 mapping(address => uint256) podAllowances;
+453	 }
+454	 struct AssetSilo {
+455	 mapping(uint32 => uint256) withdrawals;
+456	 mapping(uint32 => uint256) deposits;
+457	 mapping(uint32 => uint256) depositSeeds;
+458	 }
+459	 struct Silo {
+460	 uint256 stalk;
+461	 uint256 seeds;
+462	 }
+463	 struct SeasonOfPlenty {
+464	 uint256 base;
+465	 uint256 roots;
+466	 uint256 basePerRoot;
+467	 }
+468	 struct State {
+469	 Field field;
+470	 AssetSilo bean;
+471	 AssetSilo lp;
+472	 Silo s;
+473	 uint32 lockedUntil;
+474	 uint32 lastUpdate;
+475	 uint32 lastSop;
+476	 uint32 lastRain;
+477	 uint32 lastSIs;
+478	 SeasonOfPlenty sop;
+479	 uint256 roots;
+480	 }
+481	 }
+482	 contract Storage {
+483	 struct Contracts {
+484	 address bean;
+485	 address pair;
+486	 address pegPair;
+487	 address weth;
+488	 }
+489	 struct Field {
+490	 uint256 soil;
+491	 uint256 pods;
+492	 uint256 harvested;
+493	 uint256 harvestable;
+494	 }
+495	 struct Bip {
+496	 address proposer;
+497	 uint32 start;
+498	 uint32 period;
+499	 bool executed;
+500	 int pauseOrUnpause;
+501	 uint128 timestamp;
+502	 uint256 roots;
+503	 uint256 endTotalRoots;
+504	 }
+505	 struct DiamondCut {
+506	 IDiamondCut.FacetCut[] diamondCut;
+507	 address initAddress;
+508	 bytes initData;
+509	 }
+510	 struct Governance {
+511	 uint32[] activeBips;
+512	 uint32 bipIndex;
+513	 mapping(uint32 => DiamondCut) diamondCuts;
+514	 mapping(uint32 => mapping(address => bool)) voted;
+515	 mapping(uint32 => Bip) bips;
+516	 }
+517	 struct AssetSilo {
+518	 uint256 deposited;
+519	 uint256 withdrawn;
+520	 }
+521	 struct IncreaseSilo {
+522	 uint256 beans;
+523	 uint256 stalk;
+524	 }
+525	 struct V1IncreaseSilo {
+526	 uint256 beans;
+527	 uint256 stalk;
+528	 uint256 roots;
+529	 }
+530	 struct SeasonOfPlenty {
+531	 uint256 weth;
+532	 uint256 base;
+533	 uint32 last;
+534	 }
+535	 struct Silo {
+536	 uint256 stalk;
+537	 uint256 seeds;
+538	 uint256 roots;
+539	 }
+540	 struct Oracle {
+541	 bool initialized;
+542	 uint256 cumulative;
+543	 uint256 pegCumulative;
+544	 uint32 timestamp;
+545	 uint32 pegTimestamp;
+546	 }
+547	 struct Rain {
+548	 uint32 start;
+549	 bool raining;
+550	 uint256 pods;
+551	 uint256 roots;
+552	 }
+553	 struct Season {
+554	 uint32 current;
+555	 uint32 sis;
+556	 uint256 start;
+557	 uint256 period;
+558	 uint256 timestamp;
+559	 }
+560	 struct Weather {
+561	 uint256 startSoil;
+562	 uint256 lastDSoil;
+563	 uint96 lastSoilPercent;
+564	 uint32 lastSowTime;
+565	 uint32 nextSowTime;
+566	 uint32 yield;
+567	 bool didSowBelowMin;
+568	 bool didSowFaster;
+569	 }
+570	 struct Fundraiser {
+571	 address payee;
+572	 address token;
+573	 uint256 total;
+574	 uint256 remaining;
+575	 }
+576	 }
+577	 struct AppStorage {
+578	 uint8 index;
+579	 int8[32] cases;
+580	 bool paused;
+581	 uint128 pausedAt;
+582	 Storage.Season season;
+583	 Storage.Contracts c;
+584	 Storage.Field f;
+585	 Storage.Governance g;
+586	 Storage.Oracle o;
+587	 Storage.Rain r;
+588	 Storage.Silo s;
+589	 uint256 depreciated1;
+590	 Storage.Weather w;
+591	 Storage.AssetSilo bean;
+592	 Storage.AssetSilo lp;
+593	 Storage.IncreaseSilo si;
+594	 Storage.SeasonOfPlenty sop;
+595	 Storage.V1IncreaseSilo v1SI;
+596	 uint256 unclaimedRoots;
+597	 uint256 v2SIBeans;
+598	 mapping (uint32 => uint256) sops;
+599	 mapping (address => Account.State) a;
+600	 uint32 bip0Start;
+601	 uint32 hotFix3Start;
+602	 mapping (uint32 => Storage.Fundraiser) fundraisers;
+603	 uint32 fundraiserIndex;
+604	 mapping (address => bool) isBudget;
+605	 }
+606	 pragma solidity ^0.7.6;
+607	 interface IDiamondCut {
+608	 enum FacetCutAction {
+609	 Add, Replace, Remove}
+610	 struct FacetCut {
+611	 address facetAddress;
+612	 FacetCutAction action;
+613	 bytes4[] functionSelectors;
+614	 }
+615	 function diamondCut( FacetCut[] calldata _diamondCut, address _init, bytes calldata _calldata ) external;
+616	 event DiamondCut(FacetCut[] _diamondCut, address _init, bytes _calldata);
+617	 }

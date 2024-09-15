@@ -1,0 +1,87 @@
+row number 
+1	             pragma solidity >=0.5.15 >=0.7.6;
+2	 contract Auth {
+3	 mapping (address => uint256) public wards;
+4	 event Rely(address indexed usr);
+5	 event Deny(address indexed usr);
+6	 function rely(address usr) external auth {
+7	 wards[usr] = 1;
+8	 emit Rely(usr);
+9	 }
+10	 function deny(address usr) external auth {
+11	 wards[usr] = 0;
+12	 emit Deny(usr);
+13	 }
+14	 modifier auth {
+15	 require(wards[msg.sender] == 1, "not-authorized");
+16	 _;
+17	 }
+18	 }
+19	 interface TrancheLike_4 {
+20	 function supplyOrder(address usr, uint currencyAmount) external;
+21	 function redeemOrder(address usr, uint tokenAmount) external;
+22	 function disburse(address usr) external returns (uint payoutCurrencyAmount, uint payoutTokenAmount, uint remainingSupplyCurrency, uint remainingRedeemToken);
+23	 function disburse(address usr, uint endEpoch) external returns (uint payoutCurrencyAmount, uint payoutTokenAmount, uint remainingSupplyCurrency, uint remainingRedeemToken);
+24	 function currency() external view returns (address);
+25	 }
+26	 interface RestrictedTokenLike {
+27	 function hasMember(address) external view returns (bool);
+28	 }
+29	 interface EIP2612PermitLike {
+30	 function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+31	 }
+32	 interface DaiPermitLike {
+33	 function permit(address holder, address spender, uint256 nonce, uint256 expiry, bool allowed, uint8 v, bytes32 r, bytes32 s) external;
+34	 }
+35	 contract Operator is Auth {
+36	 TrancheLike_4 public tranche;
+37	 RestrictedTokenLike public token;
+38	 event SupplyOrder(uint indexed amount);
+39	 event RedeemOrder(uint indexed amount);
+40	 event Depend(bytes32 indexed contractName, address addr);
+41	 constructor(address tranche_) {
+42	 tranche = TrancheLike_4(tranche_);
+43	 wards[msg.sender] = 1;
+44	 emit Rely(msg.sender);
+45	 }
+46	 function depend(bytes32 contractName, address addr) public auth {
+47	 if (contractName == "tranche") {
+48	 tranche = TrancheLike_4(addr);
+49	 }
+50	 else if (contractName == "token") {
+51	 token = RestrictedTokenLike(addr);
+52	 }
+53	 else revert();
+54	 emit Depend(contractName, addr);
+55	 }
+56	 function supplyOrder(uint amount) public {
+57	 require((token.hasMember(msg.sender) == true), "user-not-allowed-to-hold-token");
+58	 tranche.supplyOrder(msg.sender, amount);
+59	 emit SupplyOrder(amount);
+60	 }
+61	 function redeemOrder(uint amount) public {
+62	 require((token.hasMember(msg.sender) == true), "user-not-allowed-to-hold-token");
+63	 tranche.redeemOrder(msg.sender, amount);
+64	 emit RedeemOrder(amount);
+65	 }
+66	 function disburse() external returns(uint payoutCurrencyAmount, uint payoutTokenAmount, uint remainingSupplyCurrency, uint remainingRedeemToken) {
+67	 require((token.hasMember(msg.sender) == true), "user-not-allowed-to-hold-token");
+68	 return tranche.disburse(msg.sender);
+69	 }
+70	 function disburse(uint endEpoch) external returns(uint payoutCurrencyAmount, uint payoutTokenAmount, uint remainingSupplyCurrency, uint remainingRedeemToken) {
+71	 require((token.hasMember(msg.sender) == true), "user-not-allowed-to-hold-token");
+72	 return tranche.disburse(msg.sender, endEpoch);
+73	 }
+74	 function supplyOrderWithDaiPermit(uint amount, uint nonce, uint expiry, uint8 v, bytes32 r, bytes32 s) public {
+75	 DaiPermitLike(tranche.currency()).permit(msg.sender, address(tranche), nonce, expiry, true, v, r, s);
+76	 supplyOrder(amount);
+77	 }
+78	 function supplyOrderWithPermit(uint amount, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) public {
+79	 EIP2612PermitLike(tranche.currency()).permit(msg.sender, address(tranche), value, deadline, v, r, s);
+80	 supplyOrder(amount);
+81	 }
+82	 function redeemOrderWithPermit(uint amount, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) public {
+83	 EIP2612PermitLike(address(token)).permit(msg.sender, address(tranche), value, deadline, v, r, s);
+84	 redeemOrder(amount);
+85	 }
+86	 }

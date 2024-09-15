@@ -1,0 +1,441 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 interface IERC20 {
+3	 function totalSupply() external view returns (uint256);
+4	 function balanceOf(address who) external view returns (uint256);
+5	 function allowance(address owner, address spender) external view returns (uint256);
+6	 function transfer(address to, uint256 value) external returns (bool);
+7	 function approve(address spender, uint256 value) external returns (bool);
+8	 function transferFrom(address from, address to, uint256 value) external returns (bool);
+9	 event Transfer( address indexed from, address indexed to, uint256 value );
+10	 event Approval( address indexed owner, address indexed spender, uint256 value );
+11	 }
+12	 library SafeMath {
+13	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+14	 if (a == 0) {
+15	 return 0;
+16	 }
+17	 uint256 c = a * b;
+18	 require(c / a == b);
+19	 return c;
+20	 }
+21	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+22	 require(b > 0);
+23	 uint256 c = a / b;
+24	 return c;
+25	 }
+26	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+27	 require(b <= a);
+28	 uint256 c = a - b;
+29	 return c;
+30	 }
+31	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+32	 uint256 c = a + b;
+33	 require(c >= a);
+34	 return c;
+35	 }
+36	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+37	 require(b != 0);
+38	 return a % b;
+39	 }
+40	 }
+41	 contract ERC20 is IERC20 {
+42	 using SafeMath for uint256;
+43	 mapping (address => uint256) private _balances;
+44	 mapping (address => mapping (address => uint256)) private _allowed;
+45	 uint256 private _totalSupply;
+46	 function totalSupply() public view returns (uint256) {
+47	 return _totalSupply;
+48	 }
+49	 function balanceOf(address owner) public view returns (uint256) {
+50	 return _balances[owner];
+51	 }
+52	 function allowance( address owner, address spender ) public view returns (uint256) {
+53	 return _allowed[owner][spender];
+54	 }
+55	 function transfer(address to, uint256 value) public returns (bool) {
+56	 require(value <= _balances[msg.sender]);
+57	 require(to != address(0));
+58	 _balances[msg.sender] = _balances[msg.sender].sub(value);
+59	 _balances[to] = _balances[to].add(value);
+60	 emit Transfer(msg.sender, to, value);
+61	 return true;
+62	 }
+63	 function approve(address spender, uint256 value) public returns (bool) {
+64	 require(spender != address(0));
+65	 _allowed[msg.sender][spender] = value;
+66	 emit Approval(msg.sender, spender, value);
+67	 return true;
+68	 }
+69	 function transferFrom( address from, address to, uint256 value ) public returns (bool) {
+70	 require(value <= _balances[from]);
+71	 require(value <= _allowed[from][msg.sender]);
+72	 require(to != address(0));
+73	 _balances[from] = _balances[from].sub(value);
+74	 _balances[to] = _balances[to].add(value);
+75	 _allowed[from][msg.sender] = _allowed[from][msg.sender].sub(value);
+76	 emit Transfer(from, to, value);
+77	 return true;
+78	 }
+79	 function increaseAllowance( address spender, uint256 addedValue ) public returns (bool) {
+80	 require(spender != address(0));
+81	 _allowed[msg.sender][spender] = ( _allowed[msg.sender][spender].add(addedValue));
+82	 emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
+83	 return true;
+84	 }
+85	 function decreaseAllowance( address spender, uint256 subtractedValue ) public returns (bool) {
+86	 require(spender != address(0));
+87	 _allowed[msg.sender][spender] = ( _allowed[msg.sender][spender].sub(subtractedValue));
+88	 emit Approval(msg.sender, spender, _allowed[msg.sender][spender]);
+89	 return true;
+90	 }
+91	 function _mint(address account, uint256 amount) internal {
+92	 require(account != 0);
+93	 _totalSupply = _totalSupply.add(amount);
+94	 _balances[account] = _balances[account].add(amount);
+95	 emit Transfer(address(0), account, amount);
+96	 }
+97	 function _burn(address account, uint256 amount) internal {
+98	 require(account != 0);
+99	 require(amount <= _balances[account]);
+100	 _totalSupply = _totalSupply.sub(amount);
+101	 _balances[account] = _balances[account].sub(amount);
+102	 emit Transfer(account, address(0), amount);
+103	 }
+104	 function _burnFrom(address account, uint256 amount) internal {
+105	 require(amount <= _allowed[account][msg.sender]);
+106	 _allowed[account][msg.sender] = _allowed[account][msg.sender].sub( amount);
+107	 _burn(account, amount);
+108	 }
+109	 }
+110	 library SafeERC20 {
+111	 function safeTransfer( IERC20 token, address to, uint256 value ) internal {
+112	 require(token.transfer(to, value));
+113	 }
+114	 function safeTransferFrom( IERC20 token, address from, address to, uint256 value ) internal {
+115	 require(token.transferFrom(from, to, value));
+116	 }
+117	 function safeApprove( IERC20 token, address spender, uint256 value ) internal {
+118	 require(token.approve(spender, value));
+119	 }
+120	 }
+121	 contract Crowdsale {
+122	 using SafeMath for uint256;
+123	 using SafeERC20 for IERC20;
+124	 IERC20 private _token;
+125	 address private _wallet;
+126	 uint256 private _rate;
+127	 uint256 private _weiRaised;
+128	 event TokensPurchased( address indexed purchaser, address indexed beneficiary, uint256 value, uint256 amount );
+129	 constructor(uint256 rate, address wallet, IERC20 token) public {
+130	 require(rate > 0);
+131	 require(wallet != address(0));
+132	 require(token != address(0));
+133	 _rate = rate;
+134	 _wallet = wallet;
+135	 _token = token;
+136	 }
+137	 function () external payable {
+138	 buyTokens(msg.sender);
+139	 }
+140	 function token() public view returns(IERC20) {
+141	 return _token;
+142	 }
+143	 function wallet() public view returns(address) {
+144	 return _wallet;
+145	 }
+146	 function rate() public view returns(uint256) {
+147	 return _rate;
+148	 }
+149	 function weiRaised() public view returns (uint256) {
+150	 return _weiRaised;
+151	 }
+152	 function buyTokens(address beneficiary) public payable {
+153	 uint256 weiAmount = msg.value;
+154	 _preValidatePurchase(beneficiary, weiAmount);
+155	 uint256 tokens = _getTokenAmount(weiAmount);
+156	 _weiRaised = _weiRaised.add(weiAmount);
+157	 _processPurchase(beneficiary, tokens);
+158	 emit TokensPurchased( msg.sender, beneficiary, weiAmount, tokens );
+159	 _updatePurchasingState(beneficiary, weiAmount);
+160	 _forwardFunds();
+161	 _postValidatePurchase(beneficiary, weiAmount);
+162	 }
+163	 function _preValidatePurchase( address beneficiary, uint256 weiAmount ) internal {
+164	 require(beneficiary != address(0));
+165	 require(weiAmount != 0);
+166	 }
+167	 function _postValidatePurchase( address beneficiary, uint256 weiAmount ) internal {
+168	 }
+169	 function _deliverTokens( address beneficiary, uint256 tokenAmount ) internal {
+170	 _token.safeTransfer(beneficiary, tokenAmount);
+171	 }
+172	 function _processPurchase( address beneficiary, uint256 tokenAmount ) internal {
+173	 _deliverTokens(beneficiary, tokenAmount);
+174	 }
+175	 function _updatePurchasingState( address beneficiary, uint256 weiAmount ) internal {
+176	 }
+177	 function _getTokenAmount(uint256 weiAmount) internal view returns (uint256) {
+178	 return weiAmount.mul(_rate);
+179	 }
+180	 function _forwardFunds() internal {
+181	 _wallet.transfer(msg.value);
+182	 }
+183	 }
+184	 contract TieredPriceCrowdsale is Crowdsale {
+185	 uint256 private _baseRate;
+186	 uint256 private _tier2Start;
+187	 uint256 private _tier3Start;
+188	 uint256 private _tier4Start;
+189	 constructor( uint256 baseRate, uint256 openingTimeTier2, uint256 openingTimeTier3, uint256 openingTimeTier4 ) public {
+190	 require(baseRate > 0);
+191	 require(openingTimeTier2 > block.timestamp);
+192	 require(openingTimeTier3 >= openingTimeTier2);
+193	 require(openingTimeTier4 >= openingTimeTier3);
+194	 _baseRate = baseRate;
+195	 _tier4Start = openingTimeTier4;
+196	 _tier3Start = openingTimeTier3;
+197	 _tier2Start = openingTimeTier2;
+198	 }
+199	 function _getbonusRate() internal view returns (uint256) {
+200	 if(_tier2Start > block.timestamp){
+201	 return(_baseRate * 6 / 5);
+202	 }
+203	 else if(_tier3Start > block.timestamp){
+204	 return(_baseRate * 11 / 10);
+205	 }
+206	 else if(_tier4Start > block.timestamp){
+207	 return(_baseRate * 21 / 20);
+208	 }
+209	 else {
+210	 return(_baseRate);
+211	 }
+212	 }
+213	 function bonusRate() public view returns(uint256) {
+214	 return _getbonusRate();
+215	 }
+216	 function tierStartTime( uint256 tier ) external view returns(uint256) {
+217	 if(tier == 2){
+218	 return _tier2Start;
+219	 }
+220	 else if(tier == 3){
+221	 return _tier3Start;
+222	 }
+223	 else if(tier == 4){
+224	 return _tier4Start;
+225	 }
+226	 return 0;
+227	 }
+228	 function _getTokenAmount( uint256 weiAmount ) internal view returns (uint256) {
+229	 return weiAmount.mul(_getbonusRate());
+230	 }
+231	 }
+232	 library Roles {
+233	 struct Role {
+234	 mapping (address => bool) bearer;
+235	 }
+236	 function add(Role storage role, address account) internal {
+237	 require(account != address(0));
+238	 role.bearer[account] = true;
+239	 }
+240	 function remove(Role storage role, address account) internal {
+241	 require(account != address(0));
+242	 role.bearer[account] = false;
+243	 }
+244	 function has(Role storage role, address account) internal view returns (bool) {
+245	 require(account != address(0));
+246	 return role.bearer[account];
+247	 }
+248	 }
+249	 contract CapperRole {
+250	 using Roles for Roles.Role;
+251	 event CapperAdded(address indexed account);
+252	 event CapperRemoved(address indexed account);
+253	 Roles.Role private cappers;
+254	 constructor() public {
+255	 cappers.add(msg.sender);
+256	 }
+257	 modifier onlyCapper() {
+258	 require(isCapper(msg.sender));
+259	 _;
+260	 }
+261	 function isCapper(address account) public view returns (bool) {
+262	 return cappers.has(account);
+263	 }
+264	 function addCapper(address account) public onlyCapper {
+265	 cappers.add(account);
+266	 emit CapperAdded(account);
+267	 }
+268	 function renounceCapper() public {
+269	 cappers.remove(msg.sender);
+270	 }
+271	 function _removeCapper(address account) internal {
+272	 cappers.remove(account);
+273	 emit CapperRemoved(account);
+274	 }
+275	 }
+276	 contract WhitelistedCrowdsale is Crowdsale, CapperRole {
+277	 using SafeMath for uint256;
+278	 uint256 private _invCap;
+279	 mapping(address => uint256) private _contributions;
+280	 mapping(address => uint256) private _caps;
+281	 constructor(uint256 invCap) public {
+282	 require(invCap > 0);
+283	 _invCap = invCap;
+284	 }
+285	 function isWhitelisted(address beneficiary) public view returns (bool) {
+286	 return _caps[beneficiary] != 0;
+287	 }
+288	 function addAddressToWhitelist(address beneficiary) public onlyCapper returns (bool) {
+289	 require(beneficiary != address(0));
+290	 _caps[beneficiary] = _invCap;
+291	 return isWhitelisted(beneficiary);
+292	 }
+293	 function addAddressesToWhitelist(address[] _beneficiaries) external onlyCapper {
+294	 for (uint256 i = 0; i < _beneficiaries.length; i++) {
+295	 addAddressToWhitelist(_beneficiaries[i]);
+296	 }
+297	 }
+298	 function removeAddressFromWhitelist(address beneficiary) public onlyCapper returns (bool) {
+299	 require(beneficiary != address(0));
+300	 _caps[beneficiary] = 0;
+301	 return isWhitelisted(beneficiary);
+302	 }
+303	 function removeAddressesFromWhitelist(address[] _beneficiaries) external onlyCapper {
+304	 for (uint256 i = 0; i < _beneficiaries.length; i++) {
+305	 removeAddressFromWhitelist(_beneficiaries[i]);
+306	 }
+307	 }
+308	 function getContribution(address beneficiary) public view returns (uint256) {
+309	 return _contributions[beneficiary];
+310	 }
+311	 function _preValidatePurchase( address beneficiary, uint256 weiAmount ) internal {
+312	 super._preValidatePurchase(beneficiary, weiAmount);
+313	 require( _contributions[beneficiary].add(weiAmount) <= _caps[beneficiary]);
+314	 }
+315	 function _updatePurchasingState( address beneficiary, uint256 weiAmount ) internal {
+316	 super._updatePurchasingState(beneficiary, weiAmount);
+317	 _contributions[beneficiary] = _contributions[beneficiary].add(weiAmount);
+318	 }
+319	 }
+320	 contract CappedCrowdsale is Crowdsale {
+321	 using SafeMath for uint256;
+322	 uint256 private _cap;
+323	 constructor(uint256 cap) public {
+324	 require(cap > 0);
+325	 _cap = cap;
+326	 }
+327	 function cap() public view returns(uint256) {
+328	 return _cap;
+329	 }
+330	 function capReached() public view returns (bool) {
+331	 return weiRaised() >= _cap;
+332	 }
+333	 function _preValidatePurchase( address beneficiary, uint256 weiAmount ) internal {
+334	 super._preValidatePurchase(beneficiary, weiAmount);
+335	 require(weiRaised().add(weiAmount) <= _cap);
+336	 }
+337	 }
+338	 contract TimedCrowdsale is Crowdsale {
+339	 using SafeMath for uint256;
+340	 uint256 private _openingTime;
+341	 uint256 private _closingTime;
+342	 modifier onlyWhileOpen {
+343	 require(isOpen());
+344	 _;
+345	 }
+346	 constructor(uint256 openingTime, uint256 closingTime) public {
+347	 require(openingTime >= block.timestamp);
+348	 require(closingTime >= openingTime);
+349	 _openingTime = openingTime;
+350	 _closingTime = closingTime;
+351	 }
+352	 function openingTime() public view returns(uint256) {
+353	 return _openingTime;
+354	 }
+355	 function closingTime() public view returns(uint256) {
+356	 return _closingTime;
+357	 }
+358	 function isOpen() public view returns (bool) {
+359	 return block.timestamp >= _openingTime && block.timestamp <= _closingTime;
+360	 }
+361	 function hasClosed() public view returns (bool) {
+362	 return block.timestamp > _closingTime;
+363	 }
+364	 function _preValidatePurchase( address beneficiary, uint256 weiAmount ) internal onlyWhileOpen {
+365	 super._preValidatePurchase(beneficiary, weiAmount);
+366	 }
+367	 }
+368	 contract FinalizableCrowdsale is TimedCrowdsale {
+369	 using SafeMath for uint256;
+370	 bool private _finalized = false;
+371	 event CrowdsaleFinalized();
+372	 function finalized() public view returns (bool) {
+373	 return _finalized;
+374	 }
+375	 function finalize() public {
+376	 require(!_finalized);
+377	 require(hasClosed());
+378	 _finalization();
+379	 emit CrowdsaleFinalized();
+380	 _finalized = true;
+381	 }
+382	 function _finalization() internal {
+383	 }
+384	 }
+385	 contract MinterRole {
+386	 using Roles for Roles.Role;
+387	 event MinterAdded(address indexed account);
+388	 event MinterRemoved(address indexed account);
+389	 Roles.Role private minters;
+390	 constructor() public {
+391	 minters.add(msg.sender);
+392	 }
+393	 modifier onlyMinter() {
+394	 require(isMinter(msg.sender));
+395	 _;
+396	 }
+397	 function isMinter(address account) public view returns (bool) {
+398	 return minters.has(account);
+399	 }
+400	 function addMinter(address account) public onlyMinter {
+401	 minters.add(account);
+402	 emit MinterAdded(account);
+403	 }
+404	 function renounceMinter() public {
+405	 minters.remove(msg.sender);
+406	 }
+407	 function _removeMinter(address account) internal {
+408	 minters.remove(account);
+409	 emit MinterRemoved(account);
+410	 }
+411	 }
+412	 contract ERC20Mintable is ERC20, MinterRole {
+413	 event MintingFinished();
+414	 bool private _mintingFinished = false;
+415	 modifier onlyBeforeMintingFinished() {
+416	 require(!_mintingFinished);
+417	 _;
+418	 }
+419	 function mintingFinished() public view returns(bool) {
+420	 return _mintingFinished;
+421	 }
+422	 function mint( address to, uint256 amount ) public onlyMinter onlyBeforeMintingFinished returns (bool) {
+423	 _mint(to, amount);
+424	 return true;
+425	 }
+426	 function finishMinting() public onlyMinter onlyBeforeMintingFinished returns (bool) {
+427	 _mintingFinished = true;
+428	 emit MintingFinished();
+429	 return true;
+430	 }
+431	 }
+432	 contract MintedCrowdsale is Crowdsale {
+433	 function _deliverTokens( address beneficiary, uint256 tokenAmount ) internal {
+434	 require( ERC20Mintable(address(token())).mint(beneficiary, tokenAmount));
+435	 }
+436	 }
+437	 contract PlazaCrowdsale is CappedCrowdsale, FinalizableCrowdsale, MintedCrowdsale, WhitelistedCrowdsale, TieredPriceCrowdsale {
+438	 constructor( uint256 openingTime, uint256 closingTime, uint256 rate, address wallet, uint256 cap, ERC20Mintable token, uint256 openingTimeTier4, uint256 openingTimeTier3, uint256 openingTimeTier2, uint256 invCap ) public Crowdsale(rate, wallet, token) CappedCrowdsale(cap) WhitelistedCrowdsale(invCap) TimedCrowdsale(openingTime, closingTime) TieredPriceCrowdsale(rate, openingTimeTier2, openingTimeTier3, openingTimeTier4) {
+439	 }
+440	 }

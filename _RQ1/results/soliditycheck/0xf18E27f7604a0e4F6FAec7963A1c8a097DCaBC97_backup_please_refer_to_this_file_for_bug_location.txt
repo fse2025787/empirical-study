@@ -1,0 +1,913 @@
+row number 
+1	           pragma solidity ^0.8.4;
+2	 interface IERC721A {
+3	 error ApprovalCallerNotOwnerNorApproved();
+4	 error ApprovalQueryForNonexistentToken();
+5	 error ApproveToCaller();
+6	 error BalanceQueryForZeroAddress();
+7	 error MintToZeroAddress();
+8	 error MintZeroQuantity();
+9	 error OwnerQueryForNonexistentToken();
+10	 error TransferCallerNotOwnerNorApproved();
+11	 error TransferFromIncorrectOwner();
+12	 error TransferToNonERC721ReceiverImplementer();
+13	 error TransferToZeroAddress();
+14	 error URIQueryForNonexistentToken();
+15	 error MintERC2309QuantityExceedsLimit();
+16	 error OwnershipNotInitializedForExtraData();
+17	 struct TokenOwnership {
+18	 address addr;
+19	 uint64 startTimestamp;
+20	 bool burned;
+21	 uint24 extraData;
+22	 }
+23	 function totalSupply() external view returns (uint256);
+24	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+25	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+26	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+27	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+28	 function balanceOf(address owner) external view returns (uint256 balance);
+29	 function ownerOf(uint256 tokenId) external view returns (address owner);
+30	 function safeTransferFrom( address from, address to, uint256 tokenId, bytes calldata data ) external;
+31	 function safeTransferFrom( address from, address to, uint256 tokenId ) external;
+32	 function transferFrom( address from, address to, uint256 tokenId ) external;
+33	 function approve(address to, uint256 tokenId) external;
+34	 function setApprovalForAll(address operator, bool _approved) external;
+35	 function getApproved(uint256 tokenId) external view returns (address operator);
+36	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+37	 function name() external view returns (string memory);
+38	 function symbol() external view returns (string memory);
+39	 function tokenURI(uint256 tokenId) external view returns (string memory);
+40	 event ConsecutiveTransfer(uint256 indexed fromTokenId, uint256 toTokenId, address indexed from, address indexed to);
+41	 }
+42	 pragma solidity ^0.8.4;
+43	 interface IERC721AQueryable is IERC721A {
+44	 error InvalidQueryRange();
+45	 function explicitOwnershipOf(uint256 tokenId) external view returns (TokenOwnership memory);
+46	 function explicitOwnershipsOf(uint256[] memory tokenIds) external view returns (TokenOwnership[] memory);
+47	 function tokensOfOwnerIn( address owner, uint256 start, uint256 stop ) external view returns (uint256[] memory);
+48	 function tokensOfOwner(address owner) external view returns (uint256[] memory);
+49	 }
+50	 contract ERC721A is IERC721A {
+51	 struct TokenApprovalRef {
+52	 address value;
+53	 }
+54	 uint256 private constant _BITMASK_ADDRESS_DATA_ENTRY = (1 << 64) - 1;
+55	 uint256 private constant _BITPOS_NUMBER_MINTED = 64;
+56	 uint256 private constant _BITPOS_NUMBER_BURNED = 128;
+57	 uint256 private constant _BITPOS_AUX = 192;
+58	 uint256 private constant _BITMASK_AUX_COMPLEMENT = (1 << 192) - 1;
+59	 uint256 private constant _BITPOS_START_TIMESTAMP = 160;
+60	 uint256 private constant _BITMASK_BURNED = 1 << 224;
+61	 uint256 private constant _BITPOS_NEXT_INITIALIZED = 225;
+62	 uint256 private constant _BITMASK_NEXT_INITIALIZED = 1 << 225;
+63	 uint256 private constant _BITPOS_EXTRA_DATA = 232;
+64	 uint256 private constant _BITMASK_EXTRA_DATA_COMPLEMENT = (1 << 232) - 1;
+65	 uint256 private constant _BITMASK_ADDRESS = (1 << 160) - 1;
+66	 uint256 private constant _MAX_MINT_ERC2309_QUANTITY_LIMIT = 5000;
+67	 bytes32 private constant _TRANSFER_EVENT_SIGNATURE = 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef;
+68	 uint256 private _currentIndex;
+69	 uint256 private _burnCounter;
+70	 string private _name;
+71	 string private _symbol;
+72	 mapping(uint256 => uint256) private _packedOwnerships;
+73	 mapping(address => uint256) private _packedAddressData;
+74	 mapping(uint256 => TokenApprovalRef) private _tokenApprovals;
+75	 mapping(address => mapping(address => bool)) private _operatorApprovals;
+76	 constructor(string memory name_, string memory symbol_) {
+77	 _name = name_;
+78	 _symbol = symbol_;
+79	 _currentIndex = _startTokenId();
+80	 }
+81	 function _startTokenId() internal view virtual returns (uint256) {
+82	 return 0;
+83	 }
+84	 function _nextTokenId() internal view virtual returns (uint256) {
+85	 return _currentIndex;
+86	 }
+87	 function totalSupply() public view virtual override returns (uint256) {
+88	 unchecked {
+89	 return _currentIndex - _burnCounter - _startTokenId();
+90	 }
+91	 }
+92	 function _totalMinted() internal view virtual returns (uint256) {
+93	 unchecked {
+94	 return _currentIndex - _startTokenId();
+95	 }
+96	 }
+97	 function _totalBurned() internal view virtual returns (uint256) {
+98	 return _burnCounter;
+99	 }
+100	 function balanceOf(address owner) public view virtual override returns (uint256) {
+101	 if (owner == address(0)) revert BalanceQueryForZeroAddress();
+102	 return _packedAddressData[owner] & _BITMASK_ADDRESS_DATA_ENTRY;
+103	 }
+104	 function _numberMinted(address owner) internal view returns (uint256) {
+105	 return (_packedAddressData[owner] >> _BITPOS_NUMBER_MINTED) & _BITMASK_ADDRESS_DATA_ENTRY;
+106	 }
+107	 function _numberBurned(address owner) internal view returns (uint256) {
+108	 return (_packedAddressData[owner] >> _BITPOS_NUMBER_BURNED) & _BITMASK_ADDRESS_DATA_ENTRY;
+109	 }
+110	 function _getAux(address owner) internal view returns (uint64) {
+111	 return uint64(_packedAddressData[owner] >> _BITPOS_AUX);
+112	 }
+113	 function _setAux(address owner, uint64 aux) internal virtual {
+114	 uint256 packed = _packedAddressData[owner];
+115	 uint256 auxCasted;
+116	 assembly {
+117	 auxCasted := aux }
+118	 packed = (packed & _BITMASK_AUX_COMPLEMENT) | (auxCasted << _BITPOS_AUX);
+119	 _packedAddressData[owner] = packed;
+120	 }
+121	 function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+122	 return interfaceId == 0x01ffc9a7 || interfaceId == 0x80ac58cd || interfaceId == 0x5b5e139f;
+123	 }
+124	 function name() public view virtual override returns (string memory) {
+125	 return _name;
+126	 }
+127	 function symbol() public view virtual override returns (string memory) {
+128	 return _symbol;
+129	 }
+130	 function tokenURI(uint256 tokenId) public view virtual override returns (string memory) {
+131	 if (!_exists(tokenId)) revert URIQueryForNonexistentToken();
+132	 string memory baseURI = _baseURI();
+133	 return bytes(baseURI).length != 0 ? string(abi.encodePacked(baseURI, _toString(tokenId))) : '';
+134	 }
+135	 function _baseURI() internal view virtual returns (string memory) {
+136	 return '';
+137	 }
+138	 function ownerOf(uint256 tokenId) public view virtual override returns (address) {
+139	 return address(uint160(_packedOwnershipOf(tokenId)));
+140	 }
+141	 function _ownershipOf(uint256 tokenId) internal view virtual returns (TokenOwnership memory) {
+142	 return _unpackedOwnership(_packedOwnershipOf(tokenId));
+143	 }
+144	 function _ownershipAt(uint256 index) internal view virtual returns (TokenOwnership memory) {
+145	 return _unpackedOwnership(_packedOwnerships[index]);
+146	 }
+147	 function _initializeOwnershipAt(uint256 index) internal virtual {
+148	 if (_packedOwnerships[index] == 0) {
+149	 _packedOwnerships[index] = _packedOwnershipOf(index);
+150	 }
+151	 }
+152	 function _packedOwnershipOf(uint256 tokenId) private view returns (uint256) {
+153	 uint256 curr = tokenId;
+154	 unchecked {
+155	 if (_startTokenId() <= curr) if (curr < _currentIndex) {
+156	 uint256 packed = _packedOwnerships[curr];
+157	 if (packed & _BITMASK_BURNED == 0) {
+158	 while (packed == 0) {
+159	 packed = _packedOwnerships[--curr];
+160	 }
+161	 return packed;
+162	 }
+163	 }
+164	 }
+165	 revert OwnerQueryForNonexistentToken();
+166	 }
+167	 function _unpackedOwnership(uint256 packed) private pure returns (TokenOwnership memory ownership) {
+168	 ownership.addr = address(uint160(packed));
+169	 ownership.startTimestamp = uint64(packed >> _BITPOS_START_TIMESTAMP);
+170	 ownership.burned = packed & _BITMASK_BURNED != 0;
+171	 ownership.extraData = uint24(packed >> _BITPOS_EXTRA_DATA);
+172	 }
+173	 function _packOwnershipData(address owner, uint256 flags) private view returns (uint256 result) {
+174	 assembly {
+175	 owner := and(owner, _BITMASK_ADDRESS) result := or(owner, or(shl(_BITPOS_START_TIMESTAMP, timestamp()), flags)) }
+176	 }
+177	 function _nextInitializedFlag(uint256 quantity) private pure returns (uint256 result) {
+178	 assembly {
+179	 result := shl(_BITPOS_NEXT_INITIALIZED, eq(quantity, 1)) }
+180	 }
+181	 function approve(address to, uint256 tokenId) public virtual override {
+182	 address owner = ownerOf(tokenId);
+183	 if (_msgSenderERC721A() != owner) if (!isApprovedForAll(owner, _msgSenderERC721A())) {
+184	 revert ApprovalCallerNotOwnerNorApproved();
+185	 }
+186	 _tokenApprovals[tokenId].value = to;
+187	 emit Approval(owner, to, tokenId);
+188	 }
+189	 function getApproved(uint256 tokenId) public view virtual override returns (address) {
+190	 if (!_exists(tokenId)) revert ApprovalQueryForNonexistentToken();
+191	 return _tokenApprovals[tokenId].value;
+192	 }
+193	 function setApprovalForAll(address operator, bool approved) public virtual override {
+194	 if (operator == _msgSenderERC721A()) revert ApproveToCaller();
+195	 _operatorApprovals[_msgSenderERC721A()][operator] = approved;
+196	 emit ApprovalForAll(_msgSenderERC721A(), operator, approved);
+197	 }
+198	 function isApprovedForAll(address owner, address operator) public view virtual override returns (bool) {
+199	 return _operatorApprovals[owner][operator];
+200	 }
+201	 function _exists(uint256 tokenId) internal view virtual returns (bool) {
+202	 return _startTokenId() <= tokenId && tokenId < _currentIndex && _packedOwnerships[tokenId] & _BITMASK_BURNED == 0;
+203	 }
+204	 function _isSenderApprovedOrOwner( address approvedAddress, address owner, address msgSender ) private pure returns (bool result) {
+205	 assembly {
+206	 owner := and(owner, _BITMASK_ADDRESS) msgSender := and(msgSender, _BITMASK_ADDRESS) result := or(eq(msgSender, owner), eq(msgSender, approvedAddress)) }
+207	 }
+208	 function _getApprovedSlotAndAddress(uint256 tokenId) private view returns (uint256 approvedAddressSlot, address approvedAddress) {
+209	 TokenApprovalRef storage tokenApproval = _tokenApprovals[tokenId];
+210	 assembly {
+211	 approvedAddressSlot := tokenApproval.slot approvedAddress := sload(approvedAddressSlot) }
+212	 }
+213	 function transferFrom( address from, address to, uint256 tokenId ) public virtual override {
+214	 uint256 prevOwnershipPacked = _packedOwnershipOf(tokenId);
+215	 if (address(uint160(prevOwnershipPacked)) != from) revert TransferFromIncorrectOwner();
+216	 (uint256 approvedAddressSlot, address approvedAddress) = _getApprovedSlotAndAddress(tokenId);
+217	 if (!_isSenderApprovedOrOwner(approvedAddress, from, _msgSenderERC721A())) if (!isApprovedForAll(from, _msgSenderERC721A())) revert TransferCallerNotOwnerNorApproved();
+218	 if (to == address(0)) revert TransferToZeroAddress();
+219	 _beforeTokenTransfers(from, to, tokenId, 1);
+220	 assembly {
+221	 if approvedAddress {
+222	 sstore(approvedAddressSlot, 0) }
+223	 }
+224	 unchecked {
+225	 --_packedAddressData[from];
+226	 ++_packedAddressData[to];
+227	 _packedOwnerships[tokenId] = _packOwnershipData( to, _BITMASK_NEXT_INITIALIZED | _nextExtraData(from, to, prevOwnershipPacked) );
+228	 if (prevOwnershipPacked & _BITMASK_NEXT_INITIALIZED == 0) {
+229	 uint256 nextTokenId = tokenId + 1;
+230	 if (_packedOwnerships[nextTokenId] == 0) {
+231	 if (nextTokenId != _currentIndex) {
+232	 _packedOwnerships[nextTokenId] = prevOwnershipPacked;
+233	 }
+234	 }
+235	 }
+236	 }
+237	 emit Transfer(from, to, tokenId);
+238	 _afterTokenTransfers(from, to, tokenId, 1);
+239	 }
+240	 function safeTransferFrom( address from, address to, uint256 tokenId ) public virtual override {
+241	 safeTransferFrom(from, to, tokenId, '');
+242	 }
+243	 function safeTransferFrom( address from, address to, uint256 tokenId, bytes memory _data ) public virtual override {
+244	 transferFrom(from, to, tokenId);
+245	 if (to.code.length != 0) if (!_checkContractOnERC721Received(from, to, tokenId, _data)) {
+246	 revert TransferToNonERC721ReceiverImplementer();
+247	 }
+248	 }
+249	 function _beforeTokenTransfers( address from, address to, uint256 startTokenId, uint256 quantity ) internal virtual {
+250	 }
+251	 function _afterTokenTransfers( address from, address to, uint256 startTokenId, uint256 quantity ) internal virtual {
+252	 }
+253	 function _checkContractOnERC721Received( address from, address to, uint256 tokenId, bytes memory _data ) private returns (bool) {
+254	 try ERC721A__IERC721Receiver(to).onERC721Received(_msgSenderERC721A(), from, tokenId, _data) returns ( bytes4 retval ) {
+255	 return retval == ERC721A__IERC721Receiver(to).onERC721Received.selector;
+256	 }
+257	 catch (bytes memory reason) {
+258	 if (reason.length == 0) {
+259	 revert TransferToNonERC721ReceiverImplementer();
+260	 }
+261	 else {
+262	 assembly {
+263	 revert(add(32, reason), mload(reason)) }
+264	 }
+265	 }
+266	 }
+267	 function _mint(address to, uint256 quantity) internal virtual {
+268	 uint256 startTokenId = _currentIndex;
+269	 if (quantity == 0) revert MintZeroQuantity();
+270	 _beforeTokenTransfers(address(0), to, startTokenId, quantity);
+271	 unchecked {
+272	 _packedAddressData[to] += quantity * ((1 << _BITPOS_NUMBER_MINTED) | 1);
+273	 _packedOwnerships[startTokenId] = _packOwnershipData( to, _nextInitializedFlag(quantity) | _nextExtraData(address(0), to, 0) );
+274	 uint256 toMasked;
+275	 uint256 end = startTokenId + quantity;
+276	 assembly {
+277	 toMasked := and(to, _BITMASK_ADDRESS) log4( 0, 0, _TRANSFER_EVENT_SIGNATURE, 0, toMasked, startTokenId ) for {
+278	 let tokenId := add(startTokenId, 1) }
+279	 iszero(eq(tokenId, end)) {
+280	 tokenId := add(tokenId, 1) }
+281	 {
+282	 log4(0, 0, _TRANSFER_EVENT_SIGNATURE, 0, toMasked, tokenId) }
+283	 }
+284	 if (toMasked == 0) revert MintToZeroAddress();
+285	 _currentIndex = end;
+286	 }
+287	 _afterTokenTransfers(address(0), to, startTokenId, quantity);
+288	 }
+289	 function _mintERC2309(address to, uint256 quantity) internal virtual {
+290	 uint256 startTokenId = _currentIndex;
+291	 if (to == address(0)) revert MintToZeroAddress();
+292	 if (quantity == 0) revert MintZeroQuantity();
+293	 if (quantity > _MAX_MINT_ERC2309_QUANTITY_LIMIT) revert MintERC2309QuantityExceedsLimit();
+294	 _beforeTokenTransfers(address(0), to, startTokenId, quantity);
+295	 unchecked {
+296	 _packedAddressData[to] += quantity * ((1 << _BITPOS_NUMBER_MINTED) | 1);
+297	 _packedOwnerships[startTokenId] = _packOwnershipData( to, _nextInitializedFlag(quantity) | _nextExtraData(address(0), to, 0) );
+298	 emit ConsecutiveTransfer(startTokenId, startTokenId + quantity - 1, address(0), to);
+299	 _currentIndex = startTokenId + quantity;
+300	 }
+301	 _afterTokenTransfers(address(0), to, startTokenId, quantity);
+302	 }
+303	 function _safeMint( address to, uint256 quantity, bytes memory _data ) internal virtual {
+304	 _mint(to, quantity);
+305	 unchecked {
+306	 if (to.code.length != 0) {
+307	 uint256 end = _currentIndex;
+308	 uint256 index = end - quantity;
+309	 do {
+310	 if (!_checkContractOnERC721Received(address(0), to, index++, _data)) {
+311	 revert TransferToNonERC721ReceiverImplementer();
+312	 }
+313	 }
+314	 while (index < end);
+315	 if (_currentIndex != end) revert();
+316	 }
+317	 }
+318	 }
+319	 function _safeMint(address to, uint256 quantity) internal virtual {
+320	 _safeMint(to, quantity, '');
+321	 }
+322	 function _burn(uint256 tokenId) internal virtual {
+323	 _burn(tokenId, false);
+324	 }
+325	 function _burn(uint256 tokenId, bool approvalCheck) internal virtual {
+326	 uint256 prevOwnershipPacked = _packedOwnershipOf(tokenId);
+327	 address from = address(uint160(prevOwnershipPacked));
+328	 (uint256 approvedAddressSlot, address approvedAddress) = _getApprovedSlotAndAddress(tokenId);
+329	 if (approvalCheck) {
+330	 if (!_isSenderApprovedOrOwner(approvedAddress, from, _msgSenderERC721A())) if (!isApprovedForAll(from, _msgSenderERC721A())) revert TransferCallerNotOwnerNorApproved();
+331	 }
+332	 _beforeTokenTransfers(from, address(0), tokenId, 1);
+333	 assembly {
+334	 if approvedAddress {
+335	 sstore(approvedAddressSlot, 0) }
+336	 }
+337	 unchecked {
+338	 _packedAddressData[from] += (1 << _BITPOS_NUMBER_BURNED) - 1;
+339	 _packedOwnerships[tokenId] = _packOwnershipData( from, (_BITMASK_BURNED | _BITMASK_NEXT_INITIALIZED) | _nextExtraData(from, address(0), prevOwnershipPacked) );
+340	 if (prevOwnershipPacked & _BITMASK_NEXT_INITIALIZED == 0) {
+341	 uint256 nextTokenId = tokenId + 1;
+342	 if (_packedOwnerships[nextTokenId] == 0) {
+343	 if (nextTokenId != _currentIndex) {
+344	 _packedOwnerships[nextTokenId] = prevOwnershipPacked;
+345	 }
+346	 }
+347	 }
+348	 }
+349	 emit Transfer(from, address(0), tokenId);
+350	 _afterTokenTransfers(from, address(0), tokenId, 1);
+351	 unchecked {
+352	 _burnCounter++;
+353	 }
+354	 }
+355	 function _setExtraDataAt(uint256 index, uint24 extraData) internal virtual {
+356	 uint256 packed = _packedOwnerships[index];
+357	 if (packed == 0) revert OwnershipNotInitializedForExtraData();
+358	 uint256 extraDataCasted;
+359	 assembly {
+360	 extraDataCasted := extraData }
+361	 packed = (packed & _BITMASK_EXTRA_DATA_COMPLEMENT) | (extraDataCasted << _BITPOS_EXTRA_DATA);
+362	 _packedOwnerships[index] = packed;
+363	 }
+364	 function _extraData( address from, address to, uint24 previousExtraData ) internal view virtual returns (uint24) {
+365	 }
+366	 function _nextExtraData( address from, address to, uint256 prevOwnershipPacked ) private view returns (uint256) {
+367	 uint24 extraData = uint24(prevOwnershipPacked >> _BITPOS_EXTRA_DATA);
+368	 return uint256(_extraData(from, to, extraData)) << _BITPOS_EXTRA_DATA;
+369	 }
+370	 function _msgSenderERC721A() internal view virtual returns (address) {
+371	 return msg.sender;
+372	 }
+373	 function _toString(uint256 value) internal pure virtual returns (string memory str) {
+374	 assembly {
+375	 str := add(mload(0x40), 0x80) mstore(0x40, str) let end := str for {
+376	 let temp := value }
+377	 1 {
+378	 }
+379	 {
+380	 str := sub(str, 1) mstore8(str, add(48, mod(temp, 10))) temp := div(temp, 10) if iszero(temp) {
+381	 break }
+382	 }
+383	 let length := sub(end, str) str := sub(str, 0x20) mstore(str, length) }
+384	 }
+385	 }
+386	 pragma solidity ^0.8.0;
+387	 abstract contract Context {
+388	 function _msgSender() internal view virtual returns (address) {
+389	 return msg.sender;
+390	 }
+391	 function _msgData() internal view virtual returns (bytes calldata) {
+392	 return msg.data;
+393	 }
+394	 }
+395	 pragma solidity ^0.8.0;
+396	 interface IERC165 {
+397	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+398	 }
+399	 pragma solidity ^0.8.4;
+400	 abstract contract ERC721AQueryable is ERC721A, IERC721AQueryable {
+401	 function explicitOwnershipOf(uint256 tokenId) public view virtual override returns (TokenOwnership memory) {
+402	 TokenOwnership memory ownership;
+403	 if (tokenId < _startTokenId() || tokenId >= _nextTokenId()) {
+404	 return ownership;
+405	 }
+406	 ownership = _ownershipAt(tokenId);
+407	 if (ownership.burned) {
+408	 return ownership;
+409	 }
+410	 return _ownershipOf(tokenId);
+411	 }
+412	 function explicitOwnershipsOf(uint256[] calldata tokenIds) external view virtual override returns (TokenOwnership[] memory) {
+413	 unchecked {
+414	 uint256 tokenIdsLength = tokenIds.length;
+415	 TokenOwnership[] memory ownerships = new TokenOwnership[](tokenIdsLength);
+416	 for (uint256 i; i != tokenIdsLength; ++i) {
+417	 ownerships[i] = explicitOwnershipOf(tokenIds[i]);
+418	 }
+419	 return ownerships;
+420	 }
+421	 }
+422	 function tokensOfOwnerIn( address owner, uint256 start, uint256 stop ) external view virtual override returns (uint256[] memory) {
+423	 unchecked {
+424	 if (start >= stop) revert InvalidQueryRange();
+425	 uint256 tokenIdsIdx;
+426	 uint256 stopLimit = _nextTokenId();
+427	 if (start < _startTokenId()) {
+428	 start = _startTokenId();
+429	 }
+430	 if (stop > stopLimit) {
+431	 stop = stopLimit;
+432	 }
+433	 uint256 tokenIdsMaxLength = balanceOf(owner);
+434	 if (start < stop) {
+435	 uint256 rangeLength = stop - start;
+436	 if (rangeLength < tokenIdsMaxLength) {
+437	 tokenIdsMaxLength = rangeLength;
+438	 }
+439	 }
+440	 else {
+441	 tokenIdsMaxLength = 0;
+442	 }
+443	 uint256[] memory tokenIds = new uint256[](tokenIdsMaxLength);
+444	 if (tokenIdsMaxLength == 0) {
+445	 return tokenIds;
+446	 }
+447	 TokenOwnership memory ownership = explicitOwnershipOf(start);
+448	 address currOwnershipAddr;
+449	 if (!ownership.burned) {
+450	 currOwnershipAddr = ownership.addr;
+451	 }
+452	 for (uint256 i = start; i != stop && tokenIdsIdx != tokenIdsMaxLength; ++i) {
+453	 ownership = _ownershipAt(i);
+454	 if (ownership.burned) {
+455	 continue;
+456	 }
+457	 if (ownership.addr != address(0)) {
+458	 currOwnershipAddr = ownership.addr;
+459	 }
+460	 if (currOwnershipAddr == owner) {
+461	 tokenIds[tokenIdsIdx++] = i;
+462	 }
+463	 }
+464	 assembly {
+465	 mstore(tokenIds, tokenIdsIdx) }
+466	 return tokenIds;
+467	 }
+468	 }
+469	 function tokensOfOwner(address owner) external view virtual override returns (uint256[] memory) {
+470	 unchecked {
+471	 uint256 tokenIdsIdx;
+472	 address currOwnershipAddr;
+473	 uint256 tokenIdsLength = balanceOf(owner);
+474	 uint256[] memory tokenIds = new uint256[](tokenIdsLength);
+475	 TokenOwnership memory ownership;
+476	 for (uint256 i = _startTokenId(); tokenIdsIdx != tokenIdsLength; ++i) {
+477	 ownership = _ownershipAt(i);
+478	 if (ownership.burned) {
+479	 continue;
+480	 }
+481	 if (ownership.addr != address(0)) {
+482	 currOwnershipAddr = ownership.addr;
+483	 }
+484	 if (currOwnershipAddr == owner) {
+485	 tokenIds[tokenIdsIdx++] = i;
+486	 }
+487	 }
+488	 return tokenIds;
+489	 }
+490	 }
+491	 }
+492	 pragma solidity ^0.8.0;
+493	 abstract contract Ownable is Context {
+494	 address private _owner;
+495	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+496	 constructor() {
+497	 _transferOwnership(_msgSender());
+498	 }
+499	 modifier onlyOwner() {
+500	 _checkOwner();
+501	 _;
+502	 }
+503	 function owner() public view virtual returns (address) {
+504	 return _owner;
+505	 }
+506	 function _checkOwner() internal view virtual {
+507	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+508	 }
+509	 function renounceOwnership() public virtual onlyOwner {
+510	 _transferOwnership(address(0));
+511	 }
+512	 function transferOwnership(address newOwner) public virtual onlyOwner {
+513	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+514	 _transferOwnership(newOwner);
+515	 }
+516	 function _transferOwnership(address newOwner) internal virtual {
+517	 address oldOwner = _owner;
+518	 _owner = newOwner;
+519	 emit OwnershipTransferred(oldOwner, newOwner);
+520	 }
+521	 }
+522	 pragma solidity ^0.8.0;
+523	 abstract contract ReentrancyGuard {
+524	 uint256 private constant _NOT_ENTERED = 1;
+525	 uint256 private constant _ENTERED = 2;
+526	 uint256 private _status;
+527	 constructor() {
+528	 _status = _NOT_ENTERED;
+529	 }
+530	 modifier nonReentrant() {
+531	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+532	 _status = _ENTERED;
+533	 _;
+534	 _status = _NOT_ENTERED;
+535	 }
+536	 }
+537	 pragma solidity ^0.8.0;
+538	 interface IERC721 is IERC165 {
+539	 event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+540	 event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+541	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+542	 function balanceOf(address owner) external view returns (uint256 balance);
+543	 function ownerOf(uint256 tokenId) external view returns (address owner);
+544	 function safeTransferFrom( address from, address to, uint256 tokenId, bytes calldata data ) external;
+545	 function safeTransferFrom( address from, address to, uint256 tokenId ) external;
+546	 function transferFrom( address from, address to, uint256 tokenId ) external;
+547	 function approve(address to, uint256 tokenId) external;
+548	 function setApprovalForAll(address operator, bool _approved) external;
+549	 function getApproved(uint256 tokenId) external view returns (address operator);
+550	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+551	 }
+552	 pragma solidity ^0.8.0;
+553	 contract The313RABBIT is ERC721AQueryable, Ownable, ReentrancyGuard {
+554	 mapping(uint256 => uint256) public status;
+555	 mapping(uint256 => bool) public returned;
+556	 mapping(uint256 => bool) public passUsed;
+557	 mapping(address => uint256) public wlMined;
+558	 mapping(address => uint256) public publicMined;
+559	 string public baseURI;
+560	 string public defaultURI;
+561	 uint256 public sleepReturnTime;
+562	 IERC20 public USDT;
+563	 uint256 public returnUSDTAmount;
+564	 IERC721Enumerable public littelMamiPASS;
+565	 uint256 public publicPrice;
+566	 uint256 public wlPrice;
+567	 uint256 public PASSPrice;
+568	 uint256 public maxSupply;
+569	 bytes32 public wlRoot;
+570	 uint256 public maxWlSupply;
+571	 uint256 public maxPASSSupply;
+572	 uint256 public wlNum;
+573	 uint256 public PASSNum;
+574	 uint256 public PASSStartTime;
+575	 uint256 public PASSEndTime;
+576	 uint256 public wlStartTime;
+577	 uint256 public wlEndTime;
+578	 uint256 public publicStartTime;
+579	 uint256 public publicEndTime;
+580	 uint256 public maxPublicMint;
+581	 uint256 public maxWlMint;
+582	 uint256 public partnerPrice;
+583	 bytes32 public partnerRoot;
+584	 bool public turnSleep;
+585	 using Strings for uint256;
+586	 event RemoveSleep(uint256 indexed tokenId);
+587	 event ToggleSleep(uint256 indexed tokenId, uint256 startTime);
+588	 constructor() public ERC721A("313 RABBIT", "313 RABBIT") {
+589	 publicPrice = 0.3 ether;
+590	 wlPrice = 0.27 ether;
+591	 partnerPrice = 0.24 ether;
+592	 PASSPrice = 0.24 ether;
+593	 maxSupply = 666;
+594	 maxWlSupply = 166;
+595	 maxPASSSupply = 300;
+596	 maxPublicMint = 2;
+597	 maxWlMint = 1;
+598	 PASSStartTime = 1664713800;
+599	 PASSEndTime = 1664886600;
+600	 wlStartTime = 1664713800;
+601	 wlEndTime = 1664886600;
+602	 publicStartTime = 1664886600;
+603	 publicEndTime = 1665318600;
+604	 littelMamiPASS = IERC721Enumerable( 0x6F555695B057c081F0A0f7c1d1a854EF7e2FEAa2 );
+605	 USDT = IERC20(0xdAC17F958D2ee523a2206206994597C13D831ec7);
+606	 returnUSDTAmount = 0;
+607	 sleepReturnTime = 60 days;
+608	 defaultURI = "ipfs: }
+609	 function adminMint(address _address, uint256 _num) external onlyOwner {
+610	 mint(_address, _num);
+611	 }
+612	 function adminMintBatch( address[] calldata _address, uint256[] calldata _num ) external onlyOwner {
+613	 require(_address.length == _num.length);
+614	 for (uint256 i = 0; i < _address.length; i++) {
+615	 mint(_address[i], _num[i]);
+616	 }
+617	 }
+618	 function withdrawETH(address payable _to) external onlyOwner {
+619	 (bool success, ) = _to.call{
+620	 value: address(this).balance}
+621	 ("");
+622	 require(success, "Transfer failed.");
+623	 }
+624	 function withdrawToken(IERC20 _token, address _to) external onlyOwner {
+625	 _token.transfer(_to, _token.balanceOf(address(this)));
+626	 }
+627	 function setSleep(uint256 _sleepReturnTime, uint256 _returnUSDTAmount) external onlyOwner {
+628	 sleepReturnTime = _sleepReturnTime;
+629	 returnUSDTAmount = _returnUSDTAmount;
+630	 }
+631	 function setReturnAmount(uint256 _returnUSDTAmount) external onlyOwner {
+632	 returnUSDTAmount = _returnUSDTAmount;
+633	 }
+634	 function setContract(IERC721Enumerable _littelMamiPASS, IERC20 _USDT) external onlyOwner {
+635	 littelMamiPASS = _littelMamiPASS;
+636	 USDT = _USDT;
+637	 }
+638	 function setMaxMint(uint256 _maxPublicMint, uint256 _maxWlMint) external onlyOwner {
+639	 maxPublicMint = _maxPublicMint;
+640	 maxWlMint = _maxWlMint;
+641	 }
+642	 function setRoot(bytes32 _wlRoot, bytes32 _partnerRoot) external onlyOwner {
+643	 wlRoot = _wlRoot;
+644	 partnerRoot = _partnerRoot;
+645	 }
+646	 function setMaxSupply(uint256 _maxPASSSupply, uint256 _maxWlSupply) external onlyOwner {
+647	 maxPASSSupply = _maxPASSSupply;
+648	 maxWlSupply = _maxWlSupply;
+649	 }
+650	 function setTime( uint256 _PASSStartTime, uint256 _PASSEndTime, uint256 _wlStartTime, uint256 _wlEndTime, uint256 _publicStartTime, uint256 _publicEndTime ) external onlyOwner {
+651	 PASSStartTime = _PASSStartTime;
+652	 PASSEndTime = _PASSEndTime;
+653	 wlStartTime = _wlStartTime;
+654	 wlEndTime = _wlEndTime;
+655	 publicStartTime = _publicStartTime;
+656	 publicEndTime = _publicEndTime;
+657	 }
+658	 function setPrice( uint256 _publicPrice, uint256 _wlPrice, uint256 _PASSPrice, uint256 _partnerPrice ) external onlyOwner {
+659	 publicPrice = _publicPrice;
+660	 wlPrice = _wlPrice;
+661	 PASSPrice = _PASSPrice;
+662	 partnerPrice = _partnerPrice;
+663	 }
+664	 function removeSleep(uint256 _tokenId) external onlyOwner {
+665	 status[_tokenId] = 0;
+666	 emit RemoveSleep(_tokenId);
+667	 }
+668	 function turnToggleSleep(bool _turnSleep) external onlyOwner {
+669	 turnSleep = _turnSleep;
+670	 }
+671	 function toggleSleep(uint256 _tokenId) external {
+672	 require( ownerOf(_tokenId) == _msgSender(), "313 RABBIT : Not the owner" );
+673	 require(turnSleep, "313 RABBIT : Sleep function is not open yet");
+674	 if (status[_tokenId] == 0) {
+675	 status[_tokenId] = block.timestamp;
+676	 emit ToggleSleep(_tokenId, block.timestamp);
+677	 }
+678	 else {
+679	 if ( block.timestamp - status[_tokenId] >= sleepReturnTime && !returned[_tokenId] ) {
+680	 USDT.transfer(_msgSender(), returnUSDTAmount);
+681	 returned[_tokenId] = true;
+682	 }
+683	 status[_tokenId] = 0;
+684	 emit ToggleSleep(_tokenId, 0);
+685	 }
+686	 }
+687	 function PASSMint(uint256 _num) external payable {
+688	 require( block.timestamp >= PASSStartTime && block.timestamp <= PASSEndTime, "313 RABBIT : Not at mint time" );
+689	 require( msg.value >= PASSPrice * _num, "313 RABBIT : Too little ether sent" );
+690	 uint256 holdNum = littelMamiPASS.balanceOf(_msgSender());
+691	 require(holdNum > 0, "313 RABBIT : HoldNum is zero");
+692	 require( _num > 0 && _num <= holdNum, "313 RABBIT : Num must greater than 0 and lower than holdNum" );
+693	 uint256 mintNum = 0;
+694	 for (uint256 i = 0; i < holdNum; i++) {
+695	 if (mintNum == _num) break;
+696	 uint256 tokenId = littelMamiPASS.tokenOfOwnerByIndex( _msgSender(), i );
+697	 if (!passUsed[tokenId]) {
+698	 passUsed[tokenId] = true;
+699	 mintNum++;
+700	 }
+701	 }
+702	 require( mintNum == _num, "313 RABBIT : Exceeds the maximum eligible PASS mint" );
+703	 require( PASSNum + mintNum <= maxPASSSupply, "313 RABBIT : Exceeds the maximum PASS supply number" );
+704	 mint(_msgSender(), mintNum);
+705	 PASSNum += mintNum;
+706	 }
+707	 function partnerMint(uint256 _num, bytes32[] memory _proof) external payable {
+708	 require( block.timestamp >= wlStartTime && block.timestamp <= wlEndTime, "313 RABBIT : Not at mint time" );
+709	 require( msg.value >= partnerPrice * _num, "313 RABBIT : Too little ether sent" );
+710	 require( wlMined[_msgSender()] + _num <= maxWlMint, "313 RABBIT : Mint exceeds the maximum wl number" );
+711	 require( _num > 0 && _num <= maxWlMint, "313 RABBIT : Num must greater than 0 and lower than maxWlMint" );
+712	 require( wlNum + _num <= maxWlSupply, "313 RABBIT : Exceeds the maximum PASS supply number" );
+713	 bytes32 leaf = keccak256(abi.encodePacked(_msgSender()));
+714	 require( MerkleProof.verify(_proof, partnerRoot, leaf), "313 RABBIT : Merkle verification failed" );
+715	 mint(_msgSender(), _num);
+716	 wlNum += _num;
+717	 wlMined[_msgSender()] += _num;
+718	 }
+719	 function wlMint(uint256 _num, bytes32[] memory _proof) external payable {
+720	 require( block.timestamp >= wlStartTime && block.timestamp <= wlEndTime, "313 RABBIT : Not at mint time" );
+721	 require( msg.value >= wlPrice * _num, "313 RABBIT : Too little ether sent" );
+722	 require( wlMined[_msgSender()] + _num <= maxWlMint, "313 RABBIT : Mint exceeds the maximum wl number" );
+723	 require( _num > 0 && _num <= maxWlMint, "313 RABBIT : Num must greater than 0 and lower than maxWlMint" );
+724	 require( wlNum + _num <= maxWlSupply, "313 RABBIT : Exceeds the maximum PASS supply number" );
+725	 bytes32 leaf = keccak256(abi.encodePacked(_msgSender()));
+726	 require( MerkleProof.verify(_proof, wlRoot, leaf), "313 RABBIT : Merkle verification failed" );
+727	 mint(_msgSender(), _num);
+728	 wlNum += _num;
+729	 wlMined[_msgSender()] += _num;
+730	 }
+731	 function publicMint(uint256 _num) external payable {
+732	 require( block.timestamp >= publicStartTime && block.timestamp <= publicEndTime, "313 RABBIT : Not at mint time" );
+733	 require( publicMined[_msgSender()] + _num <= maxPublicMint, "313 RABBIT : Mint exceeds the maximum public number" );
+734	 require( _num > 0 && _num <= maxPublicMint, "313 RABBIT : Num must greater than 0 and lower than maxPublicMint" );
+735	 require( msg.value >= publicPrice * _num, "313 RABBIT : Too little ether sent" );
+736	 mint(_msgSender(), _num);
+737	 publicMined[_msgSender()] += _num;
+738	 }
+739	 function mint(address _address, uint256 _num) internal nonReentrant {
+740	 require( totalSupply() + _num <= maxSupply, "313 RABBIT : Exceeds the maximum supply number" );
+741	 _mint(_address, _num);
+742	 }
+743	 function _beforeTokenTransfers( address from, address to, uint256 startTokenId, uint256 quantity ) internal virtual override {
+744	 super._beforeTokenTransfers(from, to, startTokenId, quantity);
+745	 for (uint256 i = startTokenId; i < startTokenId + quantity; i++) {
+746	 require(status[startTokenId] == 0, "313 RABBIT : Sleepping");
+747	 }
+748	 }
+749	 function setBaseURI(string memory _baseURI) public onlyOwner {
+750	 baseURI = _baseURI;
+751	 }
+752	 function setDefaultURI(string memory _defaultURI) public onlyOwner {
+753	 defaultURI = _defaultURI;
+754	 }
+755	 function tokenURI(uint256 _tokenId) public view override returns (string memory) {
+756	 require( _exists(_tokenId), "ERC721Metadata: URI query for nonexistent token" );
+757	 string memory imageURI = bytes(baseURI).length > 0 ? string(abi.encodePacked(baseURI, _tokenId.toString(), ".json")) : defaultURI;
+758	 return imageURI;
+759	 }
+760	 }
+761	 pragma solidity ^0.8.0;
+762	 interface IERC20 {
+763	 event Transfer(address indexed from, address indexed to, uint256 value);
+764	 event Approval(address indexed owner, address indexed spender, uint256 value);
+765	 function totalSupply() external view returns (uint256);
+766	 function balanceOf(address account) external view returns (uint256);
+767	 function transfer(address to, uint256 amount) external returns (bool);
+768	 function allowance(address owner, address spender) external view returns (uint256);
+769	 function approve(address spender, uint256 amount) external returns (bool);
+770	 function transferFrom( address from, address to, uint256 amount ) external returns (bool);
+771	 }
+772	 pragma solidity ^0.8.0;
+773	 interface IERC721Enumerable is IERC721 {
+774	 function totalSupply() external view returns (uint256);
+775	 function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256);
+776	 function tokenByIndex(uint256 index) external view returns (uint256);
+777	 }
+778	 pragma solidity ^0.8.0;
+779	 library Strings {
+780	 bytes16 private constant _HEX_SYMBOLS = "0123456789abcdef";
+781	 uint8 private constant _ADDRESS_LENGTH = 20;
+782	 function toString(uint256 value) internal pure returns (string memory) {
+783	 if (value == 0) {
+784	 return "0";
+785	 }
+786	 uint256 temp = value;
+787	 uint256 digits;
+788	 while (temp != 0) {
+789	 digits++;
+790	 temp /= 10;
+791	 }
+792	 bytes memory buffer = new bytes(digits);
+793	 while (value != 0) {
+794	 digits -= 1;
+795	 buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+796	 value /= 10;
+797	 }
+798	 return string(buffer);
+799	 }
+800	 function toHexString(uint256 value) internal pure returns (string memory) {
+801	 if (value == 0) {
+802	 return "0x00";
+803	 }
+804	 uint256 temp = value;
+805	 uint256 length = 0;
+806	 while (temp != 0) {
+807	 length++;
+808	 temp >>= 8;
+809	 }
+810	 return toHexString(value, length);
+811	 }
+812	 function toHexString(uint256 value, uint256 length) internal pure returns (string memory) {
+813	 bytes memory buffer = new bytes(2 * length + 2);
+814	 buffer[0] = "0";
+815	 buffer[1] = "x";
+816	 for (uint256 i = 2 * length + 1; i > 1; --i) {
+817	 buffer[i] = _HEX_SYMBOLS[value & 0xf];
+818	 value >>= 4;
+819	 }
+820	 require(value == 0, "Strings: hex length insufficient");
+821	 return string(buffer);
+822	 }
+823	 function toHexString(address addr) internal pure returns (string memory) {
+824	 return toHexString(uint256(uint160(addr)), _ADDRESS_LENGTH);
+825	 }
+826	 }
+827	 pragma solidity ^0.8.0;
+828	 library MerkleProof {
+829	 function verify( bytes32[] memory proof, bytes32 root, bytes32 leaf ) internal pure returns (bool) {
+830	 return processProof(proof, leaf) == root;
+831	 }
+832	 function verifyCalldata( bytes32[] calldata proof, bytes32 root, bytes32 leaf ) internal pure returns (bool) {
+833	 return processProofCalldata(proof, leaf) == root;
+834	 }
+835	 function processProof(bytes32[] memory proof, bytes32 leaf) internal pure returns (bytes32) {
+836	 bytes32 computedHash = leaf;
+837	 for (uint256 i = 0; i < proof.length; i++) {
+838	 computedHash = _hashPair(computedHash, proof[i]);
+839	 }
+840	 return computedHash;
+841	 }
+842	 function processProofCalldata(bytes32[] calldata proof, bytes32 leaf) internal pure returns (bytes32) {
+843	 bytes32 computedHash = leaf;
+844	 for (uint256 i = 0; i < proof.length; i++) {
+845	 computedHash = _hashPair(computedHash, proof[i]);
+846	 }
+847	 return computedHash;
+848	 }
+849	 function multiProofVerify( bytes32[] memory proof, bool[] memory proofFlags, bytes32 root, bytes32[] memory leaves ) internal pure returns (bool) {
+850	 return processMultiProof(proof, proofFlags, leaves) == root;
+851	 }
+852	 function multiProofVerifyCalldata( bytes32[] calldata proof, bool[] calldata proofFlags, bytes32 root, bytes32[] memory leaves ) internal pure returns (bool) {
+853	 return processMultiProofCalldata(proof, proofFlags, leaves) == root;
+854	 }
+855	 function processMultiProof( bytes32[] memory proof, bool[] memory proofFlags, bytes32[] memory leaves ) internal pure returns (bytes32 merkleRoot) {
+856	 uint256 leavesLen = leaves.length;
+857	 uint256 totalHashes = proofFlags.length;
+858	 require(leavesLen + proof.length - 1 == totalHashes, "MerkleProof: invalid multiproof");
+859	 bytes32[] memory hashes = new bytes32[](totalHashes);
+860	 uint256 leafPos = 0;
+861	 uint256 hashPos = 0;
+862	 uint256 proofPos = 0;
+863	 for (uint256 i = 0; i < totalHashes; i++) {
+864	 bytes32 a = leafPos < leavesLen ? leaves[leafPos++] : hashes[hashPos++];
+865	 bytes32 b = proofFlags[i] ? leafPos < leavesLen ? leaves[leafPos++] : hashes[hashPos++] : proof[proofPos++];
+866	 hashes[i] = _hashPair(a, b);
+867	 }
+868	 if (totalHashes > 0) {
+869	 return hashes[totalHashes - 1];
+870	 }
+871	 else if (leavesLen > 0) {
+872	 return leaves[0];
+873	 }
+874	 else {
+875	 return proof[0];
+876	 }
+877	 }
+878	 function processMultiProofCalldata( bytes32[] calldata proof, bool[] calldata proofFlags, bytes32[] memory leaves ) internal pure returns (bytes32 merkleRoot) {
+879	 uint256 leavesLen = leaves.length;
+880	 uint256 totalHashes = proofFlags.length;
+881	 require(leavesLen + proof.length - 1 == totalHashes, "MerkleProof: invalid multiproof");
+882	 bytes32[] memory hashes = new bytes32[](totalHashes);
+883	 uint256 leafPos = 0;
+884	 uint256 hashPos = 0;
+885	 uint256 proofPos = 0;
+886	 for (uint256 i = 0; i < totalHashes; i++) {
+887	 bytes32 a = leafPos < leavesLen ? leaves[leafPos++] : hashes[hashPos++];
+888	 bytes32 b = proofFlags[i] ? leafPos < leavesLen ? leaves[leafPos++] : hashes[hashPos++] : proof[proofPos++];
+889	 hashes[i] = _hashPair(a, b);
+890	 }
+891	 if (totalHashes > 0) {
+892	 return hashes[totalHashes - 1];
+893	 }
+894	 else if (leavesLen > 0) {
+895	 return leaves[0];
+896	 }
+897	 else {
+898	 return proof[0];
+899	 }
+900	 }
+901	 function _hashPair(bytes32 a, bytes32 b) private pure returns (bytes32) {
+902	 return a < b ? _efficientHash(a, b) : _efficientHash(b, a);
+903	 }
+904	 function _efficientHash(bytes32 a, bytes32 b) private pure returns (bytes32 value) {
+905	 assembly {
+906	 mstore(0x00, a) mstore(0x20, b) value := keccak256(0x00, 0x40) }
+907	 }
+908	 }
+909	 pragma solidity ^0.8.4;
+910	 interface ERC721A__IERC721Receiver {
+911	 function onERC721Received( address operator, address from, uint256 tokenId, bytes calldata data ) external returns (bytes4);
+912	 }

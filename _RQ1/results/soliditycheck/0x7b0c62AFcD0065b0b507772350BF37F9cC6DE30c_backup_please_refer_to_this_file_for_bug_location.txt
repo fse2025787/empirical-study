@@ -1,0 +1,129 @@
+row number 
+1	       pragma solidity ^0.5.16;
+2	 library SafeMath {
+3	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+4	 uint256 c = a + b;
+5	 require(c >= a, "Math error");
+6	 return c;
+7	 }
+8	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+9	 require(a >= b, "Math error");
+10	 return a - b;
+11	 }
+12	 }
+13	 interface ERC20 {
+14	 function balanceOf(address _address) external view returns (uint256 balance);
+15	 function transfer(address _to, uint256 _value) external returns (bool success);
+16	 function transferFrom(address _from, address _to, uint256 _value) external returns (bool success);
+17	 function approve(address _spender, uint256 _value) external returns (bool success);
+18	 function allowance(address _owner, address _spender) external view returns (uint256 remaining);
+19	 event Transfer(address indexed from, address indexed to, uint256 value);
+20	 event Approval(address indexed owner, address indexed spender, uint256 value);
+21	 }
+22	 library TransferHelper {
+23	 function safeApprove(address token, address to, uint value) internal {
+24	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));
+25	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: APPROVE_FAILED');
+26	 }
+27	 function safeTransfer(address token, address to, uint value) internal {
+28	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));
+29	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FAILED');
+30	 }
+31	 function safeTransferFrom(address token, address from, address to, uint value) internal {
+32	 (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));
+33	 require(success && (data.length == 0 || abi.decode(data, (bool))), 'TransferHelper: TRANSFER_FROM_FAILED');
+34	 }
+35	 function safeTransferETH(address to, uint value) internal {
+36	 (bool success,) = to.call.value(value)(new bytes(0));
+37	 require(success, 'TransferHelper: ETH_TRANSFER_FAILED');
+38	 }
+39	 }
+40	 contract BhxManage {
+41	 address public owner;
+42	 address public owner2;
+43	 mapping (bytes32 => bool) public signHash;
+44	 address public bhx;
+45	 address public usdt;
+46	 address public feeAddress;
+47	 constructor(address _owner2, address _bhx, address _usdt, address _feeAddress) public {
+48	 owner = msg.sender;
+49	 owner2 = _owner2;
+50	 bhx = _bhx;
+51	 usdt = _usdt;
+52	 feeAddress = _feeAddress;
+53	 }
+54	 event BhxRed(address indexed owner, uint256 value);
+55	 event UsdtRed(address indexed owner, uint256 value);
+56	 modifier onlyOwner() {
+57	 require(owner == msg.sender, "BHXManage: You are not owner");
+58	 _;
+59	 }
+60	 function setOwner(address _owner) external onlyOwner {
+61	 require(_owner != address(0), "BHXManage: Zero address error");
+62	 owner = _owner;
+63	 }
+64	 function setOwner2(address _owner2) external onlyOwner {
+65	 require(_owner2 != address(0), "BHXManage: Zero address error");
+66	 owner2 = _owner2;
+67	 }
+68	 function setFeeAddress(address _feeAddress) external onlyOwner {
+69	 require(_feeAddress != address(0), "BHXManage: Zero address error");
+70	 feeAddress = _feeAddress;
+71	 }
+72	 function takeErc20(address _erc20Address) external onlyOwner {
+73	 require(_erc20Address != address(0), "BHXManage: Zero address error");
+74	 ERC20 erc20 = ERC20(_erc20Address);
+75	 uint256 _value = erc20.balanceOf(address(this));
+76	 TransferHelper.safeTransfer(_erc20Address, msg.sender, _value);
+77	 }
+78	 function takeETH() external onlyOwner {
+79	 uint256 _value = address(this).balance;
+80	 TransferHelper.safeTransferETH(msg.sender, _value);
+81	 }
+82	 function backendTransferBhx(uint256 _value, uint256 _feeValue, uint256 _nonce, bytes memory _signature) public payable {
+83	 address _to = msg.sender;
+84	 require(_to != address(0), "BHXManage: Zero address error");
+85	 ERC20 bhxErc20 = ERC20(bhx);
+86	 uint256 bhxBalance = bhxErc20.balanceOf(address(this));
+87	 require(bhxBalance >= _value && _value > 0, "BHXManage: Insufficient balance or zero amount");
+88	 bytes32 hash = keccak256(abi.encodePacked(_to, _value, _feeValue, _nonce));
+89	 bytes32 messageHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+90	 address signer = recoverSigner(messageHash, _signature);
+91	 require(signer == owner2, "BHXManage: Signer is not owner2");
+92	 require(signHash[messageHash] == false, "BHXManage: MessageHash is used");
+93	 signHash[messageHash] = true;
+94	 require(msg.value == _feeValue, "BHXManage: Value unequal fee value");
+95	 TransferHelper.safeTransfer(bhx, _to, _value);
+96	 TransferHelper.safeTransferETH(feeAddress, _feeValue);
+97	 emit BhxRed(_to, _value);
+98	 }
+99	 function backendTransferUsdt(uint256 _value, uint256 _feeValue, uint256 _nonce, bytes memory _signature) public payable {
+100	 address _to = msg.sender;
+101	 require(_to != address(0), "BHXManage: Zero address error");
+102	 ERC20 usdtErc20 = ERC20(usdt);
+103	 uint256 usdtBalance = usdtErc20.balanceOf(address(this));
+104	 require(usdtBalance >= _value && _value > 0, "BHXManage: Insufficient balance or zero amount");
+105	 bytes32 hash = keccak256(abi.encodePacked(_to, _value, _feeValue, _nonce));
+106	 bytes32 messageHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+107	 address signer = recoverSigner(messageHash, _signature);
+108	 require(signer == owner2, "BHXManage: Signer is not owner2");
+109	 require(signHash[messageHash] == false, "BHXManage: MessageHash is used");
+110	 signHash[messageHash] = true;
+111	 require(msg.value == _feeValue, "BHXManage: Value unequal fee value");
+112	 TransferHelper.safeTransfer(usdt, _to, _value);
+113	 TransferHelper.safeTransferETH(feeAddress, _feeValue);
+114	 emit UsdtRed(_to, _value);
+115	 }
+116	 function recoverSigner(bytes32 message, bytes memory sig) internal pure returns (address) {
+117	 (uint8 v, bytes32 r, bytes32 s) = splitSignature(sig);
+118	 return ecrecover(message, v, r, s);
+119	 }
+120	 function splitSignature(bytes memory sig) internal pure returns (uint8 v, bytes32 r, bytes32 s) {
+121	 require(sig.length == 65);
+122	 assembly {
+123	 r := mload(add(sig, 32)) s := mload(add(sig, 64)) v := byte(0, mload(add(sig, 96))) }
+124	 return (v, r, s);
+125	 }
+126	 function() payable external {
+127	 }
+128	 }

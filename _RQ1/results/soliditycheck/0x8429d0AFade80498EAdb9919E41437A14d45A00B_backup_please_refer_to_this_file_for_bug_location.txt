@@ -1,0 +1,660 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity 0.6.12;
+3	 interface IERC20 {
+4	 function totalSupply() external view returns (uint256);
+5	 function balanceOf(address account) external view returns (uint256);
+6	 function transfer(address recipient, uint256 amount) external returns (bool);
+7	 function allowance(address owner, address spender) external view returns (uint256);
+8	 function approve(address spender, uint256 amount) external returns (bool);
+9	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+10	 event Transfer(address indexed from, address indexed to, uint256 value);
+11	 event Approval(address indexed owner, address indexed spender, uint256 value);
+12	 }
+13	 pragma solidity 0.6.12;
+14	 interface IScaledBalanceToken {
+15	 function scaledBalanceOf(address user) external view returns (uint256);
+16	 function getScaledUserBalanceAndSupply(address user) external view returns (uint256, uint256);
+17	 function scaledTotalSupply() external view returns (uint256);
+18	 }
+19	 pragma solidity 0.6.12;
+20	 interface IInitializableAToken {
+21	 event Initialized( address indexed underlyingAsset, address indexed pool, address treasury, address incentivesController, uint8 aTokenDecimals, string aTokenName, string aTokenSymbol, bytes params );
+22	 function initialize( ILendingPool pool, address treasury, address underlyingAsset, IAaveIncentivesController incentivesController, uint8 aTokenDecimals, string calldata aTokenName, string calldata aTokenSymbol, bytes calldata params ) external;
+23	 }
+24	 pragma solidity 0.6.12;
+25	 abstract contract Context {
+26	 function _msgSender() internal view virtual returns (address payable) {
+27	 return msg.sender;
+28	 }
+29	 function _msgData() internal view virtual returns (bytes memory) {
+30	 this;
+31	 return msg.data;
+32	 }
+33	 }
+34	 pragma solidity 0.6.12;
+35	 interface IERC20Detailed is IERC20 {
+36	 function name() external view returns (string memory);
+37	 function symbol() external view returns (string memory);
+38	 function decimals() external view returns (uint8);
+39	 }
+40	 pragma solidity 0.6.12;
+41	 interface IAToken is IERC20, IScaledBalanceToken, IInitializableAToken {
+42	 event Mint(address indexed from, uint256 value, uint256 index);
+43	 function mint( address user, uint256 amount, uint256 index ) external returns (bool);
+44	 event Burn(address indexed from, address indexed target, uint256 value, uint256 index);
+45	 event BalanceTransfer(address indexed from, address indexed to, uint256 value, uint256 index);
+46	 function burn( address user, address receiverOfUnderlying, uint256 amount, uint256 index ) external;
+47	 function mintToTreasury(uint256 amount, uint256 index) external;
+48	 function transferOnLiquidation( address from, address to, uint256 value ) external;
+49	 function transferUnderlyingTo(address user, uint256 amount) external returns (uint256);
+50	 function handleRepayment(address user, uint256 amount) external;
+51	 function getIncentivesController() external view returns (IAaveIncentivesController);
+52	 function UNDERLYING_ASSET_ADDRESS() external view returns (address);
+53	 }
+54	 pragma solidity 0.6.12;
+55	 abstract contract VersionedInitializable {
+56	 uint256 private lastInitializedRevision = 0;
+57	 bool private initializing;
+58	 modifier initializer() {
+59	 uint256 revision = getRevision();
+60	 require( initializing || isConstructor() || revision > lastInitializedRevision, 'Contract instance has already been initialized' );
+61	 bool isTopLevelCall = !initializing;
+62	 if (isTopLevelCall) {
+63	 initializing = true;
+64	 lastInitializedRevision = revision;
+65	 }
+66	 _;
+67	 if (isTopLevelCall) {
+68	 initializing = false;
+69	 }
+70	 }
+71	 function getRevision() internal pure virtual returns (uint256);
+72	 function isConstructor() private view returns (bool) {
+73	 uint256 cs;
+74	 assembly {
+75	 cs := extcodesize(address()) }
+76	 return cs == 0;
+77	 }
+78	 uint256[50] private ______gap;
+79	 }
+80	 pragma solidity 0.6.12;
+81	 abstract contract IncentivizedERC20 is Context, IERC20, IERC20Detailed {
+82	 using SafeMath for uint256;
+83	 mapping(address => uint256) internal _balances;
+84	 mapping(address => mapping(address => uint256)) private _allowances;
+85	 uint256 internal _totalSupply;
+86	 string private _name;
+87	 string private _symbol;
+88	 uint8 private _decimals;
+89	 constructor( string memory name, string memory symbol, uint8 decimals ) public {
+90	 _name = name;
+91	 _symbol = symbol;
+92	 _decimals = decimals;
+93	 }
+94	 function name() public view override returns (string memory) {
+95	 return _name;
+96	 }
+97	 function symbol() public view override returns (string memory) {
+98	 return _symbol;
+99	 }
+100	 function decimals() public view override returns (uint8) {
+101	 return _decimals;
+102	 }
+103	 function totalSupply() public view virtual override returns (uint256) {
+104	 return _totalSupply;
+105	 }
+106	 function balanceOf(address account) public view virtual override returns (uint256) {
+107	 return _balances[account];
+108	 }
+109	 function _getIncentivesController() internal view virtual returns(IAaveIncentivesController);
+110	 function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+111	 _transfer(_msgSender(), recipient, amount);
+112	 emit Transfer(_msgSender(), recipient, amount);
+113	 return true;
+114	 }
+115	 function allowance(address owner, address spender) public view virtual override returns (uint256) {
+116	 return _allowances[owner][spender];
+117	 }
+118	 function approve(address spender, uint256 amount) public virtual override returns (bool) {
+119	 _approve(_msgSender(), spender, amount);
+120	 return true;
+121	 }
+122	 function transferFrom( address sender, address recipient, uint256 amount ) public virtual override returns (bool) {
+123	 _transfer(sender, recipient, amount);
+124	 _approve( sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, 'ERC20: transfer amount exceeds allowance') );
+125	 emit Transfer(sender, recipient, amount);
+126	 return true;
+127	 }
+128	 function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+129	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+130	 return true;
+131	 }
+132	 function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+133	 _approve( _msgSender(), spender, _allowances[_msgSender()][spender].sub( subtractedValue, 'ERC20: decreased allowance below zero' ) );
+134	 return true;
+135	 }
+136	 function _transfer( address sender, address recipient, uint256 amount ) internal virtual {
+137	 require(sender != address(0), 'ERC20: transfer from the zero address');
+138	 require(recipient != address(0), 'ERC20: transfer to the zero address');
+139	 _beforeTokenTransfer(sender, recipient, amount);
+140	 uint256 oldSenderBalance = _balances[sender];
+141	 _balances[sender] = oldSenderBalance.sub(amount, 'ERC20: transfer amount exceeds balance');
+142	 uint256 oldRecipientBalance = _balances[recipient];
+143	 _balances[recipient] = _balances[recipient].add(amount);
+144	 if (address(_getIncentivesController()) != address(0)) {
+145	 uint256 currentTotalSupply = _totalSupply;
+146	 _getIncentivesController().handleAction(sender, currentTotalSupply, oldSenderBalance);
+147	 if (sender != recipient) {
+148	 _getIncentivesController().handleAction(recipient, currentTotalSupply, oldRecipientBalance);
+149	 }
+150	 }
+151	 }
+152	 function _mint(address account, uint256 amount) internal virtual {
+153	 require(account != address(0), 'ERC20: mint to the zero address');
+154	 _beforeTokenTransfer(address(0), account, amount);
+155	 uint256 oldTotalSupply = _totalSupply;
+156	 _totalSupply = oldTotalSupply.add(amount);
+157	 uint256 oldAccountBalance = _balances[account];
+158	 _balances[account] = oldAccountBalance.add(amount);
+159	 if (address(_getIncentivesController()) != address(0)) {
+160	 _getIncentivesController().handleAction(account, oldTotalSupply, oldAccountBalance);
+161	 }
+162	 }
+163	 function _burn(address account, uint256 amount) internal virtual {
+164	 require(account != address(0), 'ERC20: burn from the zero address');
+165	 _beforeTokenTransfer(account, address(0), amount);
+166	 uint256 oldTotalSupply = _totalSupply;
+167	 _totalSupply = oldTotalSupply.sub(amount);
+168	 uint256 oldAccountBalance = _balances[account];
+169	 _balances[account] = oldAccountBalance.sub(amount, 'ERC20: burn amount exceeds balance');
+170	 if (address(_getIncentivesController()) != address(0)) {
+171	 _getIncentivesController().handleAction(account, oldTotalSupply, oldAccountBalance);
+172	 }
+173	 }
+174	 function _approve( address owner, address spender, uint256 amount ) internal virtual {
+175	 require(owner != address(0), 'ERC20: approve from the zero address');
+176	 require(spender != address(0), 'ERC20: approve to the zero address');
+177	 _allowances[owner][spender] = amount;
+178	 emit Approval(owner, spender, amount);
+179	 }
+180	 function _setName(string memory newName) internal {
+181	 _name = newName;
+182	 }
+183	 function _setSymbol(string memory newSymbol) internal {
+184	 _symbol = newSymbol;
+185	 }
+186	 function _setDecimals(uint8 newDecimals) internal {
+187	 _decimals = newDecimals;
+188	 }
+189	 function _beforeTokenTransfer( address from, address to, uint256 amount ) internal virtual {
+190	 }
+191	 }
+192	 pragma solidity 0.6.12;
+193	 contract AToken is VersionedInitializable, IncentivizedERC20('ATOKEN_IMPL', 'ATOKEN_IMPL', 0), IAToken {
+194	 using WadRayMath for uint256;
+195	 using SafeERC20 for IERC20;
+196	 bytes public constant EIP712_REVISION = bytes('1');
+197	 bytes32 internal constant EIP712_DOMAIN = keccak256('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)');
+198	 bytes32 public constant PERMIT_TYPEHASH = keccak256('Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)');
+199	 uint256 public constant ATOKEN_REVISION = 0x1;
+200	 mapping(address => uint256) public _nonces;
+201	 bytes32 public DOMAIN_SEPARATOR;
+202	 ILendingPool internal _pool;
+203	 address internal _treasury;
+204	 address internal _underlyingAsset;
+205	 IAaveIncentivesController internal _incentivesController;
+206	 modifier onlyLendingPool {
+207	 require(_msgSender() == address(_pool), Errors.CT_CALLER_MUST_BE_LENDING_POOL);
+208	 _;
+209	 }
+210	 function getRevision() internal pure virtual override returns (uint256) {
+211	 return ATOKEN_REVISION;
+212	 }
+213	 function initialize( ILendingPool pool, address treasury, address underlyingAsset, IAaveIncentivesController incentivesController, uint8 aTokenDecimals, string calldata aTokenName, string calldata aTokenSymbol, bytes calldata params ) external override initializer {
+214	 uint256 chainId;
+215	 assembly {
+216	 chainId := chainid() }
+217	 DOMAIN_SEPARATOR = keccak256( abi.encode( EIP712_DOMAIN, keccak256(bytes(aTokenName)), keccak256(EIP712_REVISION), chainId, address(this) ) );
+218	 _setName(aTokenName);
+219	 _setSymbol(aTokenSymbol);
+220	 _setDecimals(aTokenDecimals);
+221	 _pool = pool;
+222	 _treasury = treasury;
+223	 _underlyingAsset = underlyingAsset;
+224	 _incentivesController = incentivesController;
+225	 emit Initialized( underlyingAsset, address(pool), treasury, address(incentivesController), aTokenDecimals, aTokenName, aTokenSymbol, params );
+226	 }
+227	 function burn( address user, address receiverOfUnderlying, uint256 amount, uint256 index ) external override onlyLendingPool {
+228	 uint256 amountScaled = amount.rayDiv(index);
+229	 require(amountScaled != 0, Errors.CT_INVALID_BURN_AMOUNT);
+230	 _burn(user, amountScaled);
+231	 IERC20(_underlyingAsset).safeTransfer(receiverOfUnderlying, amount);
+232	 emit Transfer(user, address(0), amount);
+233	 emit Burn(user, receiverOfUnderlying, amount, index);
+234	 }
+235	 function mint( address user, uint256 amount, uint256 index ) external override onlyLendingPool returns (bool) {
+236	 uint256 previousBalance = super.balanceOf(user);
+237	 uint256 amountScaled = amount.rayDiv(index);
+238	 require(amountScaled != 0, Errors.CT_INVALID_MINT_AMOUNT);
+239	 _mint(user, amountScaled);
+240	 emit Transfer(address(0), user, amount);
+241	 emit Mint(user, amount, index);
+242	 return previousBalance == 0;
+243	 }
+244	 function mintToTreasury(uint256 amount, uint256 index) external override onlyLendingPool {
+245	 if (amount == 0) {
+246	 return;
+247	 }
+248	 address treasury = _treasury;
+249	 _mint(treasury, amount.rayDiv(index));
+250	 emit Transfer(address(0), treasury, amount);
+251	 emit Mint(treasury, amount, index);
+252	 }
+253	 function transferOnLiquidation( address from, address to, uint256 value ) external override onlyLendingPool {
+254	 _transfer(from, to, value, false);
+255	 emit Transfer(from, to, value);
+256	 }
+257	 function balanceOf(address user) public view override(IncentivizedERC20, IERC20) returns (uint256) {
+258	 return super.balanceOf(user).rayMul(_pool.getReserveNormalizedIncome(_underlyingAsset));
+259	 }
+260	 function scaledBalanceOf(address user) external view override returns (uint256) {
+261	 return super.balanceOf(user);
+262	 }
+263	 function getScaledUserBalanceAndSupply(address user) external view override returns (uint256, uint256) {
+264	 return (super.balanceOf(user), super.totalSupply());
+265	 }
+266	 function totalSupply() public view override(IncentivizedERC20, IERC20) returns (uint256) {
+267	 uint256 currentSupplyScaled = super.totalSupply();
+268	 if (currentSupplyScaled == 0) {
+269	 return 0;
+270	 }
+271	 return currentSupplyScaled.rayMul(_pool.getReserveNormalizedIncome(_underlyingAsset));
+272	 }
+273	 function scaledTotalSupply() public view virtual override returns (uint256) {
+274	 return super.totalSupply();
+275	 }
+276	 function RESERVE_TREASURY_ADDRESS() public view returns (address) {
+277	 return _treasury;
+278	 }
+279	 function UNDERLYING_ASSET_ADDRESS() public override view returns (address) {
+280	 return _underlyingAsset;
+281	 }
+282	 function POOL() public view returns (ILendingPool) {
+283	 return _pool;
+284	 }
+285	 function _getIncentivesController() internal view override returns (IAaveIncentivesController) {
+286	 return _incentivesController;
+287	 }
+288	 function getIncentivesController() external view override returns (IAaveIncentivesController) {
+289	 return _getIncentivesController();
+290	 }
+291	 function transferUnderlyingTo(address target, uint256 amount) external override onlyLendingPool returns (uint256) {
+292	 IERC20(_underlyingAsset).safeTransfer(target, amount);
+293	 return amount;
+294	 }
+295	 function handleRepayment(address user, uint256 amount) external override onlyLendingPool {
+296	 }
+297	 function permit( address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s ) external {
+298	 require(owner != address(0), 'INVALID_OWNER');
+299	 require(block.timestamp <= deadline, 'INVALID_EXPIRATION');
+300	 uint256 currentValidNonce = _nonces[owner];
+301	 bytes32 digest = keccak256( abi.encodePacked( '\x19\x01', DOMAIN_SEPARATOR, keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, currentValidNonce, deadline)) ) );
+302	 require(owner == ecrecover(digest, v, r, s), 'INVALID_SIGNATURE');
+303	 _nonces[owner] = currentValidNonce.add(1);
+304	 _approve(owner, spender, value);
+305	 }
+306	 function _transfer( address from, address to, uint256 amount, bool validate ) internal {
+307	 address underlyingAsset = _underlyingAsset;
+308	 ILendingPool pool = _pool;
+309	 uint256 index = pool.getReserveNormalizedIncome(underlyingAsset);
+310	 uint256 fromBalanceBefore = super.balanceOf(from).rayMul(index);
+311	 uint256 toBalanceBefore = super.balanceOf(to).rayMul(index);
+312	 super._transfer(from, to, amount.rayDiv(index));
+313	 if (validate) {
+314	 pool.finalizeTransfer(underlyingAsset, from, to, amount, fromBalanceBefore, toBalanceBefore);
+315	 }
+316	 emit BalanceTransfer(from, to, amount, index);
+317	 }
+318	 function _transfer( address from, address to, uint256 amount ) internal override {
+319	 _transfer(from, to, amount, true);
+320	 }
+321	 }
+322	 pragma solidity 0.6.12;
+323	 library SafeERC20 {
+324	 using SafeMath for uint256;
+325	 using Address for address;
+326	 function safeTransfer( IERC20 token, address to, uint256 value ) internal {
+327	 callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+328	 }
+329	 function safeTransferFrom( IERC20 token, address from, address to, uint256 value ) internal {
+330	 callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+331	 }
+332	 function safeApprove( IERC20 token, address spender, uint256 value ) internal {
+333	 require( (value == 0) || (token.allowance(address(this), spender) == 0), 'SafeERC20: approve from non-zero to non-zero allowance' );
+334	 callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+335	 }
+336	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+337	 require(address(token).isContract(), 'SafeERC20: call to non-contract');
+338	 (bool success, bytes memory returndata) = address(token).call(data);
+339	 require(success, 'SafeERC20: low-level call failed');
+340	 if (returndata.length > 0) {
+341	 require(abi.decode(returndata, (bool)), 'SafeERC20: ERC20 operation did not succeed');
+342	 }
+343	 }
+344	 }
+345	 pragma solidity 0.6.12;
+346	 interface ILendingPool {
+347	 event Deposit( address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint16 indexed referral );
+348	 event Withdraw(address indexed reserve, address indexed user, address indexed to, uint256 amount);
+349	 event Borrow( address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint256 borrowRateMode, uint256 borrowRate, uint16 indexed referral );
+350	 event Repay( address indexed reserve, address indexed user, address indexed repayer, uint256 amount );
+351	 event Swap(address indexed reserve, address indexed user, uint256 rateMode);
+352	 event ReserveUsedAsCollateralEnabled(address indexed reserve, address indexed user);
+353	 event ReserveUsedAsCollateralDisabled(address indexed reserve, address indexed user);
+354	 event RebalanceStableBorrowRate(address indexed reserve, address indexed user);
+355	 event FlashLoan( address indexed target, address indexed initiator, address indexed asset, uint256 amount, uint256 premium, uint16 referralCode );
+356	 event Paused();
+357	 event Unpaused();
+358	 event LiquidationCall( address indexed collateralAsset, address indexed debtAsset, address indexed user, uint256 debtToCover, uint256 liquidatedCollateralAmount, address liquidator, bool receiveAToken );
+359	 event ReserveDataUpdated( address indexed reserve, uint256 liquidityRate, uint256 stableBorrowRate, uint256 variableBorrowRate, uint256 liquidityIndex, uint256 variableBorrowIndex );
+360	 function deposit( address asset, uint256 amount, address onBehalfOf, uint16 referralCode ) external;
+361	 function withdraw( address asset, uint256 amount, address to ) external returns (uint256);
+362	 function borrow( address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf ) external;
+363	 function repay( address asset, uint256 amount, uint256 rateMode, address onBehalfOf ) external returns (uint256);
+364	 function swapBorrowRateMode(address asset, uint256 rateMode) external;
+365	 function rebalanceStableBorrowRate(address asset, address user) external;
+366	 function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external;
+367	 function liquidationCall( address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken ) external;
+368	 function flashLoan( address receiverAddress, address[] calldata assets, uint256[] calldata amounts, uint256[] calldata modes, address onBehalfOf, bytes calldata params, uint16 referralCode ) external;
+369	 function getUserAccountData(address user) external view returns ( uint256 totalCollateralETH, uint256 totalDebtETH, uint256 availableBorrowsETH, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor );
+370	 function initReserve( address reserve, address aTokenAddress, address stableDebtAddress, address variableDebtAddress, address interestRateStrategyAddress ) external;
+371	 function setReserveInterestRateStrategyAddress(address reserve, address rateStrategyAddress) external;
+372	 function setConfiguration(address reserve, uint256 configuration) external;
+373	 function getConfiguration(address asset) external view returns (DataTypes.ReserveConfigurationMap memory);
+374	 function getUserConfiguration(address user) external view returns (DataTypes.UserConfigurationMap memory);
+375	 function getReserveNormalizedIncome(address asset) external view returns (uint256);
+376	 function getReserveNormalizedVariableDebt(address asset) external view returns (uint256);
+377	 function getReserveData(address asset) external view returns (DataTypes.ReserveData memory);
+378	 function finalizeTransfer( address asset, address from, address to, uint256 amount, uint256 balanceFromAfter, uint256 balanceToBefore ) external;
+379	 function getReservesList() external view returns (address[] memory);
+380	 function getAddressesProvider() external view returns (ILendingPoolAddressesProvider);
+381	 function setPause(bool val) external;
+382	 function paused() external view returns (bool);
+383	 }
+384	 pragma solidity 0.6.12;
+385	 library WadRayMath {
+386	 uint256 internal constant WAD = 1e18;
+387	 uint256 internal constant halfWAD = WAD / 2;
+388	 uint256 internal constant RAY = 1e27;
+389	 uint256 internal constant halfRAY = RAY / 2;
+390	 uint256 internal constant WAD_RAY_RATIO = 1e9;
+391	 function ray() internal pure returns (uint256) {
+392	 return RAY;
+393	 }
+394	 function wad() internal pure returns (uint256) {
+395	 return WAD;
+396	 }
+397	 function halfRay() internal pure returns (uint256) {
+398	 return halfRAY;
+399	 }
+400	 function halfWad() internal pure returns (uint256) {
+401	 return halfWAD;
+402	 }
+403	 function wadMul(uint256 a, uint256 b) internal pure returns (uint256) {
+404	 if (a == 0 || b == 0) {
+405	 return 0;
+406	 }
+407	 require(a <= (type(uint256).max - halfWAD) / b, Errors.MATH_MULTIPLICATION_OVERFLOW);
+408	 return (a * b + halfWAD) / WAD;
+409	 }
+410	 function wadDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+411	 require(b != 0, Errors.MATH_DIVISION_BY_ZERO);
+412	 uint256 halfB = b / 2;
+413	 require(a <= (type(uint256).max - halfB) / WAD, Errors.MATH_MULTIPLICATION_OVERFLOW);
+414	 return (a * WAD + halfB) / b;
+415	 }
+416	 function rayMul(uint256 a, uint256 b) internal pure returns (uint256) {
+417	 if (a == 0 || b == 0) {
+418	 return 0;
+419	 }
+420	 require(a <= (type(uint256).max - halfRAY) / b, Errors.MATH_MULTIPLICATION_OVERFLOW);
+421	 return (a * b + halfRAY) / RAY;
+422	 }
+423	 function rayDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+424	 require(b != 0, Errors.MATH_DIVISION_BY_ZERO);
+425	 uint256 halfB = b / 2;
+426	 require(a <= (type(uint256).max - halfB) / RAY, Errors.MATH_MULTIPLICATION_OVERFLOW);
+427	 return (a * RAY + halfB) / b;
+428	 }
+429	 function rayToWad(uint256 a) internal pure returns (uint256) {
+430	 uint256 halfRatio = WAD_RAY_RATIO / 2;
+431	 uint256 result = halfRatio + a;
+432	 require(result >= halfRatio, Errors.MATH_ADDITION_OVERFLOW);
+433	 return result / WAD_RAY_RATIO;
+434	 }
+435	 function wadToRay(uint256 a) internal pure returns (uint256) {
+436	 uint256 result = a * WAD_RAY_RATIO;
+437	 require(result / WAD_RAY_RATIO == a, Errors.MATH_MULTIPLICATION_OVERFLOW);
+438	 return result;
+439	 }
+440	 }
+441	 pragma solidity 0.6.12;
+442	 library Errors {
+443	 string public constant CALLER_NOT_POOL_ADMIN = '33';
+444	 string public constant BORROW_ALLOWANCE_NOT_ENOUGH = '59';
+445	 string public constant VL_INVALID_AMOUNT = '1';
+446	 string public constant VL_NO_ACTIVE_RESERVE = '2';
+447	 string public constant VL_RESERVE_FROZEN = '3';
+448	 string public constant VL_CURRENT_AVAILABLE_LIQUIDITY_NOT_ENOUGH = '4';
+449	 string public constant VL_NOT_ENOUGH_AVAILABLE_USER_BALANCE = '5';
+450	 string public constant VL_TRANSFER_NOT_ALLOWED = '6';
+451	 string public constant VL_BORROWING_NOT_ENABLED = '7';
+452	 string public constant VL_INVALID_INTEREST_RATE_MODE_SELECTED = '8';
+453	 string public constant VL_COLLATERAL_BALANCE_IS_0 = '9';
+454	 string public constant VL_HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD = '10';
+455	 string public constant VL_COLLATERAL_CANNOT_COVER_NEW_BORROW = '11';
+456	 string public constant VL_STABLE_BORROWING_NOT_ENABLED = '12';
+457	 string public constant VL_COLLATERAL_SAME_AS_BORROWING_CURRENCY = '13';
+458	 string public constant VL_AMOUNT_BIGGER_THAN_MAX_LOAN_SIZE_STABLE = '14';
+459	 string public constant VL_NO_DEBT_OF_SELECTED_TYPE = '15';
+460	 string public constant VL_NO_EXPLICIT_AMOUNT_TO_REPAY_ON_BEHALF = '16';
+461	 string public constant VL_NO_STABLE_RATE_LOAN_IN_RESERVE = '17';
+462	 string public constant VL_NO_VARIABLE_RATE_LOAN_IN_RESERVE = '18';
+463	 string public constant VL_UNDERLYING_BALANCE_NOT_GREATER_THAN_0 = '19';
+464	 string public constant VL_DEPOSIT_ALREADY_IN_USE = '20';
+465	 string public constant LP_NOT_ENOUGH_STABLE_BORROW_BALANCE = '21';
+466	 string public constant LP_INTEREST_RATE_REBALANCE_CONDITIONS_NOT_MET = '22';
+467	 string public constant LP_LIQUIDATION_CALL_FAILED = '23';
+468	 string public constant LP_NOT_ENOUGH_LIQUIDITY_TO_BORROW = '24';
+469	 string public constant LP_REQUESTED_AMOUNT_TOO_SMALL = '25';
+470	 string public constant LP_INCONSISTENT_PROTOCOL_ACTUAL_BALANCE = '26';
+471	 string public constant LP_CALLER_NOT_LENDING_POOL_CONFIGURATOR = '27';
+472	 string public constant LP_INCONSISTENT_FLASHLOAN_PARAMS = '28';
+473	 string public constant CT_CALLER_MUST_BE_LENDING_POOL = '29';
+474	 string public constant CT_CANNOT_GIVE_ALLOWANCE_TO_HIMSELF = '30';
+475	 string public constant CT_TRANSFER_AMOUNT_NOT_GT_0 = '31';
+476	 string public constant RL_RESERVE_ALREADY_INITIALIZED = '32';
+477	 string public constant LPC_RESERVE_LIQUIDITY_NOT_0 = '34';
+478	 string public constant LPC_INVALID_ATOKEN_POOL_ADDRESS = '35';
+479	 string public constant LPC_INVALID_STABLE_DEBT_TOKEN_POOL_ADDRESS = '36';
+480	 string public constant LPC_INVALID_VARIABLE_DEBT_TOKEN_POOL_ADDRESS = '37';
+481	 string public constant LPC_INVALID_STABLE_DEBT_TOKEN_UNDERLYING_ADDRESS = '38';
+482	 string public constant LPC_INVALID_VARIABLE_DEBT_TOKEN_UNDERLYING_ADDRESS = '39';
+483	 string public constant LPC_INVALID_ADDRESSES_PROVIDER_ID = '40';
+484	 string public constant LPC_INVALID_CONFIGURATION = '75';
+485	 string public constant LPC_CALLER_NOT_EMERGENCY_ADMIN = '76';
+486	 string public constant LPAPR_PROVIDER_NOT_REGISTERED = '41';
+487	 string public constant LPCM_HEALTH_FACTOR_NOT_BELOW_THRESHOLD = '42';
+488	 string public constant LPCM_COLLATERAL_CANNOT_BE_LIQUIDATED = '43';
+489	 string public constant LPCM_SPECIFIED_CURRENCY_NOT_BORROWED_BY_USER = '44';
+490	 string public constant LPCM_NOT_ENOUGH_LIQUIDITY_TO_LIQUIDATE = '45';
+491	 string public constant LPCM_NO_ERRORS = '46';
+492	 string public constant LP_INVALID_FLASHLOAN_MODE = '47';
+493	 string public constant MATH_MULTIPLICATION_OVERFLOW = '48';
+494	 string public constant MATH_ADDITION_OVERFLOW = '49';
+495	 string public constant MATH_DIVISION_BY_ZERO = '50';
+496	 string public constant RL_LIQUIDITY_INDEX_OVERFLOW = '51';
+497	 string public constant RL_VARIABLE_BORROW_INDEX_OVERFLOW = '52';
+498	 string public constant RL_LIQUIDITY_RATE_OVERFLOW = '53';
+499	 string public constant RL_VARIABLE_BORROW_RATE_OVERFLOW = '54';
+500	 string public constant RL_STABLE_BORROW_RATE_OVERFLOW = '55';
+501	 string public constant CT_INVALID_MINT_AMOUNT = '56';
+502	 string public constant LP_FAILED_REPAY_WITH_COLLATERAL = '57';
+503	 string public constant CT_INVALID_BURN_AMOUNT = '58';
+504	 string public constant LP_FAILED_COLLATERAL_SWAP = '60';
+505	 string public constant LP_INVALID_EQUAL_ASSETS_TO_SWAP = '61';
+506	 string public constant LP_REENTRANCY_NOT_ALLOWED = '62';
+507	 string public constant LP_CALLER_MUST_BE_AN_ATOKEN = '63';
+508	 string public constant LP_IS_PAUSED = '64';
+509	 string public constant LP_NO_MORE_RESERVES_ALLOWED = '65';
+510	 string public constant LP_INVALID_FLASH_LOAN_EXECUTOR_RETURN = '66';
+511	 string public constant RC_INVALID_LTV = '67';
+512	 string public constant RC_INVALID_LIQ_THRESHOLD = '68';
+513	 string public constant RC_INVALID_LIQ_BONUS = '69';
+514	 string public constant RC_INVALID_DECIMALS = '70';
+515	 string public constant RC_INVALID_RESERVE_FACTOR = '71';
+516	 string public constant LPAPR_INVALID_ADDRESSES_PROVIDER_ID = '72';
+517	 string public constant VL_INCONSISTENT_FLASHLOAN_PARAMS = '73';
+518	 string public constant LP_INCONSISTENT_PARAMS_LENGTH = '74';
+519	 string public constant UL_INVALID_INDEX = '77';
+520	 string public constant LP_NOT_CONTRACT = '78';
+521	 string public constant SDT_STABLE_DEBT_OVERFLOW = '79';
+522	 string public constant SDT_BURN_EXCEEDS_BALANCE = '80';
+523	 enum CollateralManagerErrors {
+524	 NO_ERROR, NO_COLLATERAL_AVAILABLE, COLLATERAL_CANNOT_BE_LIQUIDATED, CURRRENCY_NOT_BORROWED, HEALTH_FACTOR_ABOVE_THRESHOLD, NOT_ENOUGH_LIQUIDITY, NO_ACTIVE_RESERVE, HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD, INVALID_EQUAL_ASSETS_TO_SWAP, FROZEN_RESERVE }
+525	 }
+526	 pragma solidity 0.6.12;
+527	 interface IAaveIncentivesController {
+528	 event RewardsAccrued(address indexed user, uint256 amount);
+529	 event RewardsClaimed(address indexed user, address indexed to, uint256 amount);
+530	 event RewardsClaimed( address indexed user, address indexed to, address indexed claimer, uint256 amount );
+531	 event ClaimerSet(address indexed user, address indexed claimer);
+532	 function getAssetData(address asset) external view returns ( uint256, uint256, uint256 );
+533	 function assets(address asset) external view returns ( uint128, uint128, uint256 );
+534	 function setClaimer(address user, address claimer) external;
+535	 function getClaimer(address user) external view returns (address);
+536	 function configureAssets(address[] calldata assets, uint256[] calldata emissionsPerSecond) external;
+537	 function handleAction( address asset, uint256 userBalance, uint256 totalSupply ) external;
+538	 function getRewardsBalance(address[] calldata assets, address user) external view returns (uint256);
+539	 function claimRewards( address[] calldata assets, uint256 amount, address to ) external returns (uint256);
+540	 function claimRewardsOnBehalf( address[] calldata assets, uint256 amount, address user, address to ) external returns (uint256);
+541	 function getUserUnclaimedRewards(address user) external view returns (uint256);
+542	 function getUserAssetData(address user, address asset) external view returns (uint256);
+543	 function REWARD_TOKEN() external view returns (address);
+544	 function PRECISION() external view returns (uint8);
+545	 function DISTRIBUTION_END() external view returns (uint256);
+546	 }
+547	 pragma solidity 0.6.12;
+548	 library SafeMath {
+549	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+550	 uint256 c = a + b;
+551	 require(c >= a, 'SafeMath: addition overflow');
+552	 return c;
+553	 }
+554	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+555	 return sub(a, b, 'SafeMath: subtraction overflow');
+556	 }
+557	 function sub( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+558	 require(b <= a, errorMessage);
+559	 uint256 c = a - b;
+560	 return c;
+561	 }
+562	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+563	 if (a == 0) {
+564	 return 0;
+565	 }
+566	 uint256 c = a * b;
+567	 require(c / a == b, 'SafeMath: multiplication overflow');
+568	 return c;
+569	 }
+570	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+571	 return div(a, b, 'SafeMath: division by zero');
+572	 }
+573	 function div( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+574	 require(b > 0, errorMessage);
+575	 uint256 c = a / b;
+576	 return c;
+577	 }
+578	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+579	 return mod(a, b, 'SafeMath: modulo by zero');
+580	 }
+581	 function mod( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+582	 require(b != 0, errorMessage);
+583	 return a % b;
+584	 }
+585	 }
+586	 pragma solidity 0.6.12;
+587	 library Address {
+588	 function isContract(address account) internal view returns (bool) {
+589	 bytes32 codehash;
+590	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+591	 assembly {
+592	 codehash := extcodehash(account) }
+593	 return (codehash != accountHash && codehash != 0x0);
+594	 }
+595	 function sendValue(address payable recipient, uint256 amount) internal {
+596	 require(address(this).balance >= amount, 'Address: insufficient balance');
+597	 (bool success, ) = recipient.call{
+598	 value: amount}
+599	 ('');
+600	 require(success, 'Address: unable to send value, recipient may have reverted');
+601	 }
+602	 }
+603	 pragma solidity 0.6.12;
+604	 interface ILendingPoolAddressesProvider {
+605	 event MarketIdSet(string newMarketId);
+606	 event LendingPoolUpdated(address indexed newAddress);
+607	 event ConfigurationAdminUpdated(address indexed newAddress);
+608	 event EmergencyAdminUpdated(address indexed newAddress);
+609	 event LendingPoolConfiguratorUpdated(address indexed newAddress);
+610	 event LendingPoolCollateralManagerUpdated(address indexed newAddress);
+611	 event PriceOracleUpdated(address indexed newAddress);
+612	 event LendingRateOracleUpdated(address indexed newAddress);
+613	 event ProxyCreated(bytes32 id, address indexed newAddress);
+614	 event AddressSet(bytes32 id, address indexed newAddress, bool hasProxy);
+615	 function getMarketId() external view returns (string memory);
+616	 function setMarketId(string calldata marketId) external;
+617	 function setAddress(bytes32 id, address newAddress) external;
+618	 function setAddressAsProxy(bytes32 id, address impl) external;
+619	 function getAddress(bytes32 id) external view returns (address);
+620	 function getLendingPool() external view returns (address);
+621	 function setLendingPoolImpl(address pool) external;
+622	 function getLendingPoolConfigurator() external view returns (address);
+623	 function setLendingPoolConfiguratorImpl(address configurator) external;
+624	 function getLendingPoolCollateralManager() external view returns (address);
+625	 function setLendingPoolCollateralManager(address manager) external;
+626	 function getPoolAdmin() external view returns (address);
+627	 function setPoolAdmin(address admin) external;
+628	 function getEmergencyAdmin() external view returns (address);
+629	 function setEmergencyAdmin(address admin) external;
+630	 function getPriceOracle() external view returns (address);
+631	 function setPriceOracle(address priceOracle) external;
+632	 function getLendingRateOracle() external view returns (address);
+633	 function setLendingRateOracle(address lendingRateOracle) external;
+634	 }
+635	 pragma solidity 0.6.12;
+636	 library DataTypes {
+637	 struct ReserveData {
+638	 ReserveConfigurationMap configuration;
+639	 uint128 liquidityIndex;
+640	 uint128 variableBorrowIndex;
+641	 uint128 currentLiquidityRate;
+642	 uint128 currentVariableBorrowRate;
+643	 uint128 currentStableBorrowRate;
+644	 uint40 lastUpdateTimestamp;
+645	 address aTokenAddress;
+646	 address stableDebtTokenAddress;
+647	 address variableDebtTokenAddress;
+648	 address interestRateStrategyAddress;
+649	 uint8 id;
+650	 }
+651	 struct ReserveConfigurationMap {
+652	 uint256 data;
+653	 }
+654	 struct UserConfigurationMap {
+655	 uint256 data;
+656	 }
+657	 enum InterestRateMode {
+658	 NONE, STABLE, VARIABLE}
+659	 }

@@ -1,0 +1,264 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.6.12;
+3	 contract DefaultPoolOperator {
+4	 using LibERC20TokenV06 for IERC20TokenV06;
+5	 IStaking public immutable stakingProxy;
+6	 IERC20TokenV06 public immutable weth;
+7	 bytes32 public immutable poolId;
+8	 constructor( IStaking stakingProxy_, IERC20TokenV06 weth_ ) public {
+9	 stakingProxy = stakingProxy_;
+10	 weth = weth_;
+11	 poolId = stakingProxy_.createStakingPool(10 ** 6, false);
+12	 }
+13	 function returnStakingRewards() external {
+14	 uint256 wethBalance = weth.compatBalanceOf(address(this));
+15	 weth.compatTransfer(address(stakingProxy), wethBalance);
+16	 }
+17	 }
+18	 pragma solidity ^0.6.5;
+19	 interface IERC20TokenV06 {
+20	 event Transfer( address indexed from, address indexed to, uint256 value );
+21	 event Approval( address indexed owner, address indexed spender, uint256 value );
+22	 function transfer(address to, uint256 value) external returns (bool);
+23	 function transferFrom( address from, address to, uint256 value ) external returns (bool);
+24	 function approve(address spender, uint256 value) external returns (bool);
+25	 function totalSupply() external view returns (uint256);
+26	 function balanceOf(address owner) external view returns (uint256);
+27	 function allowance(address owner, address spender) external view returns (uint256);
+28	 function decimals() external view returns (uint8);
+29	 }
+30	 pragma solidity ^0.6.5;
+31	 library LibERC20TokenV06 {
+32	 bytes constant private DECIMALS_CALL_DATA = hex"313ce567";
+33	 function compatApprove( IERC20TokenV06 token, address spender, uint256 allowance ) internal {
+34	 bytes memory callData = abi.encodeWithSelector( token.approve.selector, spender, allowance );
+35	 _callWithOptionalBooleanResult(address(token), callData);
+36	 }
+37	 function approveIfBelow( IERC20TokenV06 token, address spender, uint256 amount ) internal {
+38	 if (token.allowance(address(this), spender) < amount) {
+39	 compatApprove(token, spender, uint256(-1));
+40	 }
+41	 }
+42	 function compatTransfer( IERC20TokenV06 token, address to, uint256 amount ) internal {
+43	 bytes memory callData = abi.encodeWithSelector( token.transfer.selector, to, amount );
+44	 _callWithOptionalBooleanResult(address(token), callData);
+45	 }
+46	 function compatTransferFrom( IERC20TokenV06 token, address from, address to, uint256 amount ) internal {
+47	 bytes memory callData = abi.encodeWithSelector( token.transferFrom.selector, from, to, amount );
+48	 _callWithOptionalBooleanResult(address(token), callData);
+49	 }
+50	 function compatDecimals(IERC20TokenV06 token) internal view returns (uint8 tokenDecimals) {
+51	 tokenDecimals = 18;
+52	 (bool didSucceed, bytes memory resultData) = address(token).staticcall(DECIMALS_CALL_DATA);
+53	 if (didSucceed && resultData.length >= 32) {
+54	 tokenDecimals = uint8(LibBytesV06.readUint256(resultData, 0));
+55	 }
+56	 }
+57	 function compatAllowance(IERC20TokenV06 token, address owner, address spender) internal view returns (uint256 allowance_) {
+58	 (bool didSucceed, bytes memory resultData) = address(token).staticcall( abi.encodeWithSelector( token.allowance.selector, owner, spender ) );
+59	 if (didSucceed && resultData.length >= 32) {
+60	 allowance_ = LibBytesV06.readUint256(resultData, 0);
+61	 }
+62	 }
+63	 function compatBalanceOf(IERC20TokenV06 token, address owner) internal view returns (uint256 balance) {
+64	 (bool didSucceed, bytes memory resultData) = address(token).staticcall( abi.encodeWithSelector( token.balanceOf.selector, owner ) );
+65	 if (didSucceed && resultData.length >= 32) {
+66	 balance = LibBytesV06.readUint256(resultData, 0);
+67	 }
+68	 }
+69	 function isSuccessfulResult(bytes memory resultData) internal pure returns (bool isSuccessful) {
+70	 if (resultData.length == 0) {
+71	 return true;
+72	 }
+73	 if (resultData.length >= 32) {
+74	 uint256 result = LibBytesV06.readUint256(resultData, 0);
+75	 if (result == 1) {
+76	 return true;
+77	 }
+78	 }
+79	 }
+80	 function _callWithOptionalBooleanResult( address target, bytes memory callData ) private {
+81	 (bool didSucceed, bytes memory resultData) = target.call(callData);
+82	 if (didSucceed && isSuccessfulResult(resultData)) {
+83	 return;
+84	 }
+85	 LibRichErrorsV06.rrevert(resultData);
+86	 }
+87	 }
+88	 pragma solidity ^0.6.5;
+89	 library LibRichErrorsV06 {
+90	 bytes4 internal constant STANDARD_ERROR_SELECTOR = 0x08c379a0;
+91	 function StandardError(string memory message) internal pure returns (bytes memory) {
+92	 return abi.encodeWithSelector( STANDARD_ERROR_SELECTOR, bytes(message) );
+93	 }
+94	 function rrevert(bytes memory errorData) internal pure {
+95	 assembly {
+96	 revert(add(errorData, 0x20), mload(errorData)) }
+97	 }
+98	 }
+99	 pragma solidity ^0.6.5;
+100	 library LibBytesV06 {
+101	 using LibBytesV06 for bytes;
+102	 function rawAddress(bytes memory input) internal pure returns (uint256 memoryAddress) {
+103	 assembly {
+104	 memoryAddress := input }
+105	 return memoryAddress;
+106	 }
+107	 function contentAddress(bytes memory input) internal pure returns (uint256 memoryAddress) {
+108	 assembly {
+109	 memoryAddress := add(input, 32) }
+110	 return memoryAddress;
+111	 }
+112	 function memCopy( uint256 dest, uint256 source, uint256 length ) internal pure {
+113	 if (length < 32) {
+114	 assembly {
+115	 let mask := sub(exp(256, sub(32, length)), 1) let s := and(mload(source), not(mask)) let d := and(mload(dest), mask) mstore(dest, or(s, d)) }
+116	 }
+117	 else {
+118	 if (source == dest) {
+119	 return;
+120	 }
+121	 if (source > dest) {
+122	 assembly {
+123	 length := sub(length, 32) let sEnd := add(source, length) let dEnd := add(dest, length) let last := mload(sEnd) for {
+124	 }
+125	 lt(source, sEnd) {
+126	 }
+127	 {
+128	 mstore(dest, mload(source)) source := add(source, 32) dest := add(dest, 32) }
+129	 mstore(dEnd, last) }
+130	 }
+131	 else {
+132	 assembly {
+133	 length := sub(length, 32) let sEnd := add(source, length) let dEnd := add(dest, length) let first := mload(source) for {
+134	 }
+135	 slt(dest, dEnd) {
+136	 }
+137	 {
+138	 mstore(dEnd, mload(sEnd)) sEnd := sub(sEnd, 32) dEnd := sub(dEnd, 32) }
+139	 mstore(dest, first) }
+140	 }
+141	 }
+142	 }
+143	 function slice( bytes memory b, uint256 from, uint256 to ) internal pure returns (bytes memory result) {
+144	 if (from > to) {
+145	 LibRichErrorsV06.rrevert(LibBytesRichErrorsV06.InvalidByteOperationError( LibBytesRichErrorsV06.InvalidByteOperationErrorCodes.FromLessThanOrEqualsToRequired, from, to ));
+146	 }
+147	 if (to > b.length) {
+148	 LibRichErrorsV06.rrevert(LibBytesRichErrorsV06.InvalidByteOperationError( LibBytesRichErrorsV06.InvalidByteOperationErrorCodes.ToLessThanOrEqualsLengthRequired, to, b.length ));
+149	 }
+150	 result = new bytes(to - from);
+151	 memCopy( result.contentAddress(), b.contentAddress() + from, result.length );
+152	 return result;
+153	 }
+154	 function sliceDestructive( bytes memory b, uint256 from, uint256 to ) internal pure returns (bytes memory result) {
+155	 if (from > to) {
+156	 LibRichErrorsV06.rrevert(LibBytesRichErrorsV06.InvalidByteOperationError( LibBytesRichErrorsV06.InvalidByteOperationErrorCodes.FromLessThanOrEqualsToRequired, from, to ));
+157	 }
+158	 if (to > b.length) {
+159	 LibRichErrorsV06.rrevert(LibBytesRichErrorsV06.InvalidByteOperationError( LibBytesRichErrorsV06.InvalidByteOperationErrorCodes.ToLessThanOrEqualsLengthRequired, to, b.length ));
+160	 }
+161	 assembly {
+162	 result := add(b, from) mstore(result, sub(to, from)) }
+163	 return result;
+164	 }
+165	 function popLastByte(bytes memory b) internal pure returns (bytes1 result) {
+166	 if (b.length == 0) {
+167	 LibRichErrorsV06.rrevert(LibBytesRichErrorsV06.InvalidByteOperationError( LibBytesRichErrorsV06.InvalidByteOperationErrorCodes.LengthGreaterThanZeroRequired, b.length, 0 ));
+168	 }
+169	 result = b[b.length - 1];
+170	 assembly {
+171	 let newLen := sub(mload(b), 1) mstore(b, newLen) }
+172	 return result;
+173	 }
+174	 function equals( bytes memory lhs, bytes memory rhs ) internal pure returns (bool equal) {
+175	 return lhs.length == rhs.length && keccak256(lhs) == keccak256(rhs);
+176	 }
+177	 function readAddress( bytes memory b, uint256 index ) internal pure returns (address result) {
+178	 if (b.length < index + 20) {
+179	 LibRichErrorsV06.rrevert(LibBytesRichErrorsV06.InvalidByteOperationError( LibBytesRichErrorsV06.InvalidByteOperationErrorCodes.LengthGreaterThanOrEqualsTwentyRequired, b.length, index + 20 ));
+180	 }
+181	 index += 20;
+182	 assembly {
+183	 result := and(mload(add(b, index)), 0xffffffffffffffffffffffffffffffffffffffff) }
+184	 return result;
+185	 }
+186	 function writeAddress( bytes memory b, uint256 index, address input ) internal pure {
+187	 if (b.length < index + 20) {
+188	 LibRichErrorsV06.rrevert(LibBytesRichErrorsV06.InvalidByteOperationError( LibBytesRichErrorsV06.InvalidByteOperationErrorCodes.LengthGreaterThanOrEqualsTwentyRequired, b.length, index + 20 ));
+189	 }
+190	 index += 20;
+191	 assembly {
+192	 let neighbors := and( mload(add(b, index)), 0xffffffffffffffffffffffff0000000000000000000000000000000000000000 ) input := and(input, 0xffffffffffffffffffffffffffffffffffffffff) mstore(add(b, index), xor(input, neighbors)) }
+193	 }
+194	 function readBytes32( bytes memory b, uint256 index ) internal pure returns (bytes32 result) {
+195	 if (b.length < index + 32) {
+196	 LibRichErrorsV06.rrevert(LibBytesRichErrorsV06.InvalidByteOperationError( LibBytesRichErrorsV06.InvalidByteOperationErrorCodes.LengthGreaterThanOrEqualsThirtyTwoRequired, b.length, index + 32 ));
+197	 }
+198	 index += 32;
+199	 assembly {
+200	 result := mload(add(b, index)) }
+201	 return result;
+202	 }
+203	 function writeBytes32( bytes memory b, uint256 index, bytes32 input ) internal pure {
+204	 if (b.length < index + 32) {
+205	 LibRichErrorsV06.rrevert(LibBytesRichErrorsV06.InvalidByteOperationError( LibBytesRichErrorsV06.InvalidByteOperationErrorCodes.LengthGreaterThanOrEqualsThirtyTwoRequired, b.length, index + 32 ));
+206	 }
+207	 index += 32;
+208	 assembly {
+209	 mstore(add(b, index), input) }
+210	 }
+211	 function readUint256( bytes memory b, uint256 index ) internal pure returns (uint256 result) {
+212	 result = uint256(readBytes32(b, index));
+213	 return result;
+214	 }
+215	 function writeUint256( bytes memory b, uint256 index, uint256 input ) internal pure {
+216	 writeBytes32(b, index, bytes32(input));
+217	 }
+218	 function readBytes4( bytes memory b, uint256 index ) internal pure returns (bytes4 result) {
+219	 if (b.length < index + 4) {
+220	 LibRichErrorsV06.rrevert(LibBytesRichErrorsV06.InvalidByteOperationError( LibBytesRichErrorsV06.InvalidByteOperationErrorCodes.LengthGreaterThanOrEqualsFourRequired, b.length, index + 4 ));
+221	 }
+222	 index += 32;
+223	 assembly {
+224	 result := mload(add(b, index)) result := and(result, 0xFFFFFFFF00000000000000000000000000000000000000000000000000000000) }
+225	 return result;
+226	 }
+227	 function writeLength(bytes memory b, uint256 length) internal pure {
+228	 assembly {
+229	 mstore(b, length) }
+230	 }
+231	 }
+232	 pragma solidity ^0.6.5;
+233	 library LibBytesRichErrorsV06 {
+234	 enum InvalidByteOperationErrorCodes {
+235	 FromLessThanOrEqualsToRequired, ToLessThanOrEqualsLengthRequired, LengthGreaterThanZeroRequired, LengthGreaterThanOrEqualsFourRequired, LengthGreaterThanOrEqualsTwentyRequired, LengthGreaterThanOrEqualsThirtyTwoRequired, LengthGreaterThanOrEqualsNestedBytesLengthRequired, DestinationLengthGreaterThanOrEqualSourceLengthRequired }
+236	 bytes4 internal constant INVALID_BYTE_OPERATION_ERROR_SELECTOR = 0x28006595;
+237	 function InvalidByteOperationError( InvalidByteOperationErrorCodes errorCode, uint256 offset, uint256 required ) internal pure returns (bytes memory) {
+238	 return abi.encodeWithSelector( INVALID_BYTE_OPERATION_ERROR_SELECTOR, errorCode, offset, required );
+239	 }
+240	 }
+241	 pragma solidity ^0.6.12;
+242	 interface IStaking {
+243	 enum StakeStatus {
+244	 UNDELEGATED, DELEGATED }
+245	 struct StoredBalance {
+246	 uint64 currentEpoch;
+247	 uint96 currentEpochBalance;
+248	 uint96 nextEpochBalance;
+249	 }
+250	 struct Pool {
+251	 address operator;
+252	 uint32 operatorShare;
+253	 }
+254	 function createStakingPool(uint32 operatorShare, bool addOperatorAsMaker) external returns (bytes32 poolId);
+255	 function currentEpoch() external view returns (uint256 epoch);
+256	 function currentEpochStartTimeInSeconds() external view returns (uint256 startTime);
+257	 function epochDurationInSeconds() external view returns (uint256 duration);
+258	 function getStakingPool(bytes32 poolId) external view returns (Pool memory);
+259	 function getGlobalStakeByStatus(StakeStatus stakeStatus) external view returns (StoredBalance memory balance);
+260	 function getOwnerStakeByStatus( address staker, StakeStatus stakeStatus ) external view returns (StoredBalance memory balance);
+261	 function getTotalStakeDelegatedToPool(bytes32 poolId) external view returns (StoredBalance memory balance);
+262	 function getStakeDelegatedToPoolByOwner(address staker, bytes32 poolId) external view returns (StoredBalance memory balance);
+263	 }

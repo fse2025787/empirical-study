@@ -1,0 +1,173 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.6.12;
+3	 interface IHordCongressMembersRegistry {
+4	 function isMember(address _address) external view returns (bool);
+5	 function getMinimalQuorum() external view returns (uint256);
+6	 }
+7	 pragma solidity >=0.6.0 <0.8.0;
+8	 library SafeMath {
+9	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+10	 uint256 c = a + b;
+11	 if (c < a) return (false, 0);
+12	 return (true, c);
+13	 }
+14	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+15	 if (b > a) return (false, 0);
+16	 return (true, a - b);
+17	 }
+18	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+19	 if (a == 0) return (true, 0);
+20	 uint256 c = a * b;
+21	 if (c / a != b) return (false, 0);
+22	 return (true, c);
+23	 }
+24	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+25	 if (b == 0) return (false, 0);
+26	 return (true, a / b);
+27	 }
+28	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+29	 if (b == 0) return (false, 0);
+30	 return (true, a % b);
+31	 }
+32	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+33	 uint256 c = a + b;
+34	 require(c >= a, "SafeMath: addition overflow");
+35	 return c;
+36	 }
+37	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+38	 require(b <= a, "SafeMath: subtraction overflow");
+39	 return a - b;
+40	 }
+41	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+42	 if (a == 0) return 0;
+43	 uint256 c = a * b;
+44	 require(c / a == b, "SafeMath: multiplication overflow");
+45	 return c;
+46	 }
+47	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+48	 require(b > 0, "SafeMath: division by zero");
+49	 return a / b;
+50	 }
+51	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+52	 require(b > 0, "SafeMath: modulo by zero");
+53	 return a % b;
+54	 }
+55	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+56	 require(b <= a, errorMessage);
+57	 return a - b;
+58	 }
+59	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+60	 require(b > 0, errorMessage);
+61	 return a / b;
+62	 }
+63	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+64	 require(b > 0, errorMessage);
+65	 return a % b;
+66	 }
+67	 }
+68	 pragma solidity ^0.6.12;
+69	 contract HordCongress {
+70	 using SafeMath for *;
+71	 string public constant name = "HordCongress";
+72	 IHordCongressMembersRegistry membersRegistry;
+73	 uint public proposalCount;
+74	 struct Proposal {
+75	 uint id;
+76	 address proposer;
+77	 address[] targets;
+78	 uint[] values;
+79	 string[] signatures;
+80	 bytes[] calldatas;
+81	 uint forVotes;
+82	 uint againstVotes;
+83	 bool canceled;
+84	 bool executed;
+85	 uint timestamp;
+86	 mapping (address => Receipt) receipts;
+87	 }
+88	 struct Receipt {
+89	 bool hasVoted;
+90	 bool support;
+91	 }
+92	 mapping (uint => Proposal) public proposals;
+93	 event ProposalCreated(uint id, address proposer, address[] targets, uint[] values, string[] signatures, bytes[] calldatas, string description);
+94	 event VoteCast(address voter, uint proposalId, bool support);
+95	 event ProposalCanceled(uint id);
+96	 event ProposalExecuted(uint id);
+97	 event ReceivedEther(address sender, uint amount);
+98	 event ExecuteTransaction(address indexed target, uint value, string signature, bytes data);
+99	 modifier onlyMember {
+100	 require(membersRegistry.isMember(msg.sender) == true, "Only HordCongress member can call this function");
+101	 _;
+102	 }
+103	 function setMembersRegistry( address _membersRegistry ) external {
+104	 require(address(membersRegistry) == address(0x0));
+105	 membersRegistry = IHordCongressMembersRegistry(_membersRegistry);
+106	 }
+107	 function propose( address[] memory targets, uint[] memory values, string[] memory signatures, bytes[] memory calldatas, string memory description ) external onlyMember returns (uint) {
+108	 require( targets.length == values.length && targets.length == signatures.length && targets.length == calldatas.length, "HordCongress::propose: proposal function information arity mismatch" );
+109	 require(targets.length != 0, "HordCongress::propose: must provide actions");
+110	 proposalCount++;
+111	 Proposal memory newProposal = Proposal({
+112	 id: proposalCount, proposer: msg.sender, targets: targets, values: values, signatures: signatures, calldatas: calldatas, forVotes: 0, againstVotes: 0, canceled: false, executed: false, timestamp: block.timestamp }
+113	 );
+114	 proposals[newProposal.id] = newProposal;
+115	 emit ProposalCreated(newProposal.id, msg.sender, targets, values, signatures, calldatas, description);
+116	 return newProposal.id;
+117	 }
+118	 function castVote( uint proposalId, bool support ) external onlyMember {
+119	 return _castVote(msg.sender, proposalId, support);
+120	 }
+121	 function execute( uint proposalId ) external onlyMember payable {
+122	 Proposal storage proposal = proposals[proposalId];
+123	 require(proposal.executed == false && proposal.canceled == false);
+124	 proposal.executed = true;
+125	 require(proposal.forVotes >= membersRegistry.getMinimalQuorum());
+126	 for (uint i = 0; i < proposal.targets.length; i++) {
+127	 bytes memory callData;
+128	 if (bytes(proposal.signatures[i]).length == 0) {
+129	 callData = proposal.calldatas[i];
+130	 }
+131	 else {
+132	 callData = abi.encodePacked(bytes4(keccak256(bytes(proposal.signatures[i]))), proposal.calldatas[i]);
+133	 }
+134	 (bool success,) = proposal.targets[i].call.value(proposal.values[i])(callData);
+135	 require(success, "HordCongress::executeTransaction: Transaction execution reverted.");
+136	 emit ExecuteTransaction(proposal.targets[i], proposal.values[i], proposal.signatures[i], proposal.calldatas[i]);
+137	 }
+138	 emit ProposalExecuted(proposalId);
+139	 }
+140	 function cancel(uint proposalId) external onlyMember {
+141	 Proposal storage proposal = proposals[proposalId];
+142	 require(proposal.executed == false && proposal.canceled == false);
+143	 require(block.timestamp >= proposal.timestamp + 259200);
+144	 require(proposal.forVotes < membersRegistry.getMinimalQuorum(), "HordCongress:cancel: Proposal already reached quorum");
+145	 proposal.canceled = true;
+146	 emit ProposalCanceled(proposalId);
+147	 }
+148	 function _castVote(address voter, uint proposalId, bool support) internal {
+149	 Proposal storage proposal = proposals[proposalId];
+150	 Receipt storage receipt = proposal.receipts[voter];
+151	 require(receipt.hasVoted == false, "HordCongress::_castVote: voter already voted");
+152	 if (support) {
+153	 proposal.forVotes = proposal.forVotes.add(1);
+154	 }
+155	 else {
+156	 proposal.againstVotes = proposal.againstVotes.sub(1);
+157	 }
+158	 receipt.hasVoted = true;
+159	 receipt.support = support;
+160	 emit VoteCast(voter, proposalId, support);
+161	 }
+162	 function getActions(uint proposalId) external view returns (address[] memory targets, uint[] memory values, string[] memory signatures, bytes[] memory calldatas) {
+163	 Proposal storage p = proposals[proposalId];
+164	 return (p.targets, p.values, p.signatures, p.calldatas);
+165	 }
+166	 function getMembersRegistry() external view returns (address) {
+167	 return address(membersRegistry);
+168	 }
+169	 receive() external payable {
+170	 emit ReceivedEther(msg.sender, msg.value);
+171	 }
+172	 }

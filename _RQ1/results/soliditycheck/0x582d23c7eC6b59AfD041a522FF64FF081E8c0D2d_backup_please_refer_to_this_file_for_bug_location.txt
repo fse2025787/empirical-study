@@ -1,0 +1,151 @@
+row number 
+1	       pragma solidity ^0.7.0;
+2	 abstract contract Proxy {
+3	 function _delegate(address implementation) internal {
+4	 assembly {
+5	 calldatacopy(0, 0, calldatasize()) let result := delegatecall(gas(), implementation, 0, calldatasize(), 0, 0) returndatacopy(0, 0, returndatasize()) switch result case 0 {
+6	 revert(0, returndatasize()) }
+7	 default {
+8	 return(0, returndatasize()) }
+9	 }
+10	 }
+11	 function _implementation() internal virtual view returns (address);
+12	 function _fallback() internal {
+13	 _beforeFallback();
+14	 _delegate(_implementation());
+15	 }
+16	 fallback () payable external {
+17	 _fallback();
+18	 }
+19	 receive () payable external {
+20	 _fallback();
+21	 }
+22	 function _beforeFallback() internal virtual {
+23	 }
+24	 }
+25	 pragma solidity ^0.7.0;
+26	 contract UpgradeableProxy is Proxy {
+27	 constructor(address _logic, bytes memory _data) payable {
+28	 assert(_IMPLEMENTATION_SLOT == bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1));
+29	 _setImplementation(_logic);
+30	 if(_data.length > 0) {
+31	 (bool success,) = _logic.delegatecall(_data);
+32	 require(success);
+33	 }
+34	 }
+35	 event Upgraded(address indexed implementation);
+36	 bytes32 private constant _IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+37	 function _implementation() internal override view returns (address impl) {
+38	 bytes32 slot = _IMPLEMENTATION_SLOT;
+39	 assembly {
+40	 impl := sload(slot) }
+41	 }
+42	 function _upgradeTo(address newImplementation) internal {
+43	 _setImplementation(newImplementation);
+44	 emit Upgraded(newImplementation);
+45	 }
+46	 function _setImplementation(address newImplementation) private {
+47	 require(Address.isContract(newImplementation), "UpgradeableProxy: new implementation is not a contract");
+48	 bytes32 slot = _IMPLEMENTATION_SLOT;
+49	 assembly {
+50	 sstore(slot, newImplementation) }
+51	 }
+52	 }
+53	 pragma solidity ^0.7.0;
+54	 contract TransparentUpgradeableProxy is UpgradeableProxy {
+55	 constructor(address initialLogic, address initialAdmin, bytes memory _data) payable UpgradeableProxy(initialLogic, _data) {
+56	 assert(_ADMIN_SLOT == bytes32(uint256(keccak256("eip1967.proxy.admin")) - 1));
+57	 _setAdmin(initialAdmin);
+58	 }
+59	 event AdminChanged(address previousAdmin, address newAdmin);
+60	 bytes32 private constant _ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+61	 modifier ifAdmin() {
+62	 if (msg.sender == _admin()) {
+63	 _;
+64	 }
+65	 else {
+66	 _fallback();
+67	 }
+68	 }
+69	 function admin() external ifAdmin returns (address) {
+70	 return _admin();
+71	 }
+72	 function implementation() external ifAdmin returns (address) {
+73	 return _implementation();
+74	 }
+75	 function changeAdmin(address newAdmin) external ifAdmin {
+76	 require(newAdmin != address(0), "TransparentUpgradeableProxy: new admin is the zero address");
+77	 emit AdminChanged(_admin(), newAdmin);
+78	 _setAdmin(newAdmin);
+79	 }
+80	 function upgradeTo(address newImplementation) external ifAdmin {
+81	 _upgradeTo(newImplementation);
+82	 }
+83	 function upgradeToAndCall(address newImplementation, bytes calldata data) external payable ifAdmin {
+84	 _upgradeTo(newImplementation);
+85	 (bool success,) = newImplementation.delegatecall(data);
+86	 require(success);
+87	 }
+88	 function _admin() internal view returns (address adm) {
+89	 bytes32 slot = _ADMIN_SLOT;
+90	 assembly {
+91	 adm := sload(slot) }
+92	 }
+93	 function _setAdmin(address newAdmin) private {
+94	 bytes32 slot = _ADMIN_SLOT;
+95	 assembly {
+96	 sstore(slot, newAdmin) }
+97	 }
+98	 function _beforeFallback() internal override virtual {
+99	 require(msg.sender != _admin(), "TransparentUpgradeableProxy: admin cannot fallback to proxy target");
+100	 super._beforeFallback();
+101	 }
+102	 }
+103	 pragma solidity ^0.7.0;
+104	 library Address {
+105	 function isContract(address account) internal view returns (bool) {
+106	 bytes32 codehash;
+107	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+108	 assembly {
+109	 codehash := extcodehash(account) }
+110	 return (codehash != accountHash && codehash != 0x0);
+111	 }
+112	 function sendValue(address payable recipient, uint256 amount) internal {
+113	 require(address(this).balance >= amount, "Address: insufficient balance");
+114	 (bool success, ) = recipient.call{
+115	 value: amount }
+116	 ("");
+117	 require(success, "Address: unable to send value, recipient may have reverted");
+118	 }
+119	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+120	 return functionCall(target, data, "Address: low-level call failed");
+121	 }
+122	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+123	 return _functionCallWithValue(target, data, 0, errorMessage);
+124	 }
+125	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+126	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+127	 }
+128	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+129	 require(address(this).balance >= value, "Address: insufficient balance for call");
+130	 return _functionCallWithValue(target, data, value, errorMessage);
+131	 }
+132	 function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+133	 require(isContract(target), "Address: call to non-contract");
+134	 (bool success, bytes memory returndata) = target.call{
+135	 value: weiValue }
+136	 (data);
+137	 if (success) {
+138	 return returndata;
+139	 }
+140	 else {
+141	 if (returndata.length > 0) {
+142	 assembly {
+143	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+144	 }
+145	 else {
+146	 revert(errorMessage);
+147	 }
+148	 }
+149	 }
+150	 }

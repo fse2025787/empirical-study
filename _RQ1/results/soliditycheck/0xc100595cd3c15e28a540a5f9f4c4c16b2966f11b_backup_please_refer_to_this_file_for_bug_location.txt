@@ -1,0 +1,143 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract IERC20 {
+3	 function totalSupply() pure public returns (uint _totalSupply);
+4	 function balanceOf(address _owner) pure public returns (uint balance);
+5	 function transfer(address _to, uint _value) public returns (bool success);
+6	 function transferFrom(address _from, address _to, uint _value) public returns (bool success);
+7	 function approve(address _spender, uint _value) public returns (bool success);
+8	 function allowance(address _owner, address _spender) pure public returns (uint remaining);
+9	 event Transfer(address indexed _from, address indexed _to, uint _value);
+10	 event Approval(address indexed _owner, address indexed _spender, uint _value);
+11	 }
+12	 library SafeMathLib {
+13	 function times(uint a, uint b) pure public returns (uint) {
+14	 uint c = a * b;
+15	 assert(a == 0 || c / a == b);
+16	 return c;
+17	 }
+18	 function minus(uint a, uint b) pure public returns (uint) {
+19	 assert(b <= a);
+20	 return a - b;
+21	 }
+22	 function plus(uint a, uint b) pure public returns (uint) {
+23	 uint c = a + b;
+24	 assert(c>=a && c>=b);
+25	 return c;
+26	 }
+27	 }
+28	 contract TDX {
+29	 address public owner;
+30	 constructor() public {
+31	 owner = msg.sender;
+32	 }
+33	 modifier onlyOwner() {
+34	 require(msg.sender == owner);
+35	 _;
+36	 }
+37	 function transferOwnership(address newOwner) onlyOwner public {
+38	 require(newOwner != address(0));
+39	 owner = newOwner;
+40	 }
+41	 }
+42	 contract Sale is TDX {
+43	 using SafeMathLib for uint256;
+44	 using SafeMathLib for uint8;
+45	 IERC20 token;
+46	 address tokenAddressWallet;
+47	 address etherAddressWallet;
+48	 uint256 public constant CAP = 15000000 * 10**8;
+49	 uint256 public constant tokensPerPhase = 5000000 * 10**8;
+50	 uint256 public PHASE1_START = 1533254400;
+51	 uint256 public PHASE1_END = 1536451200;
+52	 uint256 public PHASE2_START = 1536451200;
+53	 uint256 public PHASE2_END = 1539648000;
+54	 uint256 public PHASE3_START = 1539648000;
+55	 uint256 public PHASE3_END = 1543017600;
+56	 uint256 usdPerEther = 1000;
+57	 uint256 public tokensSold;
+58	 uint256[] public tokensSoldPerPhase;
+59	 bool public initialized = false;
+60	 modifier IsLive() {
+61	 assert(isSaleLive());
+62	 _;
+63	 }
+64	 constructor( address _tokenAddr, address _etherAddr, address _tokenWalletAddr ) public {
+65	 require(_tokenAddr != 0);
+66	 token = IERC20(_tokenAddr);
+67	 etherAddressWallet = _etherAddr;
+68	 tokenAddressWallet = _tokenWalletAddr;
+69	 }
+70	 function initialize() public onlyOwner {
+71	 require(initialized == false);
+72	 require(tokensAvailable() == CAP);
+73	 initialized = true;
+74	 }
+75	 function isSaleLive() public constant returns (bool) {
+76	 return ( initialized == true && getPhase() != 0 && goalReached() == false );
+77	 }
+78	 function goalReached() public constant returns (bool) {
+79	 if (tokensSold >= CAP) {
+80	 token.transfer(tokenAddressWallet, token.balanceOf(this));
+81	 return true;
+82	 }
+83	 return false;
+84	 }
+85	 function () public payable {
+86	 sellTokens();
+87	 }
+88	 function sellTokens() payable IsLive {
+89	 require(msg.value > 0);
+90	 uint256 tokens;
+91	 uint8 phase = getPhase();
+92	 if (phase == 1) {
+93	 tokens = (((msg.value) / usdPerEther) / 2) / 10 **10;
+94	 }
+95	 else if (phase == 2) {
+96	 tokens = (((msg.value).times(3) / usdPerEther) / 4) / 10 **10;
+97	 }
+98	 else if (phase == 3) {
+99	 tokens = ((msg.value) / usdPerEther) / 10 ** 10;
+100	 }
+101	 uint256 afterPayment = tokensSoldPerPhase[phase].plus(tokens);
+102	 require(afterPayment <= tokensPerPhase);
+103	 tokensSold = tokensSold.plus(tokens);
+104	 tokensSoldPerPhase[phase] = afterPayment;
+105	 transferTokens(tokens);
+106	 etherAddressWallet.transfer(msg.value);
+107	 }
+108	 function getPhase() public constant returns (uint8) {
+109	 if (now >= PHASE1_START && now <= PHASE1_END) {
+110	 return 1;
+111	 }
+112	 else if (now >= PHASE2_START && now <= PHASE2_END) {
+113	 return 2;
+114	 }
+115	 else if (now >= PHASE3_START && now <= PHASE3_END) {
+116	 return 3;
+117	 }
+118	 else if(now >= PHASE3_END) {
+119	 terminateSale();
+120	 }
+121	 else {
+122	 return 0;
+123	 }
+124	 }
+125	 function transferTokens(uint256 tokens) private {
+126	 token.transfer(msg.sender, tokens);
+127	 tokensSold = tokensSold.plus(tokens);
+128	 }
+129	 function tokensAvailable() public constant returns (uint256) {
+130	 return token.balanceOf(this);
+131	 }
+132	 function terminateSale() internal {
+133	 token.transfer(tokenAddressWallet, token.balanceOf(this));
+134	 }
+135	 function terminateTokenSale() public onlyOwner {
+136	 terminateSale();
+137	 }
+138	 function terminateContract() public onlyOwner {
+139	 terminateSale();
+140	 selfdestruct(etherAddressWallet);
+141	 }
+142	 }

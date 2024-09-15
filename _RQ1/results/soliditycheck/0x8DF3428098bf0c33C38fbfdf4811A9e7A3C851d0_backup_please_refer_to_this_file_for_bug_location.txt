@@ -1,0 +1,294 @@
+row number 
+1	       pragma solidity 0.7.6;
+2	 abstract contract Permissions {
+3	 using SafeERC20 for IERC20;
+4	 mapping(address => bool) internal operators;
+5	 address public admin;
+6	 address public pendingAdmin;
+7	 address[] internal operatorsGroup;
+8	 uint256 private constant MAX_GROUP_SIZE = 50;
+9	 event EtherWithdraw(uint256 amount, address sendTo);
+10	 event TokenWithdraw(IERC20 token, uint256 amount, address sendTo);
+11	 event AdminClaimed(address newAdmin, address previousAdmin);
+12	 event TransferAdminPending(address pendingAdmin);
+13	 event OperatorAdded(address newOperator, bool isAdd);
+14	 constructor(address _admin) {
+15	 require(_admin != address(0), "admin 0");
+16	 admin = _admin;
+17	 }
+18	 modifier onlyAdmin() {
+19	 require(msg.sender == admin, "only admin");
+20	 _;
+21	 }
+22	 modifier onlyOperator() {
+23	 require(operators[msg.sender], "only operator");
+24	 _;
+25	 }
+26	 function withdrawEther(uint256 amount, address payable sendTo) external onlyAdmin {
+27	 (bool success, ) = sendTo.call{
+28	 value: amount}
+29	 ("");
+30	 require(success, "withdraw failed");
+31	 emit EtherWithdraw(amount, sendTo);
+32	 }
+33	 function withdrawToken( IERC20 token, uint256 amount, address sendTo ) external onlyAdmin {
+34	 token.safeTransfer(sendTo, amount);
+35	 emit TokenWithdraw(token, amount, sendTo);
+36	 }
+37	 function claimAdmin() public {
+38	 require(pendingAdmin == msg.sender, "not pending");
+39	 emit AdminClaimed(pendingAdmin, admin);
+40	 admin = pendingAdmin;
+41	 pendingAdmin = address(0);
+42	 }
+43	 function transferAdmin(address newAdmin) public onlyAdmin {
+44	 require(newAdmin != address(0), "new admin 0");
+45	 emit TransferAdminPending(newAdmin);
+46	 pendingAdmin = newAdmin;
+47	 }
+48	 function addOperator(address newOperator) public onlyAdmin {
+49	 require(!operators[newOperator], "operator exists");
+50	 require(operatorsGroup.length < MAX_GROUP_SIZE, "max operators");
+51	 emit OperatorAdded(newOperator, true);
+52	 operators[newOperator] = true;
+53	 operatorsGroup.push(newOperator);
+54	 }
+55	 function removeOperator(address operator) public onlyAdmin {
+56	 require(operators[operator], "not operator");
+57	 operators[operator] = false;
+58	 for (uint256 i = 0; i < operatorsGroup.length; ++i) {
+59	 if (operatorsGroup[i] == operator) {
+60	 operatorsGroup[i] = operatorsGroup[operatorsGroup.length - 1];
+61	 operatorsGroup.pop();
+62	 emit OperatorAdded(operator, false);
+63	 break;
+64	 }
+65	 }
+66	 }
+67	 function transferAdminQuickly(address newAdmin) public onlyAdmin {
+68	 require(newAdmin != address(0), "admin 0");
+69	 emit TransferAdminPending(newAdmin);
+70	 emit AdminClaimed(newAdmin, admin);
+71	 admin = newAdmin;
+72	 }
+73	 function getOperators() external view returns (address[] memory) {
+74	 return operatorsGroup;
+75	 }
+76	 }
+77	 pragma solidity 0.7.6;
+78	 interface GasToken {
+79	 function freeFromUpTo(address from, uint256 value) external returns (uint256);
+80	 }
+81	 contract RewardsDistributor is Permissions {
+82	 using SafeERC20 for IERC20;
+83	 modifier discount(GasToken gasToken) {
+84	 uint256 gasStart = gasleft();
+85	 _;
+86	 uint256 gasSpent = 21000 + gasStart - gasleft() + 16 * msg.data.length;
+87	 gasToken.freeFromUpTo(address(this), (gasSpent + 14154) / 41947);
+88	 }
+89	 constructor(address _admin) Permissions(_admin) {
+90	 }
+91	 IERC20 internal constant ETH_TOKEN_ADDRESS = IERC20( 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE );
+92	 receive() external payable {
+93	 }
+94	 function distributeToOne( address payable winner, IERC20 token, uint256 amount, GasToken gasToken ) public onlyOperator {
+95	 require(winner != address(0), "winner cannot be zero address");
+96	 require(address(token) != address(0), "token cannot be zero address");
+97	 require(amount > 0, "amount is 0");
+98	 if (address(gasToken) == address(0)) {
+99	 _distributeWithoutGasToken(winner, token, amount);
+100	 }
+101	 else {
+102	 _distributeWithGasToken(winner, token, amount, gasToken);
+103	 }
+104	 }
+105	 function distributeToMany( address[] memory winners, IERC20 token, uint256 amount, GasToken gasToken ) public onlyOperator {
+106	 for (uint256 i = 0; i < winners.length; i++) {
+107	 distributeToOne(payable(winners[i]), token, amount, gasToken);
+108	 }
+109	 }
+110	 function _distributeWithGasToken( address payable winner, IERC20 token, uint256 amount, GasToken gasToken ) private discount(gasToken) {
+111	 _distribute(winner, token, amount);
+112	 }
+113	 function _distributeWithoutGasToken( address payable winner, IERC20 token, uint256 amount ) private {
+114	 _distribute(winner, token, amount);
+115	 }
+116	 function _distribute( address payable winner, IERC20 token, uint256 amount ) private {
+117	 if (token == ETH_TOKEN_ADDRESS) {
+118	 require(address(this).balance >= amount, "eth amount required > balance");
+119	 (bool success, ) = winner.call{
+120	 value: amount}
+121	 ("");
+122	 require(success, "send to winner failed");
+123	 }
+124	 else {
+125	 require(token.balanceOf(address(this)) >= amount, "token amount required > balance");
+126	 token.safeTransfer(winner, amount);
+127	 }
+128	 }
+129	 }
+130	 pragma solidity ^0.7.0;
+131	 interface IERC20 {
+132	 function totalSupply() external view returns (uint256);
+133	 function balanceOf(address account) external view returns (uint256);
+134	 function transfer(address recipient, uint256 amount) external returns (bool);
+135	 function allowance(address owner, address spender) external view returns (uint256);
+136	 function approve(address spender, uint256 amount) external returns (bool);
+137	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+138	 event Transfer(address indexed from, address indexed to, uint256 value);
+139	 event Approval(address indexed owner, address indexed spender, uint256 value);
+140	 }
+141	 pragma solidity ^0.7.0;
+142	 library SafeERC20 {
+143	 using SafeMath for uint256;
+144	 using Address for address;
+145	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+146	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+147	 }
+148	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+149	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+150	 }
+151	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+152	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+153	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+154	 }
+155	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+156	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+157	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+158	 }
+159	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+160	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+161	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+162	 }
+163	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+164	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+165	 if (returndata.length > 0) {
+166	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+167	 }
+168	 }
+169	 }
+170	 pragma solidity ^0.7.0;
+171	 library SafeMath {
+172	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+173	 uint256 c = a + b;
+174	 if (c < a) return (false, 0);
+175	 return (true, c);
+176	 }
+177	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+178	 if (b > a) return (false, 0);
+179	 return (true, a - b);
+180	 }
+181	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+182	 if (a == 0) return (true, 0);
+183	 uint256 c = a * b;
+184	 if (c / a != b) return (false, 0);
+185	 return (true, c);
+186	 }
+187	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+188	 if (b == 0) return (false, 0);
+189	 return (true, a / b);
+190	 }
+191	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+192	 if (b == 0) return (false, 0);
+193	 return (true, a % b);
+194	 }
+195	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+196	 uint256 c = a + b;
+197	 require(c >= a, "SafeMath: addition overflow");
+198	 return c;
+199	 }
+200	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+201	 require(b <= a, "SafeMath: subtraction overflow");
+202	 return a - b;
+203	 }
+204	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+205	 if (a == 0) return 0;
+206	 uint256 c = a * b;
+207	 require(c / a == b, "SafeMath: multiplication overflow");
+208	 return c;
+209	 }
+210	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+211	 require(b > 0, "SafeMath: division by zero");
+212	 return a / b;
+213	 }
+214	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+215	 require(b > 0, "SafeMath: modulo by zero");
+216	 return a % b;
+217	 }
+218	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+219	 require(b <= a, errorMessage);
+220	 return a - b;
+221	 }
+222	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+223	 require(b > 0, errorMessage);
+224	 return a / b;
+225	 }
+226	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+227	 require(b > 0, errorMessage);
+228	 return a % b;
+229	 }
+230	 }
+231	 pragma solidity ^0.7.0;
+232	 library Address {
+233	 function isContract(address account) internal view returns (bool) {
+234	 uint256 size;
+235	 assembly {
+236	 size := extcodesize(account) }
+237	 return size > 0;
+238	 }
+239	 function sendValue(address payable recipient, uint256 amount) internal {
+240	 require(address(this).balance >= amount, "Address: insufficient balance");
+241	 (bool success, ) = recipient.call{
+242	 value: amount }
+243	 ("");
+244	 require(success, "Address: unable to send value, recipient may have reverted");
+245	 }
+246	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+247	 return functionCall(target, data, "Address: low-level call failed");
+248	 }
+249	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+250	 return functionCallWithValue(target, data, 0, errorMessage);
+251	 }
+252	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+253	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+254	 }
+255	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+256	 require(address(this).balance >= value, "Address: insufficient balance for call");
+257	 require(isContract(target), "Address: call to non-contract");
+258	 (bool success, bytes memory returndata) = target.call{
+259	 value: value }
+260	 (data);
+261	 return _verifyCallResult(success, returndata, errorMessage);
+262	 }
+263	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+264	 return functionStaticCall(target, data, "Address: low-level static call failed");
+265	 }
+266	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+267	 require(isContract(target), "Address: static call to non-contract");
+268	 (bool success, bytes memory returndata) = target.staticcall(data);
+269	 return _verifyCallResult(success, returndata, errorMessage);
+270	 }
+271	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+272	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+273	 }
+274	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+275	 require(isContract(target), "Address: delegate call to non-contract");
+276	 (bool success, bytes memory returndata) = target.delegatecall(data);
+277	 return _verifyCallResult(success, returndata, errorMessage);
+278	 }
+279	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+280	 if (success) {
+281	 return returndata;
+282	 }
+283	 else {
+284	 if (returndata.length > 0) {
+285	 assembly {
+286	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+287	 }
+288	 else {
+289	 revert(errorMessage);
+290	 }
+291	 }
+292	 }
+293	 }

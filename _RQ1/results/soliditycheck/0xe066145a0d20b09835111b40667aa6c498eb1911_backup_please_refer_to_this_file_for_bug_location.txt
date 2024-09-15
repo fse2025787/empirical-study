@@ -1,0 +1,212 @@
+row number 
+1	   pragma solidity ^0.4.23;
+2	 contract ZTHReceivingContract {
+3	 function tokenFallback(address _from, uint _value, bytes _data) public returns (bool);
+4	 }
+5	 contract ZTHInterface {
+6	 function getFrontEndTokenBalanceOf(address who) public view returns (uint);
+7	 function transfer(address _to, uint _value) public returns (bool);
+8	 function approve(address spender, uint tokens) public returns (bool);
+9	 }
+10	 contract Zethroll is ZTHReceivingContract {
+11	 using SafeMath for uint;
+12	 modifier betIsValid(uint _betSize, uint _playerNumber) {
+13	 require( calculateProfit(_betSize, _playerNumber) < maxProfit && _betSize >= minBet && _playerNumber > minNumber && _playerNumber < maxNumber);
+14	 _;
+15	 }
+16	 modifier gameIsActive {
+17	 require(gamePaused == false);
+18	 _;
+19	 }
+20	 modifier onlyOwner {
+21	 require(msg.sender == owner);
+22	 _;
+23	 }
+24	 uint constant private MAX_INT = 2 ** 256 - 1;
+25	 uint constant public maxProfitDivisor = 1000000;
+26	 uint constant public maxNumber = 99;
+27	 uint constant public minNumber = 2;
+28	 uint constant public houseEdgeDivisor = 1000;
+29	 bool public gamePaused;
+30	 address public owner;
+31	 address public ZethrBankroll;
+32	 address public ZTHTKNADDR;
+33	 ZTHInterface public ZTHTKN;
+34	 uint public contractBalance;
+35	 uint public houseEdge;
+36	 uint public maxProfit;
+37	 uint public maxProfitAsPercentOfHouse;
+38	 uint public minBet = 0;
+39	 uint public totalBets;
+40	 uint public totalZTHWagered;
+41	 event LogBet(address sender, uint value, uint rollUnder);
+42	 event LogResult(address player, uint result, uint rollUnder, uint profit, uint tokensBetted, bool won);
+43	 event LogOwnerTransfer(address indexed SentToAddress, uint indexed AmountTransferred);
+44	 event MaxProfitChanged(uint _oldMaxProfit, uint _newMaxProfit);
+45	 event CurrentContractBalance(uint _tokens);
+46	 constructor (address zthtknaddr, address zthbankrolladdr) public {
+47	 owner = msg.sender;
+48	 ZTHTKN = ZTHInterface(zthtknaddr);
+49	 ZTHTKNADDR = zthtknaddr;
+50	 ZethrBankroll = zthbankrolladdr;
+51	 houseEdge = 990;
+52	 ownerSetMaxProfitAsPercentOfHouse(10000);
+53	 ownerSetMinBet(1e18);
+54	 ZTHTKN.approve(zthbankrolladdr, MAX_INT);
+55	 }
+56	 function() public payable {
+57	 }
+58	 function maxRandom(uint blockn, address entropy) public view returns (uint256 randomNumber) {
+59	 return uint256(keccak256( abi.encodePacked( blockhash(blockn), entropy) ));
+60	 }
+61	 function random(uint256 upper, uint256 blockn, address entropy) internal view returns (uint256 randomNumber) {
+62	 return maxRandom(blockn, entropy) % upper;
+63	 }
+64	 function calculateProfit(uint _initBet, uint _roll) private view returns (uint) {
+65	 return ((((_initBet * (100 - (_roll.sub(1)))) / (_roll.sub(1)) + _initBet)) * houseEdge / houseEdgeDivisor) - _initBet;
+66	 }
+67	 struct playerRoll{
+68	 uint200 tokenValue;
+69	 uint48 blockn;
+70	 uint8 rollUnder;
+71	 }
+72	 mapping(address => playerRoll) public playerRolls;
+73	 function _playerRollDice(uint _rollUnder, TKN _tkn) private gameIsActive betIsValid(_tkn.value, _rollUnder) {
+74	 require(_tkn.value < ((2 ** 200) - 1));
+75	 require(block.number < ((2 ** 48) - 1));
+76	 require(_zthToken(msg.sender));
+77	 playerRoll memory roll = playerRolls[_tkn.sender];
+78	 require(block.number != roll.blockn);
+79	 if (roll.blockn != 0) {
+80	 _finishBet(false, _tkn.sender);
+81	 }
+82	 roll.blockn = uint48(block.number);
+83	 roll.tokenValue = uint200(_tkn.value);
+84	 roll.rollUnder = uint8(_rollUnder);
+85	 playerRolls[_tkn.sender] = roll;
+86	 emit LogBet(_tkn.sender, _tkn.value, _rollUnder);
+87	 totalBets += 1;
+88	 totalZTHWagered += _tkn.value;
+89	 }
+90	 function finishBet() public gameIsActive returns (uint) {
+91	 return _finishBet(true, msg.sender);
+92	 }
+93	 function _finishBet(bool delete_it, address target) private returns (uint){
+94	 playerRoll memory roll = playerRolls[target];
+95	 require(roll.tokenValue > 0);
+96	 require(roll.blockn != block.number);
+97	 uint result;
+98	 if (block.number - roll.blockn > 255) {
+99	 result = 1000;
+100	 }
+101	 else {
+102	 result = random(99, roll.blockn, target) + 1;
+103	 }
+104	 uint rollUnder = roll.rollUnder;
+105	 if (result < rollUnder) {
+106	 uint profit = calculateProfit(roll.tokenValue, rollUnder);
+107	 if (profit > maxProfit){
+108	 profit = maxProfit;
+109	 }
+110	 contractBalance = contractBalance.sub(profit);
+111	 emit LogResult(target, result, rollUnder, profit, roll.tokenValue, true);
+112	 setMaxProfit();
+113	 delete playerRolls[target];
+114	 ZTHTKN.transfer(target, profit + roll.tokenValue);
+115	 return result;
+116	 }
+117	 else {
+118	 emit LogResult(target, result, rollUnder, profit, roll.tokenValue, false);
+119	 contractBalance = contractBalance.add(roll.tokenValue);
+120	 setMaxProfit();
+121	 return result;
+122	 }
+123	 }
+124	 struct TKN {
+125	 address sender;
+126	 uint value;
+127	 }
+128	 function tokenFallback(address _from, uint _value, bytes _data) public returns (bool) {
+129	 require(msg.sender == ZTHTKNADDR);
+130	 if (_from == ZethrBankroll) {
+131	 contractBalance = contractBalance.add(_value);
+132	 uint oldMaxProfit = maxProfit;
+133	 setMaxProfit();
+134	 emit MaxProfitChanged(oldMaxProfit, maxProfit);
+135	 return true;
+136	 }
+137	 else {
+138	 TKN memory _tkn;
+139	 _tkn.sender = _from;
+140	 _tkn.value = _value;
+141	 uint8 chosenNumber = uint8(_data[0]);
+142	 _playerRollDice(chosenNumber, _tkn);
+143	 }
+144	 return true;
+145	 }
+146	 function setMaxProfit() internal {
+147	 emit CurrentContractBalance(contractBalance);
+148	 maxProfit = (contractBalance * maxProfitAsPercentOfHouse) / maxProfitDivisor;
+149	 }
+150	 function ownerUpdateContractBalance(uint newContractBalance) public onlyOwner {
+151	 contractBalance = newContractBalance;
+152	 }
+153	 function ownerSetMaxProfitAsPercentOfHouse(uint newMaxProfitAsPercent) public onlyOwner {
+154	 require(newMaxProfitAsPercent <= 200000);
+155	 maxProfitAsPercentOfHouse = newMaxProfitAsPercent;
+156	 setMaxProfit();
+157	 }
+158	 function ownerSetMinBet(uint newMinimumBet) public onlyOwner {
+159	 minBet = newMinimumBet;
+160	 }
+161	 function ownerTransferZTH(address sendTo, uint amount) public onlyOwner {
+162	 contractBalance = contractBalance.sub(amount);
+163	 setMaxProfit();
+164	 require(ZTHTKN.transfer(sendTo, amount));
+165	 emit LogOwnerTransfer(sendTo, amount);
+166	 }
+167	 function ownerPauseGame(bool newStatus) public onlyOwner {
+168	 gamePaused = newStatus;
+169	 }
+170	 function ownerSetBankroll(address newBankroll) public onlyOwner {
+171	 ZTHTKN.approve(ZethrBankroll, 0);
+172	 ZethrBankroll = newBankroll;
+173	 ZTHTKN.approve(newBankroll, MAX_INT);
+174	 }
+175	 function ownerChangeOwner(address newOwner) public onlyOwner {
+176	 owner = newOwner;
+177	 }
+178	 function ownerkill() public onlyOwner {
+179	 ZTHTKN.transfer(owner, contractBalance);
+180	 selfdestruct(owner);
+181	 }
+182	 function dumpdivs() public{
+183	 ZethrBankroll.transfer(address(this).balance);
+184	 }
+185	 function _zthToken(address _tokenContract) private view returns (bool) {
+186	 return _tokenContract == ZTHTKNADDR;
+187	 }
+188	 }
+189	 library SafeMath {
+190	 function mul(uint a, uint b) internal pure returns (uint) {
+191	 if (a == 0) {
+192	 return 0;
+193	 }
+194	 uint c = a * b;
+195	 assert(c / a == b);
+196	 return c;
+197	 }
+198	 function div(uint a, uint b) internal pure returns (uint) {
+199	 uint c = a / b;
+200	 return c;
+201	 }
+202	 function sub(uint a, uint b) internal pure returns (uint) {
+203	 assert(b <= a);
+204	 return a - b;
+205	 }
+206	 function add(uint a, uint b) internal pure returns (uint) {
+207	 uint c = a + b;
+208	 assert(c >= a);
+209	 return c;
+210	 }
+211	 }

@@ -1,0 +1,216 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity >=0.6.0 <0.8.0;
+3	 abstract contract Context {
+4	 function _msgSender() internal view virtual returns (address payable) {
+5	 return msg.sender;
+6	 }
+7	 function _msgData() internal view virtual returns (bytes memory) {
+8	 this;
+9	 return msg.data;
+10	 }
+11	 }
+12	 pragma solidity >=0.6.0 <0.8.0;
+13	 abstract contract Ownable is Context {
+14	 address private _owner;
+15	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+16	 constructor () internal {
+17	 address msgSender = _msgSender();
+18	 _owner = msgSender;
+19	 emit OwnershipTransferred(address(0), msgSender);
+20	 }
+21	 function owner() public view virtual returns (address) {
+22	 return _owner;
+23	 }
+24	 modifier onlyOwner() {
+25	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+26	 _;
+27	 }
+28	 function renounceOwnership() public virtual onlyOwner {
+29	 emit OwnershipTransferred(_owner, address(0));
+30	 _owner = address(0);
+31	 }
+32	 function transferOwnership(address newOwner) public virtual onlyOwner {
+33	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+34	 emit OwnershipTransferred(_owner, newOwner);
+35	 _owner = newOwner;
+36	 }
+37	 }
+38	 pragma solidity ^0.7.6;
+39	 contract XMRCH is Ownable {
+40	 string public constant name = "xMRCH DAO Token";
+41	 string public constant symbol = "xMRCH";
+42	 uint8 public constant decimals = 18;
+43	 uint public totalSupply = 500e18;
+44	 mapping (address => mapping (address => uint96)) internal allowances;
+45	 mapping (address => uint96) internal balances;
+46	 mapping (address => address) public delegates;
+47	 struct Checkpoint {
+48	 uint32 fromBlock;
+49	 uint96 votes;
+50	 }
+51	 mapping (address => mapping (uint32 => Checkpoint)) public checkpoints;
+52	 mapping (address => uint32) public numCheckpoints;
+53	 bytes32 public constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
+54	 bytes32 public constant DELEGATION_TYPEHASH = keccak256("Delegation(address delegatee,uint256 nonce,uint256 expiry)");
+55	 mapping (address => uint) public nonces;
+56	 event DelegateChanged(address indexed delegator, address indexed fromDelegate, address indexed toDelegate);
+57	 event DelegateVotesChanged(address indexed delegate, uint previousBalance, uint newBalance);
+58	 event Transfer(address indexed from, address indexed to, uint256 amount);
+59	 event Approval(address indexed owner, address indexed spender, uint256 amount);
+60	 constructor(address account) {
+61	 balances[account] = uint96(totalSupply);
+62	 emit Transfer(address(0), account, totalSupply);
+63	 }
+64	 function allowance(address account, address spender) external view returns (uint) {
+65	 return allowances[account][spender];
+66	 }
+67	 function approve(address spender, uint rawAmount) external returns (bool) {
+68	 uint96 amount;
+69	 if (rawAmount == uint(-1)) {
+70	 amount = uint96(-1);
+71	 }
+72	 else {
+73	 amount = safe96(rawAmount, "xMRCH::approve: amount exceeds 96 bits");
+74	 }
+75	 allowances[msg.sender][spender] = amount;
+76	 emit Approval(msg.sender, spender, amount);
+77	 return true;
+78	 }
+79	 function balanceOf(address account) external view returns (uint) {
+80	 return balances[account];
+81	 }
+82	 function transfer(address dst, uint rawAmount) external returns (bool) {
+83	 uint96 amount = safe96(rawAmount, "xMRCH::transfer: amount exceeds 96 bits");
+84	 _transferTokens(msg.sender, dst, amount);
+85	 return true;
+86	 }
+87	 function transferFrom(address src, address dst, uint rawAmount) external returns (bool) {
+88	 address spender = msg.sender;
+89	 uint96 spenderAllowance = allowances[src][spender];
+90	 uint96 amount = safe96(rawAmount, "xMRCH::approve: amount exceeds 96 bits");
+91	 if (spender != src && spenderAllowance != uint96(-1)) {
+92	 uint96 newAllowance = sub96(spenderAllowance, amount, "xMRCH::transferFrom: transfer amount exceeds spender allowance");
+93	 allowances[src][spender] = newAllowance;
+94	 emit Approval(src, spender, newAllowance);
+95	 }
+96	 _transferTokens(src, dst, amount);
+97	 return true;
+98	 }
+99	 function delegate(address delegatee) public {
+100	 return _delegate(msg.sender, delegatee);
+101	 }
+102	 function delegateBySig(address delegatee, uint nonce, uint expiry, uint8 v, bytes32 r, bytes32 s) public {
+103	 bytes32 domainSeparator = keccak256(abi.encode(DOMAIN_TYPEHASH, keccak256(bytes(name)), getChainId(), address(this)));
+104	 bytes32 structHash = keccak256(abi.encode(DELEGATION_TYPEHASH, delegatee, nonce, expiry));
+105	 bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+106	 address signatory = ecrecover(digest, v, r, s);
+107	 require(signatory != address(0), "xMRCH::delegateBySig: invalid signature");
+108	 require(nonce == nonces[signatory]++, "xMRCH::delegateBySig: invalid nonce");
+109	 require(block.timestamp <= expiry, "xMRCH::delegateBySig: signature expired");
+110	 return _delegate(signatory, delegatee);
+111	 }
+112	 function getCurrentVotes(address account) external view returns (uint96) {
+113	 uint32 nCheckpoints = numCheckpoints[account];
+114	 return nCheckpoints > 0 ? checkpoints[account][nCheckpoints - 1].votes : 0;
+115	 }
+116	 function getPriorVotes(address account, uint blockNumber) public view returns (uint96) {
+117	 require(blockNumber < block.number, "xMRCH::getPriorVotes: not yet determined");
+118	 uint32 nCheckpoints = numCheckpoints[account];
+119	 if (nCheckpoints == 0) {
+120	 return 0;
+121	 }
+122	 if (checkpoints[account][nCheckpoints - 1].fromBlock <= blockNumber) {
+123	 return checkpoints[account][nCheckpoints - 1].votes;
+124	 }
+125	 if (checkpoints[account][0].fromBlock > blockNumber) {
+126	 return 0;
+127	 }
+128	 uint32 lower = 0;
+129	 uint32 upper = nCheckpoints - 1;
+130	 while (upper > lower) {
+131	 uint32 center = upper - (upper - lower) / 2;
+132	 Checkpoint memory cp = checkpoints[account][center];
+133	 if (cp.fromBlock == blockNumber) {
+134	 return cp.votes;
+135	 }
+136	 else if (cp.fromBlock < blockNumber) {
+137	 lower = center;
+138	 }
+139	 else {
+140	 upper = center - 1;
+141	 }
+142	 }
+143	 return checkpoints[account][lower].votes;
+144	 }
+145	 function _delegate(address delegator, address delegatee) internal {
+146	 address currentDelegate = delegates[delegator];
+147	 uint96 delegatorBalance = balances[delegator];
+148	 delegates[delegator] = delegatee;
+149	 emit DelegateChanged(delegator, currentDelegate, delegatee);
+150	 _moveDelegates(currentDelegate, delegatee, delegatorBalance);
+151	 }
+152	 function _transferTokens(address src, address dst, uint96 amount) internal {
+153	 require(src != address(0), "xMRCH::_transferTokens: cannot transfer from the zero address");
+154	 require(dst != address(0), "xMRCH::_transferTokens: cannot transfer to the zero address");
+155	 balances[src] = sub96(balances[src], amount, "xMRCH::_transferTokens: transfer amount exceeds balance");
+156	 balances[dst] = add96(balances[dst], amount, "xMRCH::_transferTokens: transfer amount overflows");
+157	 emit Transfer(src, dst, amount);
+158	 _moveDelegates(delegates[src], delegates[dst], amount);
+159	 }
+160	 function _moveDelegates(address srcRep, address dstRep, uint96 amount) internal {
+161	 if (srcRep != dstRep && amount > 0) {
+162	 if (srcRep != address(0)) {
+163	 uint32 srcRepNum = numCheckpoints[srcRep];
+164	 uint96 srcRepOld = srcRepNum > 0 ? checkpoints[srcRep][srcRepNum - 1].votes : 0;
+165	 uint96 srcRepNew = sub96(srcRepOld, amount, "xMRCH::_moveVotes: vote amount underflows");
+166	 _writeCheckpoint(srcRep, srcRepNum, srcRepOld, srcRepNew);
+167	 }
+168	 if (dstRep != address(0)) {
+169	 uint32 dstRepNum = numCheckpoints[dstRep];
+170	 uint96 dstRepOld = dstRepNum > 0 ? checkpoints[dstRep][dstRepNum - 1].votes : 0;
+171	 uint96 dstRepNew = add96(dstRepOld, amount, "xMRCH::_moveVotes: vote amount overflows");
+172	 _writeCheckpoint(dstRep, dstRepNum, dstRepOld, dstRepNew);
+173	 }
+174	 }
+175	 }
+176	 function _writeCheckpoint(address delegatee, uint32 nCheckpoints, uint96 oldVotes, uint96 newVotes) internal {
+177	 uint32 blockNumber = safe32(block.number, "xMRCH::_writeCheckpoint: block number exceeds 32 bits");
+178	 if (nCheckpoints > 0 && checkpoints[delegatee][nCheckpoints - 1].fromBlock == blockNumber) {
+179	 checkpoints[delegatee][nCheckpoints - 1].votes = newVotes;
+180	 }
+181	 else {
+182	 checkpoints[delegatee][nCheckpoints] = Checkpoint(blockNumber, newVotes);
+183	 numCheckpoints[delegatee] = nCheckpoints + 1;
+184	 }
+185	 emit DelegateVotesChanged(delegatee, oldVotes, newVotes);
+186	 }
+187	 function safe32(uint n, string memory errorMessage) internal pure returns (uint32) {
+188	 require(n < 2**32, errorMessage);
+189	 return uint32(n);
+190	 }
+191	 function safe96(uint n, string memory errorMessage) internal pure returns (uint96) {
+192	 require(n < 2**96, errorMessage);
+193	 return uint96(n);
+194	 }
+195	 function add96(uint96 a, uint96 b, string memory errorMessage) internal pure returns (uint96) {
+196	 uint96 c = a + b;
+197	 require(c >= a, errorMessage);
+198	 return c;
+199	 }
+200	 function sub96(uint96 a, uint96 b, string memory errorMessage) internal pure returns (uint96) {
+201	 require(b <= a, errorMessage);
+202	 return a - b;
+203	 }
+204	 function getChainId() internal pure returns (uint) {
+205	 uint256 chainId;
+206	 assembly {
+207	 chainId := chainid() }
+208	 return chainId;
+209	 }
+210	 function mint(uint96 amount) external onlyOwner {
+211	 totalSupply = totalSupply + uint(amount);
+212	 balances[msg.sender] = add96(balances[msg.sender], amount, "xMRCH::mint: transfer amount overflows");
+213	 emit Transfer(address(0), msg.sender, amount);
+214	 }
+215	 }

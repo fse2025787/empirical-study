@@ -1,0 +1,496 @@
+row number 
+1	           pragma solidity ^0.8.7;
+2	 interface IERC20 {
+3	 function totalSupply() external view returns (uint256);
+4	 function balanceOf(address account) external view returns (uint256);
+5	 function transfer(address recipient, uint256 amount) external returns (bool);
+6	 function allowance(address owner, address spender) external view returns (uint256);
+7	 function approve(address spender, uint256 amount) external returns (bool);
+8	 function transferFrom( address sender, address recipient, uint256 amount ) external returns (bool);
+9	 event Transfer(address indexed from, address indexed to, uint256 value);
+10	 event Approval(address indexed owner, address indexed spender, uint256 value);
+11	 }
+12	 abstract contract Context {
+13	 function _msgSender() internal view virtual returns (address) {
+14	 return msg.sender;
+15	 }
+16	 function _msgData() internal view virtual returns (bytes calldata) {
+17	 this;
+18	 return msg.data;
+19	 }
+20	 }
+21	 abstract contract Ownable is Context {
+22	 address private _owner;
+23	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+24	 constructor() {
+25	 _setOwner(_msgSender());
+26	 }
+27	 function owner() public view virtual returns (address) {
+28	 return _owner;
+29	 }
+30	 modifier onlyOwner() {
+31	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+32	 _;
+33	 }
+34	 function renounceOwnership() public virtual onlyOwner {
+35	 _setOwner(address(0));
+36	 }
+37	 function transferOwnership(address newOwner) public virtual onlyOwner {
+38	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+39	 _setOwner(newOwner);
+40	 }
+41	 function _setOwner(address newOwner) private {
+42	 address oldOwner = _owner;
+43	 _owner = newOwner;
+44	 emit OwnershipTransferred(oldOwner, newOwner);
+45	 }
+46	 }
+47	 interface IFactory{
+48	 function createPair(address tokenA, address tokenB) external returns (address pair);
+49	 }
+50	 interface IRouter {
+51	 function factory() external pure returns (address);
+52	 function WETH() external pure returns (address);
+53	 function addLiquidityETH( address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+54	 function swapExactTokensForETHSupportingFeeOnTransferTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external;
+55	 }
+56	 library Address{
+57	 function sendValue(address payable recipient, uint256 amount) internal {
+58	 require(address(this).balance >= amount, "Address: insufficient balance");
+59	 (bool success, ) = recipient.call{
+60	 value: amount}
+61	 ("");
+62	 require(success, "Address: unable to send value, recipient may have reverted");
+63	 }
+64	 }
+65	 contract ProofOfVitalik is Context, IERC20, Ownable {
+66	 using Address for address payable;
+67	 mapping (address => uint256) private _rOwned;
+68	 mapping (address => uint256) private _tOwned;
+69	 mapping (address => mapping (address => uint256)) private _allowances;
+70	 mapping (address => bool) private _isExcludedFromFee;
+71	 mapping (address => bool) private _isExcluded;
+72	 mapping (address => bool) public allowedTransfer;
+73	 mapping (address => bool) private _isBlacklisted;
+74	 address[] private _excluded;
+75	 bool public tradingEnabled;
+76	 bool public swapEnabled;
+77	 bool private swapping;
+78	 mapping(address => uint256) private _lastSell;
+79	 bool public coolDownEnabled = false;
+80	 uint256 public coolDownTime = 0 seconds;
+81	 modifier antiBot(address account){
+82	 require(tradingEnabled || allowedTransfer[account], "Trading not enabled yet");
+83	 _;
+84	 }
+85	 IRouter public router;
+86	 address public pair;
+87	 uint8 private constant _decimals = 6;
+88	 uint256 private constant MAX = ~uint256(0);
+89	 uint256 private _tTotal = 1000000e6 * 10**_decimals;
+90	 uint256 private _rTotal = (MAX - (MAX % _tTotal));
+91	 uint256 public swapTokensAtAmount = 5_000_000_000 * 10**6;
+92	 uint256 public maxBuyLimit = 10_000_000_000 * 10**6;
+93	 uint256 public maxSellLimit = 10_000_000_000 * 10**6;
+94	 uint256 public maxWalletLimit = 20_000_000_000 * 10**6;
+95	 uint256 public genesis_block;
+96	 address public marketingWallet = 0x3fA729D687fcd256b9dD251f5F702EA3868b6321;
+97	 address public developmentWallet = 0x3fA729D687fcd256b9dD251f5F702EA3868b6321;
+98	 string private constant _name = "Proof of Vitalik";
+99	 string private constant _symbol = "PoA";
+100	 struct Taxes {
+101	 uint256 rfi;
+102	 uint256 development;
+103	 uint256 liquidity;
+104	 uint256 marketing;
+105	 }
+106	 Taxes public taxes = Taxes(0, 1, 1, 3);
+107	 Taxes public sellTaxes = Taxes(0, 1, 1, 3);
+108	 struct TotFeesPaidStruct{
+109	 uint256 rfi;
+110	 uint256 development;
+111	 uint256 liquidity;
+112	 uint256 marketing;
+113	 }
+114	 TotFeesPaidStruct public totFeesPaid;
+115	 struct valuesFromGetValues{
+116	 uint256 rAmount;
+117	 uint256 rTransferAmount;
+118	 uint256 rRfi;
+119	 uint256 rdevelopment;
+120	 uint256 rLiquidity;
+121	 uint256 rmarketing;
+122	 uint256 tTransferAmount;
+123	 uint256 tRfi;
+124	 uint256 tdevelopment;
+125	 uint256 tLiquidity;
+126	 uint256 tmarketing;
+127	 }
+128	 event FeesChanged();
+129	 event UpdatedRouter(address oldRouter, address newRouter);
+130	 modifier lockTheSwap {
+131	 swapping = true;
+132	 _;
+133	 swapping = false;
+134	 }
+135	 constructor (address routerAddress) {
+136	 IRouter _router = IRouter(routerAddress);
+137	 address _pair = IFactory(_router.factory()) .createPair(address(this), _router.WETH());
+138	 router = _router;
+139	 pair = _pair;
+140	 excludeFromReward(pair);
+141	 _rOwned[owner()] = _rTotal;
+142	 _isExcludedFromFee[address(this)] = true;
+143	 _isExcludedFromFee[owner()] = true;
+144	 _isExcludedFromFee[marketingWallet] = true;
+145	 _isExcludedFromFee[developmentWallet] = true;
+146	 allowedTransfer[address(this)] = true;
+147	 allowedTransfer[owner()] = true;
+148	 allowedTransfer[pair] = true;
+149	 allowedTransfer[marketingWallet] = true;
+150	 allowedTransfer[developmentWallet] = true;
+151	 emit Transfer(address(0), owner(), _tTotal);
+152	 }
+153	 function name() public pure returns (string memory) {
+154	 return _name;
+155	 }
+156	 function symbol() public pure returns (string memory) {
+157	 return _symbol;
+158	 }
+159	 function decimals() public pure returns (uint8) {
+160	 return _decimals;
+161	 }
+162	 function totalSupply() public view override returns (uint256) {
+163	 return _tTotal;
+164	 }
+165	 function balanceOf(address account) public view override returns (uint256) {
+166	 if (_isExcluded[account]) return _tOwned[account];
+167	 return tokenFromReflection(_rOwned[account]);
+168	 }
+169	 function allowance(address owner, address spender) public view override returns (uint256) {
+170	 return _allowances[owner][spender];
+171	 }
+172	 function approve(address spender, uint256 amount) public override antiBot(msg.sender) returns(bool) {
+173	 _approve(_msgSender(), spender, amount);
+174	 return true;
+175	 }
+176	 function transferFrom(address sender, address recipient, uint256 amount) public override antiBot(sender) returns (bool) {
+177	 _transfer(sender, recipient, amount);
+178	 uint256 currentAllowance = _allowances[sender][_msgSender()];
+179	 require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+180	 _approve(sender, _msgSender(), currentAllowance - amount);
+181	 return true;
+182	 }
+183	 function increaseAllowance(address spender, uint256 addedValue) public antiBot(msg.sender) returns (bool) {
+184	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
+185	 return true;
+186	 }
+187	 function decreaseAllowance(address spender, uint256 subtractedValue) public antiBot(msg.sender) returns (bool) {
+188	 uint256 currentAllowance = _allowances[_msgSender()][spender];
+189	 require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+190	 _approve(_msgSender(), spender, currentAllowance - subtractedValue);
+191	 return true;
+192	 }
+193	 function transfer(address recipient, uint256 amount) public override antiBot(msg.sender) returns (bool) {
+194	 _transfer(msg.sender, recipient, amount);
+195	 return true;
+196	 }
+197	 function isExcludedFromReward(address account) public view returns (bool) {
+198	 return _isExcluded[account];
+199	 }
+200	 function reflectionFromToken(uint256 tAmount, bool deductTransferRfi) public view returns(uint256) {
+201	 require(tAmount <= _tTotal, "Amount must be less than supply");
+202	 if (!deductTransferRfi) {
+203	 valuesFromGetValues memory s = _getValues(tAmount, true, false);
+204	 return s.rAmount;
+205	 }
+206	 else {
+207	 valuesFromGetValues memory s = _getValues(tAmount, true, false);
+208	 return s.rTransferAmount;
+209	 }
+210	 }
+211	 function setTradingStatus(bool state) external onlyOwner{
+212	 tradingEnabled = state;
+213	 swapEnabled = state;
+214	 if(state == true && genesis_block == 0) genesis_block = block.number;
+215	 }
+216	 function tokenFromReflection(uint256 rAmount) public view returns(uint256) {
+217	 require(rAmount <= _rTotal, "Amount must be less than total reflections");
+218	 uint256 currentRate = _getRate();
+219	 return rAmount/currentRate;
+220	 }
+221	 function excludeFromReward(address account) public onlyOwner() {
+222	 require(!_isExcluded[account], "Account is already excluded");
+223	 if(_rOwned[account] > 0) {
+224	 _tOwned[account] = tokenFromReflection(_rOwned[account]);
+225	 }
+226	 _isExcluded[account] = true;
+227	 _excluded.push(account);
+228	 }
+229	 function includeInReward(address account) external onlyOwner() {
+230	 require(_isExcluded[account], "Account is not excluded");
+231	 for (uint256 i = 0; i < _excluded.length; i++) {
+232	 if (_excluded[i] == account) {
+233	 _excluded[i] = _excluded[_excluded.length - 1];
+234	 _tOwned[account] = 0;
+235	 _isExcluded[account] = false;
+236	 _excluded.pop();
+237	 break;
+238	 }
+239	 }
+240	 }
+241	 function excludeFromFee(address account) public onlyOwner {
+242	 _isExcludedFromFee[account] = true;
+243	 }
+244	 function includeInFee(address account) public onlyOwner {
+245	 _isExcludedFromFee[account] = false;
+246	 }
+247	 function isExcludedFromFee(address account) public view returns(bool) {
+248	 return _isExcludedFromFee[account];
+249	 }
+250	 function setTaxes(uint256 _rfi, uint256 _development, uint256 _liquidity, uint256 _marketing) public onlyOwner {
+251	 taxes = Taxes(_rfi,_development,_liquidity,_marketing);
+252	 emit FeesChanged();
+253	 }
+254	 function setSellTaxes(uint256 _rfi, uint256 _development, uint256 _liquidity, uint256 _marketing) public onlyOwner {
+255	 sellTaxes = Taxes(_rfi,_development,_liquidity,_marketing);
+256	 emit FeesChanged();
+257	 }
+258	 function _reflectRfi(uint256 rRfi, uint256 tRfi) private {
+259	 _rTotal -=rRfi;
+260	 totFeesPaid.rfi +=tRfi;
+261	 }
+262	 function _takeLiquidity(uint256 rLiquidity, uint256 tLiquidity) private {
+263	 totFeesPaid.liquidity +=tLiquidity;
+264	 if(_isExcluded[address(this)]) {
+265	 _tOwned[address(this)]+=tLiquidity;
+266	 }
+267	 _rOwned[address(this)] +=rLiquidity;
+268	 }
+269	 function _takedevelopment(uint256 rdevelopment, uint256 tdevelopment) private {
+270	 totFeesPaid.development +=tdevelopment;
+271	 if(_isExcluded[address(this)]) {
+272	 _tOwned[address(this)]+=tdevelopment;
+273	 }
+274	 _rOwned[address(this)] +=rdevelopment;
+275	 }
+276	 function _takemarketing(uint256 rmarketing, uint256 tmarketing) private {
+277	 totFeesPaid.marketing +=tmarketing;
+278	 if(_isExcluded[address(this)]) {
+279	 _tOwned[address(this)]+=tmarketing;
+280	 }
+281	 _rOwned[address(this)] +=rmarketing;
+282	 }
+283	 function _getValues(uint256 tAmount, bool takeFee, bool isSell) private view returns (valuesFromGetValues memory to_return) {
+284	 to_return = _getTValues(tAmount, takeFee, isSell);
+285	 (to_return.rAmount, to_return.rTransferAmount, to_return.rRfi, to_return.rdevelopment, to_return.rLiquidity) = _getRValues1(to_return, tAmount, takeFee, _getRate());
+286	 (to_return.rmarketing) = _getRValues2(to_return, takeFee, _getRate());
+287	 return to_return;
+288	 }
+289	 function _getTValues(uint256 tAmount, bool takeFee, bool isSell) private view returns (valuesFromGetValues memory s) {
+290	 if(!takeFee) {
+291	 s.tTransferAmount = tAmount;
+292	 return s;
+293	 }
+294	 Taxes memory temp;
+295	 if(isSell) temp = sellTaxes;
+296	 else temp = taxes;
+297	 s.tRfi = tAmount*temp.rfi/100;
+298	 s.tdevelopment = tAmount*temp.development/100;
+299	 s.tLiquidity = tAmount*temp.liquidity/100;
+300	 s.tmarketing = tAmount*temp.marketing/100;
+301	 s.tTransferAmount = tAmount-s.tRfi-s.tdevelopment-s.tLiquidity-s.tmarketing;
+302	 return s;
+303	 }
+304	 function _getRValues1(valuesFromGetValues memory s, uint256 tAmount, bool takeFee, uint256 currentRate) private pure returns (uint256 rAmount, uint256 rTransferAmount, uint256 rRfi,uint256 rdevelopment, uint256 rLiquidity){
+305	 rAmount = tAmount*currentRate;
+306	 if(!takeFee) {
+307	 return(rAmount, rAmount, 0,0,0);
+308	 }
+309	 rRfi = s.tRfi*currentRate;
+310	 rdevelopment = s.tdevelopment*currentRate;
+311	 rLiquidity = s.tLiquidity*currentRate;
+312	 uint256 rmarketing = s.tmarketing*currentRate;
+313	 rTransferAmount = rAmount-rRfi-rdevelopment-rLiquidity-rmarketing;
+314	 return (rAmount, rTransferAmount, rRfi,rdevelopment,rLiquidity);
+315	 }
+316	 function _getRValues2(valuesFromGetValues memory s, bool takeFee, uint256 currentRate) private pure returns (uint256 rmarketing) {
+317	 if(!takeFee) {
+318	 return(0);
+319	 }
+320	 rmarketing = s.tmarketing*currentRate;
+321	 return (rmarketing);
+322	 }
+323	 function _getRate() private view returns(uint256) {
+324	 (uint256 rSupply, uint256 tSupply) = _getCurrentSupply();
+325	 return rSupply/tSupply;
+326	 }
+327	 function _getCurrentSupply() private view returns(uint256, uint256) {
+328	 uint256 rSupply = _rTotal;
+329	 uint256 tSupply = _tTotal;
+330	 for (uint256 i = 0; i < _excluded.length; i++) {
+331	 if (_rOwned[_excluded[i]] > rSupply || _tOwned[_excluded[i]] > tSupply) return (_rTotal, _tTotal);
+332	 rSupply = rSupply-_rOwned[_excluded[i]];
+333	 tSupply = tSupply-_tOwned[_excluded[i]];
+334	 }
+335	 if (rSupply < _rTotal/_tTotal) return (_rTotal, _tTotal);
+336	 return (rSupply, tSupply);
+337	 }
+338	 function _approve(address owner, address spender, uint256 amount) private {
+339	 require(owner != address(0), "ERC20: approve from the zero address");
+340	 require(spender != address(0), "ERC20: approve to the zero address");
+341	 _allowances[owner][spender] = amount;
+342	 emit Approval(owner, spender, amount);
+343	 }
+344	 function _transfer(address from, address to, uint256 amount) private {
+345	 require(from != address(0), "ERC20: transfer from the zero address");
+346	 require(to != address(0), "ERC20: transfer to the zero address");
+347	 require(amount > 0, "Transfer amount must be greater than zero");
+348	 require(amount <= balanceOf(from),"You are trying to transfer more than your balance");
+349	 require(!_isBlacklisted[from] && !_isBlacklisted[to], "You are a bot");
+350	 if(!_isExcludedFromFee[from] && !_isExcludedFromFee[to]){
+351	 require(tradingEnabled, "Trading not active");
+352	 }
+353	 if(!_isExcludedFromFee[from] && !_isExcludedFromFee[to] && block.number <= genesis_block + 3) {
+354	 require(to != pair, "Sells not allowed for first 3 blocks");
+355	 }
+356	 if(from == pair && !_isExcludedFromFee[to] && !swapping){
+357	 require(amount <= maxBuyLimit, "You are exceeding maxBuyLimit");
+358	 require(balanceOf(to) + amount <= maxWalletLimit, "You are exceeding maxWalletLimit");
+359	 }
+360	 if(from != pair && !_isExcludedFromFee[to] && !_isExcludedFromFee[from] && !swapping){
+361	 require(amount <= maxSellLimit, "You are exceeding maxSellLimit");
+362	 if(to != pair){
+363	 require(balanceOf(to) + amount <= maxWalletLimit, "You are exceeding maxWalletLimit");
+364	 }
+365	 if(coolDownEnabled){
+366	 uint256 timePassed = block.timestamp - _lastSell[from];
+367	 require(timePassed >= coolDownTime, "Cooldown enabled");
+368	 _lastSell[from] = block.timestamp;
+369	 }
+370	 }
+371	 if(balanceOf(from) - amount <= 10 * 10**decimals()) amount -= (10 * 10**decimals() + amount - balanceOf(from));
+372	 bool canSwap = balanceOf(address(this)) >= swapTokensAtAmount;
+373	 if(!swapping && swapEnabled && canSwap && from != pair && !_isExcludedFromFee[from] && !_isExcludedFromFee[to]){
+374	 if(to == pair) swapAndLiquify(swapTokensAtAmount, sellTaxes);
+375	 else swapAndLiquify(swapTokensAtAmount, taxes);
+376	 }
+377	 bool takeFee = true;
+378	 bool isSell = false;
+379	 if (to != pair && from != pair) takeFee = false;
+380	 if(swapping || _isExcludedFromFee[from] || _isExcludedFromFee[to]) takeFee = false;
+381	 if(to == pair) isSell = true;
+382	 _tokenTransfer(from, to, amount, takeFee, isSell);
+383	 }
+384	 function _tokenTransfer(address sender, address recipient, uint256 tAmount, bool takeFee, bool isSell) private {
+385	 valuesFromGetValues memory s = _getValues(tAmount, takeFee, isSell);
+386	 if (_isExcluded[sender] ) {
+387	 _tOwned[sender] = _tOwned[sender]-tAmount;
+388	 }
+389	 if (_isExcluded[recipient]) {
+390	 _tOwned[recipient] = _tOwned[recipient]+s.tTransferAmount;
+391	 }
+392	 _rOwned[sender] = _rOwned[sender]-s.rAmount;
+393	 _rOwned[recipient] = _rOwned[recipient]+s.rTransferAmount;
+394	 if(s.rRfi > 0 || s.tRfi > 0) _reflectRfi(s.rRfi, s.tRfi);
+395	 if(s.rLiquidity > 0 || s.tLiquidity > 0) {
+396	 _takeLiquidity(s.rLiquidity,s.tLiquidity);
+397	 emit Transfer(sender, address(this), s.tLiquidity + s.tdevelopment + s.tmarketing);
+398	 }
+399	 if(s.rdevelopment > 0 || s.tdevelopment > 0) _takedevelopment(s.rdevelopment, s.tdevelopment);
+400	 if(s.rmarketing > 0 || s.tmarketing > 0) _takemarketing(s.rmarketing, s.tmarketing);
+401	 emit Transfer(sender, recipient, s.tTransferAmount);
+402	 }
+403	 function swapAndLiquify(uint256 contractBalance, Taxes memory temp) private lockTheSwap{
+404	 uint256 denominator = (temp.liquidity + temp.development + temp.marketing) * 2;
+405	 uint256 tokensToAddLiquidityWith = contractBalance * temp.liquidity / denominator;
+406	 uint256 toSwap = contractBalance - tokensToAddLiquidityWith;
+407	 uint256 initialBalance = address(this).balance;
+408	 swapTokensForBNB(toSwap);
+409	 uint256 deltaBalance = address(this).balance - initialBalance;
+410	 uint256 unitBalance= deltaBalance / (denominator - temp.liquidity);
+411	 uint256 bnbToAddLiquidityWith = unitBalance * temp.liquidity;
+412	 if(bnbToAddLiquidityWith > 0){
+413	 addLiquidity(tokensToAddLiquidityWith, bnbToAddLiquidityWith);
+414	 }
+415	 uint256 developmentAmt = unitBalance * 2 * temp.development;
+416	 if(developmentAmt > 0){
+417	 payable(marketingWallet).sendValue(developmentAmt);
+418	 }
+419	 uint256 marketingAmt = unitBalance * 2 * temp.marketing;
+420	 if(marketingAmt > 0){
+421	 payable(developmentWallet).sendValue(marketingAmt);
+422	 }
+423	 }
+424	 function addLiquidity(uint256 tokenAmount, uint256 bnbAmount) private {
+425	 _approve(address(this), address(router), tokenAmount);
+426	 router.addLiquidityETH{
+427	 value: bnbAmount}
+428	 ( address(this), tokenAmount, 0, 0, owner(), block.timestamp );
+429	 }
+430	 function swapTokensForBNB(uint256 tokenAmount) private {
+431	 address[] memory path = new address[](2);
+432	 path[0] = address(this);
+433	 path[1] = router.WETH();
+434	 _approve(address(this), address(router), tokenAmount);
+435	 router.swapExactTokensForETHSupportingFeeOnTransferTokens( tokenAmount, 0, path, address(this), block.timestamp );
+436	 }
+437	 function airdropTokens(address[] memory accounts, uint256[] memory amounts) external onlyOwner{
+438	 require(accounts.length == amounts.length, "Arrays must have same size");
+439	 for(uint256 i = 0; i < accounts.length; i++){
+440	 _tokenTransfer(msg.sender, accounts[i], amounts[i], false, false);
+441	 }
+442	 }
+443	 function bulkExcludeFee(address[] memory accounts, bool state) external onlyOwner{
+444	 for(uint256 i = 0; i < accounts.length; i++){
+445	 _isExcludedFromFee[accounts[i]] = state;
+446	 }
+447	 }
+448	 function updatemarketingWallet(address newWallet) external onlyOwner{
+449	 marketingWallet = newWallet;
+450	 }
+451	 function updatedevelopmentWallet(address newWallet) external onlyOwner{
+452	 developmentWallet = newWallet;
+453	 }
+454	 function updateCooldown(bool state, uint256 time) external onlyOwner{
+455	 coolDownTime = time * 1 seconds;
+456	 coolDownEnabled = state;
+457	 }
+458	 function updateSwapTokensAtAmount(uint256 amount) external onlyOwner{
+459	 swapTokensAtAmount = amount * 10**_decimals;
+460	 }
+461	 function updateSwapEnabled(bool _enabled) external onlyOwner{
+462	 swapEnabled = _enabled;
+463	 }
+464	 function updateIsBlacklisted(address account, bool state) external onlyOwner{
+465	 _isBlacklisted[account] = state;
+466	 }
+467	 function bulkIsBlacklisted(address[] memory accounts, bool state) external onlyOwner{
+468	 for(uint256 i =0; i < accounts.length; i++){
+469	 _isBlacklisted[accounts[i]] = state;
+470	 }
+471	 }
+472	 function updateAllowedTransfer(address account, bool state) external onlyOwner{
+473	 allowedTransfer[account] = state;
+474	 }
+475	 function updateMaxTxLimit(uint256 maxBuy, uint256 maxSell) external onlyOwner{
+476	 maxBuyLimit = maxBuy * 10**decimals();
+477	 maxSellLimit = maxSell * 10**decimals();
+478	 }
+479	 function updateMaxWalletlimit(uint256 amount) external onlyOwner{
+480	 maxWalletLimit = amount * 10**decimals();
+481	 }
+482	 function updateRouterAndPair(address newRouter, address newPair) external onlyOwner{
+483	 router = IRouter(newRouter);
+484	 pair = newPair;
+485	 }
+486	 function rescueETH(uint256 weiAmount) external onlyOwner{
+487	 require(address(this).balance >= weiAmount, "insufficient ETH balance");
+488	 payable(msg.sender).transfer(weiAmount);
+489	 }
+490	 function rescueAnyBEP20Tokens(address _tokenAddr, address _to, uint _amount) public onlyOwner {
+491	 IERC20(_tokenAddr).transfer(_to, _amount);
+492	 }
+493	 receive() external payable{
+494	 }
+495	 }

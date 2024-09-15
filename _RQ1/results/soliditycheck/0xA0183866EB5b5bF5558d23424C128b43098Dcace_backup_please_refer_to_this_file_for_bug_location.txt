@@ -1,0 +1,494 @@
+row number 
+1	          pragma solidity ^0.8.0;
+2	 interface IERC165 {
+3	 function supportsInterface(bytes4 interfaceId) external view returns (bool);
+4	 }
+5	 pragma solidity ^0.8.0;
+6	 interface IERC1155 is IERC165 {
+7	 event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value);
+8	 event TransferBatch( address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values );
+9	 event ApprovalForAll(address indexed account, address indexed operator, bool approved);
+10	 event URI(string value, uint256 indexed id);
+11	 function balanceOf(address account, uint256 id) external view returns (uint256);
+12	 function balanceOfBatch(address[] calldata accounts, uint256[] calldata ids) external view returns (uint256[] memory);
+13	 function setApprovalForAll(address operator, bool approved) external;
+14	 function isApprovedForAll(address account, address operator) external view returns (bool);
+15	 function safeTransferFrom( address from, address to, uint256 id, uint256 amount, bytes calldata data ) external;
+16	 function safeBatchTransferFrom( address from, address to, uint256[] calldata ids, uint256[] calldata amounts, bytes calldata data ) external;
+17	 }
+18	 pragma solidity ^0.8.0;
+19	 interface IERC1155MetadataURI is IERC1155 {
+20	 function uri(uint256 id) external view returns (string memory);
+21	 }
+22	 pragma solidity ^0.8.0;
+23	 abstract contract Context {
+24	 function _msgSender() internal view virtual returns (address) {
+25	 return msg.sender;
+26	 }
+27	 function _msgData() internal view virtual returns (bytes calldata) {
+28	 return msg.data;
+29	 }
+30	 }
+31	 pragma solidity ^0.8.0;
+32	 abstract contract ERC165 is IERC165 {
+33	 function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+34	 return interfaceId == type(IERC165).interfaceId;
+35	 }
+36	 }
+37	 pragma solidity ^0.8.0;
+38	 contract ERC1155 is Context, ERC165, IERC1155, IERC1155MetadataURI {
+39	 using Address for address;
+40	 mapping(uint256 => mapping(address => uint256)) private _balances;
+41	 mapping(address => mapping(address => bool)) private _operatorApprovals;
+42	 string private _uri;
+43	 constructor(string memory uri_) {
+44	 _setURI(uri_);
+45	 }
+46	 function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, IERC165) returns (bool) {
+47	 return interfaceId == type(IERC1155).interfaceId || interfaceId == type(IERC1155MetadataURI).interfaceId || super.supportsInterface(interfaceId);
+48	 }
+49	 function uri(uint256) public view virtual override returns (string memory) {
+50	 return _uri;
+51	 }
+52	 function balanceOf(address account, uint256 id) public view virtual override returns (uint256) {
+53	 require(account != address(0), "ERC1155: balance query for the zero address");
+54	 return _balances[id][account];
+55	 }
+56	 function balanceOfBatch(address[] memory accounts, uint256[] memory ids) public view virtual override returns (uint256[] memory) {
+57	 require(accounts.length == ids.length, "ERC1155: accounts and ids length mismatch");
+58	 uint256[] memory batchBalances = new uint256[](accounts.length);
+59	 for (uint256 i = 0; i < accounts.length; ++i) {
+60	 batchBalances[i] = balanceOf(accounts[i], ids[i]);
+61	 }
+62	 return batchBalances;
+63	 }
+64	 function setApprovalForAll(address operator, bool approved) public virtual override {
+65	 _setApprovalForAll(_msgSender(), operator, approved);
+66	 }
+67	 function isApprovedForAll(address account, address operator) public view virtual override returns (bool) {
+68	 return _operatorApprovals[account][operator];
+69	 }
+70	 function safeTransferFrom( address from, address to, uint256 id, uint256 amount, bytes memory data ) public virtual override {
+71	 require( from == _msgSender() || isApprovedForAll(from, _msgSender()), "ERC1155: caller is not owner nor approved" );
+72	 _safeTransferFrom(from, to, id, amount, data);
+73	 }
+74	 function safeBatchTransferFrom( address from, address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) public virtual override {
+75	 require( from == _msgSender() || isApprovedForAll(from, _msgSender()), "ERC1155: transfer caller is not owner nor approved" );
+76	 _safeBatchTransferFrom(from, to, ids, amounts, data);
+77	 }
+78	 function _safeTransferFrom( address from, address to, uint256 id, uint256 amount, bytes memory data ) internal virtual {
+79	 require(to != address(0), "ERC1155: transfer to the zero address");
+80	 address operator = _msgSender();
+81	 _beforeTokenTransfer(operator, from, to, _asSingletonArray(id), _asSingletonArray(amount), data);
+82	 uint256 fromBalance = _balances[id][from];
+83	 require(fromBalance >= amount, "ERC1155: insufficient balance for transfer");
+84	 unchecked {
+85	 _balances[id][from] = fromBalance - amount;
+86	 }
+87	 _balances[id][to] += amount;
+88	 emit TransferSingle(operator, from, to, id, amount);
+89	 _doSafeTransferAcceptanceCheck(operator, from, to, id, amount, data);
+90	 }
+91	 function _safeBatchTransferFrom( address from, address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) internal virtual {
+92	 require(ids.length == amounts.length, "ERC1155: ids and amounts length mismatch");
+93	 require(to != address(0), "ERC1155: transfer to the zero address");
+94	 address operator = _msgSender();
+95	 _beforeTokenTransfer(operator, from, to, ids, amounts, data);
+96	 for (uint256 i = 0; i < ids.length; ++i) {
+97	 uint256 id = ids[i];
+98	 uint256 amount = amounts[i];
+99	 uint256 fromBalance = _balances[id][from];
+100	 require(fromBalance >= amount, "ERC1155: insufficient balance for transfer");
+101	 unchecked {
+102	 _balances[id][from] = fromBalance - amount;
+103	 }
+104	 _balances[id][to] += amount;
+105	 }
+106	 emit TransferBatch(operator, from, to, ids, amounts);
+107	 _doSafeBatchTransferAcceptanceCheck(operator, from, to, ids, amounts, data);
+108	 }
+109	 function _setURI(string memory newuri) internal virtual {
+110	 _uri = newuri;
+111	 }
+112	 function _mint( address to, uint256 id, uint256 amount, bytes memory data ) internal virtual {
+113	 require(to != address(0), "ERC1155: mint to the zero address");
+114	 address operator = _msgSender();
+115	 _beforeTokenTransfer(operator, address(0), to, _asSingletonArray(id), _asSingletonArray(amount), data);
+116	 _balances[id][to] += amount;
+117	 emit TransferSingle(operator, address(0), to, id, amount);
+118	 _doSafeTransferAcceptanceCheck(operator, address(0), to, id, amount, data);
+119	 }
+120	 function _mintBatch( address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) internal virtual {
+121	 require(to != address(0), "ERC1155: mint to the zero address");
+122	 require(ids.length == amounts.length, "ERC1155: ids and amounts length mismatch");
+123	 address operator = _msgSender();
+124	 _beforeTokenTransfer(operator, address(0), to, ids, amounts, data);
+125	 for (uint256 i = 0; i < ids.length; i++) {
+126	 _balances[ids[i]][to] += amounts[i];
+127	 }
+128	 emit TransferBatch(operator, address(0), to, ids, amounts);
+129	 _doSafeBatchTransferAcceptanceCheck(operator, address(0), to, ids, amounts, data);
+130	 }
+131	 function _burn( address from, uint256 id, uint256 amount ) internal virtual {
+132	 require(from != address(0), "ERC1155: burn from the zero address");
+133	 address operator = _msgSender();
+134	 _beforeTokenTransfer(operator, from, address(0), _asSingletonArray(id), _asSingletonArray(amount), "");
+135	 uint256 fromBalance = _balances[id][from];
+136	 require(fromBalance >= amount, "ERC1155: burn amount exceeds balance");
+137	 unchecked {
+138	 _balances[id][from] = fromBalance - amount;
+139	 }
+140	 emit TransferSingle(operator, from, address(0), id, amount);
+141	 }
+142	 function _burnBatch( address from, uint256[] memory ids, uint256[] memory amounts ) internal virtual {
+143	 require(from != address(0), "ERC1155: burn from the zero address");
+144	 require(ids.length == amounts.length, "ERC1155: ids and amounts length mismatch");
+145	 address operator = _msgSender();
+146	 _beforeTokenTransfer(operator, from, address(0), ids, amounts, "");
+147	 for (uint256 i = 0; i < ids.length; i++) {
+148	 uint256 id = ids[i];
+149	 uint256 amount = amounts[i];
+150	 uint256 fromBalance = _balances[id][from];
+151	 require(fromBalance >= amount, "ERC1155: burn amount exceeds balance");
+152	 unchecked {
+153	 _balances[id][from] = fromBalance - amount;
+154	 }
+155	 }
+156	 emit TransferBatch(operator, from, address(0), ids, amounts);
+157	 }
+158	 function _setApprovalForAll( address owner, address operator, bool approved ) internal virtual {
+159	 require(owner != operator, "ERC1155: setting approval status for self");
+160	 _operatorApprovals[owner][operator] = approved;
+161	 emit ApprovalForAll(owner, operator, approved);
+162	 }
+163	 function _beforeTokenTransfer( address operator, address from, address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) internal virtual {
+164	 }
+165	 function _doSafeTransferAcceptanceCheck( address operator, address from, address to, uint256 id, uint256 amount, bytes memory data ) private {
+166	 if (to.isContract()) {
+167	 try IERC1155Receiver(to).onERC1155Received(operator, from, id, amount, data) returns (bytes4 response) {
+168	 if (response != IERC1155Receiver.onERC1155Received.selector) {
+169	 revert("ERC1155: ERC1155Receiver rejected tokens");
+170	 }
+171	 }
+172	 catch Error(string memory reason) {
+173	 revert(reason);
+174	 }
+175	 catch {
+176	 revert("ERC1155: transfer to non ERC1155Receiver implementer");
+177	 }
+178	 }
+179	 }
+180	 function _doSafeBatchTransferAcceptanceCheck( address operator, address from, address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data ) private {
+181	 if (to.isContract()) {
+182	 try IERC1155Receiver(to).onERC1155BatchReceived(operator, from, ids, amounts, data) returns ( bytes4 response ) {
+183	 if (response != IERC1155Receiver.onERC1155BatchReceived.selector) {
+184	 revert("ERC1155: ERC1155Receiver rejected tokens");
+185	 }
+186	 }
+187	 catch Error(string memory reason) {
+188	 revert(reason);
+189	 }
+190	 catch {
+191	 revert("ERC1155: transfer to non ERC1155Receiver implementer");
+192	 }
+193	 }
+194	 }
+195	 function _asSingletonArray(uint256 element) private pure returns (uint256[] memory) {
+196	 uint256[] memory array = new uint256[](1);
+197	 array[0] = element;
+198	 return array;
+199	 }
+200	 }
+201	 pragma solidity ^0.8.0;
+202	 abstract contract Ownable is Context {
+203	 address private _owner;
+204	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+205	 constructor() {
+206	 _transferOwnership(_msgSender());
+207	 }
+208	 function owner() public view virtual returns (address) {
+209	 return _owner;
+210	 }
+211	 modifier onlyOwner() {
+212	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+213	 _;
+214	 }
+215	 function renounceOwnership() public virtual onlyOwner {
+216	 _transferOwnership(address(0));
+217	 }
+218	 function transferOwnership(address newOwner) public virtual onlyOwner {
+219	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+220	 _transferOwnership(newOwner);
+221	 }
+222	 function _transferOwnership(address newOwner) internal virtual {
+223	 address oldOwner = _owner;
+224	 _owner = newOwner;
+225	 emit OwnershipTransferred(oldOwner, newOwner);
+226	 }
+227	 }
+228	 pragma solidity ^0.8.7;
+229	 contract PROPERTYDEED is ERC1155, Ownable {
+230	 using Counters for Counters.Counter;
+231	 using Strings for uint256;
+232	 Counters.Counter public _tokenIdCounter;
+233	 string public name = "METAVATARS - PROPERTY DEED";
+234	 string public description = "METAVATARS PROPERTY DEED allow you to receive what is rightfully yours on P403. When you first enter the Metavatars world, you will be able to automatically synchronize your wallet with your inventory. The magic of the blockchain will do the rest.";
+235	 uint256 public MAX_MINT_PER_WALLET = 1;
+236	 uint256 public price = 0 ether;
+237	 enum currentStatus {
+238	 Before, PrivateMint, Pause }
+239	 currentStatus public status;
+240	 uint256 public constant LOOTBOX = 1;
+241	 uint256 public constant PET = 2;
+242	 uint256 public constant MOUNT = 3;
+243	 uint256 public constant RESIDENCE = 4;
+244	 uint256 public constant LAND = 5;
+245	 mapping(address => uint256) public LootBoxTokensPerWallet;
+246	 mapping(address => uint256) public PetTokensPerWallet;
+247	 mapping(address => uint256) public MountTokensPerWallet;
+248	 mapping(address => uint256) public ResidenceTokensPerWallet;
+249	 mapping(address => uint256) public LandTokensPerWallet;
+250	 bytes32 public LootBoxRootTree;
+251	 bytes32 public PetRootTree;
+252	 bytes32 public MountRootTree;
+253	 bytes32 public ResidenceRootTree;
+254	 bytes32 public LandRootTree;
+255	 constructor( string memory _uri, bytes32 _lootMerkleRoot, bytes32 _petMerkleRoot, bytes32 _mountMerkleRoot, bytes32 _residenceMerkleRoot, bytes32 _landMerkleRoot ) ERC1155(_uri) {
+256	 LootBoxRootTree = _lootMerkleRoot;
+257	 PetRootTree = _petMerkleRoot;
+258	 MountRootTree = _mountMerkleRoot;
+259	 ResidenceRootTree = _residenceMerkleRoot;
+260	 LandRootTree = _landMerkleRoot;
+261	 }
+262	 function getCurrentStatus() public view returns(currentStatus) {
+263	 return status;
+264	 }
+265	 function setInPause() external onlyOwner {
+266	 status = currentStatus.Pause;
+267	 }
+268	 function startPrivateMint() external onlyOwner {
+269	 status = currentStatus.PrivateMint;
+270	 }
+271	 function setMaxMintPerWallet(uint256 maxMintPerWallet_) external onlyOwner {
+272	 MAX_MINT_PER_WALLET = maxMintPerWallet_;
+273	 }
+274	 function setLootMerkleTree(bytes32 lootMerkleTree_) public onlyOwner{
+275	 LootBoxRootTree = lootMerkleTree_;
+276	 }
+277	 function setPetMerkleTree(bytes32 petMerkleTree_) public onlyOwner{
+278	 PetRootTree = petMerkleTree_;
+279	 }
+280	 function setMountMerkleTree(bytes32 mountMerkleTree_) public onlyOwner{
+281	 MountRootTree = mountMerkleTree_;
+282	 }
+283	 function setResidenceMerkleTree(bytes32 residenceMerkleTree_) public onlyOwner{
+284	 ResidenceRootTree = residenceMerkleTree_;
+285	 }
+286	 function setLandMerkleTree(bytes32 landMerkleTree_) public onlyOwner{
+287	 LandRootTree = landMerkleTree_;
+288	 }
+289	 function lootMint(bytes32[] calldata merkleProof, uint32 amount) external {
+290	 require(status == currentStatus.PrivateMint, "METAVATARS PROPERTY DEED: Loot Mint Is Not OPEN !");
+291	 bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+292	 require(MerkleProof.verify(merkleProof, LootBoxRootTree, leaf), "METAVATARS PROPERTY DEED: You're not Eligible for the Loot Mint !");
+293	 require(LootBoxTokensPerWallet[msg.sender] + amount <= MAX_MINT_PER_WALLET, "METAVATARS PROPERTY DEED: Max Loot Mint per Wallet !");
+294	 LootBoxTokensPerWallet[msg.sender] += amount;
+295	 _mint(msg.sender, LOOTBOX, amount, "");
+296	 }
+297	 function petMint(bytes32[] calldata merkleProof, uint32 amount) external {
+298	 require(status == currentStatus.PrivateMint, "METAVATARS PROPERTY DEED: Pet Mint Is Not OPEN !");
+299	 bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+300	 require(MerkleProof.verify(merkleProof, PetRootTree, leaf), "METAVATARS PROPERTY DEED: You're not Eligible for the Loot Mint !");
+301	 require(PetTokensPerWallet[msg.sender] + amount <= MAX_MINT_PER_WALLET, "METAVATARS PROPERTY DEED: Max Loot Mint per Wallet !");
+302	 PetTokensPerWallet[msg.sender] += amount;
+303	 _mint(msg.sender, PET, amount, "");
+304	 }
+305	 function mountMint(bytes32[] calldata merkleProof, uint32 amount) external {
+306	 require(status == currentStatus.PrivateMint, "METAVATARS PROPERTY DEED: Mount Mint Is Not OPEN !");
+307	 bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+308	 require(MerkleProof.verify(merkleProof, MountRootTree, leaf), "METAVATARS PROPERTY DEED: You're not Eligible for the Loot Mint !");
+309	 require(MountTokensPerWallet[msg.sender] + amount <= MAX_MINT_PER_WALLET, "METAVATARS PROPERTY DEED: Max Loot Mint per Wallet !");
+310	 MountTokensPerWallet[msg.sender] += amount;
+311	 _mint(msg.sender, MOUNT, amount, "");
+312	 }
+313	 function residenceMint(bytes32[] calldata merkleProof, uint32 amount) external {
+314	 require(status == currentStatus.PrivateMint, "METAVATARS PROPERTY DEED: Residence Mint Is Not OPEN !");
+315	 bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+316	 require(MerkleProof.verify(merkleProof, ResidenceRootTree, leaf), "METAVATARS PROPERTY DEED: You're not Eligible for the Loot Mint !");
+317	 require(ResidenceTokensPerWallet[msg.sender] + amount <= MAX_MINT_PER_WALLET, "METAVATARS PROPERTY DEED: Max Loot Mint per Wallet !");
+318	 ResidenceTokensPerWallet[msg.sender] += amount;
+319	 _mint(msg.sender, RESIDENCE, amount, "");
+320	 }
+321	 function landMint(bytes32[] calldata merkleProof, uint32 amount) external {
+322	 require(status == currentStatus.PrivateMint, "METAVATARS PROPERTY DEED: Land Mint Is Not OPEN !");
+323	 bytes32 leaf = keccak256(abi.encodePacked(msg.sender));
+324	 require(MerkleProof.verify(merkleProof, LandRootTree, leaf), "METAVATARS PROPERTY DEED: You're not Eligible for the Loot Mint !");
+325	 require(LandTokensPerWallet[msg.sender] + amount <= MAX_MINT_PER_WALLET, "METAVATARS PROPERTY DEED: Max Loot Mint per Wallet !");
+326	 LandTokensPerWallet[msg.sender] += amount;
+327	 _mint(msg.sender, LAND, amount, "");
+328	 }
+329	 function gift(uint256 amount, uint256 tokenId, address giveawayAddress) public onlyOwner {
+330	 require(amount > 0, "METAVATARS PROPERTY DEED: Need to gift 1 min !");
+331	 _mint(giveawayAddress, tokenId, amount, "");
+332	 }
+333	 function uri(uint256 _id) public view override returns (string memory) {
+334	 require(_id > 0 && _id < 6, "URI: nonexistent token");
+335	 return string(abi.encodePacked(super.uri(_id), Strings.toString(_id)));
+336	 }
+337	 }
+338	 pragma solidity ^0.8.0;
+339	 library Strings {
+340	 bytes16 private constant _HEX_SYMBOLS = "0123456789abcdef";
+341	 function toString(uint256 value) internal pure returns (string memory) {
+342	 if (value == 0) {
+343	 return "0";
+344	 }
+345	 uint256 temp = value;
+346	 uint256 digits;
+347	 while (temp != 0) {
+348	 digits++;
+349	 temp /= 10;
+350	 }
+351	 bytes memory buffer = new bytes(digits);
+352	 while (value != 0) {
+353	 digits -= 1;
+354	 buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+355	 value /= 10;
+356	 }
+357	 return string(buffer);
+358	 }
+359	 function toHexString(uint256 value) internal pure returns (string memory) {
+360	 if (value == 0) {
+361	 return "0x00";
+362	 }
+363	 uint256 temp = value;
+364	 uint256 length = 0;
+365	 while (temp != 0) {
+366	 length++;
+367	 temp >>= 8;
+368	 }
+369	 return toHexString(value, length);
+370	 }
+371	 function toHexString(uint256 value, uint256 length) internal pure returns (string memory) {
+372	 bytes memory buffer = new bytes(2 * length + 2);
+373	 buffer[0] = "0";
+374	 buffer[1] = "x";
+375	 for (uint256 i = 2 * length + 1; i > 1; --i) {
+376	 buffer[i] = _HEX_SYMBOLS[value & 0xf];
+377	 value >>= 4;
+378	 }
+379	 require(value == 0, "Strings: hex length insufficient");
+380	 return string(buffer);
+381	 }
+382	 }
+383	 pragma solidity ^0.8.0;
+384	 library Counters {
+385	 struct Counter {
+386	 uint256 _value;
+387	 }
+388	 function current(Counter storage counter) internal view returns (uint256) {
+389	 return counter._value;
+390	 }
+391	 function increment(Counter storage counter) internal {
+392	 unchecked {
+393	 counter._value += 1;
+394	 }
+395	 }
+396	 function decrement(Counter storage counter) internal {
+397	 uint256 value = counter._value;
+398	 require(value > 0, "Counter: decrement overflow");
+399	 unchecked {
+400	 counter._value = value - 1;
+401	 }
+402	 }
+403	 function reset(Counter storage counter) internal {
+404	 counter._value = 0;
+405	 }
+406	 }
+407	 pragma solidity ^0.8.0;
+408	 library MerkleProof {
+409	 function verify( bytes32[] memory proof, bytes32 root, bytes32 leaf ) internal pure returns (bool) {
+410	 return processProof(proof, leaf) == root;
+411	 }
+412	 function processProof(bytes32[] memory proof, bytes32 leaf) internal pure returns (bytes32) {
+413	 bytes32 computedHash = leaf;
+414	 for (uint256 i = 0; i < proof.length; i++) {
+415	 bytes32 proofElement = proof[i];
+416	 if (computedHash <= proofElement) {
+417	 computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
+418	 }
+419	 else {
+420	 computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
+421	 }
+422	 }
+423	 return computedHash;
+424	 }
+425	 }
+426	 pragma solidity ^0.8.0;
+427	 interface IERC1155Receiver is IERC165 {
+428	 function onERC1155Received( address operator, address from, uint256 id, uint256 value, bytes calldata data ) external returns (bytes4);
+429	 function onERC1155BatchReceived( address operator, address from, uint256[] calldata ids, uint256[] calldata values, bytes calldata data ) external returns (bytes4);
+430	 }
+431	 pragma solidity ^0.8.0;
+432	 library Address {
+433	 function isContract(address account) internal view returns (bool) {
+434	 uint256 size;
+435	 assembly {
+436	 size := extcodesize(account) }
+437	 return size > 0;
+438	 }
+439	 function sendValue(address payable recipient, uint256 amount) internal {
+440	 require(address(this).balance >= amount, "Address: insufficient balance");
+441	 (bool success, ) = recipient.call{
+442	 value: amount}
+443	 ("");
+444	 require(success, "Address: unable to send value, recipient may have reverted");
+445	 }
+446	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+447	 return functionCall(target, data, "Address: low-level call failed");
+448	 }
+449	 function functionCall( address target, bytes memory data, string memory errorMessage ) internal returns (bytes memory) {
+450	 return functionCallWithValue(target, data, 0, errorMessage);
+451	 }
+452	 function functionCallWithValue( address target, bytes memory data, uint256 value ) internal returns (bytes memory) {
+453	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+454	 }
+455	 function functionCallWithValue( address target, bytes memory data, uint256 value, string memory errorMessage ) internal returns (bytes memory) {
+456	 require(address(this).balance >= value, "Address: insufficient balance for call");
+457	 require(isContract(target), "Address: call to non-contract");
+458	 (bool success, bytes memory returndata) = target.call{
+459	 value: value}
+460	 (data);
+461	 return verifyCallResult(success, returndata, errorMessage);
+462	 }
+463	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+464	 return functionStaticCall(target, data, "Address: low-level static call failed");
+465	 }
+466	 function functionStaticCall( address target, bytes memory data, string memory errorMessage ) internal view returns (bytes memory) {
+467	 require(isContract(target), "Address: static call to non-contract");
+468	 (bool success, bytes memory returndata) = target.staticcall(data);
+469	 return verifyCallResult(success, returndata, errorMessage);
+470	 }
+471	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+472	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+473	 }
+474	 function functionDelegateCall( address target, bytes memory data, string memory errorMessage ) internal returns (bytes memory) {
+475	 require(isContract(target), "Address: delegate call to non-contract");
+476	 (bool success, bytes memory returndata) = target.delegatecall(data);
+477	 return verifyCallResult(success, returndata, errorMessage);
+478	 }
+479	 function verifyCallResult( bool success, bytes memory returndata, string memory errorMessage ) internal pure returns (bytes memory) {
+480	 if (success) {
+481	 return returndata;
+482	 }
+483	 else {
+484	 if (returndata.length > 0) {
+485	 assembly {
+486	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+487	 }
+488	 else {
+489	 revert(errorMessage);
+490	 }
+491	 }
+492	 }
+493	 }

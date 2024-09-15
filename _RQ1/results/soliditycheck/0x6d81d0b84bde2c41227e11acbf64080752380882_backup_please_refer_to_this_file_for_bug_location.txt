@@ -1,0 +1,163 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.6.0 <0.8.0;
+3	 abstract contract Context {
+4	 function _msgSender() internal view virtual returns (address payable) {
+5	 return msg.sender;
+6	 }
+7	 function _msgData() internal view virtual returns (bytes memory) {
+8	 this;
+9	 return msg.data;
+10	 }
+11	 }
+12	 pragma solidity ^0.7.6;
+13	 interface IVault {
+14	 function setBalance(address _voter, uint256 _amount) external;
+15	 function deposit(uint256 _amount) external;
+16	 function claimUSDH(address _voter) external returns (uint256);
+17	 }
+18	 pragma solidity >=0.6.0 <0.8.0;
+19	 abstract contract Ownable is Context {
+20	 address private _owner;
+21	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+22	 constructor () internal {
+23	 address msgSender = _msgSender();
+24	 _owner = msgSender;
+25	 emit OwnershipTransferred(address(0), msgSender);
+26	 }
+27	 function owner() public view virtual returns (address) {
+28	 return _owner;
+29	 }
+30	 modifier onlyOwner() {
+31	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+32	 _;
+33	 }
+34	 function renounceOwnership() public virtual onlyOwner {
+35	 emit OwnershipTransferred(_owner, address(0));
+36	 _owner = address(0);
+37	 }
+38	 function transferOwnership(address newOwner) public virtual onlyOwner {
+39	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+40	 emit OwnershipTransferred(_owner, newOwner);
+41	 _owner = newOwner;
+42	 }
+43	 }
+44	 pragma solidity ^0.7.6;
+45	 contract WeekVault is IVault, Ownable {
+46	 struct Share {
+47	 uint256 amount;
+48	 uint256 uncounted;
+49	 uint256 counted;
+50	 }
+51	 address[] voters;
+52	 mapping (address => uint256) voterIds;
+53	 mapping (address => uint256) voterClaims;
+54	 mapping (address => uint256) public totalRewardsToVoter;
+55	 mapping (address => Share) public shares;
+56	 uint256 public totalShares;
+57	 uint256 public totalRewards;
+58	 uint256 public totalDistributed;
+59	 uint256 public rewardsPerShare;
+60	 uint256 public constant decimals = 10 ** 36;
+61	 address public vehrd;
+62	 IERC20 public immutable USDH;
+63	 bool public canSetVEHRD = true;
+64	 constructor () {
+65	 vehrd = msg.sender;
+66	 USDH = IERC20(0xe350E32ca91B04F2D7307185BB352F0b7E7BcE35);
+67	 }
+68	 function _getCumulativeUSDH(uint256 _share) private view returns (uint256) {
+69	 return _share * rewardsPerShare / decimals;
+70	 }
+71	 function setBalance(address _voter, uint256 _amount) external override {
+72	 require(msg.sender == vehrd);
+73	 if (_amount > 0 && shares[_voter].amount == 0) {
+74	 voterIds[_voter] = voters.length;
+75	 voters.push(_voter);
+76	 }
+77	 else if (_amount == 0 && shares[_voter].amount > 0) {
+78	 voters[voterIds[_voter]] = voters[voters.length - 1];
+79	 voterIds[voters[voters.length - 1]] = voterIds[_voter];
+80	 voters.pop();
+81	 }
+82	 totalShares = totalShares - shares[_voter].amount + _amount;
+83	 shares[_voter].amount = _amount;
+84	 shares[_voter].uncounted = _getCumulativeUSDH(shares[_voter].amount);
+85	 }
+86	 function claimUSDH(address _voter) external override returns (uint256) {
+87	 require(msg.sender == vehrd);
+88	 if (shares[_voter].amount == 0) return 0;
+89	 uint256 _amount = getUnclaimedUSDH(_voter);
+90	 if (_amount > 0) {
+91	 voterClaims[_voter] = block.timestamp;
+92	 shares[_voter].counted = shares[_voter].counted + _amount;
+93	 shares[_voter].uncounted = _getCumulativeUSDH(shares[_voter].amount);
+94	 USDH.transfer(vehrd, _amount);
+95	 totalDistributed = totalDistributed + _amount;
+96	 totalRewardsToVoter[_voter] = totalRewardsToVoter[_voter] + _amount;
+97	 return _amount;
+98	 }
+99	 else {
+100	 return 0;
+101	 }
+102	 }
+103	 function deposit(uint256 _amount) external override {
+104	 require(msg.sender == vehrd);
+105	 require(USDH.balanceOf(msg.sender) >= _amount, "Insufficient Balance");
+106	 require(USDH.allowance(msg.sender, address(this)) >= _amount, "Insufficient Allowance");
+107	 uint256 balance = USDH.balanceOf(address(this));
+108	 USDH.transferFrom(msg.sender, address(this), _amount);
+109	 require(USDH.balanceOf(address(this)) == balance + _amount, "Transfer Failed");
+110	 totalRewards = totalRewards + _amount;
+111	 rewardsPerShare = rewardsPerShare + (decimals * _amount / totalShares);
+112	 }
+113	 function getUnclaimedUSDH(address _voter) public view returns (uint256) {
+114	 if (shares[_voter].amount == 0) return 0;
+115	 uint256 _voterRewards = _getCumulativeUSDH(shares[_voter].amount);
+116	 uint256 _voterUncounted = shares[_voter].uncounted;
+117	 if (_voterRewards <= _voterUncounted) return 0;
+118	 return _voterRewards - _voterUncounted;
+119	 }
+120	 function getClaimedRewardsTotal() external view returns (uint256) {
+121	 return totalDistributed;
+122	 }
+123	 function getClaimedRewards(address _voter) external view returns (uint256) {
+124	 return totalRewardsToVoter[_voter];
+125	 }
+126	 function getLastClaim(address _voter) external view returns (uint256) {
+127	 return voterClaims[_voter];
+128	 }
+129	 function balanceOf(address _voter) external view returns (uint256) {
+130	 return shares[_voter].amount;
+131	 }
+132	 function setVEHRD(address _vehrd, bool _canSetVEHRD) external onlyOwner {
+133	 require(canSetVEHRD);
+134	 vehrd = _vehrd;
+135	 canSetVEHRD = _canSetVEHRD;
+136	 }
+137	 function rescue(address token) external onlyOwner {
+138	 if (token == 0x0000000000000000000000000000000000000000) {
+139	 payable(msg.sender).call{
+140	 value: address(this).balance}
+141	 ("");
+142	 }
+143	 else {
+144	 require(token != address(USDH));
+145	 IERC20 Token = IERC20(token);
+146	 Token.transfer(msg.sender, Token.balanceOf(address(this)));
+147	 }
+148	 }
+149	 receive() external payable {
+150	 }
+151	 }
+152	 pragma solidity >=0.6.0 <0.8.0;
+153	 interface IERC20 {
+154	 function totalSupply() external view returns (uint256);
+155	 function balanceOf(address account) external view returns (uint256);
+156	 function transfer(address recipient, uint256 amount) external returns (bool);
+157	 function allowance(address owner, address spender) external view returns (uint256);
+158	 function approve(address spender, uint256 amount) external returns (bool);
+159	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+160	 event Transfer(address indexed from, address indexed to, uint256 value);
+161	 event Approval(address indexed owner, address indexed spender, uint256 value);
+162	 }

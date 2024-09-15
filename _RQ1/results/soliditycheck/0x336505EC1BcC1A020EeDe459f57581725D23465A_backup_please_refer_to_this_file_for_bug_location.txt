@@ -1,0 +1,109 @@
+row number 
+1	 pragma experimental ABIEncoderV2;
+2	 contract GovernorBravoDelegatorStorage {
+3	 address public admin;
+4	 address public pendingAdmin;
+5	 address public implementation;
+6	 }
+7	 pragma solidity ^0.5.16;
+8	 contract GovernorBravoEvents {
+9	 event ProposalCreated( uint id, address proposer, address[] targets, uint[] values, string[] signatures, bytes[] calldatas, uint startBlock, uint endBlock, string description );
+10	 event VoteCast( address indexed voter, uint proposalId, uint8 support, uint votes, string reason );
+11	 event ProposalCanceled(uint id);
+12	 event ProposalQueued(uint id, uint eta);
+13	 event ProposalExecuted(uint id);
+14	 event VotingDelaySet(uint oldVotingDelay, uint newVotingDelay);
+15	 event VotingPeriodSet(uint oldVotingPeriod, uint newVotingPeriod);
+16	 event NewImplementation(address oldImplementation, address newImplementation);
+17	 event ProposalThresholdSet( uint oldProposalThreshold, uint newProposalThreshold );
+18	 event NewPendingAdmin(address oldPendingAdmin, address newPendingAdmin);
+19	 event NewAdmin(address oldAdmin, address newAdmin);
+20	 event WhitelistAccountExpirationSet(address account, uint expiration);
+21	 event WhitelistGuardianSet(address oldGuardian, address newGuardian);
+22	 }
+23	 contract GovernorBravoDelegateStorageV1 is GovernorBravoDelegatorStorage {
+24	 uint public votingDelay;
+25	 uint public votingPeriod;
+26	 uint public proposalThreshold;
+27	 uint public initialProposalId;
+28	 uint public proposalCount;
+29	 TimelockInterface public timelock;
+30	 CompInterface public comp;
+31	 mapping(uint => Proposal) public proposals;
+32	 mapping(address => uint) public latestProposalIds;
+33	 struct Proposal {
+34	 uint id;
+35	 address proposer;
+36	 uint eta;
+37	 address[] targets;
+38	 uint[] values;
+39	 string[] signatures;
+40	 bytes[] calldatas;
+41	 uint startBlock;
+42	 uint endBlock;
+43	 uint forVotes;
+44	 uint againstVotes;
+45	 uint abstainVotes;
+46	 bool canceled;
+47	 bool executed;
+48	 mapping(address => Receipt) receipts;
+49	 }
+50	 struct Receipt {
+51	 bool hasVoted;
+52	 uint8 support;
+53	 uint96 votes;
+54	 }
+55	 enum ProposalState {
+56	 Pending, Active, Canceled, Defeated, Succeeded, Queued, Expired, Executed }
+57	 }
+58	 pragma solidity ^0.5.16;
+59	 contract GovernorBravoDelegator is GovernorBravoDelegatorStorage, GovernorBravoEvents {
+60	 constructor( address timelock_, address comp_, address admin_, address implementation_, uint votingPeriod_, uint votingDelay_, uint proposalThreshold_ ) public {
+61	 admin = msg.sender;
+62	 delegateTo( implementation_, abi.encodeWithSignature( "initialize(address,address,uint256,uint256,uint256)", timelock_, comp_, votingPeriod_, votingDelay_, proposalThreshold_ ) );
+63	 _setImplementation(implementation_);
+64	 admin = admin_;
+65	 }
+66	 function _setImplementation(address implementation_) public {
+67	 require( msg.sender == admin, "GovernorBravoDelegator::_setImplementation: admin only" );
+68	 require( implementation_ != address(0), "GovernorBravoDelegator::_setImplementation: invalid implementation address" );
+69	 address oldImplementation = implementation;
+70	 implementation = implementation_;
+71	 emit NewImplementation(oldImplementation, implementation);
+72	 }
+73	 function delegateTo(address callee, bytes memory data) internal {
+74	 (bool success, bytes memory returnData) = callee.delegatecall(data);
+75	 assembly {
+76	 if eq(success, 0) {
+77	 revert(add(returnData, 0x20), returndatasize) }
+78	 }
+79	 }
+80	 function() external payable {
+81	 (bool success, ) = implementation.delegatecall(msg.data);
+82	 assembly {
+83	 let free_mem_ptr := mload(0x40) returndatacopy(free_mem_ptr, 0, returndatasize) switch success case 0 {
+84	 revert(free_mem_ptr, returndatasize) }
+85	 default {
+86	 return(free_mem_ptr, returndatasize) }
+87	 }
+88	 }
+89	 }
+90	 contract GovernorBravoDelegateStorageV2 is GovernorBravoDelegateStorageV1 {
+91	 mapping(address => uint) public whitelistAccountExpirations;
+92	 address public whitelistGuardian;
+93	 }
+94	 interface TimelockInterface {
+95	 function delay() external view returns (uint);
+96	 function GRACE_PERIOD() external view returns (uint);
+97	 function acceptAdmin() external;
+98	 function queuedTransactions(bytes32 hash) external view returns (bool);
+99	 function queueTransaction( address target, uint value, string calldata signature, bytes calldata data, uint eta ) external returns (bytes32);
+100	 function cancelTransaction( address target, uint value, string calldata signature, bytes calldata data, uint eta ) external;
+101	 function executeTransaction( address target, uint value, string calldata signature, bytes calldata data, uint eta ) external payable returns (bytes memory);
+102	 }
+103	 interface CompInterface {
+104	 function getPriorVotes( address account, uint blockNumber ) external view returns (uint96);
+105	 }
+106	 interface GovernorAlpha {
+107	 function proposalCount() external returns (uint);
+108	 }

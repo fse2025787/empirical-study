@@ -1,0 +1,122 @@
+row number 
+1	   pragma solidity ^0.5.16;
+2	 contract InterestRateModel {
+3	 bool public constant isInterestRateModel = true;
+4	 function getBorrowRate( uint256 cash, uint256 borrows, uint256 reserves ) external view returns (uint256);
+5	 function getSupplyRate( uint256 cash, uint256 borrows, uint256 reserves, uint256 reserveFactorMantissa ) external view returns (uint256);
+6	 }
+7	 pragma solidity ^0.5.16;
+8	 library SafeMath {
+9	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+10	 uint256 c = a + b;
+11	 require(c >= a, "SafeMath: addition overflow");
+12	 return c;
+13	 }
+14	 function add( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+15	 uint256 c = a + b;
+16	 require(c >= a, errorMessage);
+17	 return c;
+18	 }
+19	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+20	 return sub(a, b, "SafeMath: subtraction underflow");
+21	 }
+22	 function sub( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+23	 require(b <= a, errorMessage);
+24	 uint256 c = a - b;
+25	 return c;
+26	 }
+27	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+28	 if (a == 0) {
+29	 return 0;
+30	 }
+31	 uint256 c = a * b;
+32	 require(c / a == b, "SafeMath: multiplication overflow");
+33	 return c;
+34	 }
+35	 function mul( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+36	 if (a == 0) {
+37	 return 0;
+38	 }
+39	 uint256 c = a * b;
+40	 require(c / a == b, errorMessage);
+41	 return c;
+42	 }
+43	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+44	 return div(a, b, "SafeMath: division by zero");
+45	 }
+46	 function div( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+47	 require(b > 0, errorMessage);
+48	 uint256 c = a / b;
+49	 return c;
+50	 }
+51	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+52	 return mod(a, b, "SafeMath: modulo by zero");
+53	 }
+54	 function mod( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+55	 require(b != 0, errorMessage);
+56	 return a % b;
+57	 }
+58	 }
+59	 pragma solidity ^0.5.16;
+60	 contract TripleSlopeRateModel is InterestRateModel {
+61	 using SafeMath for uint256;
+62	 event NewInterestParams( uint256 baseRatePerBlock, uint256 multiplierPerBlock, uint256 jumpMultiplierPerBlock, uint256 kink1, uint256 kink2, uint256 roof );
+63	 address public owner;
+64	 uint256 public constant blocksPerYear = 2102400;
+65	 uint256 internal constant minRoofValue = 1e18;
+66	 uint256 public multiplierPerBlock;
+67	 uint256 public baseRatePerBlock;
+68	 uint256 public jumpMultiplierPerBlock;
+69	 uint256 public kink1;
+70	 uint256 public kink2;
+71	 uint256 public roof;
+72	 constructor( uint256 baseRatePerYear, uint256 multiplierPerYear, uint256 jumpMultiplierPerYear, uint256 kink1_, uint256 kink2_, uint256 roof_, address owner_ ) public {
+73	 owner = owner_;
+74	 updateTripleRateModelInternal(baseRatePerYear, multiplierPerYear, jumpMultiplierPerYear, kink1_, kink2_, roof_);
+75	 }
+76	 function updateTripleRateModel( uint256 baseRatePerYear, uint256 multiplierPerYear, uint256 jumpMultiplierPerYear, uint256 kink1_, uint256 kink2_, uint256 roof_ ) external {
+77	 require(msg.sender == owner, "only the owner may call this function.");
+78	 updateTripleRateModelInternal(baseRatePerYear, multiplierPerYear, jumpMultiplierPerYear, kink1_, kink2_, roof_);
+79	 }
+80	 function utilizationRate( uint256 cash, uint256 borrows, uint256 reserves ) public view returns (uint256) {
+81	 if (borrows == 0) {
+82	 return 0;
+83	 }
+84	 uint256 util = borrows.mul(1e18).div(cash.add(borrows).sub(reserves));
+85	 if (util > roof) {
+86	 util = roof;
+87	 }
+88	 return util;
+89	 }
+90	 function getBorrowRate( uint256 cash, uint256 borrows, uint256 reserves ) public view returns (uint256) {
+91	 uint256 util = utilizationRate(cash, borrows, reserves);
+92	 if (util <= kink1) {
+93	 return util.mul(multiplierPerBlock).div(1e18).add(baseRatePerBlock);
+94	 }
+95	 else if (util <= kink2) {
+96	 return kink1.mul(multiplierPerBlock).div(1e18).add(baseRatePerBlock);
+97	 }
+98	 else {
+99	 uint256 normalRate = kink1.mul(multiplierPerBlock).div(1e18).add(baseRatePerBlock);
+100	 uint256 excessUtil = util.sub(kink2);
+101	 return excessUtil.mul(jumpMultiplierPerBlock).div(1e18).add(normalRate);
+102	 }
+103	 }
+104	 function getSupplyRate( uint256 cash, uint256 borrows, uint256 reserves, uint256 reserveFactorMantissa ) public view returns (uint256) {
+105	 uint256 oneMinusReserveFactor = uint256(1e18).sub(reserveFactorMantissa);
+106	 uint256 borrowRate = getBorrowRate(cash, borrows, reserves);
+107	 uint256 rateToPool = borrowRate.mul(oneMinusReserveFactor).div(1e18);
+108	 return utilizationRate(cash, borrows, reserves).mul(rateToPool).div(1e18);
+109	 }
+110	 function updateTripleRateModelInternal( uint256 baseRatePerYear, uint256 multiplierPerYear, uint256 jumpMultiplierPerYear, uint256 kink1_, uint256 kink2_, uint256 roof_ ) internal {
+111	 require(kink1_ <= kink2_, "kink1 must less than or equal to kink2");
+112	 require(roof_ >= minRoofValue, "invalid roof value");
+113	 baseRatePerBlock = baseRatePerYear.div(blocksPerYear);
+114	 multiplierPerBlock = (multiplierPerYear.mul(1e18)).div(blocksPerYear.mul(kink1_));
+115	 jumpMultiplierPerBlock = jumpMultiplierPerYear.div(blocksPerYear);
+116	 kink1 = kink1_;
+117	 kink2 = kink2_;
+118	 roof = roof_;
+119	 emit NewInterestParams(baseRatePerBlock, multiplierPerBlock, jumpMultiplierPerBlock, kink1, kink2, roof);
+120	 }
+121	 }

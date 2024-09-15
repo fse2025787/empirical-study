@@ -1,0 +1,436 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 contract EscapeMmmEvents {
+3	 event onOffered ( address indexed playerAddress, uint256 offerAmount, address affiliateAddress, address siteOwner, uint256 timestamp );
+4	 event onAccepted ( address indexed playerAddress, uint256 acceptAmount );
+5	 event onWithdraw ( address indexed playerAddress, uint256 withdrawAmount );
+6	 event onAirDrop ( address indexed playerAddress, uint256 airdropAmount, uint256 offerAmount );
+7	 }
+8	 contract Ownable {
+9	 address public owner;
+10	 event OwnershipRenounced(address indexed previousOwner);
+11	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+12	 constructor() public {
+13	 owner = msg.sender;
+14	 }
+15	 modifier onlyOwner() {
+16	 require(msg.sender == owner);
+17	 _;
+18	 }
+19	 function renounceOwnership() public onlyOwner {
+20	 emit OwnershipRenounced(owner);
+21	 owner = address(0);
+22	 }
+23	 function transferOwnership(address _newOwner) public onlyOwner {
+24	 _transferOwnership(_newOwner);
+25	 }
+26	 function _transferOwnership(address _newOwner) internal {
+27	 require(_newOwner != address(0));
+28	 emit OwnershipTransferred(owner, _newOwner);
+29	 owner = _newOwner;
+30	 }
+31	 }
+32	 contract EFMAPlatform is EscapeMmmEvents, Ownable {
+33	 using SafeMath for *;
+34	 string constant public name = "Escape Financial Mutual Aid Platform";
+35	 string constant public symbol = "EFMAP";
+36	 address private xTokenAddress = 0xfe8b40a35ff222c8475385f74e77d33954531b41;
+37	 uint8 public feePercent_ = 1;
+38	 uint8 public affPercent_ = 5;
+39	 uint8 public sitePercent_ = 5;
+40	 uint8 public airDropPercent_ = 10;
+41	 uint8 public xTokenPercent_ = 3;
+42	 uint256 constant public interestPeriod_ = 1 hours;
+43	 uint256 constant public maxInterestTime_ = 7 days;
+44	 uint256 public airDropPool_;
+45	 uint256 public airDropTracker_ = 0;
+46	 mapping (address => FMAPDatasets.Player) public players_;
+47	 mapping (address => mapping (uint256 => FMAPDatasets.OfferInfo)) public playerOfferOrders_;
+48	 mapping (address => mapping (uint256 => uint256)) public playerAcceptOrders_;
+49	 uint256 private restOfferAmount_ = 0;
+50	 FMAPDatasets.AcceptOrder private currentOrder_;
+51	 mapping (uint256 => FMAPDatasets.AcceptOrder) public acceptOrders_;
+52	 address private teamXWallet;
+53	 uint256 public _totalFee;
+54	 uint256 public _totalXT;
+55	 constructor() public {
+56	 teamXWallet = msg.sender;
+57	 FMAPDatasets.AcceptOrder memory ao;
+58	 ao.nextOrder = 1;
+59	 ao.playerAddress = msg.sender;
+60	 ao.acceptAmount = 1 finney;
+61	 acceptOrders_[0] = ao;
+62	 currentOrder_ = ao;
+63	 }
+64	 function transFee() public onlyOwner {
+65	 teamXWallet.transfer(_totalFee);
+66	 }
+67	 function setTeamWallet(address wallet) public onlyOwner {
+68	 teamXWallet = wallet;
+69	 }
+70	 function setXToken(address xToken) public onlyOwner {
+71	 xTokenAddress = xToken;
+72	 }
+73	 modifier isHuman() {
+74	 require(AddressUtils.isContract(msg.sender) == false, "sorry, only human allowed");
+75	 _;
+76	 }
+77	 function() isHuman() public payable {
+78	 FMAPDatasets.OfferInfo memory offerInfo = packageOfferInfo(address(0), msg.value);
+79	 offerCore(offerInfo, false);
+80	 }
+81	 function offerHelp(address siteOwner, address affiliate) isHuman() public payable {
+82	 FMAPDatasets.OfferInfo memory offerInfo = packageOfferInfo(siteOwner, msg.value);
+83	 bool updateAff = false;
+84	 if(affiliate != address(0) && affiliate != offerInfo.affiliateAddress) {
+85	 offerInfo.affiliateAddress = affiliate;
+86	 updateAff = true;
+87	 }
+88	 offerCore(offerInfo, updateAff);
+89	 emit onOffered(offerInfo.playerAddress, offerInfo.offerAmount, offerInfo.affiliateAddress, offerInfo.siteOwner, offerInfo.timestamp);
+90	 }
+91	 function offerHelpUsingBalance(address siteOwner, address affiliate, uint256 ethAmount) isHuman() public {
+92	 require(ethAmount <= players_[msg.sender].balance, "sorry, you don't have enough balance");
+93	 FMAPDatasets.OfferInfo memory offerInfo = packageOfferInfo(siteOwner, ethAmount);
+94	 bool updateAff = false;
+95	 if(affiliate != address(0) && affiliate != offerInfo.affiliateAddress) {
+96	 offerInfo.affiliateAddress = affiliate;
+97	 updateAff = true;
+98	 }
+99	 players_[msg.sender].balance = players_[msg.sender].balance.sub(ethAmount);
+100	 offerCore(offerInfo, updateAff);
+101	 emit onOffered(offerInfo.playerAddress, offerInfo.offerAmount, offerInfo.affiliateAddress, offerInfo.siteOwner, offerInfo.timestamp);
+102	 }
+103	 function acceptHelp(uint256 amount) isHuman() public returns (uint256 canAcceptLeft) {
+104	 (canAcceptLeft, ) = calcCanAcceptAmount(msg.sender, true, 0);
+105	 require(amount <= canAcceptLeft, "sorry, you don't have enough acceptable amount");
+106	 uint256 _nextOrderId = currentOrder_.nextOrder;
+107	 FMAPDatasets.AcceptOrder memory acceptOrder;
+108	 acceptOrder.playerAddress = msg.sender;
+109	 acceptOrder.acceptAmount = amount;
+110	 acceptOrder.acceptedAmount = 0;
+111	 acceptOrder.nextOrder = _nextOrderId + 1;
+112	 acceptOrders_[_nextOrderId] = acceptOrder;
+113	 if (currentOrder_.orderId == _nextOrderId || currentOrder_.acceptAmount == currentOrder_.acceptedAmount) {
+114	 currentOrder_ = acceptOrder;
+115	 }
+116	 players_[acceptOrder.playerAddress].totalAccepted = amount.add(players_[acceptOrder.playerAddress].totalAccepted);
+117	 players_[acceptOrder.playerAddress].acceptOrderCount++;
+118	 if (restOfferAmount_ > 0) {
+119	 matching();
+120	 }
+121	 calcAndSetPlayerTotalCanAccept(acceptOrder.playerAddress, amount);
+122	 emit onAccepted(acceptOrder.playerAddress, acceptOrder.acceptAmount);
+123	 return (canAcceptLeft);
+124	 }
+125	 function withdraw() isHuman() public {
+126	 require(players_[msg.sender].balance >= 1 finney, "sorry, withdraw at least 1 finney");
+127	 uint256 _balance = players_[msg.sender].balance;
+128	 players_[msg.sender].balance = 0;
+129	 msg.sender.transfer(_balance);
+130	 emit onWithdraw(msg.sender, _balance);
+131	 }
+132	 function getCanAcceptAmount(address playerAddr) public view returns (uint256 canAccept, uint256 earliest) {
+133	 (canAccept, earliest) = calcCanAcceptAmount(playerAddr, true, 0);
+134	 return (canAccept, earliest);
+135	 }
+136	 function getBalance(address playerAddr) public view returns (uint256) {
+137	 uint256 balance = players_[playerAddr].balance;
+138	 return (balance);
+139	 }
+140	 function getPlayerInfo(address playerAddr) public view returns (uint256 totalAssets, uint256 nextPeriodAssets, uint256 balance, uint256 canAccept, uint256 airdrop, uint256 offered, uint256 accepted, uint256 affiliateEarned, uint256 siteEarned, uint256 nextUpdateTime) {
+141	 FMAPDatasets.Player memory _player = players_[playerAddr];
+142	 uint256 _calculatedCanAccept;
+143	 (_calculatedCanAccept, ) = calcCanAcceptAmount(playerAddr, false, 0);
+144	 totalAssets = _player.balance.add(_calculatedCanAccept);
+145	 (_calculatedCanAccept, ) = calcCanAcceptAmount(playerAddr, false, interestPeriod_);
+146	 nextPeriodAssets = _player.balance.add(_calculatedCanAccept);
+147	 (canAccept, nextUpdateTime) = calcCanAcceptAmount(playerAddr, true, 0);
+148	 return (totalAssets, nextPeriodAssets, _player.balance, canAccept, _player.airDroped, _player.totalOffered, _player.totalAccepted, _player.affiliateEarned, _player.siteEarned, nextUpdateTime);
+149	 }
+150	 function packageOfferInfo(address siteOwner, uint256 amount) private view returns (FMAPDatasets.OfferInfo) {
+151	 FMAPDatasets.OfferInfo memory offerInfo;
+152	 offerInfo.playerAddress = msg.sender;
+153	 offerInfo.offerAmount = amount;
+154	 offerInfo.affiliateAddress = players_[msg.sender].lastAffiliate;
+155	 offerInfo.siteOwner = siteOwner;
+156	 offerInfo.timestamp = block.timestamp;
+157	 offerInfo.interesting = true;
+158	 return (offerInfo);
+159	 }
+160	 function offerCore(FMAPDatasets.OfferInfo memory offerInfo, bool updateAff) private {
+161	 uint256 _fee = (offerInfo.offerAmount).mul(feePercent_).div(100);
+162	 uint256 _aff = (offerInfo.offerAmount).mul(affPercent_).div(100);
+163	 uint256 _sit = (offerInfo.offerAmount).mul(sitePercent_).div(100);
+164	 uint256 _air = (offerInfo.offerAmount).mul(airDropPercent_).div(100);
+165	 uint256 _xt = (offerInfo.offerAmount).mul(xTokenPercent_).div(100);
+166	 uint256 _leftAmount = offerInfo.offerAmount;
+167	 if (offerInfo.affiliateAddress == offerInfo.siteOwner) {
+168	 offerInfo.affiliateAddress = address(0);
+169	 }
+170	 players_[offerInfo.playerAddress].totalOffered = (offerInfo.offerAmount).add(players_[offerInfo.playerAddress].totalOffered);
+171	 if (offerInfo.affiliateAddress == address(0) || offerInfo.affiliateAddress == offerInfo.playerAddress) {
+172	 _fee = _fee.add(_aff);
+173	 _aff = 0;
+174	 }
+175	 if (offerInfo.siteOwner == address(0) || offerInfo.siteOwner == offerInfo.playerAddress) {
+176	 _fee = _fee.add(_sit);
+177	 _sit = 0;
+178	 }
+179	 _totalFee = _totalFee.add(_fee);
+180	 _totalXT = _totalXT.add(_xt);
+181	 if (_totalXT > 1 finney) {
+182	 xTokenAddress.transfer(_totalXT);
+183	 }
+184	 _leftAmount = _leftAmount.sub(_fee);
+185	 if (_aff > 0) {
+186	 players_[offerInfo.affiliateAddress].balance = _aff.add(players_[offerInfo.affiliateAddress].balance);
+187	 players_[offerInfo.affiliateAddress].affiliateEarned = _aff.add(players_[offerInfo.affiliateAddress].affiliateEarned);
+188	 _leftAmount = _leftAmount.sub(_aff);
+189	 }
+190	 if (_sit > 0) {
+191	 players_[offerInfo.siteOwner].balance = _sit.add(players_[offerInfo.siteOwner].balance);
+192	 players_[offerInfo.siteOwner].siteEarned = _sit.add(players_[offerInfo.siteOwner].siteEarned);
+193	 _leftAmount = _leftAmount.sub(_sit);
+194	 }
+195	 if (offerInfo.offerAmount >= 1 finney) {
+196	 airDropTracker_ = airDropTracker_ + FMAPMath.calcTrackerCount(offerInfo.offerAmount);
+197	 if (airdrop() == true) {
+198	 uint256 _airdrop = FMAPMath.calcAirDropAmount(offerInfo.offerAmount);
+199	 players_[offerInfo.playerAddress].balance = _airdrop.add(players_[offerInfo.playerAddress].balance);
+200	 players_[offerInfo.playerAddress].airDroped = _airdrop.add(players_[offerInfo.playerAddress].airDroped);
+201	 emit onAirDrop(offerInfo.playerAddress, _airdrop, offerInfo.offerAmount);
+202	 }
+203	 }
+204	 airDropPool_ = airDropPool_.add(_air);
+205	 _leftAmount = _leftAmount.sub(_air);
+206	 if (updateAff) {
+207	 players_[offerInfo.playerAddress].lastAffiliate = offerInfo.affiliateAddress;
+208	 }
+209	 restOfferAmount_ = restOfferAmount_.add(_leftAmount);
+210	 if (currentOrder_.acceptAmount > currentOrder_.acceptedAmount) {
+211	 matching();
+212	 }
+213	 playerOfferOrders_[offerInfo.playerAddress][players_[offerInfo.playerAddress].offeredCount] = offerInfo;
+214	 players_[offerInfo.playerAddress].offeredCount = (players_[offerInfo.playerAddress].offeredCount).add(1);
+215	 if (players_[offerInfo.playerAddress].playerAddress == address(0)) {
+216	 players_[offerInfo.playerAddress].playerAddress = offerInfo.playerAddress;
+217	 }
+218	 }
+219	 function matching() private {
+220	 while (restOfferAmount_ > 0 && currentOrder_.acceptAmount > currentOrder_.acceptedAmount) {
+221	 uint256 needAcceptAmount = (currentOrder_.acceptAmount).sub(currentOrder_.acceptedAmount);
+222	 if (needAcceptAmount <= restOfferAmount_) {
+223	 restOfferAmount_ = restOfferAmount_.sub(needAcceptAmount);
+224	 players_[currentOrder_.playerAddress].balance = needAcceptAmount.add(players_[currentOrder_.playerAddress].balance);
+225	 currentOrder_.acceptedAmount = (currentOrder_.acceptedAmount).add(needAcceptAmount);
+226	 currentOrder_ = acceptOrders_[currentOrder_.nextOrder];
+227	 }
+228	 else {
+229	 currentOrder_.acceptedAmount = (currentOrder_.acceptedAmount).add(restOfferAmount_);
+230	 players_[currentOrder_.playerAddress].balance = (players_[currentOrder_.playerAddress].balance).add(restOfferAmount_);
+231	 restOfferAmount_ = 0;
+232	 }
+233	 }
+234	 }
+235	 function calcAndSetPlayerTotalCanAccept(address pAddr, uint256 acceptAmount) private {
+236	 uint256 _now = block.timestamp;
+237	 uint256 _latestCalced = players_[pAddr].lastCalcOfferNo;
+238	 uint256 _acceptedAmount = acceptAmount;
+239	 while(_latestCalced < players_[pAddr].offeredCount) {
+240	 FMAPDatasets.OfferInfo storage oi = playerOfferOrders_[pAddr][_latestCalced];
+241	 uint256 _ts = _now.sub(oi.timestamp);
+242	 if (oi.interesting == true) {
+243	 if (_ts >= maxInterestTime_) {
+244	 uint256 interest1 = oi.offerAmount.sub(oi.acceptAmount).mul(1).div(1000).mul(maxInterestTime_ / interestPeriod_);
+245	 players_[pAddr].canAccept = (players_[pAddr].canAccept).add(oi.offerAmount).add(interest1);
+246	 oi.interesting = false;
+247	 if (oi.offerAmount.sub(oi.acceptAmount) > _acceptedAmount) {
+248	 _acceptedAmount = 0;
+249	 oi.acceptAmount = oi.acceptAmount.add(_acceptedAmount);
+250	 }
+251	 else {
+252	 _acceptedAmount = _acceptedAmount.sub(oi.offerAmount.sub(oi.acceptAmount));
+253	 oi.acceptAmount = oi.offerAmount;
+254	 }
+255	 }
+256	 else if (_acceptedAmount > 0) {
+257	 if (_acceptedAmount < oi.offerAmount.sub(oi.acceptAmount)) {
+258	 oi.acceptAmount = oi.acceptAmount.add(_acceptedAmount);
+259	 _acceptedAmount = 0;
+260	 }
+261	 else {
+262	 uint256 interest0 = oi.offerAmount.sub(oi.acceptAmount).mul(1).div(1000).mul(_ts / interestPeriod_);
+263	 players_[pAddr].canAccept = (players_[pAddr].canAccept).add(oi.offerAmount).add(interest0);
+264	 oi.interesting = false;
+265	 _acceptedAmount = _acceptedAmount.sub(oi.offerAmount.sub(oi.acceptAmount));
+266	 oi.acceptAmount = oi.offerAmount;
+267	 }
+268	 }
+269	 }
+270	 else if (oi.offerAmount > oi.acceptAmount && _acceptedAmount > 0) {
+271	 if (oi.offerAmount.sub(oi.acceptAmount) > _acceptedAmount) {
+272	 _acceptedAmount = 0;
+273	 oi.acceptAmount = oi.acceptAmount.add(_acceptedAmount);
+274	 }
+275	 else {
+276	 _acceptedAmount = _acceptedAmount.sub(oi.offerAmount.sub(oi.acceptAmount));
+277	 oi.acceptAmount = oi.offerAmount;
+278	 }
+279	 }
+280	 if (_acceptedAmount == 0) {
+281	 break;
+282	 }
+283	 _latestCalced = _latestCalced + 1;
+284	 }
+285	 players_[pAddr].lastCalcOfferNo = _latestCalced;
+286	 }
+287	 function airdrop() private view returns (bool) {
+288	 uint256 seed = uint256(keccak256(abi.encodePacked(block.timestamp, block.number, block.timestamp, block.difficulty, block.gaslimit, airDropTracker_, block.coinbase, msg.sender)));
+289	 if(seed - (seed / 10000).mul(10000) < airDropTracker_) {
+290	 return (true);
+291	 }
+292	 return (false);
+293	 }
+294	 function calcCanAcceptAmount(address pAddr, bool isLimit, uint256 offsetTime) private view returns (uint256, uint256 nextUpdateTime) {
+295	 uint256 _totalCanAccepted = players_[pAddr].canAccept;
+296	 uint256 i = players_[pAddr].offeredCount;
+297	 uint256 _now = block.timestamp.add(offsetTime);
+298	 uint256 _nextUpdateTime = _now.add(interestPeriod_);
+299	 for(; i > 0; i--) {
+300	 FMAPDatasets.OfferInfo memory oi = playerOfferOrders_[pAddr][i - 1];
+301	 if (oi.interesting == true) {
+302	 uint256 timepassed = _now.sub(oi.timestamp);
+303	 if (!isLimit || (timepassed >= interestPeriod_)) {
+304	 uint256 interest;
+305	 if (timepassed < maxInterestTime_) {
+306	 interest = oi.offerAmount.sub(oi.acceptAmount).mul(1).div(1000).mul(timepassed / interestPeriod_);
+307	 uint256 oiNextUpdateTime = (timepassed / interestPeriod_).add(1).mul(interestPeriod_).add(oi.timestamp);
+308	 if (_nextUpdateTime > oiNextUpdateTime) {
+309	 _nextUpdateTime = oiNextUpdateTime;
+310	 }
+311	 }
+312	 else {
+313	 interest = oi.offerAmount.sub(oi.acceptAmount).mul(1).div(1000).mul(maxInterestTime_ / interestPeriod_);
+314	 }
+315	 _totalCanAccepted = _totalCanAccepted.add(oi.offerAmount).add(interest);
+316	 }
+317	 }
+318	 else if (oi.timestamp == 0) {
+319	 continue;
+320	 }
+321	 else {
+322	 break;
+323	 }
+324	 }
+325	 return (_totalCanAccepted.sub(players_[pAddr].totalAccepted), _nextUpdateTime);
+326	 }
+327	 }
+328	 library FMAPMath {
+329	 using SafeMath for uint256;
+330	 function calcTrackerCount(uint256 ethAmount) internal pure returns (uint256) {
+331	 if (ethAmount >= 1 finney && ethAmount < 10 finney) {
+332	 return (1);
+333	 }
+334	 else if (ethAmount < 50 finney) {
+335	 return (2);
+336	 }
+337	 else if (ethAmount < 200 finney) {
+338	 return (3);
+339	 }
+340	 else if (ethAmount < 500 finney) {
+341	 return (4);
+342	 }
+343	 else if (ethAmount < 1 ether) {
+344	 return (5);
+345	 }
+346	 else if (ethAmount >= 1 ether) {
+347	 return ethAmount.div(1 ether).add(5);
+348	 }
+349	 return (0);
+350	 }
+351	 function calcAirDropAmount(uint256 ethAmount) internal pure returns (uint256) {
+352	 if (ethAmount >= 1 finney && ethAmount < 10 finney) {
+353	 return (5);
+354	 }
+355	 else if (ethAmount < 50 finney) {
+356	 return (10);
+357	 }
+358	 else if (ethAmount < 200 finney) {
+359	 return (15);
+360	 }
+361	 else if (ethAmount < 500 finney) {
+362	 return (20);
+363	 }
+364	 else if (ethAmount < 1 ether) {
+365	 return (25);
+366	 }
+367	 else if (ethAmount >= 1 ether) {
+368	 uint256 a = ethAmount.div(1 ether).add(5).mul(5);
+369	 return (a > 75 ? 75 : a);
+370	 }
+371	 return (0);
+372	 }
+373	 }
+374	 library FMAPDatasets {
+375	 struct OfferInfo {
+376	 address playerAddress;
+377	 uint256 offerAmount;
+378	 uint256 acceptAmount;
+379	 address affiliateAddress;
+380	 address siteOwner;
+381	 uint256 timestamp;
+382	 bool interesting;
+383	 }
+384	 struct AcceptOrder {
+385	 uint256 orderId;
+386	 address playerAddress;
+387	 uint256 acceptAmount;
+388	 uint256 acceptedAmount;
+389	 uint256 nextOrder;
+390	 }
+391	 struct Player {
+392	 address playerAddress;
+393	 address lastAffiliate;
+394	 uint256 totalOffered;
+395	 uint256 totalAccepted;
+396	 uint256 airDroped;
+397	 uint256 balance;
+398	 uint256 offeredCount;
+399	 uint256 acceptOrderCount;
+400	 uint256 canAccept;
+401	 uint256 lastCalcOfferNo;
+402	 uint256 affiliateEarned;
+403	 uint256 siteEarned;
+404	 }
+405	 }
+406	 library SafeMath {
+407	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+408	 if (a == 0) {
+409	 return 0;
+410	 }
+411	 c = a * b;
+412	 assert(c / a == b);
+413	 return c;
+414	 }
+415	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+416	 return a / b;
+417	 }
+418	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+419	 assert(b <= a);
+420	 return a - b;
+421	 }
+422	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+423	 c = a + b;
+424	 assert(c >= a);
+425	 return c;
+426	 }
+427	 }
+428	 library AddressUtils {
+429	 function isContract(address addr) internal view returns (bool) {
+430	 uint256 size;
+431	 assembly {
+432	 size := extcodesize(addr) }
+433	 return size > 0;
+434	 }
+435	 }

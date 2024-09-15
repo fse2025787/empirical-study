@@ -1,0 +1,323 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 interface PlayerBookReceiverInterface {
+3	 function receivePlayerInfo(uint256 _pID, address _addr, bytes32 _name, uint256 _laff) external;
+4	 function receivePlayerNameList(uint256 _pID, bytes32 _name) external;
+5	 }
+6	 contract PlayerBook {
+7	 using NameFilter for string;
+8	 using SafeMath for uint256;
+9	 address private communityAddr = 0x5707D1322237300fc0a0Be9b3159B0BA41eEfEEF;
+10	 uint256 public registrationFee_ = 10 finney;
+11	 mapping(uint256 => PlayerBookReceiverInterface) public games_;
+12	 mapping(address => bytes32) public gameNames_;
+13	 mapping(address => uint256) public gameIDs_;
+14	 uint256 public gID_;
+15	 uint256 public pID_;
+16	 mapping (address => uint256) public pIDxAddr_;
+17	 mapping (bytes32 => uint256) public pIDxName_;
+18	 mapping (uint256 => Player) public plyr_;
+19	 mapping (uint256 => mapping (bytes32 => bool)) public plyrNames_;
+20	 mapping (uint256 => mapping (uint256 => bytes32)) public plyrNameList_;
+21	 struct Player {
+22	 address addr;
+23	 bytes32 name;
+24	 uint256 laff;
+25	 uint256 names;
+26	 }
+27	 constructor() public {
+28	 plyr_[1].addr = 0x44C4Fa4e8c0fBB9f903c542525aA3DB50317CF41;
+29	 plyr_[1].name = "daddy";
+30	 plyr_[1].names = 1;
+31	 pIDxAddr_[0x44C4Fa4e8c0fBB9f903c542525aA3DB50317CF41] = 1;
+32	 pIDxName_["daddy"] = 1;
+33	 plyrNames_[1]["daddy"] = true;
+34	 plyrNameList_[1][1] = "daddy";
+35	 plyr_[2].addr = 0xec7e029c7f658ddac2ed6af1f76b1e073a55c3e8;
+36	 plyr_[2].name = "suoha";
+37	 plyr_[2].names = 1;
+38	 pIDxAddr_[0xec7e029c7f658ddac2ed6af1f76b1e073a55c3e8] = 2;
+39	 pIDxName_["suoha"] = 2;
+40	 plyrNames_[2]["suoha"] = true;
+41	 plyrNameList_[2][1] = "suoha";
+42	 plyr_[3].addr = 0xc60dd3ffba4eda95a4801fec28d9b2e2eb6d6590;
+43	 plyr_[3].name = "nodumb";
+44	 plyr_[3].names = 1;
+45	 pIDxAddr_[0xc60dd3ffba4eda95a4801fec28d9b2e2eb6d6590] = 3;
+46	 pIDxName_["nodumb"] = 3;
+47	 plyrNames_[3]["nodumb"] = true;
+48	 plyrNameList_[3][1] = "nodumb";
+49	 plyr_[4].addr = 0x52b8ad7ea88657815d96c604dd8e65f32db41111;
+50	 plyr_[4].name = "dddos";
+51	 plyr_[4].names = 1;
+52	 pIDxAddr_[0x52b8ad7ea88657815d96c604dd8e65f32db41111] = 4;
+53	 pIDxName_["dddos"] = 4;
+54	 plyrNames_[4]["dddos"] = true;
+55	 plyrNameList_[4][1] = "dddos";
+56	 pID_ = 4;
+57	 }
+58	 modifier isHuman() {
+59	 address _addr = msg.sender;
+60	 uint256 _codeLength;
+61	 assembly {
+62	 _codeLength := extcodesize(_addr)}
+63	 require(_codeLength == 0, "sorry humans only");
+64	 _;
+65	 }
+66	 modifier onlyCommunity() {
+67	 require(msg.sender == communityAddr, "msg sender is not the community");
+68	 _;
+69	 }
+70	 modifier isRegisteredGame() {
+71	 require(gameIDs_[msg.sender] != 0);
+72	 _;
+73	 }
+74	 event onNewName ( uint256 indexed playerID, address indexed playerAddress, bytes32 indexed playerName, bool isNewPlayer, uint256 affiliateID, address affiliateAddress, bytes32 affiliateName, uint256 amountPaid, uint256 timeStamp );
+75	 function checkIfNameValid(string _nameStr) public view returns(bool) {
+76	 bytes32 _name = _nameStr.nameFilter();
+77	 if (pIDxName_[_name] == 0) return (true);
+78	 else return (false);
+79	 }
+80	 function registerNameXID(string _nameString, uint256 _affCode, bool _all) isHuman() public payable {
+81	 require (msg.value >= registrationFee_, "umm..... you have to pay the name fee");
+82	 bytes32 _name = NameFilter.nameFilter(_nameString);
+83	 address _addr = msg.sender;
+84	 bool _isNewPlayer = determinePID(_addr);
+85	 uint256 _pID = pIDxAddr_[_addr];
+86	 if (_affCode != 0 && _affCode != plyr_[_pID].laff && _affCode != _pID) {
+87	 plyr_[_pID].laff = _affCode;
+88	 }
+89	 else if (_affCode == _pID) {
+90	 _affCode = 0;
+91	 }
+92	 registerNameCore(_pID, _addr, _affCode, _name, _isNewPlayer, _all);
+93	 }
+94	 function registerNameXaddr(string _nameString, address _affCode, bool _all) isHuman() public payable {
+95	 require (msg.value >= registrationFee_, "umm..... you have to pay the name fee");
+96	 bytes32 _name = NameFilter.nameFilter(_nameString);
+97	 address _addr = msg.sender;
+98	 bool _isNewPlayer = determinePID(_addr);
+99	 uint256 _pID = pIDxAddr_[_addr];
+100	 uint256 _affID;
+101	 if (_affCode != address(0) && _affCode != _addr) {
+102	 _affID = pIDxAddr_[_affCode];
+103	 if (_affID != plyr_[_pID].laff) {
+104	 plyr_[_pID].laff = _affID;
+105	 }
+106	 }
+107	 registerNameCore(_pID, _addr, _affID, _name, _isNewPlayer, _all);
+108	 }
+109	 function registerNameXname(string _nameString, bytes32 _affCode, bool _all) isHuman() public payable {
+110	 require (msg.value >= registrationFee_, "umm..... you have to pay the name fee");
+111	 bytes32 _name = NameFilter.nameFilter(_nameString);
+112	 address _addr = msg.sender;
+113	 bool _isNewPlayer = determinePID(_addr);
+114	 uint256 _pID = pIDxAddr_[_addr];
+115	 uint256 _affID;
+116	 if (_affCode != "" && _affCode != _name) {
+117	 _affID = pIDxName_[_affCode];
+118	 if (_affID != plyr_[_pID].laff) {
+119	 plyr_[_pID].laff = _affID;
+120	 }
+121	 }
+122	 registerNameCore(_pID, _addr, _affID, _name, _isNewPlayer, _all);
+123	 }
+124	 function addMeToGame(uint256 _gameID) isHuman() public {
+125	 require(_gameID <= gID_, "silly player, that game doesn't exist yet");
+126	 address _addr = msg.sender;
+127	 uint256 _pID = pIDxAddr_[_addr];
+128	 require(_pID != 0, "hey there buddy, you dont even have an account");
+129	 uint256 _totalNames = plyr_[_pID].names;
+130	 games_[_gameID].receivePlayerInfo(_pID, _addr, plyr_[_pID].name, plyr_[_pID].laff);
+131	 if (_totalNames > 1) for (uint256 ii = 1;
+132	 ii <= _totalNames;
+133	 ii++) games_[_gameID].receivePlayerNameList(_pID, plyrNameList_[_pID][ii]);
+134	 }
+135	 function addMeToAllGames() isHuman() public {
+136	 address _addr = msg.sender;
+137	 uint256 _pID = pIDxAddr_[_addr];
+138	 require(_pID != 0, "hey there buddy, you dont even have an account");
+139	 uint256 _laff = plyr_[_pID].laff;
+140	 uint256 _totalNames = plyr_[_pID].names;
+141	 bytes32 _name = plyr_[_pID].name;
+142	 for (uint256 i = 1; i <= gID_; i++) {
+143	 games_[i].receivePlayerInfo(_pID, _addr, _name, _laff);
+144	 if (_totalNames > 1) for (uint256 ii = 1;
+145	 ii <= _totalNames;
+146	 ii++) games_[i].receivePlayerNameList(_pID, plyrNameList_[_pID][ii]);
+147	 }
+148	 }
+149	 function useMyOldName(string _nameString) isHuman() public {
+150	 bytes32 _name = _nameString.nameFilter();
+151	 uint256 _pID = pIDxAddr_[msg.sender];
+152	 require(plyrNames_[_pID][_name] == true, "umm... thats not a name you own");
+153	 plyr_[_pID].name = _name;
+154	 }
+155	 function registerNameCore(uint256 _pID, address _addr, uint256 _affID, bytes32 _name, bool _isNewPlayer, bool _all) private {
+156	 if (pIDxName_[_name] != 0) require(plyrNames_[_pID][_name] == true, "sorry that names already taken");
+157	 plyr_[_pID].name = _name;
+158	 pIDxName_[_name] = _pID;
+159	 if (plyrNames_[_pID][_name] == false) {
+160	 plyrNames_[_pID][_name] = true;
+161	 plyr_[_pID].names++;
+162	 plyrNameList_[_pID][plyr_[_pID].names] = _name;
+163	 }
+164	 communityAddr.transfer(address(this).balance);
+165	 if (_all == true) for (uint256 i = 1;
+166	 i <= gID_;
+167	 i++) games_[i].receivePlayerInfo(_pID, _addr, _name, _affID);
+168	 emit onNewName(_pID, _addr, _name, _isNewPlayer, _affID, plyr_[_affID].addr, plyr_[_affID].name, msg.value, now);
+169	 }
+170	 function determinePID(address _addr) private returns (bool) {
+171	 if (pIDxAddr_[_addr] == 0) {
+172	 pID_++;
+173	 pIDxAddr_[_addr] = pID_;
+174	 plyr_[pID_].addr = _addr;
+175	 return (true);
+176	 }
+177	 else {
+178	 return (false);
+179	 }
+180	 }
+181	 function getPlayerID(address _addr) isRegisteredGame() external returns (uint256) {
+182	 determinePID(_addr);
+183	 return (pIDxAddr_[_addr]);
+184	 }
+185	 function getPlayerName(uint256 _pID) external view returns (bytes32) {
+186	 return (plyr_[_pID].name);
+187	 }
+188	 function getPlayerLAff(uint256 _pID) external view returns (uint256) {
+189	 return (plyr_[_pID].laff);
+190	 }
+191	 function getPlayerAddr(uint256 _pID) external view returns (address) {
+192	 return (plyr_[_pID].addr);
+193	 }
+194	 function getNameFee() external view returns (uint256) {
+195	 return(registrationFee_);
+196	 }
+197	 function registerNameXIDFromDapp(address _addr, bytes32 _name, uint256 _affCode, bool _all) isRegisteredGame() external payable returns(bool, uint256) {
+198	 require (msg.value >= registrationFee_, "umm..... you have to pay the name fee");
+199	 bool _isNewPlayer = determinePID(_addr);
+200	 uint256 _pID = pIDxAddr_[_addr];
+201	 uint256 _affID = _affCode;
+202	 if (_affID != 0 && _affID != plyr_[_pID].laff && _affID != _pID) {
+203	 plyr_[_pID].laff = _affID;
+204	 }
+205	 else if (_affID == _pID) {
+206	 _affID = 0;
+207	 }
+208	 registerNameCore(_pID, _addr, _affID, _name, _isNewPlayer, _all);
+209	 return(_isNewPlayer, _affID);
+210	 }
+211	 function registerNameXaddrFromDapp(address _addr, bytes32 _name, address _affCode, bool _all) isRegisteredGame() external payable returns(bool, uint256) {
+212	 require (msg.value >= registrationFee_, "umm..... you have to pay the name fee");
+213	 bool _isNewPlayer = determinePID(_addr);
+214	 uint256 _pID = pIDxAddr_[_addr];
+215	 uint256 _affID;
+216	 if (_affCode != address(0) && _affCode != _addr) {
+217	 _affID = pIDxAddr_[_affCode];
+218	 if (_affID != plyr_[_pID].laff) {
+219	 plyr_[_pID].laff = _affID;
+220	 }
+221	 }
+222	 registerNameCore(_pID, _addr, _affID, _name, _isNewPlayer, _all);
+223	 return(_isNewPlayer, _affID);
+224	 }
+225	 function registerNameXnameFromDapp(address _addr, bytes32 _name, bytes32 _affCode, bool _all) isRegisteredGame() external payable returns(bool, uint256) {
+226	 require (msg.value >= registrationFee_, "umm..... you have to pay the name fee");
+227	 bool _isNewPlayer = determinePID(_addr);
+228	 uint256 _pID = pIDxAddr_[_addr];
+229	 uint256 _affID;
+230	 if (_affCode != "" && _affCode != _name) {
+231	 _affID = pIDxName_[_affCode];
+232	 if (_affID != plyr_[_pID].laff) {
+233	 plyr_[_pID].laff = _affID;
+234	 }
+235	 }
+236	 registerNameCore(_pID, _addr, _affID, _name, _isNewPlayer, _all);
+237	 return(_isNewPlayer, _affID);
+238	 }
+239	 function addGame(address _gameAddress, string _gameNameStr) onlyCommunity() public {
+240	 require(gameIDs_[_gameAddress] == 0, "derp, that games already been registered");
+241	 gID_++;
+242	 bytes32 _name = _gameNameStr.nameFilter();
+243	 gameIDs_[_gameAddress] = gID_;
+244	 gameNames_[_gameAddress] = _name;
+245	 games_[gID_] = PlayerBookReceiverInterface(_gameAddress);
+246	 games_[gID_].receivePlayerInfo(1, plyr_[1].addr, plyr_[1].name, 0);
+247	 games_[gID_].receivePlayerInfo(2, plyr_[2].addr, plyr_[2].name, 0);
+248	 games_[gID_].receivePlayerInfo(3, plyr_[3].addr, plyr_[3].name, 0);
+249	 games_[gID_].receivePlayerInfo(4, plyr_[4].addr, plyr_[4].name, 0);
+250	 }
+251	 function setRegistrationFee(uint256 _fee) onlyCommunity() public {
+252	 registrationFee_ = _fee;
+253	 }
+254	 }
+255	 library NameFilter {
+256	 function nameFilter(string _input) internal pure returns(bytes32) {
+257	 bytes memory _temp = bytes(_input);
+258	 uint256 _length = _temp.length;
+259	 require (_length <= 32 && _length > 0, "string must be between 1 and 32 characters");
+260	 require(_temp[0] != 0x20 && _temp[_length-1] != 0x20, "string cannot start or end with space");
+261	 if (_temp[0] == 0x30) {
+262	 require(_temp[1] != 0x78, "string cannot start with 0x");
+263	 require(_temp[1] != 0x58, "string cannot start with 0X");
+264	 }
+265	 bool _hasNonNumber;
+266	 for (uint256 i = 0; i < _length; i++) {
+267	 if (_temp[i] > 0x40 && _temp[i] < 0x5b) {
+268	 _temp[i] = byte(uint(_temp[i]) + 32);
+269	 if (_hasNonNumber == false) _hasNonNumber = true;
+270	 }
+271	 else {
+272	 require ( _temp[i] == 0x20 || (_temp[i] > 0x60 && _temp[i] < 0x7b) || (_temp[i] > 0x2f && _temp[i] < 0x3a), "string contains invalid characters" );
+273	 if (_temp[i] == 0x20) require( _temp[i+1] != 0x20, "string cannot contain consecutive spaces");
+274	 if (_hasNonNumber == false && (_temp[i] < 0x30 || _temp[i] > 0x39)) _hasNonNumber = true;
+275	 }
+276	 }
+277	 require(_hasNonNumber == true, "string cannot be only numbers");
+278	 bytes32 _ret;
+279	 assembly {
+280	 _ret := mload(add(_temp, 32)) }
+281	 return (_ret);
+282	 }
+283	 }
+284	 library SafeMath {
+285	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+286	 if (a == 0) {
+287	 return 0;
+288	 }
+289	 c = a * b;
+290	 require(c / a == b, "SafeMath mul failed");
+291	 return c;
+292	 }
+293	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+294	 require(b <= a, "SafeMath sub failed");
+295	 return a - b;
+296	 }
+297	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+298	 c = a + b;
+299	 require(c >= a, "SafeMath add failed");
+300	 return c;
+301	 }
+302	 function sqrt(uint256 x) internal pure returns (uint256 y) {
+303	 uint256 z = ((add(x,1)) / 2);
+304	 y = x;
+305	 while (z < y) {
+306	 y = z;
+307	 z = ((add((x / z),z)) / 2);
+308	 }
+309	 }
+310	 function sq(uint256 x) internal pure returns (uint256) {
+311	 return (mul(x,x));
+312	 }
+313	 function pwr(uint256 x, uint256 y) internal pure returns (uint256) {
+314	 if (x==0) return (0);
+315	 else if (y==0) return (1);
+316	 else {
+317	 uint256 z = x;
+318	 for (uint256 i=1; i < y; i++) z = mul(z,x);
+319	 return (z);
+320	 }
+321	 }
+322	 }

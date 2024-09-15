@@ -1,0 +1,164 @@
+row number 
+1	     pragma solidity ^0.6.7;
+2	 interface IRandomNumberConsumer {
+3	 function getRandomNumber() external returns (bytes32 requestId);
+4	 function readFulfilledRandomness(bytes32 requestId) external view returns (uint256);
+5	 function setRandomnessRequesterApproval(address _requester, bool _approvalStatus) external;
+6	 }
+7	 interface IERC1155 {
+8	 function safeTransferFrom(address _from, address _to, uint256 _id, uint256 value, bytes calldata _data) external;
+9	 function balanceOf(address _owner, uint256 _id) external view returns(uint256);
+10	 }
+11	 interface IERC20 {
+12	 function balanceOf(address _who) external returns (uint256);
+13	 }
+14	 library Math {
+15	 function add(uint a, uint b) internal pure returns (uint c) {
+16	 require((c = a + b) >= b, "BoringMath: Add Overflow");
+17	 }
+18	 function sub(uint a, uint b) internal pure returns (uint c) {
+19	 require((c = a - b) <= a, "BoringMath: Underflow");
+20	 }
+21	 function mul(uint a, uint b) internal pure returns (uint c) {
+22	 require(a == 0 || (c = a * b)/b == a, "BoringMath: Mul Overflow");
+23	 }
+24	 }
+25	 contract VRFNFTSaleClonable {
+26	 using Math for uint256;
+27	 address public controller;
+28	 address public hausAddress;
+29	 address public stakingSwapContract;
+30	 address public vrfProvider;
+31	 IERC1155 public nft;
+32	 uint256 public price;
+33	 uint256[] public ids;
+34	 uint256 public start;
+35	 uint256 public end;
+36	 uint256 public limitPerOrder;
+37	 uint256 public stakingRewardPercentageBasisPoints;
+38	 uint256 public ticketId;
+39	 mapping(address => uint256[]) public buyerToTicketIds;
+40	 bool public isInitialized;
+41	 bool public isRandomnessRequested;
+42	 bytes32 public randomNumberRequestId;
+43	 uint256 public vrfResult;
+44	 uint256 public randomOffset;
+45	 event Buy(address buyer, uint256 amount);
+46	 event RequestedVRF(bool isRequested, bytes32 randomNumberRequestId);
+47	 event CommittedVRF(bytes32 randomNumberRequestId, uint256 vrfResult, uint256 randomOffset);
+48	 event ClaimedAssigned(address indexed claimant, uint256 quantity);
+49	 function initialize( address _hausAddress, uint256 _startTime, uint256 _endTime, address _tokenAddress, uint256[] memory _tokenIds, uint256 _priceWei, uint256 _limitPerOrder, uint256 _stakingRewardPercentageBasisPoints, address _stakingSwapContract, address _vrfProvider, address _controllerAddress ) public {
+50	 require(isInitialized == false, "Already initialized.");
+51	 hausAddress = _hausAddress;
+52	 start = _startTime;
+53	 end = _endTime;
+54	 nft = IERC1155(_tokenAddress);
+55	 ids = _tokenIds;
+56	 price = _priceWei;
+57	 limitPerOrder = _limitPerOrder;
+58	 controller = _controllerAddress;
+59	 stakingRewardPercentageBasisPoints = _stakingRewardPercentageBasisPoints;
+60	 stakingSwapContract = _stakingSwapContract;
+61	 ticketId = 0;
+62	 vrfProvider = _vrfProvider;
+63	 isInitialized = true;
+64	 }
+65	 function buy(uint256 amount) public payable {
+66	 require(msg.sender == tx.origin, "no contracts");
+67	 require(block.timestamp >= start, "early");
+68	 require(block.timestamp <= end, "sale has ended");
+69	 require(amount > 0, "can't buy zero items");
+70	 require((amount <= limitPerOrder) && ((amount + ticketId) <= ids.length), "ordered too many");
+71	 require(msg.value == price.mul(amount), "wrong amount");
+72	 uint256 stakingReward = (address(this).balance * stakingRewardPercentageBasisPoints) / 10000;
+73	 (bool stakingRewardSuccess, ) = stakingSwapContract.call{
+74	 value: stakingReward}
+75	 ("");
+76	 require(stakingRewardSuccess, "Staking reward transfer failed.");
+77	 (bool successMultisig, ) = hausAddress.call{
+78	 value: address(this).balance}
+79	 ("");
+80	 require(successMultisig, "Multisig transfer failed.");
+81	 for(uint256 i = 0; i < amount; i++) {
+82	 buyerToTicketIds[msg.sender].push(ticketId);
+83	 ticketId++;
+84	 }
+85	 if(ticketId == (ids.length - 1)) {
+86	 end = block.timestamp;
+87	 }
+88	 emit Buy(msg.sender, amount);
+89	 }
+90	 function isReservationPeriodOver() public view returns (bool) {
+91	 return (block.timestamp > end) || (ticketId == (ids.length - 1));
+92	 }
+93	 function addressToTicketCount(address _address) public view returns (uint256) {
+94	 return buyerToTicketIds[_address].length;
+95	 }
+96	 function supply() public view returns(uint256) {
+97	 uint256 response = 0;
+98	 for(uint256 i = 0; i < ids.length; i++) {
+99	 response += nft.balanceOf(address(this), ids[i]);
+100	 }
+101	 return response;
+102	 }
+103	 function setTokenAddress(address _tokenAddress) public onlyController {
+104	 nft = IERC1155(_tokenAddress);
+105	 }
+106	 function setTokenIds(uint256[] memory _tokenIds) public onlyController {
+107	 ids = _tokenIds;
+108	 }
+109	 function pull() public onlyController {
+110	 for(uint256 i = 0; i < ids.length; i++) {
+111	 if(nft.balanceOf(address(this), ids[i]) > 0) {
+112	 nft.safeTransferFrom(address(this), controller, ids[i], nft.balanceOf(address(this), ids[i]), new bytes(0x0));
+113	 }
+114	 }
+115	 }
+116	 function setEndTime(uint256 _newEndTime) public onlyController {
+117	 require(block.timestamp <= _newEndTime, "VRF721NFT::setEndTime: new endTime must be in the future");
+118	 end = _newEndTime;
+119	 }
+120	 modifier onlyController {
+121	 require(msg.sender == controller);
+122	 _;
+123	 }
+124	 function initiateRandomDistribution() external {
+125	 require(block.timestamp > end, "VRF721NFT::initiateRandomDistribution: minting period has not ended");
+126	 require(ticketId > 0, "VRF721NFT::initiateRandomDistribution: ticketId must be more than 0");
+127	 require(isRandomnessRequested == false, "VRF721NFT::beginReveal: request for random number has already been initiated");
+128	 IRandomNumberConsumer randomNumberConsumer = IRandomNumberConsumer(vrfProvider);
+129	 randomNumberRequestId = randomNumberConsumer.getRandomNumber();
+130	 isRandomnessRequested = true;
+131	 emit RequestedVRF(isRandomnessRequested, randomNumberRequestId);
+132	 }
+133	 function commitRandomDistribution() external {
+134	 require(isRandomnessRequested == true, "VRF721NFT::completeReveal: request for random number has not been initiated");
+135	 IRandomNumberConsumer randomNumberConsumer = IRandomNumberConsumer(vrfProvider);
+136	 uint256 result = randomNumberConsumer.readFulfilledRandomness(randomNumberRequestId);
+137	 require(result > 0, "VRF721NFT::completeReveal: randomResult has not been provided to vrfProvider");
+138	 vrfResult = result;
+139	 randomOffset = result % ticketId;
+140	 emit CommittedVRF(randomNumberRequestId, vrfResult, randomOffset);
+141	 }
+142	 function claimAssigned() external {
+143	 require(vrfResult > 0, "Randomness has not been assigned");
+144	 uint256[] memory buyerToTicketIdsMemory = buyerToTicketIds[msg.sender];
+145	 uint256 buyerTicketCount = buyerToTicketIdsMemory.length;
+146	 require(buyerTicketCount > 0, "buyerTicketCount is not a positive number");
+147	 uint256[] memory idsMemory = ids;
+148	 for(uint256 i = 0; i < buyerTicketCount; i++) {
+149	 if((buyerToTicketIdsMemory[i] + randomOffset) <= idsMemory.length - 1) {
+150	 uint256 offsetIndex = (buyerToTicketIdsMemory[i] + randomOffset);
+151	 nft.safeTransferFrom(address(this), msg.sender, ids[offsetIndex], nft.balanceOf(address(this), ids[offsetIndex]), new bytes(0x0));
+152	 }
+153	 else {
+154	 uint256 offsetIndex = randomOffset - (idsMemory.length - buyerToTicketIdsMemory[i]);
+155	 nft.safeTransferFrom(address(this), msg.sender, ids[offsetIndex], nft.balanceOf(address(this), ids[offsetIndex]), new bytes(0x0));
+156	 }
+157	 }
+158	 emit ClaimedAssigned(msg.sender, buyerTicketCount);
+159	 }
+160	 function onERC1155Received(address, address, uint256, uint256, bytes calldata) external pure returns(bytes4) {
+161	 return bytes4(keccak256("onERC1155Received(address,address,uint256,uint256,bytes)"));
+162	 }
+163	 }

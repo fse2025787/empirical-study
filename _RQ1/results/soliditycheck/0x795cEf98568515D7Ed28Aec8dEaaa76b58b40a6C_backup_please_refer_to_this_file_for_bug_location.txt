@@ -1,0 +1,116 @@
+row number 
+1	     pragma solidity 0.5.17;
+2	 contract BaseJumpRateModelV2 {
+3	 using SafeMath for uint256;
+4	 event NewInterestParams( uint256 baseRatePerBlock, uint256 multiplierPerBlock, uint256 jumpMultiplierPerBlock, uint256 kink );
+5	 address public owner;
+6	 uint256 public constant blocksPerYear = 2102400;
+7	 uint256 public multiplierPerBlock;
+8	 uint256 public baseRatePerBlock;
+9	 uint256 public jumpMultiplierPerBlock;
+10	 uint256 public kink;
+11	 constructor( uint256 baseRatePerYear, uint256 multiplierPerYear, uint256 jumpMultiplierPerYear, uint256 kink_, address owner_ ) internal {
+12	 owner = owner_;
+13	 updateJumpRateModelInternal(baseRatePerYear, multiplierPerYear, jumpMultiplierPerYear, kink_);
+14	 }
+15	 function updateJumpRateModel( uint256 baseRatePerYear, uint256 multiplierPerYear, uint256 jumpMultiplierPerYear, uint256 kink_ ) external {
+16	 require(msg.sender == owner, "only the owner may call this function.");
+17	 updateJumpRateModelInternal(baseRatePerYear, multiplierPerYear, jumpMultiplierPerYear, kink_);
+18	 }
+19	 function utilizationRate( uint256 cash, uint256 borrows, uint256 reserves ) public pure returns (uint256) {
+20	 if (borrows == 0) {
+21	 return 0;
+22	 }
+23	 return borrows.mul(1e18).div(cash.add(borrows).sub(reserves));
+24	 }
+25	 function getBorrowRateInternal( uint256 cash, uint256 borrows, uint256 reserves ) internal view returns (uint256) {
+26	 uint256 util = utilizationRate(cash, borrows, reserves);
+27	 if (util <= kink) {
+28	 return util.mul(multiplierPerBlock).div(1e18).add(baseRatePerBlock);
+29	 }
+30	 else {
+31	 uint256 normalRate = kink.mul(multiplierPerBlock).div(1e18).add(baseRatePerBlock);
+32	 uint256 excessUtil = util.sub(kink);
+33	 return excessUtil.mul(jumpMultiplierPerBlock).div(1e18).add(normalRate);
+34	 }
+35	 }
+36	 function getSupplyRate( uint256 cash, uint256 borrows, uint256 reserves, uint256 reserveFactorMantissa ) public view returns (uint256) {
+37	 uint256 oneMinusReserveFactor = uint256(1e18).sub(reserveFactorMantissa);
+38	 uint256 borrowRate = getBorrowRateInternal(cash, borrows, reserves);
+39	 uint256 rateToPool = borrowRate.mul(oneMinusReserveFactor).div(1e18);
+40	 return utilizationRate(cash, borrows, reserves).mul(rateToPool).div(1e18);
+41	 }
+42	 function updateJumpRateModelInternal( uint256 baseRatePerYear, uint256 multiplierPerYear, uint256 jumpMultiplierPerYear, uint256 kink_ ) internal {
+43	 baseRatePerBlock = baseRatePerYear.div(blocksPerYear);
+44	 multiplierPerBlock = (multiplierPerYear.mul(1e18)).div(blocksPerYear.mul(kink_));
+45	 jumpMultiplierPerBlock = jumpMultiplierPerYear.div(blocksPerYear);
+46	 kink = kink_;
+47	 emit NewInterestParams(baseRatePerBlock, multiplierPerBlock, jumpMultiplierPerBlock, kink);
+48	 }
+49	 }
+50	 pragma solidity 0.5.17;
+51	 contract InterestRateModel {
+52	 bool public constant isInterestRateModel = true;
+53	 function getBorrowRate( uint256 cash, uint256 borrows, uint256 reserves ) external view returns (uint256);
+54	 function getSupplyRate( uint256 cash, uint256 borrows, uint256 reserves, uint256 reserveFactorMantissa ) external view returns (uint256);
+55	 }
+56	 pragma solidity 0.5.17;
+57	 contract JumpRateModelV2 is InterestRateModel, BaseJumpRateModelV2 {
+58	 function getBorrowRate( uint256 cash, uint256 borrows, uint256 reserves ) external view returns (uint256) {
+59	 return getBorrowRateInternal(cash, borrows, reserves);
+60	 }
+61	 constructor( uint256 baseRatePerYear, uint256 multiplierPerYear, uint256 jumpMultiplierPerYear, uint256 kink_, address owner_ ) public BaseJumpRateModelV2(baseRatePerYear, multiplierPerYear, jumpMultiplierPerYear, kink_, owner_) {
+62	 }
+63	 }
+64	 pragma solidity 0.5.17;
+65	 library SafeMath {
+66	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+67	 uint256 c = a + b;
+68	 require(c >= a, "SafeMath: addition overflow");
+69	 return c;
+70	 }
+71	 function add( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+72	 uint256 c = a + b;
+73	 require(c >= a, errorMessage);
+74	 return c;
+75	 }
+76	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+77	 return sub(a, b, "SafeMath: subtraction underflow");
+78	 }
+79	 function sub( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+80	 require(b <= a, errorMessage);
+81	 uint256 c = a - b;
+82	 return c;
+83	 }
+84	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+85	 if (a == 0) {
+86	 return 0;
+87	 }
+88	 uint256 c = a * b;
+89	 require(c / a == b, "SafeMath: multiplication overflow");
+90	 return c;
+91	 }
+92	 function mul( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+93	 if (a == 0) {
+94	 return 0;
+95	 }
+96	 uint256 c = a * b;
+97	 require(c / a == b, errorMessage);
+98	 return c;
+99	 }
+100	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+101	 return div(a, b, "SafeMath: division by zero");
+102	 }
+103	 function div( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+104	 require(b > 0, errorMessage);
+105	 uint256 c = a / b;
+106	 return c;
+107	 }
+108	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+109	 return mod(a, b, "SafeMath: modulo by zero");
+110	 }
+111	 function mod( uint256 a, uint256 b, string memory errorMessage ) internal pure returns (uint256) {
+112	 require(b != 0, errorMessage);
+113	 return a % b;
+114	 }
+115	 }

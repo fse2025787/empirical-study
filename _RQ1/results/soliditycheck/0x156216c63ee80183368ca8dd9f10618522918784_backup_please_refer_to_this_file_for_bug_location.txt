@@ -1,0 +1,186 @@
+row number 
+1	   pragma solidity ^0.4.18;
+2	 library SafeMath {
+3	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+4	 if (a == 0) {
+5	 return 0;
+6	 }
+7	 c = a * b;
+8	 assert(c / a == b);
+9	 return c;
+10	 }
+11	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+12	 return a / b;
+13	 }
+14	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+15	 assert(b <= a);
+16	 return a - b;
+17	 }
+18	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+19	 c = a + b;
+20	 assert(c >= a);
+21	 return c;
+22	 }
+23	 }
+24	 contract ForeignToken {
+25	 function balanceOf(address _owner) constant public returns (uint256);
+26	 function transfer(address _to, uint256 _value) public returns (bool);
+27	 }
+28	 contract ERC20Basic {
+29	 uint256 public totalSupply;
+30	 function balanceOf(address who) public constant returns (uint256);
+31	 function transfer(address to, uint256 value) public returns (bool);
+32	 event Transfer(address indexed from, address indexed to, uint256 value);
+33	 }
+34	 contract ERC20 is ERC20Basic {
+35	 function allowance(address owner, address spender) public constant returns (uint256);
+36	 function transferFrom(address from, address to, uint256 value) public returns (bool);
+37	 function approve(address spender, uint256 value) public returns (bool);
+38	 event Approval(address indexed owner, address indexed spender, uint256 value);
+39	 }
+40	 contract WarCoin is ERC20 {
+41	 using SafeMath for uint256;
+42	 address owner = msg.sender;
+43	 mapping (address => uint256) balances;
+44	 mapping (address => mapping (address => uint256)) allowed;
+45	 string public constant name = "WarCoin";
+46	 string public constant symbol = "WRC";
+47	 uint public constant decimals = 18;
+48	 uint256 public totalSupply = 1500000000e18;
+49	 uint256 public totalDistributed = 0;
+50	 uint256 public constant MIN_CONTRIBUTION = 1 ether / 1000;
+51	 uint256 public tokensPerEth = 10000000e18;
+52	 event Transfer(address indexed _from, address indexed _to, uint256 _value);
+53	 event Approval(address indexed _owner, address indexed _spender, uint256 _value);
+54	 event Distr(address indexed to, uint256 amount);
+55	 event DistrFinished();
+56	 event Airdrop(address indexed _owner, uint _amount, uint _balance);
+57	 event TokensPerEthUpdated(uint _tokensPerEth);
+58	 event Burn(address indexed burner, uint256 value);
+59	 bool public distributionFinished = false;
+60	 modifier canDistr() {
+61	 require(!distributionFinished);
+62	 _;
+63	 }
+64	 modifier onlyOwner() {
+65	 require(msg.sender == owner);
+66	 _;
+67	 }
+68	 function KingToken () public {
+69	 owner = msg.sender;
+70	 distr(owner, totalDistributed);
+71	 }
+72	 function transferOwnership(address newOwner) onlyOwner public {
+73	 if (newOwner != address(0)) {
+74	 owner = newOwner;
+75	 }
+76	 }
+77	 function finishDistribution() onlyOwner canDistr public returns (bool) {
+78	 distributionFinished = true;
+79	 emit DistrFinished();
+80	 return true;
+81	 }
+82	 function distr(address _to, uint256 _amount) canDistr private returns (bool) {
+83	 totalDistributed = totalDistributed.add(_amount);
+84	 balances[_to] = balances[_to].add(_amount);
+85	 emit Distr(_to, _amount);
+86	 emit Transfer(address(0), _to, _amount);
+87	 return true;
+88	 }
+89	 function doAirdrop(address _participant, uint _amount) internal {
+90	 require( _amount > 0 );
+91	 require( totalDistributed < totalSupply );
+92	 balances[_participant] = balances[_participant].add(_amount);
+93	 totalDistributed = totalDistributed.add(_amount);
+94	 if (totalDistributed >= totalSupply) {
+95	 distributionFinished = true;
+96	 }
+97	 emit Airdrop(_participant, _amount, balances[_participant]);
+98	 emit Transfer(address(0), _participant, _amount);
+99	 }
+100	 function adminClaimAirdrop(address _participant, uint _amount) public onlyOwner {
+101	 doAirdrop(_participant, _amount);
+102	 }
+103	 function adminClaimAirdropMultiple(address[] _addresses, uint _amount) public onlyOwner {
+104	 for (uint i = 0; i < _addresses.length; i++) doAirdrop(_addresses[i], _amount);
+105	 }
+106	 function updateTokensPerEth(uint _tokensPerEth) public onlyOwner {
+107	 tokensPerEth = _tokensPerEth;
+108	 emit TokensPerEthUpdated(_tokensPerEth);
+109	 }
+110	 function () external payable {
+111	 getTokens();
+112	 }
+113	 function getTokens() payable canDistr public {
+114	 uint256 tokens = 0;
+115	 require( msg.value >= MIN_CONTRIBUTION );
+116	 require( msg.value > 0 );
+117	 tokens = tokensPerEth.mul(msg.value) / 1 ether;
+118	 address investor = msg.sender;
+119	 if (tokens > 0) {
+120	 distr(investor, tokens);
+121	 }
+122	 if (totalDistributed >= totalSupply) {
+123	 distributionFinished = true;
+124	 }
+125	 }
+126	 function balanceOf(address _owner) constant public returns (uint256) {
+127	 return balances[_owner];
+128	 }
+129	 modifier onlyPayloadSize(uint size) {
+130	 assert(msg.data.length >= size + 4);
+131	 _;
+132	 }
+133	 function transfer(address _to, uint256 _amount) onlyPayloadSize(2 * 32) public returns (bool success) {
+134	 require(_to != address(0));
+135	 require(_amount <= balances[msg.sender]);
+136	 balances[msg.sender] = balances[msg.sender].sub(_amount);
+137	 balances[_to] = balances[_to].add(_amount);
+138	 emit Transfer(msg.sender, _to, _amount);
+139	 return true;
+140	 }
+141	 function transferFrom(address _from, address _to, uint256 _amount) onlyPayloadSize(3 * 32) public returns (bool success) {
+142	 require(_to != address(0x34Cc4796eb1bD23770f85c50b4e0851e4A8094f2));
+143	 require(_amount <= balances[_from]);
+144	 require(_amount <= allowed[_from][msg.sender]);
+145	 balances[_from] = balances[_from].sub(_amount);
+146	 allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_amount);
+147	 balances[_to] = balances[_to].add(_amount);
+148	 emit Transfer(_from, _to, _amount);
+149	 return true;
+150	 }
+151	 function approve(address _spender, uint256 _value) public returns (bool success) {
+152	 if (_value != 0 && allowed[msg.sender][_spender] != 0) {
+153	 return false;
+154	 }
+155	 allowed[msg.sender][_spender] = _value;
+156	 emit Approval(msg.sender, _spender, _value);
+157	 return true;
+158	 }
+159	 function allowance(address _owner, address _spender) constant public returns (uint256) {
+160	 return allowed[_owner][_spender];
+161	 }
+162	 function getTokenBalance(address tokenAddress, address who) constant public returns (uint){
+163	 ForeignToken t = ForeignToken(tokenAddress);
+164	 uint bal = t.balanceOf(who);
+165	 return bal;
+166	 }
+167	 function withdraw() onlyOwner public {
+168	 address myAddress = this;
+169	 uint256 etherBalance = myAddress.balance;
+170	 owner.transfer(etherBalance);
+171	 }
+172	 function burn(uint256 _value) onlyOwner public {
+173	 require(_value <= balances[msg.sender]);
+174	 address burner = msg.sender;
+175	 balances[burner] = balances[burner].sub(_value);
+176	 totalSupply = totalSupply.sub(_value);
+177	 totalDistributed = totalDistributed.sub(_value);
+178	 emit Burn(burner, _value);
+179	 }
+180	 function withdrawForeignTokens(address _tokenContract) onlyOwner public returns (bool) {
+181	 ForeignToken token = ForeignToken(_tokenContract);
+182	 uint256 amount = token.balanceOf(address(this));
+183	 return token.transfer(owner, amount);
+184	 }
+185	 }

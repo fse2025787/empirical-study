@@ -1,0 +1,429 @@
+row number 
+1	           pragma solidity ^0.8.4;
+2	 interface IERC20 {
+3	 function totalSupply() external view returns (uint256);
+4	 function decimals() external view returns (uint8);
+5	 function symbol() external view returns (string memory);
+6	 function name() external view returns (string memory);
+7	 function getOwner() external view returns (address);
+8	 function balanceOf(address account) external view returns (uint256);
+9	 function transfer(address recipient, uint256 amount) external returns (bool);
+10	 function allowance(address _owner, address spender) external view returns (uint256);
+11	 function approve(address spender, uint256 amount) external returns (bool);
+12	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+13	 event Transfer(address indexed from, address indexed to, uint256 value);
+14	 event Approval(address indexed owner, address indexed spender, uint256 value);
+15	 }
+16	 interface IDexFactory {
+17	 function createPair(address tokenA, address tokenB) external returns (address pair);
+18	 }
+19	 interface IDexRouter {
+20	 function addLiquidityETH( address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+21	 function swapExactTokensForETHSupportingFeeOnTransferTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external;
+22	 function factory() external pure returns (address);
+23	 function WETH() external pure returns (address);
+24	 }
+25	 abstract contract Ownable {
+26	 address private _owner;
+27	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+28	 constructor () {
+29	 address msgSender = msg.sender;
+30	 _owner = msgSender;
+31	 emit OwnershipTransferred(address(0), msgSender);
+32	 }
+33	 function owner() public view returns (address) {
+34	 return _owner;
+35	 }
+36	 modifier onlyOwner() {
+37	 require(owner() == msg.sender, "Ownable: caller is not the owner");
+38	 _;
+39	 }
+40	 function renounceOwnership() external onlyOwner {
+41	 emit OwnershipTransferred(_owner, address(0));
+42	 _owner = address(0);
+43	 }
+44	 function transferOwnership(address newOwner) public onlyOwner {
+45	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+46	 emit OwnershipTransferred(_owner, newOwner);
+47	 _owner = newOwner;
+48	 }
+49	 }
+50	 pragma solidity ^0.8.4;
+51	 contract Nothing is IERC20, Ownable {
+52	 mapping (address => uint) private _balances;
+53	 mapping (address => mapping (address => uint)) private _allowances;
+54	 mapping(address => bool) private excludedFromLimits;
+55	 mapping(address => bool) public excludedFromFees;
+56	 mapping(address=>bool) public isAMM;
+57	 mapping (address => bool) public isBlacklisted;
+58	 string private constant _name = 'Nothing';
+59	 string private constant _symbol = '0';
+60	 uint8 private constant _decimals=18;
+61	 uint private constant InitialSupply=5*10**6 * 10**_decimals;
+62	 uint private constant DefaultLiquidityLockTime=7 days;
+63	 uint public buyTax = 0;
+64	 uint public sellTax = 20;
+65	 uint public transferTax = 0;
+66	 uint public burnTax=0;
+67	 uint public liquidityTax=500;
+68	 uint public projectTax=0;
+69	 uint public swapTreshold=6;
+70	 uint public overLiquifyTreshold=50;
+71	 uint public LaunchTimestamp;
+72	 uint public communityShare=0;
+73	 uint public marketingShare=500;
+74	 uint _liquidityUnlockTime;
+75	 uint constant TAX_DENOMINATOR=1000;
+76	 uint constant MAXTAXDENOMINATOR=10;
+77	 uint256 public maxWalletBalance;
+78	 uint256 public maxTransactionAmount;
+79	 bool private _isSwappingContractModifier;
+80	 bool public manualSwap;
+81	 bool public blacklistMode = true;
+82	 IDexRouter private _DexRouter;
+83	 address private _PairAddress;
+84	 address public marketingWallet;
+85	 address public communityWallet;
+86	 address public constant burnWallet = 0x000000000000000000000000000000000000dEaD;
+87	 address private constant DexRouter=0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
+88	 event BlacklistStatusChange(bool status);
+89	 event MaxWalletBalanceUpdated(uint256 percent);
+90	 event OnSetTaxes(uint buy, uint sell, uint transfer_, uint burn, uint project,uint liquidity);
+91	 event ExcludeAccount(address account, bool exclude);
+92	 event OnEnableTrading();
+93	 event OnReleaseLP();
+94	 event OnProlongLPLock(uint UnlockTimestamp);
+95	 event ExcludeFromLimits(address account, bool exclude);
+96	 event MarketingWalletChange(address newWallet);
+97	 event CommunityWalletChange(address newWallet);
+98	 event SharesUpdated(uint _marketingShare, uint _communityShare);
+99	 event AMMadded(address AMM);
+100	 event ManualSwapOn(bool manual);
+101	 event ManualSwapPerformed();
+102	 event LockExtended(uint secondsUntilUnlock);
+103	 event MaxTransactionAmountUpdated(uint256 percent);
+104	 event SwapThresholdChange(uint newSwapTresholdPermille);
+105	 event BlacklistUpdated();
+106	 event OverLiquifiedThresholdChange(uint newOverLiquifyTresholdPermille);
+107	 modifier lockTheSwap {
+108	 _isSwappingContractModifier = true;
+109	 _;
+110	 _isSwappingContractModifier = false;
+111	 }
+112	 constructor () {
+113	 uint ownerBalance=InitialSupply * 95/100;
+114	 uint team1walletBalance=InitialSupply * 1/100;
+115	 uint team2walletBalance=InitialSupply * 1/100;
+116	 uint team3walletBalance=InitialSupply * 1/100;
+117	 uint team4walletBalance=InitialSupply * 1/100;
+118	 uint team5walletBalance=InitialSupply * 1/100;
+119	 _balances[msg.sender] = ownerBalance;
+120	 _balances[0x1E8043CaA1251Dfe2f93b26E64aB7C2B9d1CF387] = team1walletBalance;
+121	 _balances[0x1E8FDE30151A0537Bd61dBFfA0979E24EEA3D628] = team2walletBalance;
+122	 _balances[0x454350BFEcd39CFe924614F7e3c7175daAc8b698] = team3walletBalance;
+123	 _balances[0xacdF241A66b78F6e0185Ddb25d8908c1B13F0EBB] = team4walletBalance;
+124	 _balances[0x8A4911fFf82049B88575627512742B30400eD565] = team5walletBalance;
+125	 emit Transfer(0x7Ee8771e3D1d84CC447348AEEc847E3eb441B7a9, msg.sender, ownerBalance);
+126	 emit Transfer(0x7Ee8771e3D1d84CC447348AEEc847E3eb441B7a9, 0x1E8043CaA1251Dfe2f93b26E64aB7C2B9d1CF387, team1walletBalance);
+127	 emit Transfer(0x7Ee8771e3D1d84CC447348AEEc847E3eb441B7a9, 0x1E8FDE30151A0537Bd61dBFfA0979E24EEA3D628, team2walletBalance);
+128	 emit Transfer(0x7Ee8771e3D1d84CC447348AEEc847E3eb441B7a9, 0x454350BFEcd39CFe924614F7e3c7175daAc8b698, team3walletBalance);
+129	 emit Transfer(0x7Ee8771e3D1d84CC447348AEEc847E3eb441B7a9, 0xacdF241A66b78F6e0185Ddb25d8908c1B13F0EBB, team4walletBalance);
+130	 emit Transfer(0x7Ee8771e3D1d84CC447348AEEc847E3eb441B7a9, 0x8A4911fFf82049B88575627512742B30400eD565, team5walletBalance);
+131	 _DexRouter = IDexRouter(DexRouter);
+132	 _PairAddress = IDexFactory(_DexRouter.factory()).createPair(address(this), _DexRouter.WETH());
+133	 isAMM[_PairAddress]=true;
+134	 marketingWallet=0x1F38502522aa347eF1ff3d570788182239B68bac;
+135	 communityWallet=0x1F38502522aa347eF1ff3d570788182239B68bac;
+136	 excludedFromFees[msg.sender]=true;
+137	 excludedFromFees[DexRouter]=true;
+138	 excludedFromFees[address(this)]=true;
+139	 excludedFromLimits[burnWallet] = true;
+140	 excludedFromLimits[address(this)] = true;
+141	 }
+142	 function BlacklistStatus(bool _status) external onlyOwner {
+143	 blacklistMode = _status;
+144	 emit BlacklistStatusChange (_status);
+145	 }
+146	 function ManageBlacklist(address[] calldata addresses, bool status) external onlyOwner {
+147	 for (uint256 i; i < addresses.length; ++i) {
+148	 isBlacklisted[addresses[i]] = status;
+149	 }
+150	 emit BlacklistUpdated();
+151	 }
+152	 function ChangeMarketingWallet(address newWallet) external onlyOwner{
+153	 marketingWallet=newWallet;
+154	 emit MarketingWalletChange(newWallet);
+155	 }
+156	 function ChangeCommunityWallet(address newWallet) external onlyOwner{
+157	 communityWallet=newWallet;
+158	 emit CommunityWalletChange(newWallet);
+159	 }
+160	 function SetFeeShares(uint _marketingShare, uint _communityShare) external onlyOwner{
+161	 require(_marketingShare+_communityShare<=100);
+162	 marketingShare=_marketingShare;
+163	 communityShare=_communityShare;
+164	 emit SharesUpdated(_marketingShare, _communityShare);
+165	 }
+166	 function setMaxWalletBalancePercent(uint256 percent) external onlyOwner {
+167	 require(percent >= 10, "min 1%");
+168	 require(percent <= 1000, "max 100%");
+169	 maxWalletBalance = InitialSupply * percent / 1000;
+170	 emit MaxWalletBalanceUpdated(percent);
+171	 }
+172	 function setMaxTransactionAmount(uint256 percent) external onlyOwner {
+173	 require(percent >= 25, "min 0.25%");
+174	 require(percent <= 10000, "max 100%");
+175	 maxTransactionAmount = InitialSupply * percent / 10000;
+176	 emit MaxTransactionAmountUpdated(percent);
+177	 }
+178	 function _transfer(address sender, address recipient, uint amount) private{
+179	 require(sender != address(0), "Transfer from zero");
+180	 require(recipient != address(0), "Transfer to zero");
+181	 if(blacklistMode){
+182	 require(!isBlacklisted[sender] && !isBlacklisted[recipient],"Blacklisted");
+183	 }
+184	 if(excludedFromFees[sender] || excludedFromFees[recipient]) _feelessTransfer(sender, recipient, amount);
+185	 else {
+186	 require(LaunchTimestamp>0,"trading not yet enabled");
+187	 _taxedTransfer(sender,recipient,amount);
+188	 }
+189	 }
+190	 function _taxedTransfer(address sender, address recipient, uint amount) private{
+191	 uint senderBalance = _balances[sender];
+192	 require(senderBalance >= amount, "Transfer exceeds balance");
+193	 bool excludedAccount = excludedFromLimits[sender] || excludedFromLimits[recipient];
+194	 if ( isAMM[sender] && !excludedAccount ) {
+195	 require( amount <= maxTransactionAmount, "Transfer amount exceeds the maxTxAmount." );
+196	 uint256 contractBalanceRecepient = balanceOf(recipient);
+197	 require( contractBalanceRecepient + amount <= maxWalletBalance, "Exceeds maximum wallet token amount." );
+198	 }
+199	 else if ( isAMM[recipient] && !excludedAccount ) {
+200	 require(amount <= maxTransactionAmount, "Sell transfer amount exceeds the maxSellTransactionAmount.");
+201	 }
+202	 bool isBuy=isAMM[sender];
+203	 bool isSell=isAMM[recipient];
+204	 uint tax;
+205	 if(isSell){
+206	 uint SellTaxDuration=3 minutes;
+207	 if(block.timestamp<LaunchTimestamp+SellTaxDuration){
+208	 tax=_getStartTax(SellTaxDuration,200);
+209	 }
+210	 else tax=sellTax;
+211	 }
+212	 else if(isBuy){
+213	 uint BuyTaxDuration=8 seconds;
+214	 if(block.timestamp<LaunchTimestamp+BuyTaxDuration){
+215	 tax=_getStartTax(BuyTaxDuration,999);
+216	 }
+217	 else tax=buyTax;
+218	 }
+219	 else tax=transferTax;
+220	 if((sender!=_PairAddress)&&(!manualSwap)&&(!_isSwappingContractModifier)) _swapContractToken(false);
+221	 uint tokensToBeSentToBurn=_calculateFee(amount, tax, burnTax);
+222	 uint contractToken=_calculateFee(amount, tax, projectTax+liquidityTax);
+223	 uint taxedAmount=amount-(tokensToBeSentToBurn + contractToken);
+224	 _balances[sender]-=amount;
+225	 _balances[address(this)] += contractToken;
+226	 _balances[burnWallet]+=tokensToBeSentToBurn;
+227	 _balances[recipient]+=taxedAmount;
+228	 emit Transfer(sender,burnWallet,tokensToBeSentToBurn);
+229	 emit Transfer(sender,recipient,taxedAmount);
+230	 }
+231	 function _getStartTax(uint duration, uint maxTax) private view returns (uint){
+232	 uint timeSinceLaunch=block.timestamp-LaunchTimestamp;
+233	 return maxTax-((maxTax-50)*timeSinceLaunch/duration);
+234	 }
+235	 function _calculateFee(uint amount, uint tax, uint taxPercent) private pure returns (uint) {
+236	 return (amount*tax*taxPercent) / (TAX_DENOMINATOR*TAX_DENOMINATOR);
+237	 }
+238	 function _feelessTransfer(address sender, address recipient, uint amount) private{
+239	 uint senderBalance = _balances[sender];
+240	 require(senderBalance >= amount, "Transfer exceeds balance");
+241	 _balances[sender]-=amount;
+242	 _balances[recipient]+=amount;
+243	 emit Transfer(sender,recipient,amount);
+244	 }
+245	 function setSwapTreshold(uint newSwapTresholdPermille) external onlyOwner{
+246	 require(newSwapTresholdPermille<=10);
+247	 swapTreshold=newSwapTresholdPermille;
+248	 emit SwapThresholdChange(newSwapTresholdPermille);
+249	 }
+250	 function SetOverLiquifiedTreshold(uint newOverLiquifyTresholdPermille) external onlyOwner{
+251	 require(newOverLiquifyTresholdPermille<=1000);
+252	 overLiquifyTreshold=newOverLiquifyTresholdPermille;
+253	 emit OverLiquifiedThresholdChange(newOverLiquifyTresholdPermille);
+254	 }
+255	 function SetTaxes(uint buy, uint sell, uint transfer_, uint burn, uint project,uint liquidity) external onlyOwner{
+256	 uint maxTax=TAX_DENOMINATOR/MAXTAXDENOMINATOR;
+257	 require(buy<=maxTax&&sell<=maxTax&&transfer_<=maxTax,"Tax exceeds maxTax");
+258	 require(burn+project+liquidity==TAX_DENOMINATOR,"Taxes don't add up to denominator");
+259	 buyTax=buy;
+260	 sellTax=sell;
+261	 transferTax=transfer_;
+262	 projectTax=project;
+263	 liquidityTax=liquidity;
+264	 burnTax=burn;
+265	 emit OnSetTaxes(buy, sell, transfer_, burn, project, liquidity);
+266	 }
+267	 function isOverLiquified() public view returns(bool){
+268	 return _balances[_PairAddress]>getCirculatingSupply()*overLiquifyTreshold/1000;
+269	 }
+270	 function _swapContractToken(bool ignoreLimits) private lockTheSwap{
+271	 uint contractBalance=_balances[address(this)];
+272	 uint totalTax=liquidityTax+projectTax;
+273	 uint tokenToSwap=_balances[_PairAddress]*swapTreshold/1000;
+274	 if(totalTax==0)return;
+275	 if(ignoreLimits) tokenToSwap=_balances[address(this)];
+276	 else if(contractBalance<tokenToSwap) return;
+277	 uint tokenForLiquidity= isOverLiquified()?0 :(tokenToSwap*liquidityTax)/totalTax;
+278	 uint tokenForProject= tokenToSwap-tokenForLiquidity;
+279	 uint LiqHalf=tokenForLiquidity/2;
+280	 uint swapToken=LiqHalf+tokenForProject;
+281	 uint initialETHBalance=address(this).balance;
+282	 _swapTokenForETH(swapToken);
+283	 uint newETH=(address(this).balance - initialETHBalance);
+284	 if(tokenForLiquidity>0){
+285	 uint liqETH = (newETH*LiqHalf)/swapToken;
+286	 _addLiquidity(LiqHalf, liqETH);
+287	 }
+288	 uint marketbalance=address(this).balance * marketingShare/100;
+289	 uint communitybalance=address(this).balance * communityShare/100;
+290	 (bool marketing,)=marketingWallet.call{
+291	 value:marketbalance}
+292	 ("");
+293	 marketing=true;
+294	 (bool community,)=communityWallet.call{
+295	 value:communitybalance}
+296	 ("");
+297	 community=true;
+298	 }
+299	 function _swapTokenForETH(uint amount) private {
+300	 _approve(address(this), address(_DexRouter), amount);
+301	 address[] memory path = new address[](2);
+302	 path[0] = address(this);
+303	 path[1] = _DexRouter.WETH();
+304	 try _DexRouter.swapExactTokensForETHSupportingFeeOnTransferTokens( amount, 0, path, address(this), block.timestamp ){
+305	 }
+306	 catch{
+307	 }
+308	 }
+309	 function _addLiquidity(uint tokenamount, uint ETHamount) private {
+310	 _approve(address(this), address(_DexRouter), tokenamount);
+311	 _DexRouter.addLiquidityETH{
+312	 value: ETHamount}
+313	 ( address(this), tokenamount, 0, 0, address(this), block.timestamp );
+314	 }
+315	 function getLiquidityReleaseTimeInSeconds() external view returns (uint){
+316	 if(block.timestamp<_liquidityUnlockTime) return _liquidityUnlockTime-block.timestamp;
+317	 return 0;
+318	 }
+319	 function getBurnedTokens() external view returns(uint){
+320	 return _balances[address(0xdead)];
+321	 }
+322	 function getCirculatingSupply() public view returns(uint){
+323	 return InitialSupply-_balances[address(0xdead)];
+324	 }
+325	 function SetAMM(address AMM, bool Add) external onlyOwner{
+326	 require(AMM!=_PairAddress,"can't change pancake");
+327	 isAMM[AMM]=Add;
+328	 emit AMMadded(AMM);
+329	 }
+330	 function SwitchManualSwap(bool manual) external onlyOwner{
+331	 manualSwap=manual;
+332	 emit ManualSwapOn(manual);
+333	 }
+334	 function SwapContractToken() external onlyOwner{
+335	 _swapContractToken(true);
+336	 emit ManualSwapPerformed();
+337	 }
+338	 function ExcludeAccountFromFees(address account, bool exclude) external onlyOwner{
+339	 require(account!=address(this),"can't Include the contract");
+340	 excludedFromFees[account]=exclude;
+341	 emit ExcludeAccount(account,exclude);
+342	 }
+343	 function setExcludedAccountFromLimits(address account, bool exclude) external onlyOwner{
+344	 excludedFromLimits[account]=exclude;
+345	 emit ExcludeFromLimits(account,exclude);
+346	 }
+347	 function isExcludedFromLimits(address account) external view returns(bool) {
+348	 return excludedFromLimits[account];
+349	 }
+350	 function EnableTrading() external onlyOwner{
+351	 require(LaunchTimestamp==0,"AlreadyLaunched");
+352	 LaunchTimestamp=block.timestamp;
+353	 maxWalletBalance = InitialSupply * 20 / 1000;
+354	 maxTransactionAmount = InitialSupply * 200 / 10000;
+355	 emit OnEnableTrading();
+356	 }
+357	 function LockLiquidityForSeconds(uint secondsUntilUnlock) external onlyOwner{
+358	 _prolongLiquidityLock(secondsUntilUnlock+block.timestamp);
+359	 emit LockExtended(secondsUntilUnlock);
+360	 }
+361	 function _prolongLiquidityLock(uint newUnlockTime) private{
+362	 require(newUnlockTime>_liquidityUnlockTime);
+363	 _liquidityUnlockTime=newUnlockTime;
+364	 emit OnProlongLPLock(_liquidityUnlockTime);
+365	 }
+366	 function LiquidityRelease() external {
+367	 require(msg.sender==marketingWallet);
+368	 require(block.timestamp >= _liquidityUnlockTime, "Not yet unlocked");
+369	 IERC20 liquidityToken = IERC20(_PairAddress);
+370	 uint amount = liquidityToken.balanceOf(address(this));
+371	 liquidityToken.transfer(msg.sender, amount);
+372	 emit OnReleaseLP();
+373	 }
+374	 receive() external payable {
+375	 }
+376	 function getOwner() external view override returns (address) {
+377	 return owner();
+378	 }
+379	 function name() external pure override returns (string memory) {
+380	 return _name;
+381	 }
+382	 function symbol() external pure override returns (string memory) {
+383	 return _symbol;
+384	 }
+385	 function decimals() external pure override returns (uint8) {
+386	 return _decimals;
+387	 }
+388	 function totalSupply() external pure override returns (uint) {
+389	 return InitialSupply;
+390	 }
+391	 function balanceOf(address account) public view override returns (uint) {
+392	 return _balances[account];
+393	 }
+394	 function allowance(address _owner, address spender) external view override returns (uint) {
+395	 return _allowances[_owner][spender];
+396	 }
+397	 function transfer(address recipient, uint amount) external override returns (bool) {
+398	 _transfer(msg.sender, recipient, amount);
+399	 return true;
+400	 }
+401	 function approve(address spender, uint amount) external override returns (bool) {
+402	 _approve(msg.sender, spender, amount);
+403	 return true;
+404	 }
+405	 function _approve(address owner, address spender, uint amount) private {
+406	 require(owner != address(0), "Approve from zero");
+407	 require(spender != address(0), "Approve to zero");
+408	 _allowances[owner][spender] = amount;
+409	 emit Approval(owner, spender, amount);
+410	 }
+411	 function transferFrom(address sender, address recipient, uint amount) external override returns (bool) {
+412	 _transfer(sender, recipient, amount);
+413	 uint currentAllowance = _allowances[sender][msg.sender];
+414	 require(currentAllowance >= amount, "Transfer > allowance");
+415	 _approve(sender, msg.sender, currentAllowance - amount);
+416	 return true;
+417	 }
+418	 function increaseAllowance(address spender, uint addedValue) external returns (bool) {
+419	 _approve(msg.sender, spender, _allowances[msg.sender][spender] + addedValue);
+420	 return true;
+421	 }
+422	 function decreaseAllowance(address spender, uint subtractedValue) external returns (bool) {
+423	 uint currentAllowance = _allowances[msg.sender][spender];
+424	 require(currentAllowance >= subtractedValue, "<0 allowance");
+425	 _approve(msg.sender, spender, currentAllowance - subtractedValue);
+426	 return true;
+427	 }
+428	 }

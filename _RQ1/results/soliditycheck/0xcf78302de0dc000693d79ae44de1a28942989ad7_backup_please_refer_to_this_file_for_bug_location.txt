@@ -1,0 +1,196 @@
+row number 
+1	   pragma solidity ^0.4.11;
+2	 library SafeMath {
+3	 function mul(uint a, uint b) internal returns (uint) {
+4	 uint c = a * b;
+5	 assert(a == 0 || c / a == b);
+6	 return c;
+7	 }
+8	 function div(uint a, uint b) internal returns (uint) {
+9	 uint c = a / b;
+10	 return c;
+11	 }
+12	 function sub(uint a, uint b) internal returns (uint) {
+13	 assert(b <= a);
+14	 return a - b;
+15	 }
+16	 function add(uint a, uint b) internal returns (uint) {
+17	 uint c = a + b;
+18	 assert(c >= a);
+19	 return c;
+20	 }
+21	 function max64(uint64 a, uint64 b) internal constant returns (uint64) {
+22	 return a >= b ? a : b;
+23	 }
+24	 function min64(uint64 a, uint64 b) internal constant returns (uint64) {
+25	 return a < b ? a : b;
+26	 }
+27	 function max256(uint256 a, uint256 b) internal constant returns (uint256) {
+28	 return a >= b ? a : b;
+29	 }
+30	 function min256(uint256 a, uint256 b) internal constant returns (uint256) {
+31	 return a < b ? a : b;
+32	 }
+33	 function assert(bool assertion) internal {
+34	 if (!assertion) {
+35	 throw;
+36	 }
+37	 }
+38	 }
+39	 contract ERC20Basic {
+40	 uint public totalSupply;
+41	 function balanceOf(address who) constant returns (uint);
+42	 function transfer(address to, uint value);
+43	 event Transfer(address indexed from, address indexed to, uint value);
+44	 }
+45	 contract BasicToken is ERC20Basic {
+46	 using SafeMath for uint;
+47	 mapping(address => uint) balances;
+48	 modifier onlyPayloadSize(uint size) {
+49	 if(msg.data.length < size + 4) {
+50	 throw;
+51	 }
+52	 _;
+53	 }
+54	 function transfer(address _to, uint _value) onlyPayloadSize(2 * 32) {
+55	 balances[msg.sender] = balances[msg.sender].sub(_value);
+56	 balances[_to] = balances[_to].add(_value);
+57	 Transfer(msg.sender, _to, _value);
+58	 }
+59	 function balanceOf(address _owner) constant returns (uint balance) {
+60	 return balances[_owner];
+61	 }
+62	 }
+63	 contract ERC20 is ERC20Basic {
+64	 function allowance(address owner, address spender) constant returns (uint);
+65	 function transferFrom(address from, address to, uint value);
+66	 function approve(address spender, uint value);
+67	 event Approval(address indexed owner, address indexed spender, uint value);
+68	 }
+69	 contract StandardToken is BasicToken, ERC20 {
+70	 mapping (address => mapping (address => uint)) allowed;
+71	 function transferFrom(address _from, address _to, uint _value) onlyPayloadSize(3 * 32) {
+72	 var _allowance = allowed[_from][msg.sender];
+73	 balances[_to] = balances[_to].add(_value);
+74	 balances[_from] = balances[_from].sub(_value);
+75	 allowed[_from][msg.sender] = _allowance.sub(_value);
+76	 Transfer(_from, _to, _value);
+77	 }
+78	 function approve(address _spender, uint _value) {
+79	 if ((_value != 0) && (allowed[msg.sender][_spender] != 0)) throw;
+80	 allowed[msg.sender][_spender] = _value;
+81	 Approval(msg.sender, _spender, _value);
+82	 }
+83	 function allowance(address _owner, address _spender) constant returns (uint remaining) {
+84	 return allowed[_owner][_spender];
+85	 }
+86	 }
+87	 contract Ownable {
+88	 address public owner;
+89	 function Ownable() {
+90	 owner = msg.sender;
+91	 }
+92	 modifier onlyOwner() {
+93	 if (msg.sender != owner) {
+94	 throw;
+95	 }
+96	 _;
+97	 }
+98	 function transferOwnership(address newOwner) onlyOwner {
+99	 if (newOwner != address(0)) {
+100	 owner = newOwner;
+101	 }
+102	 }
+103	 }
+104	 contract PayaToken is StandardToken, Ownable {
+105	 event Paya(address indexed to, uint value);
+106	 event PayaFinished();
+107	 bool public payaFinished = false;
+108	 uint public totalSupply = 0;
+109	 modifier canPaya() {
+110	 if(payaFinished) throw;
+111	 _;
+112	 }
+113	 function mint(address _to, uint _amount) onlyOwner canPaya returns (bool) {
+114	 totalSupply = totalSupply.add(_amount);
+115	 balances[_to] = balances[_to].add(_amount);
+116	 Paya(_to, _amount);
+117	 return true;
+118	 }
+119	 function finishPayaning() onlyOwner returns (bool) {
+120	 payaFinished = true;
+121	 PayaFinished();
+122	 return true;
+123	 }
+124	 }
+125	 contract Pausable is Ownable {
+126	 event Pause();
+127	 event Unpause();
+128	 bool public paused = false;
+129	 modifier whenNotPaused() {
+130	 if (paused) throw;
+131	 _;
+132	 }
+133	 modifier whenPaused {
+134	 if (!paused) throw;
+135	 _;
+136	 }
+137	 function pause() onlyOwner whenNotPaused returns (bool) {
+138	 paused = true;
+139	 Pause();
+140	 return true;
+141	 }
+142	 function unpause() onlyOwner whenPaused returns (bool) {
+143	 paused = false;
+144	 Unpause();
+145	 return true;
+146	 }
+147	 }
+148	 contract PausableToken is StandardToken, Pausable {
+149	 function transfer(address _to, uint _value) whenNotPaused {
+150	 super.transfer(_to, _value);
+151	 }
+152	 function transferFrom(address _from, address _to, uint _value) whenNotPaused {
+153	 super.transferFrom(_from, _to, _value);
+154	 }
+155	 }
+156	 contract TokenTimelock {
+157	 ERC20Basic token;
+158	 address beneficiary;
+159	 uint releaseTime;
+160	 function TokenTimelock(ERC20Basic _token, address _beneficiary, uint _releaseTime) {
+161	 require(_releaseTime > now);
+162	 token = _token;
+163	 beneficiary = _beneficiary;
+164	 releaseTime = _releaseTime;
+165	 }
+166	 function claim() {
+167	 require(msg.sender == beneficiary);
+168	 require(now >= releaseTime);
+169	 uint amount = token.balanceOf(this);
+170	 require(amount > 0);
+171	 token.transfer(beneficiary, amount);
+172	 }
+173	 }
+174	 contract PAYA is PausableToken, PayaToken {
+175	 using SafeMath for uint256;
+176	 string public name = "PAYA";
+177	 string public symbol = "PAYA";
+178	 uint public decimals = 9;
+179	 string public version = 'H1.0';
+180	 function () {
+181	 throw;
+182	 }
+183	 function PAYA( ) {
+184	 balances[msg.sender] = 21000000000000000000;
+185	 totalSupply = 21000000000000000000;
+186	 }
+187	 function approveAndCall(address _spender, uint256 _value, bytes _extraData) returns (bool success) {
+188	 allowed[msg.sender][_spender] = _value;
+189	 Approval(msg.sender, _spender, _value);
+190	 if(!_spender.call(bytes4(bytes32(sha3("receiveApproval(address,uint256,address,bytes)"))), msg.sender, _value, this, _extraData)) {
+191	 throw;
+192	 }
+193	 return true;
+194	 }
+195	 }

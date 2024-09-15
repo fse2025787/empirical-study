@@ -1,0 +1,267 @@
+row number 
+1	        pragma solidity 0.7.6;
+2	 contract Initializable {
+3	 bool private initialized;
+4	 bool private initializing;
+5	 modifier initializer() {
+6	 require( initializing || isConstructor() || !initialized, "Contract instance has already been initialized" );
+7	 bool wasInitializing = initializing;
+8	 initializing = true;
+9	 initialized = true;
+10	 _;
+11	 initializing = wasInitializing;
+12	 }
+13	 function isConstructor() private view returns (bool) {
+14	 address _self = address(this);
+15	 uint256 cs;
+16	 assembly {
+17	 cs := extcodesize(_self) }
+18	 return cs == 0;
+19	 }
+20	 uint256[50] private ______gap;
+21	 }
+22	 contract Ownable is Initializable {
+23	 address private _owner;
+24	 event OwnershipRenounced(address indexed previousOwner);
+25	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+26	 function initialize(address sender) public virtual initializer {
+27	 _owner = sender;
+28	 }
+29	 function owner() public view returns (address) {
+30	 return _owner;
+31	 }
+32	 modifier onlyOwner() {
+33	 require(isOwner());
+34	 _;
+35	 }
+36	 function isOwner() public view returns (bool) {
+37	 return msg.sender == _owner;
+38	 }
+39	 function renounceOwnership() public onlyOwner {
+40	 emit OwnershipRenounced(_owner);
+41	 _owner = address(0);
+42	 }
+43	 function transferOwnership(address newOwner) public onlyOwner {
+44	 _transferOwnership(newOwner);
+45	 }
+46	 function _transferOwnership(address newOwner) internal {
+47	 require(newOwner != address(0));
+48	 emit OwnershipTransferred(_owner, newOwner);
+49	 _owner = newOwner;
+50	 }
+51	 uint256[50] private ______gap;
+52	 }
+53	 library SafeMath {
+54	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+55	 if (a == 0) {
+56	 return 0;
+57	 }
+58	 uint256 c = a * b;
+59	 require(c / a == b);
+60	 return c;
+61	 }
+62	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+63	 require(b > 0);
+64	 uint256 c = a / b;
+65	 return c;
+66	 }
+67	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+68	 require(b <= a);
+69	 uint256 c = a - b;
+70	 return c;
+71	 }
+72	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+73	 uint256 c = a + b;
+74	 require(c >= a);
+75	 return c;
+76	 }
+77	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+78	 require(b != 0);
+79	 return a % b;
+80	 }
+81	 }
+82	 library SafeMathInt {
+83	 int256 private constant MIN_INT256 = int256(1) << 255;
+84	 int256 private constant MAX_INT256 = ~(int256(1) << 255);
+85	 function mul(int256 a, int256 b) internal pure returns (int256) {
+86	 int256 c = a * b;
+87	 require(c != MIN_INT256 || (a & MIN_INT256) != (b & MIN_INT256));
+88	 require((b == 0) || (c / b == a));
+89	 return c;
+90	 }
+91	 function div(int256 a, int256 b) internal pure returns (int256) {
+92	 require(b != -1 || a != MIN_INT256);
+93	 return a / b;
+94	 }
+95	 function sub(int256 a, int256 b) internal pure returns (int256) {
+96	 int256 c = a - b;
+97	 require((b >= 0 && c <= a) || (b < 0 && c > a));
+98	 return c;
+99	 }
+100	 function add(int256 a, int256 b) internal pure returns (int256) {
+101	 int256 c = a + b;
+102	 require((b >= 0 && c >= a) || (b < 0 && c < a));
+103	 return c;
+104	 }
+105	 function abs(int256 a) internal pure returns (int256) {
+106	 require(a != MIN_INT256);
+107	 return a < 0 ? -a : a;
+108	 }
+109	 }
+110	 library UInt256Lib {
+111	 uint256 private constant MAX_INT256 = ~(uint256(1) << 255);
+112	 function toInt256Safe(uint256 a) internal pure returns (int256) {
+113	 require(a <= MAX_INT256);
+114	 return int256(a);
+115	 }
+116	 }
+117	 interface IUFragments {
+118	 function totalSupply() external view returns (uint256);
+119	 function rebase(uint256 epoch, int256 supplyDelta) external returns (uint256);
+120	 }
+121	 interface IOracle {
+122	 function getData() external returns (uint256, bool);
+123	 }
+124	 contract UFragmentsPolicy is Ownable {
+125	 using SafeMath for uint256;
+126	 using SafeMathInt for int256;
+127	 using UInt256Lib for uint256;
+128	 event LogRebase( uint256 indexed epoch, uint256 exchangeRate, int256 requestedSupplyAdjustment, uint256 timestampSec );
+129	 IUFragments public uFrags;
+130	 IOracle public marketOracle;
+131	 uint256 public deviationThreshold;
+132	 uint256 public rebaseLag;
+133	 uint256 public minRebaseTimeIntervalSec;
+134	 uint256 public lastRebaseTimestampSec;
+135	 uint256 public rebaseWindowOffsetSec;
+136	 uint256 public rebaseWindowLengthSec;
+137	 uint256 public epoch;
+138	 uint256 private constant DECIMALS = 18;
+139	 uint256 private constant MAX_RATE = 10 * 10**DECIMALS;
+140	 uint256 private constant MAX_SUPPLY = uint256(type(int256).max) / MAX_RATE;
+141	 uint256 private constant TARGET_RATE = 1 * 10**DECIMALS;
+142	 address public orchestrator;
+143	 modifier onlyOrchestrator() {
+144	 require(msg.sender == orchestrator);
+145	 _;
+146	 }
+147	 function rebase() external onlyOrchestrator {
+148	 require(inRebaseWindow());
+149	 require(lastRebaseTimestampSec.add(minRebaseTimeIntervalSec) < block.timestamp);
+150	 lastRebaseTimestampSec = block .timestamp .sub(block.timestamp.mod(minRebaseTimeIntervalSec)) .add(rebaseWindowOffsetSec);
+151	 epoch = epoch.add(1);
+152	 uint256 targetRate = TARGET_RATE;
+153	 uint256 exchangeRate;
+154	 bool rateValid;
+155	 (exchangeRate, rateValid) = marketOracle.getData();
+156	 require(rateValid);
+157	 if (exchangeRate > MAX_RATE) {
+158	 exchangeRate = MAX_RATE;
+159	 }
+160	 int256 supplyDelta = computeSupplyDelta(exchangeRate, targetRate);
+161	 supplyDelta = supplyDelta.div(rebaseLag.toInt256Safe());
+162	 if (supplyDelta > 0 && uFrags.totalSupply().add(uint256(supplyDelta)) > MAX_SUPPLY) {
+163	 supplyDelta = (MAX_SUPPLY.sub(uFrags.totalSupply())).toInt256Safe();
+164	 }
+165	 uint256 supplyAfterRebase = uFrags.rebase(epoch, supplyDelta);
+166	 assert(supplyAfterRebase <= MAX_SUPPLY);
+167	 emit LogRebase(epoch, exchangeRate, supplyDelta, block.timestamp);
+168	 }
+169	 function setMarketOracle(IOracle marketOracle_) external onlyOwner {
+170	 marketOracle = marketOracle_;
+171	 }
+172	 function setOrchestrator(address orchestrator_) external onlyOwner {
+173	 orchestrator = orchestrator_;
+174	 }
+175	 function setDeviationThreshold(uint256 deviationThreshold_) external onlyOwner {
+176	 deviationThreshold = deviationThreshold_;
+177	 }
+178	 function setRebaseLag(uint256 rebaseLag_) external onlyOwner {
+179	 require(rebaseLag_ > 0);
+180	 rebaseLag = rebaseLag_;
+181	 }
+182	 function setRebaseTimingParameters( uint256 minRebaseTimeIntervalSec_, uint256 rebaseWindowOffsetSec_, uint256 rebaseWindowLengthSec_ ) external onlyOwner {
+183	 require(minRebaseTimeIntervalSec_ > 0);
+184	 require(rebaseWindowOffsetSec_ < minRebaseTimeIntervalSec_);
+185	 minRebaseTimeIntervalSec = minRebaseTimeIntervalSec_;
+186	 rebaseWindowOffsetSec = rebaseWindowOffsetSec_;
+187	 rebaseWindowLengthSec = rebaseWindowLengthSec_;
+188	 }
+189	 function globalAmpleforthEpochAndAMPLSupply() external view returns (uint256, uint256) {
+190	 return (epoch, uFrags.totalSupply());
+191	 }
+192	 function initialize( address owner_, IUFragments uFrags_ ) public initializer {
+193	 Ownable.initialize(owner_);
+194	 deviationThreshold = 5 * 10**(DECIMALS - 2);
+195	 rebaseLag = 30;
+196	 minRebaseTimeIntervalSec = 1 days;
+197	 rebaseWindowOffsetSec = 72000;
+198	 rebaseWindowLengthSec = 15 minutes;
+199	 lastRebaseTimestampSec = 0;
+200	 epoch = 0;
+201	 uFrags = uFrags_;
+202	 }
+203	 function inRebaseWindow() public view returns (bool) {
+204	 return (block.timestamp.mod(minRebaseTimeIntervalSec) >= rebaseWindowOffsetSec && block.timestamp.mod(minRebaseTimeIntervalSec) < (rebaseWindowOffsetSec.add(rebaseWindowLengthSec)));
+205	 }
+206	 function computeSupplyDelta(uint256 rate, uint256 targetRate) internal view returns (int256) {
+207	 if (withinDeviationThreshold(rate, targetRate)) {
+208	 return 0;
+209	 }
+210	 int256 targetRateSigned = targetRate.toInt256Safe();
+211	 return uFrags.totalSupply().toInt256Safe().mul(rate.toInt256Safe().sub(targetRateSigned)).div( targetRateSigned );
+212	 }
+213	 function withinDeviationThreshold(uint256 rate, uint256 targetRate) internal view returns (bool) {
+214	 uint256 absoluteDeviationThreshold = targetRate.mul(deviationThreshold).div(10**DECIMALS);
+215	 return (rate >= targetRate && rate.sub(targetRate) < absoluteDeviationThreshold) || (rate < targetRate && targetRate.sub(rate) < absoluteDeviationThreshold);
+216	 }
+217	 }
+218	 contract Orchestrator is Ownable {
+219	 struct Transaction {
+220	 bool enabled;
+221	 address destination;
+222	 bytes data;
+223	 }
+224	 Transaction[] public transactions;
+225	 UFragmentsPolicy public policy;
+226	 address public governance;
+227	 constructor(address policy_) {
+228	 Ownable.initialize(msg.sender);
+229	 policy = UFragmentsPolicy(policy_);
+230	 }
+231	 function rebase() external {
+232	 require(msg.sender == governance, "Only Governance");
+233	 policy.rebase();
+234	 for (uint256 i = 0; i < transactions.length; i++) {
+235	 Transaction storage t = transactions[i];
+236	 if (t.enabled) {
+237	 (bool result, ) = t.destination.call(t.data);
+238	 if (!result) {
+239	 revert("Transaction Failed");
+240	 }
+241	 }
+242	 }
+243	 }
+244	 function addTransaction(address destination, bytes memory data) external onlyOwner {
+245	 transactions.push(Transaction({
+246	 enabled: true, destination: destination, data: data}
+247	 ));
+248	 }
+249	 function removeTransaction(uint256 index) external onlyOwner {
+250	 require(index < transactions.length, "index out of bounds");
+251	 if (index < transactions.length - 1) {
+252	 transactions[index] = transactions[transactions.length - 1];
+253	 }
+254	 transactions.pop();
+255	 }
+256	 function setTransactionEnabled(uint256 index, bool enabled) external onlyOwner {
+257	 require(index < transactions.length, "index must be in range of stored tx list");
+258	 transactions[index].enabled = enabled;
+259	 }
+260	 function transactionsSize() external view returns (uint256) {
+261	 return transactions.length;
+262	 }
+263	 function setGovernance(address _governance) external onlyOwner {
+264	 governance = _governance;
+265	 }
+266	 }

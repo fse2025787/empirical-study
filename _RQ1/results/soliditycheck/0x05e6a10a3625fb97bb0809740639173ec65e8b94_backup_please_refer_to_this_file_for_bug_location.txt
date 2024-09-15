@@ -1,0 +1,208 @@
+row number 
+1	       pragma solidity ^0.6.0;
+2	 interface Minereum {
+3	 function Payment ( ) payable external;
+4	 }
+5	 interface BazarSwap {
+6	 function getWeiPriceUnitTokenList (address seller, address tokenAddress) external view returns (uint);
+7	 }
+8	 contract MinereumLuckyDraw {
+9	 Minereum public mne;
+10	 uint public stakeHoldersfee = 50;
+11	 uint public percentWin = 80;
+12	 uint public mnefee = 0;
+13	 uint public ethfee = 15000000000000000;
+14	 uint public totalSentToStakeHolders = 0;
+15	 uint public totalPaidOut = 0;
+16	 uint public ticketsSold = 0;
+17	 uint public ticketsPlayed = 0;
+18	 address public owner = 0x0000000000000000000000000000000000000000;
+19	 uint public maxNumber = 10001;
+20	 uint public systemNumber = 3223;
+21	 uint public blockInterval = 3;
+22	 uint public midBlock = 2;
+23	 uint public maxBlock = 256;
+24	 uint public winnersCount = 0;
+25	 uint public winnersEthCount = 0;
+26	 address[] public winners;
+27	 uint[] public winnersTickets;
+28	 uint[] public winnersETH;
+29	 uint[] public winnersTimestamp;
+30	 uint bazarSwapCount = 0;
+31	 bool bazarSwapActive = true;
+32	 BazarSwap bazar;
+33	 mapping (address => mapping (address => bool)) public bazarSwapClaimed;
+34	 mapping (address => uint256) public playerBlock;
+35	 mapping (address => uint256) public playerTickets;
+36	 event Numbers(address indexed from, uint[] n, string m);
+37	 constructor() public {
+38	 mne = Minereum(0x426CA1eA2406c07d75Db9585F22781c096e3d0E0);
+39	 bazar = BazarSwap(0xb3cD2Bf2DC3D92E5647953314561d10a9B7CF473);
+40	 owner = msg.sender;
+41	 ticketsPlayed = 405;
+42	 ticketsSold = 510;
+43	 totalSentToStakeHolders = 3727500000000000000;
+44	 }
+45	 receive() external payable {
+46	 }
+47	 function LuckyDraw() public {
+48	 require(msg.sender == tx.origin);
+49	 if (block.number >= playerBlock[msg.sender] + maxBlock) {
+50	 uint[] memory empty = new uint[](0);
+51	 emit Numbers(address(this), empty, "Your tickets expired or are invalid. Try Again.");
+52	 playerBlock[msg.sender] = 0;
+53	 playerTickets[msg.sender] = 0;
+54	 }
+55	 else if (block.number > playerBlock[msg.sender] + blockInterval) {
+56	 bool win = false;
+57	 uint[] memory numbers = new uint[](playerTickets[msg.sender]);
+58	 uint i = 0;
+59	 while (i < playerTickets[msg.sender]) {
+60	 numbers[i] = uint256(uint256(keccak256(abi.encodePacked(blockhash(playerBlock[msg.sender] + midBlock), i)))%maxNumber);
+61	 if (numbers[i] == systemNumber) win = true;
+62	 i++;
+63	 }
+64	 ticketsPlayed += playerTickets[msg.sender];
+65	 if (win) {
+66	 address payable add = payable(msg.sender);
+67	 uint contractBalance = address(this).balance;
+68	 uint winAmount = contractBalance * percentWin / 100;
+69	 uint totalToPay = winAmount;
+70	 if (!add.send(totalToPay)) revert('Error While Executing Payment.');
+71	 totalPaidOut += totalToPay;
+72	 winnersCount++;
+73	 winnersEthCount += totalToPay;
+74	 emit Numbers(address(this), numbers, "YOU WON!");
+75	 winners.push(msg.sender);
+76	 winnersTickets.push(playerTickets[msg.sender]);
+77	 winnersETH.push(totalToPay);
+78	 winnersTimestamp.push(block.timestamp);
+79	 }
+80	 else {
+81	 emit Numbers(address(this), numbers, "Your numbers don't match the System Number! Try Again.");
+82	 }
+83	 playerBlock[msg.sender] = 0;
+84	 playerTickets[msg.sender] = 0;
+85	 }
+86	 else {
+87	 revert('Players must wait 3 blocks');
+88	 }
+89	 }
+90	 function BuyTickets(uint256 _max) public payable {
+91	 require(msg.sender == tx.origin);
+92	 if (_max == 0) revert('value is 0');
+93	 if (playerBlock[msg.sender] == 0) {
+94	 ticketsSold += _max;
+95	 uint totalEthfee = ethfee * _max;
+96	 playerBlock[msg.sender] = block.number;
+97	 playerTickets[msg.sender] = _max;
+98	 if (msg.value < totalEthfee) revert('Not enough ETH.');
+99	 mne.Payment{
+100	 value:msg.value}
+101	 ();
+102	 totalSentToStakeHolders += msg.value;
+103	 }
+104	 else {
+105	 revert('You must play the tickets first');
+106	 }
+107	 }
+108	 function ClaimBazarSwapTickets(address tokenAddress) public {
+109	 require(msg.sender == tx.origin);
+110	 if (playerBlock[msg.sender] == 0) {
+111	 if (!bazarSwapClaimed[msg.sender][tokenAddress]) {
+112	 if (bazarSwapActive) {
+113	 if (bazar.getWeiPriceUnitTokenList(msg.sender, tokenAddress) == 0) revert('Token not set for sale');
+114	 playerBlock[msg.sender] = block.number;
+115	 playerTickets[msg.sender] = 1;
+116	 bazarSwapClaimed[msg.sender][tokenAddress] = true;
+117	 bazarSwapCount++;
+118	 }
+119	 else {
+120	 revert('Bazarswap Claim Not Active');
+121	 }
+122	 }
+123	 else {
+124	 revert('Ticket already claimed');
+125	 }
+126	 }
+127	 else {
+128	 revert('You must play the tickets you have first');
+129	 }
+130	 }
+131	 function GetBazarSwapClaimed(address _address, address _token) public view returns (bool) {
+132	 return bazarSwapClaimed[_address][_token];
+133	 }
+134	 function transferFundsOut() public {
+135	 if (msg.sender == owner) {
+136	 address payable add = payable(msg.sender);
+137	 uint contractBalance = address(this).balance;
+138	 if (!add.send(contractBalance)) revert('Error While Executing Payment.');
+139	 }
+140	 else {
+141	 revert();
+142	 }
+143	 }
+144	 function updateFees(uint _stakeHoldersfee, uint _mnefee, uint _ethfee, uint _blockInterval, bool _bazarSwapActive, uint _maxBlock, uint _midBlock) public {
+145	 if (msg.sender == owner) {
+146	 stakeHoldersfee = _stakeHoldersfee;
+147	 mnefee = _mnefee;
+148	 ethfee = _ethfee;
+149	 blockInterval = _blockInterval;
+150	 bazarSwapActive = _bazarSwapActive;
+151	 maxBlock = _maxBlock;
+152	 midBlock = _midBlock;
+153	 }
+154	 else {
+155	 revert();
+156	 }
+157	 }
+158	 function updateSystemNumber(uint _systemNumber) public {
+159	 if (msg.sender == owner) {
+160	 systemNumber = _systemNumber;
+161	 }
+162	 else {
+163	 revert();
+164	 }
+165	 }
+166	 function updateMaxNumber(uint _maxNumber) public {
+167	 if (msg.sender == owner) {
+168	 maxNumber = _maxNumber;
+169	 }
+170	 else {
+171	 revert();
+172	 }
+173	 }
+174	 function updatePercentWin(uint _percentWin) public {
+175	 if (msg.sender == owner) {
+176	 percentWin = _percentWin;
+177	 }
+178	 else {
+179	 revert();
+180	 }
+181	 }
+182	 function updateMNEContract(address _mneAddress) public {
+183	 if (msg.sender == owner) {
+184	 mne = Minereum(_mneAddress);
+185	 }
+186	 else {
+187	 revert();
+188	 }
+189	 }
+190	 function updateBazarContract(address _address) public {
+191	 if (msg.sender == owner) {
+192	 bazar = BazarSwap(_address);
+193	 }
+194	 else {
+195	 revert();
+196	 }
+197	 }
+198	 function WinnersLength() public view returns (uint256) {
+199	 return winners.length;
+200	 }
+201	 function GetPlayerBlock(address _address) public view returns (uint256) {
+202	 return playerBlock[_address];
+203	 }
+204	 function GetPlayerTickets(address _address) public view returns (uint256) {
+205	 return playerTickets[_address];
+206	 }
+207	 }

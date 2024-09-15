@@ -1,0 +1,937 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.5.0;
+3	 interface IUniswapV3SwapCallback {
+4	 function uniswapV3SwapCallback( int256 amount0Delta, int256 amount1Delta, bytes calldata data ) external;
+5	 }
+6	 pragma solidity >=0.5.0;
+7	 interface IUniswapV3PoolActions {
+8	 function initialize(uint160 sqrtPriceX96) external;
+9	 function mint( address recipient, int24 tickLower, int24 tickUpper, uint128 amount, bytes calldata data ) external returns (uint256 amount0, uint256 amount1);
+10	 function collect( address recipient, int24 tickLower, int24 tickUpper, uint128 amount0Requested, uint128 amount1Requested ) external returns (uint128 amount0, uint128 amount1);
+11	 function burn( int24 tickLower, int24 tickUpper, uint128 amount ) external returns (uint256 amount0, uint256 amount1);
+12	 function swap( address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes calldata data ) external returns (int256 amount0, int256 amount1);
+13	 function flash( address recipient, uint256 amount0, uint256 amount1, bytes calldata data ) external;
+14	 function increaseObservationCardinalityNext(uint16 observationCardinalityNext) external;
+15	 }
+16	 pragma solidity >=0.5.0;
+17	 interface IUniswapV3PoolDerivedState {
+18	 function observe(uint32[] calldata secondsAgos) external view returns (int56[] memory tickCumulatives, uint160[] memory secondsPerLiquidityCumulativeX128s);
+19	 function snapshotCumulativesInside(int24 tickLower, int24 tickUpper) external view returns ( int56 tickCumulativeInside, uint160 secondsPerLiquidityInsideX128, uint32 secondsInside );
+20	 }
+21	 pragma solidity >=0.5.0;
+22	 interface IUniswapV3PoolEvents {
+23	 event Initialize(uint160 sqrtPriceX96, int24 tick);
+24	 event Mint( address sender, address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1 );
+25	 event Collect( address indexed owner, address recipient, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount0, uint128 amount1 );
+26	 event Burn( address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1 );
+27	 event Swap( address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick );
+28	 event Flash( address indexed sender, address indexed recipient, uint256 amount0, uint256 amount1, uint256 paid0, uint256 paid1 );
+29	 event IncreaseObservationCardinalityNext( uint16 observationCardinalityNextOld, uint16 observationCardinalityNextNew );
+30	 event SetFeeProtocol(uint8 feeProtocol0Old, uint8 feeProtocol1Old, uint8 feeProtocol0New, uint8 feeProtocol1New);
+31	 event CollectProtocol(address indexed sender, address indexed recipient, uint128 amount0, uint128 amount1);
+32	 }
+33	 pragma solidity >=0.5.0;
+34	 interface IUniswapV3PoolImmutables {
+35	 function factory() external view returns (address);
+36	 function token0() external view returns (address);
+37	 function token1() external view returns (address);
+38	 function fee() external view returns (uint24);
+39	 function tickSpacing() external view returns (int24);
+40	 function maxLiquidityPerTick() external view returns (uint128);
+41	 }
+42	 pragma solidity >=0.5.0;
+43	 interface IUniswapV3PoolOwnerActions {
+44	 function setFeeProtocol(uint8 feeProtocol0, uint8 feeProtocol1) external;
+45	 function collectProtocol( address recipient, uint128 amount0Requested, uint128 amount1Requested ) external returns (uint128 amount0, uint128 amount1);
+46	 }
+47	 pragma solidity >=0.5.0;
+48	 interface IUniswapV3PoolState {
+49	 function slot0() external view returns ( uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked );
+50	 function feeGrowthGlobal0X128() external view returns (uint256);
+51	 function feeGrowthGlobal1X128() external view returns (uint256);
+52	 function protocolFees() external view returns (uint128 token0, uint128 token1);
+53	 function liquidity() external view returns (uint128);
+54	 function ticks(int24 tick) external view returns ( uint128 liquidityGross, int128 liquidityNet, uint256 feeGrowthOutside0X128, uint256 feeGrowthOutside1X128, int56 tickCumulativeOutside, uint160 secondsPerLiquidityOutsideX128, uint32 secondsOutside, bool initialized );
+55	 function tickBitmap(int16 wordPosition) external view returns (uint256);
+56	 function positions(bytes32 key) external view returns ( uint128 _liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1 );
+57	 function observations(uint256 index) external view returns ( uint32 blockTimestamp, int56 tickCumulative, uint160 secondsPerLiquidityCumulativeX128, bool initialized );
+58	 }
+59	 pragma solidity >=0.5.0;
+60	 interface IUniswapV3Pool is IUniswapV3PoolImmutables, IUniswapV3PoolState, IUniswapV3PoolDerivedState, IUniswapV3PoolActions, IUniswapV3PoolOwnerActions, IUniswapV3PoolEvents {
+61	 }
+62	 pragma solidity >=0.4.0;
+63	 library FixedPoint128 {
+64	 uint256 internal constant Q128 = 0x100000000000000000000000000000000;
+65	 }
+66	 pragma solidity >=0.4.0;
+67	 library FixedPoint96 {
+68	 uint8 internal constant RESOLUTION = 96;
+69	 uint256 internal constant Q96 = 0x1000000000000000000000000;
+70	 }
+71	 pragma solidity >=0.4.0;
+72	 library FullMath {
+73	 function mulDiv( uint256 a, uint256 b, uint256 denominator ) internal pure returns (uint256 result) {
+74	 uint256 prod0;
+75	 uint256 prod1;
+76	 assembly {
+77	 let mm := mulmod(a, b, not(0)) prod0 := mul(a, b) prod1 := sub(sub(mm, prod0), lt(mm, prod0)) }
+78	 if (prod1 == 0) {
+79	 require(denominator > 0);
+80	 assembly {
+81	 result := div(prod0, denominator) }
+82	 return result;
+83	 }
+84	 require(denominator > prod1);
+85	 uint256 remainder;
+86	 assembly {
+87	 remainder := mulmod(a, b, denominator) }
+88	 assembly {
+89	 prod1 := sub(prod1, gt(remainder, prod0)) prod0 := sub(prod0, remainder) }
+90	 uint256 twos = -denominator & denominator;
+91	 assembly {
+92	 denominator := div(denominator, twos) }
+93	 assembly {
+94	 prod0 := div(prod0, twos) }
+95	 assembly {
+96	 twos := add(div(sub(0, twos), twos), 1) }
+97	 prod0 |= prod1 * twos;
+98	 uint256 inv = (3 * denominator) ^ 2;
+99	 inv *= 2 - denominator * inv;
+100	 inv *= 2 - denominator * inv;
+101	 inv *= 2 - denominator * inv;
+102	 inv *= 2 - denominator * inv;
+103	 inv *= 2 - denominator * inv;
+104	 inv *= 2 - denominator * inv;
+105	 result = prod0 * inv;
+106	 return result;
+107	 }
+108	 function mulDivRoundingUp( uint256 a, uint256 b, uint256 denominator ) internal pure returns (uint256 result) {
+109	 result = mulDiv(a, b, denominator);
+110	 if (mulmod(a, b, denominator) > 0) {
+111	 require(result < type(uint256).max);
+112	 result++;
+113	 }
+114	 }
+115	 }
+116	 pragma solidity >=0.7.0;
+117	 library LowGasSafeMath {
+118	 function add(uint256 x, uint256 y) internal pure returns (uint256 z) {
+119	 require((z = x + y) >= x);
+120	 }
+121	 function sub(uint256 x, uint256 y) internal pure returns (uint256 z) {
+122	 require((z = x - y) <= x);
+123	 }
+124	 function mul(uint256 x, uint256 y) internal pure returns (uint256 z) {
+125	 require(x == 0 || (z = x * y) / x == y);
+126	 }
+127	 function add(int256 x, int256 y) internal pure returns (int256 z) {
+128	 require((z = x + y) >= x == (y >= 0));
+129	 }
+130	 function sub(int256 x, int256 y) internal pure returns (int256 z) {
+131	 require((z = x - y) <= x == (y >= 0));
+132	 }
+133	 }
+134	 pragma solidity >=0.5.0;
+135	 library SafeCast {
+136	 function toUint160(uint256 y) internal pure returns (uint160 z) {
+137	 require((z = uint160(y)) == y);
+138	 }
+139	 function toInt128(int256 y) internal pure returns (int128 z) {
+140	 require((z = int128(y)) == y);
+141	 }
+142	 function toInt256(uint256 y) internal pure returns (int256 z) {
+143	 require(y < 2**255);
+144	 z = int256(y);
+145	 }
+146	 }
+147	 pragma solidity >=0.5.0;
+148	 library SqrtPriceMath {
+149	 using LowGasSafeMath for uint256;
+150	 using SafeCast for uint256;
+151	 function getNextSqrtPriceFromAmount0RoundingUp( uint160 sqrtPX96, uint128 liquidity, uint256 amount, bool add ) internal pure returns (uint160) {
+152	 if (amount == 0) return sqrtPX96;
+153	 uint256 numerator1 = uint256(liquidity) << FixedPoint96.RESOLUTION;
+154	 if (add) {
+155	 uint256 product;
+156	 if ((product = amount * sqrtPX96) / amount == sqrtPX96) {
+157	 uint256 denominator = numerator1 + product;
+158	 if (denominator >= numerator1) return uint160(FullMath.mulDivRoundingUp(numerator1, sqrtPX96, denominator));
+159	 }
+160	 return uint160(UnsafeMath.divRoundingUp(numerator1, (numerator1 / sqrtPX96).add(amount)));
+161	 }
+162	 else {
+163	 uint256 product;
+164	 require((product = amount * sqrtPX96) / amount == sqrtPX96 && numerator1 > product);
+165	 uint256 denominator = numerator1 - product;
+166	 return FullMath.mulDivRoundingUp(numerator1, sqrtPX96, denominator).toUint160();
+167	 }
+168	 }
+169	 function getNextSqrtPriceFromAmount1RoundingDown( uint160 sqrtPX96, uint128 liquidity, uint256 amount, bool add ) internal pure returns (uint160) {
+170	 if (add) {
+171	 uint256 quotient = ( amount <= type(uint160).max ? (amount << FixedPoint96.RESOLUTION) / liquidity : FullMath.mulDiv(amount, FixedPoint96.Q96, liquidity) );
+172	 return uint256(sqrtPX96).add(quotient).toUint160();
+173	 }
+174	 else {
+175	 uint256 quotient = ( amount <= type(uint160).max ? UnsafeMath.divRoundingUp(amount << FixedPoint96.RESOLUTION, liquidity) : FullMath.mulDivRoundingUp(amount, FixedPoint96.Q96, liquidity) );
+176	 require(sqrtPX96 > quotient);
+177	 return uint160(sqrtPX96 - quotient);
+178	 }
+179	 }
+180	 function getNextSqrtPriceFromInput( uint160 sqrtPX96, uint128 liquidity, uint256 amountIn, bool zeroForOne ) internal pure returns (uint160 sqrtQX96) {
+181	 require(sqrtPX96 > 0);
+182	 require(liquidity > 0);
+183	 return zeroForOne ? getNextSqrtPriceFromAmount0RoundingUp(sqrtPX96, liquidity, amountIn, true) : getNextSqrtPriceFromAmount1RoundingDown(sqrtPX96, liquidity, amountIn, true);
+184	 }
+185	 function getNextSqrtPriceFromOutput( uint160 sqrtPX96, uint128 liquidity, uint256 amountOut, bool zeroForOne ) internal pure returns (uint160 sqrtQX96) {
+186	 require(sqrtPX96 > 0);
+187	 require(liquidity > 0);
+188	 return zeroForOne ? getNextSqrtPriceFromAmount1RoundingDown(sqrtPX96, liquidity, amountOut, false) : getNextSqrtPriceFromAmount0RoundingUp(sqrtPX96, liquidity, amountOut, false);
+189	 }
+190	 function getAmount0Delta( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity, bool roundUp ) internal pure returns (uint256 amount0) {
+191	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+192	 uint256 numerator1 = uint256(liquidity) << FixedPoint96.RESOLUTION;
+193	 uint256 numerator2 = sqrtRatioBX96 - sqrtRatioAX96;
+194	 require(sqrtRatioAX96 > 0);
+195	 return roundUp ? UnsafeMath.divRoundingUp( FullMath.mulDivRoundingUp(numerator1, numerator2, sqrtRatioBX96), sqrtRatioAX96 ) : FullMath.mulDiv(numerator1, numerator2, sqrtRatioBX96) / sqrtRatioAX96;
+196	 }
+197	 function getAmount1Delta( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity, bool roundUp ) internal pure returns (uint256 amount1) {
+198	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+199	 return roundUp ? FullMath.mulDivRoundingUp(liquidity, sqrtRatioBX96 - sqrtRatioAX96, FixedPoint96.Q96) : FullMath.mulDiv(liquidity, sqrtRatioBX96 - sqrtRatioAX96, FixedPoint96.Q96);
+200	 }
+201	 function getAmount0Delta( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, int128 liquidity ) internal pure returns (int256 amount0) {
+202	 return liquidity < 0 ? -getAmount0Delta(sqrtRatioAX96, sqrtRatioBX96, uint128(-liquidity), false).toInt256() : getAmount0Delta(sqrtRatioAX96, sqrtRatioBX96, uint128(liquidity), true).toInt256();
+203	 }
+204	 function getAmount1Delta( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, int128 liquidity ) internal pure returns (int256 amount1) {
+205	 return liquidity < 0 ? -getAmount1Delta(sqrtRatioAX96, sqrtRatioBX96, uint128(-liquidity), false).toInt256() : getAmount1Delta(sqrtRatioAX96, sqrtRatioBX96, uint128(liquidity), true).toInt256();
+206	 }
+207	 }
+208	 pragma solidity >=0.5.0;
+209	 library TickMath {
+210	 int24 internal constant MIN_TICK = -887272;
+211	 int24 internal constant MAX_TICK = -MIN_TICK;
+212	 uint160 internal constant MIN_SQRT_RATIO = 4295128739;
+213	 uint160 internal constant MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342;
+214	 function getSqrtRatioAtTick(int24 tick) internal pure returns (uint160 sqrtPriceX96) {
+215	 uint256 absTick = tick < 0 ? uint256(-int256(tick)) : uint256(int256(tick));
+216	 require(absTick <= uint256(MAX_TICK), 'T');
+217	 uint256 ratio = absTick & 0x1 != 0 ? 0xfffcb933bd6fad37aa2d162d1a594001 : 0x100000000000000000000000000000000;
+218	 if (absTick & 0x2 != 0) ratio = (ratio * 0xfff97272373d413259a46990580e213a) >> 128;
+219	 if (absTick & 0x4 != 0) ratio = (ratio * 0xfff2e50f5f656932ef12357cf3c7fdcc) >> 128;
+220	 if (absTick & 0x8 != 0) ratio = (ratio * 0xffe5caca7e10e4e61c3624eaa0941cd0) >> 128;
+221	 if (absTick & 0x10 != 0) ratio = (ratio * 0xffcb9843d60f6159c9db58835c926644) >> 128;
+222	 if (absTick & 0x20 != 0) ratio = (ratio * 0xff973b41fa98c081472e6896dfb254c0) >> 128;
+223	 if (absTick & 0x40 != 0) ratio = (ratio * 0xff2ea16466c96a3843ec78b326b52861) >> 128;
+224	 if (absTick & 0x80 != 0) ratio = (ratio * 0xfe5dee046a99a2a811c461f1969c3053) >> 128;
+225	 if (absTick & 0x100 != 0) ratio = (ratio * 0xfcbe86c7900a88aedcffc83b479aa3a4) >> 128;
+226	 if (absTick & 0x200 != 0) ratio = (ratio * 0xf987a7253ac413176f2b074cf7815e54) >> 128;
+227	 if (absTick & 0x400 != 0) ratio = (ratio * 0xf3392b0822b70005940c7a398e4b70f3) >> 128;
+228	 if (absTick & 0x800 != 0) ratio = (ratio * 0xe7159475a2c29b7443b29c7fa6e889d9) >> 128;
+229	 if (absTick & 0x1000 != 0) ratio = (ratio * 0xd097f3bdfd2022b8845ad8f792aa5825) >> 128;
+230	 if (absTick & 0x2000 != 0) ratio = (ratio * 0xa9f746462d870fdf8a65dc1f90e061e5) >> 128;
+231	 if (absTick & 0x4000 != 0) ratio = (ratio * 0x70d869a156d2a1b890bb3df62baf32f7) >> 128;
+232	 if (absTick & 0x8000 != 0) ratio = (ratio * 0x31be135f97d08fd981231505542fcfa6) >> 128;
+233	 if (absTick & 0x10000 != 0) ratio = (ratio * 0x9aa508b5b7a84e1c677de54f3e99bc9) >> 128;
+234	 if (absTick & 0x20000 != 0) ratio = (ratio * 0x5d6af8dedb81196699c329225ee604) >> 128;
+235	 if (absTick & 0x40000 != 0) ratio = (ratio * 0x2216e584f5fa1ea926041bedfe98) >> 128;
+236	 if (absTick & 0x80000 != 0) ratio = (ratio * 0x48a170391f7dc42444e8fa2) >> 128;
+237	 if (tick > 0) ratio = type(uint256).max / ratio;
+238	 sqrtPriceX96 = uint160((ratio >> 32) + (ratio % (1 << 32) == 0 ? 0 : 1));
+239	 }
+240	 function getTickAtSqrtRatio(uint160 sqrtPriceX96) internal pure returns (int24 tick) {
+241	 require(sqrtPriceX96 >= MIN_SQRT_RATIO && sqrtPriceX96 < MAX_SQRT_RATIO, 'R');
+242	 uint256 ratio = uint256(sqrtPriceX96) << 32;
+243	 uint256 r = ratio;
+244	 uint256 msb = 0;
+245	 assembly {
+246	 let f := shl(7, gt(r, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+247	 assembly {
+248	 let f := shl(6, gt(r, 0xFFFFFFFFFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+249	 assembly {
+250	 let f := shl(5, gt(r, 0xFFFFFFFF)) msb := or(msb, f) r := shr(f, r) }
+251	 assembly {
+252	 let f := shl(4, gt(r, 0xFFFF)) msb := or(msb, f) r := shr(f, r) }
+253	 assembly {
+254	 let f := shl(3, gt(r, 0xFF)) msb := or(msb, f) r := shr(f, r) }
+255	 assembly {
+256	 let f := shl(2, gt(r, 0xF)) msb := or(msb, f) r := shr(f, r) }
+257	 assembly {
+258	 let f := shl(1, gt(r, 0x3)) msb := or(msb, f) r := shr(f, r) }
+259	 assembly {
+260	 let f := gt(r, 0x1) msb := or(msb, f) }
+261	 if (msb >= 128) r = ratio >> (msb - 127);
+262	 else r = ratio << (127 - msb);
+263	 int256 log_2 = (int256(msb) - 128) << 64;
+264	 assembly {
+265	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(63, f)) r := shr(f, r) }
+266	 assembly {
+267	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(62, f)) r := shr(f, r) }
+268	 assembly {
+269	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(61, f)) r := shr(f, r) }
+270	 assembly {
+271	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(60, f)) r := shr(f, r) }
+272	 assembly {
+273	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(59, f)) r := shr(f, r) }
+274	 assembly {
+275	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(58, f)) r := shr(f, r) }
+276	 assembly {
+277	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(57, f)) r := shr(f, r) }
+278	 assembly {
+279	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(56, f)) r := shr(f, r) }
+280	 assembly {
+281	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(55, f)) r := shr(f, r) }
+282	 assembly {
+283	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(54, f)) r := shr(f, r) }
+284	 assembly {
+285	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(53, f)) r := shr(f, r) }
+286	 assembly {
+287	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(52, f)) r := shr(f, r) }
+288	 assembly {
+289	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(51, f)) r := shr(f, r) }
+290	 assembly {
+291	 r := shr(127, mul(r, r)) let f := shr(128, r) log_2 := or(log_2, shl(50, f)) }
+292	 int256 log_sqrt10001 = log_2 * 255738958999603826347141;
+293	 int24 tickLow = int24((log_sqrt10001 - 3402992956809132418596140100660247210) >> 128);
+294	 int24 tickHi = int24((log_sqrt10001 + 291339464771989622907027621153398088495) >> 128);
+295	 tick = tickLow == tickHi ? tickLow : getSqrtRatioAtTick(tickHi) <= sqrtPriceX96 ? tickHi : tickLow;
+296	 }
+297	 }
+298	 pragma solidity >=0.5.0;
+299	 library UnsafeMath {
+300	 function divRoundingUp(uint256 x, uint256 y) internal pure returns (uint256 z) {
+301	 assembly {
+302	 z := add(div(x, y), gt(mod(x, y), 0)) }
+303	 }
+304	 }
+305	 pragma solidity >=0.7.5;
+306	 interface ISwapRouter is IUniswapV3SwapCallback {
+307	 struct ExactInputSingleParams {
+308	 address tokenIn;
+309	 address tokenOut;
+310	 uint24 fee;
+311	 address recipient;
+312	 uint256 deadline;
+313	 uint256 amountIn;
+314	 uint256 amountOutMinimum;
+315	 uint160 sqrtPriceLimitX96;
+316	 }
+317	 function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
+318	 struct ExactInputParams {
+319	 bytes path;
+320	 address recipient;
+321	 uint256 deadline;
+322	 uint256 amountIn;
+323	 uint256 amountOutMinimum;
+324	 }
+325	 function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
+326	 struct ExactOutputSingleParams {
+327	 address tokenIn;
+328	 address tokenOut;
+329	 uint24 fee;
+330	 address recipient;
+331	 uint256 deadline;
+332	 uint256 amountOut;
+333	 uint256 amountInMaximum;
+334	 uint160 sqrtPriceLimitX96;
+335	 }
+336	 function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
+337	 struct ExactOutputParams {
+338	 bytes path;
+339	 address recipient;
+340	 uint256 deadline;
+341	 uint256 amountOut;
+342	 uint256 amountInMaximum;
+343	 }
+344	 function exactOutput(ExactOutputParams calldata params) external payable returns (uint256 amountIn);
+345	 }
+346	 pragma solidity >=0.5.0 <0.8.0;
+347	 library BytesLib {
+348	 function slice( bytes memory _bytes, uint256 _start, uint256 _length ) internal pure returns (bytes memory) {
+349	 require(_length + 31 >= _length, 'slice_overflow');
+350	 require(_start + _length >= _start, 'slice_overflow');
+351	 require(_bytes.length >= _start + _length, 'slice_outOfBounds');
+352	 bytes memory tempBytes;
+353	 assembly {
+354	 switch iszero(_length) case 0 {
+355	 tempBytes := mload(0x40) let lengthmod := and(_length, 31) let mc := add(add(tempBytes, lengthmod), mul(0x20, iszero(lengthmod))) let end := add(mc, _length) for {
+356	 let cc := add(add(add(_bytes, lengthmod), mul(0x20, iszero(lengthmod))), _start) }
+357	 lt(mc, end) {
+358	 mc := add(mc, 0x20) cc := add(cc, 0x20) }
+359	 {
+360	 mstore(mc, mload(cc)) }
+361	 mstore(tempBytes, _length) mstore(0x40, and(add(mc, 31), not(31))) }
+362	 default {
+363	 tempBytes := mload(0x40) mstore(tempBytes, 0) mstore(0x40, add(tempBytes, 0x20)) }
+364	 }
+365	 return tempBytes;
+366	 }
+367	 function toAddress(bytes memory _bytes, uint256 _start) internal pure returns (address) {
+368	 require(_start + 20 >= _start, 'toAddress_overflow');
+369	 require(_bytes.length >= _start + 20, 'toAddress_outOfBounds');
+370	 address tempAddress;
+371	 assembly {
+372	 tempAddress := div(mload(add(add(_bytes, 0x20), _start)), 0x1000000000000000000000000) }
+373	 return tempAddress;
+374	 }
+375	 function toUint24(bytes memory _bytes, uint256 _start) internal pure returns (uint24) {
+376	 require(_start + 3 >= _start, 'toUint24_overflow');
+377	 require(_bytes.length >= _start + 3, 'toUint24_outOfBounds');
+378	 uint24 tempUint;
+379	 assembly {
+380	 tempUint := mload(add(add(_bytes, 0x3), _start)) }
+381	 return tempUint;
+382	 }
+383	 }
+384	 pragma solidity >=0.5.0;
+385	 library LiquidityAmounts {
+386	 function toUint128(uint256 x) private pure returns (uint128 y) {
+387	 require((y = uint128(x)) == x);
+388	 }
+389	 function getLiquidityForAmount0( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint256 amount0 ) internal pure returns (uint128 liquidity) {
+390	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+391	 uint256 intermediate = FullMath.mulDiv(sqrtRatioAX96, sqrtRatioBX96, FixedPoint96.Q96);
+392	 return toUint128(FullMath.mulDiv(amount0, intermediate, sqrtRatioBX96 - sqrtRatioAX96));
+393	 }
+394	 function getLiquidityForAmount1( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint256 amount1 ) internal pure returns (uint128 liquidity) {
+395	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+396	 return toUint128(FullMath.mulDiv(amount1, FixedPoint96.Q96, sqrtRatioBX96 - sqrtRatioAX96));
+397	 }
+398	 function getLiquidityForAmounts( uint160 sqrtRatioX96, uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint256 amount0, uint256 amount1 ) internal pure returns (uint128 liquidity) {
+399	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+400	 if (sqrtRatioX96 <= sqrtRatioAX96) {
+401	 liquidity = getLiquidityForAmount0(sqrtRatioAX96, sqrtRatioBX96, amount0);
+402	 }
+403	 else if (sqrtRatioX96 < sqrtRatioBX96) {
+404	 uint128 liquidity0 = getLiquidityForAmount0(sqrtRatioX96, sqrtRatioBX96, amount0);
+405	 uint128 liquidity1 = getLiquidityForAmount1(sqrtRatioAX96, sqrtRatioX96, amount1);
+406	 liquidity = liquidity0 < liquidity1 ? liquidity0 : liquidity1;
+407	 }
+408	 else {
+409	 liquidity = getLiquidityForAmount1(sqrtRatioAX96, sqrtRatioBX96, amount1);
+410	 }
+411	 }
+412	 function getAmount0ForLiquidity( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity ) internal pure returns (uint256 amount0) {
+413	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+414	 return FullMath.mulDiv( uint256(liquidity) << FixedPoint96.RESOLUTION, sqrtRatioBX96 - sqrtRatioAX96, sqrtRatioBX96 ) / sqrtRatioAX96;
+415	 }
+416	 function getAmount1ForLiquidity( uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity ) internal pure returns (uint256 amount1) {
+417	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+418	 return FullMath.mulDiv(liquidity, sqrtRatioBX96 - sqrtRatioAX96, FixedPoint96.Q96);
+419	 }
+420	 function getAmountsForLiquidity( uint160 sqrtRatioX96, uint160 sqrtRatioAX96, uint160 sqrtRatioBX96, uint128 liquidity ) internal pure returns (uint256 amount0, uint256 amount1) {
+421	 if (sqrtRatioAX96 > sqrtRatioBX96) (sqrtRatioAX96, sqrtRatioBX96) = (sqrtRatioBX96, sqrtRatioAX96);
+422	 if (sqrtRatioX96 <= sqrtRatioAX96) {
+423	 amount0 = getAmount0ForLiquidity(sqrtRatioAX96, sqrtRatioBX96, liquidity);
+424	 }
+425	 else if (sqrtRatioX96 < sqrtRatioBX96) {
+426	 amount0 = getAmount0ForLiquidity(sqrtRatioX96, sqrtRatioBX96, liquidity);
+427	 amount1 = getAmount1ForLiquidity(sqrtRatioAX96, sqrtRatioX96, liquidity);
+428	 }
+429	 else {
+430	 amount1 = getAmount1ForLiquidity(sqrtRatioAX96, sqrtRatioBX96, liquidity);
+431	 }
+432	 }
+433	 }
+434	 pragma solidity >=0.6.0;
+435	 library Path {
+436	 using BytesLib for bytes;
+437	 uint256 private constant ADDR_SIZE = 20;
+438	 uint256 private constant FEE_SIZE = 3;
+439	 uint256 private constant NEXT_OFFSET = ADDR_SIZE + FEE_SIZE;
+440	 uint256 private constant POP_OFFSET = NEXT_OFFSET + ADDR_SIZE;
+441	 uint256 private constant MULTIPLE_POOLS_MIN_LENGTH = POP_OFFSET + NEXT_OFFSET;
+442	 function hasMultiplePools(bytes memory path) internal pure returns (bool) {
+443	 return path.length >= MULTIPLE_POOLS_MIN_LENGTH;
+444	 }
+445	 function decodeFirstPool(bytes memory path) internal pure returns ( address tokenA, address tokenB, uint24 fee ) {
+446	 tokenA = path.toAddress(0);
+447	 fee = path.toUint24(ADDR_SIZE);
+448	 tokenB = path.toAddress(NEXT_OFFSET);
+449	 }
+450	 function getFirstPool(bytes memory path) internal pure returns (bytes memory) {
+451	 return path.slice(0, POP_OFFSET);
+452	 }
+453	 function skipToken(bytes memory path) internal pure returns (bytes memory) {
+454	 return path.slice(NEXT_OFFSET, path.length - NEXT_OFFSET);
+455	 }
+456	 }
+457	 pragma solidity >=0.5.0;
+458	 library PoolAddress {
+459	 bytes32 internal constant POOL_INIT_CODE_HASH = 0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54;
+460	 struct PoolKey {
+461	 address token0;
+462	 address token1;
+463	 uint24 fee;
+464	 }
+465	 function getPoolKey( address tokenA, address tokenB, uint24 fee ) internal pure returns (PoolKey memory) {
+466	 if (tokenA > tokenB) (tokenA, tokenB) = (tokenB, tokenA);
+467	 return PoolKey({
+468	 token0: tokenA, token1: tokenB, fee: fee}
+469	 );
+470	 }
+471	 function computeAddress(address factory, PoolKey memory key) internal pure returns (address pool) {
+472	 require(key.token0 < key.token1);
+473	 pool = address( uint256( keccak256( abi.encodePacked( hex'ff', factory, keccak256(abi.encode(key.token0, key.token1, key.fee)), POOL_INIT_CODE_HASH ) ) ) );
+474	 }
+475	 }
+476	 pragma solidity >=0.5.0;
+477	 library PositionKey {
+478	 function compute( address owner, int24 tickLower, int24 tickUpper ) internal pure returns (bytes32) {
+479	 return keccak256(abi.encodePacked(owner, tickLower, tickUpper));
+480	 }
+481	 }
+482	 pragma solidity >=0.4.0;
+483	 library FixedPoint64 {
+484	 uint256 internal constant Q64 = 0x10000000000000000;
+485	 }
+486	 pragma solidity >=0.7.5;
+487	 library PathPrice {
+488	 using Path for bytes;
+489	 function getSqrtPriceX96( bytes memory path, address uniV3Factory ) internal view returns (uint sqrtPriceX96){
+490	 require(path.length > 0, "IPL");
+491	 sqrtPriceX96 = FixedPoint96.Q96;
+492	 uint _nextSqrtPriceX96;
+493	 uint32[] memory secondAges = new uint32[](2);
+494	 secondAges[0] = 0;
+495	 secondAges[1] = 1;
+496	 while (true) {
+497	 (address tokenIn, address tokenOut, uint24 fee) = path.decodeFirstPool();
+498	 IUniswapV3Pool pool = IUniswapV3Pool(PoolAddress.computeAddress(uniV3Factory, PoolAddress.getPoolKey(tokenIn, tokenOut, fee)));
+499	 (_nextSqrtPriceX96,,,,,,) = pool.slot0();
+500	 sqrtPriceX96 = tokenIn > tokenOut ? FullMath.mulDiv(sqrtPriceX96, FixedPoint96.Q96, _nextSqrtPriceX96) : FullMath.mulDiv(sqrtPriceX96, _nextSqrtPriceX96, FixedPoint96.Q96);
+501	 if (path.hasMultiplePools()) path = path.skipToken();
+502	 else break;
+503	 }
+504	 }
+505	 function getSqrtPriceX96Last( bytes memory path, address uniV3Factory ) internal view returns (uint sqrtPriceX96Last){
+506	 require(path.length > 0, "IPL");
+507	 sqrtPriceX96Last = FixedPoint96.Q96;
+508	 uint _nextSqrtPriceX96;
+509	 uint32[] memory secondAges = new uint32[](2);
+510	 secondAges[0] = 0;
+511	 secondAges[1] = 1;
+512	 while (true) {
+513	 (address tokenIn, address tokenOut, uint24 fee) = path.decodeFirstPool();
+514	 IUniswapV3Pool pool = IUniswapV3Pool(PoolAddress.computeAddress(uniV3Factory, PoolAddress.getPoolKey(tokenIn, tokenOut, fee)));
+515	 (int56[] memory tickCumulatives,) = pool.observe(secondAges);
+516	 _nextSqrtPriceX96 = TickMath.getSqrtRatioAtTick(int24(tickCumulatives[0] - tickCumulatives[1]));
+517	 sqrtPriceX96Last = tokenIn > tokenOut ? FullMath.mulDiv(sqrtPriceX96Last, FixedPoint96.Q96, _nextSqrtPriceX96) : FullMath.mulDiv(sqrtPriceX96Last, _nextSqrtPriceX96, FixedPoint96.Q96);
+518	 if (path.hasMultiplePools()) path = path.skipToken();
+519	 else break;
+520	 }
+521	 }
+522	 function verifySlippage( bytes memory path, address uniV3Factory, uint32 maxSqrtSlippage ) internal view returns(uint) {
+523	 uint last = getSqrtPriceX96Last(path, uniV3Factory);
+524	 uint current = getSqrtPriceX96(path, uniV3Factory);
+525	 if(last > current) require(current > FullMath.mulDiv(maxSqrtSlippage, last, 1e4), "VS");
+526	 return current;
+527	 }
+528	 }
+529	 pragma solidity >=0.7.5;
+530	 library Position {
+531	 using LowGasSafeMath for uint;
+532	 using SafeCast for int256;
+533	 uint constant DIVISOR = 100 << 128;
+534	 struct Info {
+535	 bool isEmpty;
+536	 int24 tickLower;
+537	 int24 tickUpper;
+538	 }
+539	 function getAmountsForAmount0( uint160 sqrtPriceX96, uint160 sqrtPriceL96, uint160 sqrtPriceU96, uint deltaX ) internal pure returns(uint amount0, uint amount1){
+540	 if(sqrtPriceX96 <= sqrtPriceL96){
+541	 amount0 = deltaX;
+542	 }
+543	 else if( sqrtPriceX96 < sqrtPriceU96){
+544	 uint a = FullMath.mulDiv(sqrtPriceU96, sqrtPriceX96 - sqrtPriceL96, FixedPoint64.Q64);
+545	 uint b = FullMath.mulDiv(sqrtPriceX96, sqrtPriceU96 - sqrtPriceX96, FixedPoint64.Q64);
+546	 amount0 = FullMath.mulDiv(deltaX, b, a + b);
+547	 }
+548	 if(deltaX > amount0){
+549	 amount1 = FullMath.mulDiv( deltaX.sub(amount0), FullMath.mulDiv(sqrtPriceX96, sqrtPriceX96, FixedPoint64.Q64), FixedPoint128.Q128 );
+550	 }
+551	 }
+552	 function getAmountOutMin( uint curSqrtPirceX96, uint maxPriceImpact, uint amountIn ) internal pure returns(uint amountOutMin){
+553	 amountOutMin = FullMath.mulDiv( FullMath.mulDiv(amountIn, FullMath.mulDiv(curSqrtPirceX96, curSqrtPirceX96, FixedPoint64.Q64), FixedPoint128.Q128), 1e4 - maxPriceImpact, 1e4);
+554	 }
+555	 struct SwapParams{
+556	 uint amount;
+557	 uint amount0;
+558	 uint amount1;
+559	 uint160 sqrtPriceX96;
+560	 uint160 sqrtRatioAX96;
+561	 uint160 sqrtRatioBX96;
+562	 address token;
+563	 address token0;
+564	 address token1;
+565	 uint24 fee;
+566	 address uniV3Factory;
+567	 address uniV3Router;
+568	 uint32 maxSqrtSlippage;
+569	 uint32 maxPriceImpact;
+570	 }
+571	 function computeSwapAmounts( SwapParams memory params, mapping(address => bytes) storage buyPath ) internal returns(uint amount0Max, uint amount1Max) {
+572	 uint equalAmount0;
+573	 bytes memory buy0Path;
+574	 bytes memory buy1Path;
+575	 uint buy0SqrtPriceX96;
+576	 uint buy1SqrtPriceX96;
+577	 uint amountIn;
+578	 if(params.amount > 0){
+579	 if(params.token == params.token0){
+580	 buy1Path = buyPath[params.token1];
+581	 buy1SqrtPriceX96 = PathPrice.verifySlippage(buy1Path, params.uniV3Factory, params.maxSqrtSlippage);
+582	 equalAmount0 = params.amount0.add(params.amount);
+583	 }
+584	 else {
+585	 buy0Path = buyPath[params.token0];
+586	 buy0SqrtPriceX96 = PathPrice.verifySlippage(buy0Path, params.uniV3Factory, params.maxSqrtSlippage);
+587	 if(params.token != params.token1) {
+588	 buy1Path = buyPath[params.token1];
+589	 buy1SqrtPriceX96 = PathPrice.verifySlippage(buy1Path, params.uniV3Factory, params.maxSqrtSlippage);
+590	 }
+591	 equalAmount0 = params.amount0.add((FullMath.mulDiv( params.amount, FullMath.mulDiv(buy0SqrtPriceX96, buy0SqrtPriceX96, FixedPoint64.Q64), FixedPoint128.Q128 )));
+592	 }
+593	 }
+594	 else equalAmount0 = params.amount0;
+595	 if(params.amount1 > 0){
+596	 equalAmount0 = equalAmount0.add((FullMath.mulDiv( params.amount1, FixedPoint128.Q128, FullMath.mulDiv(params.sqrtPriceX96, params.sqrtPriceX96, FixedPoint64.Q64) )));
+597	 }
+598	 require(equalAmount0 > 0, "EIZ");
+599	 (amount0Max, amount1Max) = getAmountsForAmount0(params.sqrtPriceX96, params.sqrtRatioAX96, params.sqrtRatioBX96, equalAmount0);
+600	 if(amount0Max > params.amount0) {
+601	 if(amount1Max > params.amount1){
+602	 if(params.token0 == params.token){
+603	 amountIn = amount0Max - params.amount0;
+604	 if(amountIn > params.amount) amountIn = params.amount;
+605	 amount0Max = params.amount0.add(amountIn);
+606	 }
+607	 else {
+608	 amountIn = FullMath.mulDiv( amount0Max - params.amount0, FixedPoint128.Q128, FullMath.mulDiv(buy0SqrtPriceX96, buy0SqrtPriceX96, FixedPoint64.Q64) );
+609	 if(amountIn > params.amount) amountIn = params.amount;
+610	 if(amountIn > 0) {
+611	 uint amountOutMin = getAmountOutMin(buy0SqrtPriceX96, params.maxPriceImpact, amountIn);
+612	 amount0Max = params.amount0.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+613	 path: buy0Path, recipient: address(this), deadline: block.timestamp, amountIn: amountIn, amountOutMinimum: amountOutMin }
+614	 )));
+615	 }
+616	 else amount0Max = params.amount0;
+617	 }
+618	 if(params.token1 == params.token){
+619	 amount1Max = params.amount1.add(params.amount.sub(amountIn));
+620	 }
+621	 else {
+622	 if(amountIn < params.amount){
+623	 amountIn = params.amount.sub(amountIn);
+624	 uint amountOutMin = getAmountOutMin(buy1SqrtPriceX96, params.maxPriceImpact, amountIn);
+625	 amount1Max = params.amount1.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+626	 path: buy1Path, recipient: address(this), deadline: block.timestamp, amountIn: amountIn, amountOutMinimum: amountOutMin }
+627	 )));
+628	 }
+629	 else amount1Max = params.amount1;
+630	 }
+631	 }
+632	 else {
+633	 if (params.amount > 0){
+634	 if(params.token0 == params.token){
+635	 amount0Max = params.amount0.add(params.amount);
+636	 }
+637	 else{
+638	 uint amountOutMin = getAmountOutMin(buy0SqrtPriceX96, params.maxPriceImpact, params.amount);
+639	 amount0Max = params.amount0.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+640	 path: buy0Path, recipient: address(this), deadline: block.timestamp, amountIn: params.amount, amountOutMinimum: amountOutMin }
+641	 )));
+642	 }
+643	 }
+644	 else amount0Max = params.amount0;
+645	 if(params.amount1 > amount1Max) {
+646	 amountIn = params.amount1.sub(amount1Max);
+647	 buy0Path = abi.encodePacked(params.token1, params.fee, params.token0);
+648	 buy0SqrtPriceX96 = FixedPoint96.Q96 * FixedPoint96.Q96 / params.sqrtPriceX96;
+649	 uint lastSqrtPriceX96 = PathPrice.getSqrtPriceX96Last(buy0Path, params.uniV3Factory);
+650	 if(lastSqrtPriceX96 > buy0SqrtPriceX96) require(buy0SqrtPriceX96 > params.maxSqrtSlippage * lastSqrtPriceX96 / 1e4, "VS");
+651	 uint amountOutMin = getAmountOutMin(buy0SqrtPriceX96, params.maxPriceImpact, amountIn);
+652	 amount0Max = amount0Max.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+653	 path: buy0Path, recipient: address(this), deadline: block.timestamp, amountIn: amountIn, amountOutMinimum: amountOutMin }
+654	 )));
+655	 }
+656	 }
+657	 }
+658	 else {
+659	 if(params.amount > 0){
+660	 if(params.token1 == params.token){
+661	 amount1Max = params.amount1.add(params.amount);
+662	 }
+663	 else {
+664	 uint amountOutMin = getAmountOutMin(buy1SqrtPriceX96, params.maxPriceImpact, params.amount);
+665	 amount1Max = params.amount1.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+666	 path: buy1Path, recipient: address(this), deadline: block.timestamp, amountIn: params.amount, amountOutMinimum: amountOutMin }
+667	 )));
+668	 }
+669	 }
+670	 else amount1Max = params.amount1;
+671	 if(params.amount0 > amount0Max){
+672	 amountIn = params.amount0.sub(amount0Max);
+673	 buy1Path = abi.encodePacked(params.token0, params.fee, params.token1);
+674	 buy1SqrtPriceX96 = params.sqrtPriceX96;
+675	 uint lastSqrtPriceX96 = PathPrice.getSqrtPriceX96Last(buy1Path, params.uniV3Factory);
+676	 if(lastSqrtPriceX96 > buy1SqrtPriceX96) require(buy1SqrtPriceX96 > params.maxSqrtSlippage * lastSqrtPriceX96 / 1e4, "VS");
+677	 uint amountOutMin = getAmountOutMin(buy1SqrtPriceX96, params.maxPriceImpact, amountIn);
+678	 amount1Max = amount1Max.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+679	 path: buy1Path, recipient: address(this), deadline: block.timestamp, amountIn: amountIn, amountOutMinimum: amountOutMin }
+680	 )));
+681	 }
+682	 }
+683	 }
+684	 struct AddParams {
+685	 uint poolIndex;
+686	 address pool;
+687	 address token;
+688	 uint amount;
+689	 uint amount0Max;
+690	 uint amount1Max;
+691	 address uniV3Router;
+692	 address uniV3Factory;
+693	 uint32 maxSqrtSlippage;
+694	 uint32 maxPriceImpact;
+695	 }
+696	 function addLiquidity( Info storage self, AddParams memory params, mapping(address => bytes) storage sellPath, mapping(address => bytes) storage buyPath ) public returns(uint128 liquidity) {
+697	 (int24 tickLower, int24 tickUpper) = (self.tickLower, self.tickUpper);
+698	 (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(params.pool).slot0();
+699	 SwapParams memory swapParams = SwapParams({
+700	 amount: params.amount, amount0: params.amount0Max, amount1: params.amount1Max, sqrtPriceX96: sqrtPriceX96, sqrtRatioAX96: TickMath.getSqrtRatioAtTick(tickLower), sqrtRatioBX96: TickMath.getSqrtRatioAtTick(tickUpper), token: params.token, token0: IUniswapV3Pool(params.pool).token0(), token1: IUniswapV3Pool(params.pool).token1(), fee: IUniswapV3Pool(params.pool).fee(), uniV3Router: params.uniV3Router, uniV3Factory: params.uniV3Factory, maxSqrtSlippage: params.maxSqrtSlippage, maxPriceImpact: params.maxPriceImpact }
+701	 );
+702	 (params.amount0Max, params.amount1Max) = computeSwapAmounts(swapParams, buyPath);
+703	 (sqrtPriceX96,,,,,,) = IUniswapV3Pool(params.pool).slot0();
+704	 liquidity = LiquidityAmounts.getLiquidityForAmounts(sqrtPriceX96, swapParams.sqrtRatioAX96, swapParams.sqrtRatioBX96, params.amount0Max, params.amount1Max);
+705	 require(liquidity > 0, "LIZ");
+706	 (uint amount0, uint amount1) = IUniswapV3Pool(params.pool).mint( address(this), tickLower, tickUpper, liquidity, abi.encode(params.poolIndex) );
+707	 if(amount0 < params.amount0Max){
+708	 if(swapParams.token0 != params.token){
+709	 ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+710	 path: sellPath[swapParams.token0], recipient: address(this), deadline: block.timestamp, amountIn: params.amount0Max - amount0, amountOutMinimum: 0 }
+711	 ));
+712	 }
+713	 }
+714	 if(amount1 < params.amount1Max){
+715	 if(swapParams.token1 != params.token){
+716	 ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+717	 path: sellPath[swapParams.token1], recipient: address(this), deadline: block.timestamp, amountIn: params.amount1Max - amount1, amountOutMinimum: 0 }
+718	 ));
+719	 }
+720	 }
+721	 if(self.isEmpty) self.isEmpty = false;
+722	 }
+723	 function burnAndCollect( Info storage self, address pool, uint proportionX128 ) public returns(uint amount0, uint amount1) {
+724	 require(proportionX128 <= DIVISOR, "PTL");
+725	 if(self.isEmpty == true) return(amount0, amount1);
+726	 int24 tickLower = self.tickLower;
+727	 int24 tickUpper = self.tickUpper;
+728	 IUniswapV3Pool _pool = IUniswapV3Pool(pool);
+729	 if(proportionX128 > 0) {
+730	 (uint sumLP, , , , ) = _pool.positions(PositionKey.compute(address(this), tickLower, tickUpper));
+731	 uint subLP = FullMath.mulDiv(proportionX128, sumLP, DIVISOR);
+732	 _pool.burn(tickLower, tickUpper, uint128(subLP));
+733	 (amount0, amount1) = _pool.collect(address(this), tickLower, tickUpper, type(uint128).max, type(uint128).max);
+734	 if(sumLP == subLP) self.isEmpty = true;
+735	 }
+736	 else {
+737	 _pool.burn(tickLower, tickUpper, 0);
+738	 (amount0, amount1) = _pool.collect(address(this), tickLower, tickUpper, type(uint128).max, type(uint128).max);
+739	 }
+740	 }
+741	 struct SubParams {
+742	 address pool;
+743	 address token;
+744	 uint proportionX128;
+745	 address uniV3Router;
+746	 address uniV3Factory;
+747	 uint32 maxSqrtSlippage;
+748	 uint32 maxPriceImpact;
+749	 }
+750	 function subLiquidity ( Info storage self, SubParams memory params, mapping(address => bytes) storage sellPath ) public returns(uint amount) {
+751	 address token0 = IUniswapV3Pool(params.pool).token0();
+752	 address token1 = IUniswapV3Pool(params.pool).token1();
+753	 uint sqrtPriceX96;
+754	 uint sqrtPriceX96Last;
+755	 uint amountOutMin;
+756	 if(params.maxSqrtSlippage <= 1e4){
+757	 (sqrtPriceX96,,,,,,) = IUniswapV3Pool(params.pool).slot0();
+758	 uint32[] memory secondAges = new uint32[](2);
+759	 secondAges[0] = 0;
+760	 secondAges[1] = 1;
+761	 (int56[] memory tickCumulatives,) = IUniswapV3Pool(params.pool).observe(secondAges);
+762	 sqrtPriceX96Last = TickMath.getSqrtRatioAtTick(int24(tickCumulatives[0] - tickCumulatives[1]));
+763	 if(sqrtPriceX96Last > sqrtPriceX96) require(sqrtPriceX96 > params.maxSqrtSlippage * sqrtPriceX96Last / 1e4, "VS");
+764	 sqrtPriceX96 = FixedPoint96.Q96 * FixedPoint96.Q96 / sqrtPriceX96;
+765	 sqrtPriceX96Last = FixedPoint96.Q96 * FixedPoint96.Q96 / sqrtPriceX96Last;
+766	 if(sqrtPriceX96Last > sqrtPriceX96) require(sqrtPriceX96 > params.maxSqrtSlippage * sqrtPriceX96Last / 1e4, "VS");
+767	 }
+768	 (uint amount0, uint amount1) = burnAndCollect(self, params.pool, params.proportionX128);
+769	 if(token0 != params.token){
+770	 if(amount0 > 0){
+771	 bytes memory path = sellPath[token0];
+772	 if(params.maxSqrtSlippage <= 1e4) {
+773	 sqrtPriceX96 = PathPrice.verifySlippage(path, params.uniV3Factory, params.maxSqrtSlippage);
+774	 amountOutMin = getAmountOutMin(sqrtPriceX96, params.maxPriceImpact, amount0);
+775	 }
+776	 amount = ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+777	 path: path, recipient: address(this), deadline: block.timestamp, amountIn: amount0, amountOutMinimum: amountOutMin }
+778	 ));
+779	 }
+780	 }
+781	 if(token1 != params.token){
+782	 if(amount1 > 0){
+783	 bytes memory path = sellPath[token1];
+784	 if(params.maxSqrtSlippage <= 1e4) {
+785	 sqrtPriceX96 = PathPrice.verifySlippage(path, params.uniV3Factory, params.maxSqrtSlippage);
+786	 amountOutMin = getAmountOutMin(sqrtPriceX96, params.maxPriceImpact, amount1);
+787	 }
+788	 amount = amount.add(ISwapRouter(params.uniV3Router).exactInput(ISwapRouter.ExactInputParams({
+789	 path: path, recipient: address(this), deadline: block.timestamp, amountIn: amount1, amountOutMinimum: amountOutMin }
+790	 )));
+791	 }
+792	 }
+793	 }
+794	 struct AssetsParams {
+795	 address token0;
+796	 address token1;
+797	 uint sqrt0;
+798	 uint sqrt1;
+799	 uint160 sqrtPriceX96;
+800	 int24 tick;
+801	 uint256 feeGrowthGlobal0X128;
+802	 uint256 feeGrowthGlobal1X128;
+803	 }
+804	 function assetsOfPool( Info[] storage self, address pool, address token, mapping(address => bytes) storage sellPath, address uniV3Factory ) public view returns (uint amount, uint[] memory) {
+805	 uint[] memory amounts = new uint[](self.length);
+806	 AssetsParams memory params;
+807	 params.token0 = IUniswapV3Pool(pool).token0();
+808	 params.token1 = IUniswapV3Pool(pool).token1();
+809	 if(params.token0 != token){
+810	 bytes memory path = sellPath[params.token0];
+811	 if(path.length == 0) return(amount, amounts);
+812	 params.sqrt0 = PathPrice.getSqrtPriceX96Last(path, uniV3Factory);
+813	 }
+814	 if(params.token1 != token){
+815	 bytes memory path = sellPath[params.token1];
+816	 if(path.length == 0) return(amount, amounts);
+817	 params.sqrt1 = PathPrice.getSqrtPriceX96Last(path, uniV3Factory);
+818	 }
+819	 (params.sqrtPriceX96, params.tick, , , , , ) = IUniswapV3Pool(pool).slot0();
+820	 params.feeGrowthGlobal0X128 = IUniswapV3Pool(pool).feeGrowthGlobal0X128();
+821	 params.feeGrowthGlobal1X128 = IUniswapV3Pool(pool).feeGrowthGlobal1X128();
+822	 for(uint i=0; i < self.length; i++){
+823	 Position.Info memory position = self[i];
+824	 if(position.isEmpty) continue;
+825	 bytes32 positionKey = keccak256(abi.encodePacked(address(this), position.tickLower, position.tickUpper));
+826	 (uint256 _amount0, uint256 _amount1) = getAssetsOfSinglePosition( AssetsOfSinglePosition({
+827	 pool: pool, positionKey: positionKey, tickLower: position.tickLower, tickUpper: position.tickUpper, tickCurrent: params.tick, sqrtPriceX96: params.sqrtPriceX96, feeGrowthGlobal0X128: params.feeGrowthGlobal0X128, feeGrowthGlobal1X128: params.feeGrowthGlobal1X128 }
+828	 ) );
+829	 uint _amount;
+830	 if(params.token0 != token){
+831	 _amount = FullMath.mulDiv( _amount0, FullMath.mulDiv(params.sqrt0, params.sqrt0, FixedPoint64.Q64), FixedPoint128.Q128);
+832	 }
+833	 else _amount = _amount0;
+834	 if(params.token1 != token){
+835	 _amount = _amount.add(FullMath.mulDiv( _amount1, FullMath.mulDiv(params.sqrt1, params.sqrt1, FixedPoint64.Q64), FixedPoint128.Q128));
+836	 }
+837	 else _amount = _amount.add(_amount1);
+838	 amounts[i] = _amount;
+839	 amount = amount.add(_amount);
+840	 }
+841	 return(amount, amounts);
+842	 }
+843	 function assets( Info storage self, address pool, address token, mapping(address => bytes) storage sellPath, address uniV3Factory ) public view returns (uint amount) {
+844	 if(self.isEmpty) return 0;
+845	 (uint160 sqrtPriceX96, int24 tick, , , , , ) = IUniswapV3Pool(pool).slot0();
+846	 bytes32 positionKey = keccak256(abi.encodePacked(address(this), self.tickLower, self.tickUpper));
+847	 (uint256 amount0, uint256 amount1) = getAssetsOfSinglePosition( AssetsOfSinglePosition({
+848	 pool: pool, positionKey: positionKey, tickLower: self.tickLower, tickUpper: self.tickUpper, tickCurrent: tick, sqrtPriceX96: sqrtPriceX96, feeGrowthGlobal0X128: IUniswapV3Pool(pool).feeGrowthGlobal0X128(), feeGrowthGlobal1X128: IUniswapV3Pool(pool).feeGrowthGlobal1X128() }
+849	 ) );
+850	 if(amount0 > 0){
+851	 address token0 = IUniswapV3Pool(pool).token0();
+852	 if(token0 != token){
+853	 uint sqrt0 = PathPrice.getSqrtPriceX96Last(sellPath[token0], uniV3Factory);
+854	 amount = FullMath.mulDiv( amount0, FullMath.mulDiv(sqrt0, sqrt0, FixedPoint64.Q64), FixedPoint128.Q128);
+855	 }
+856	 else amount = amount0;
+857	 }
+858	 if(amount1 > 0){
+859	 address token1 = IUniswapV3Pool(pool).token1();
+860	 if(token1 != token){
+861	 uint sqrt1 = PathPrice.getSqrtPriceX96Last(sellPath[token1], uniV3Factory);
+862	 amount = amount.add(FullMath.mulDiv( amount1, FullMath.mulDiv(sqrt1, sqrt1, FixedPoint64.Q64), FixedPoint128.Q128));
+863	 }
+864	 else amount = amount.add(amount1);
+865	 }
+866	 }
+867	 struct AssetsOfSinglePosition {
+868	 address pool;
+869	 bytes32 positionKey;
+870	 int24 tickLower;
+871	 int24 tickUpper;
+872	 int24 tickCurrent;
+873	 uint160 sqrtPriceX96;
+874	 uint256 feeGrowthGlobal0X128;
+875	 uint256 feeGrowthGlobal1X128;
+876	 }
+877	 function getAssetsOfSinglePosition(AssetsOfSinglePosition memory params) internal view returns (uint256 amount0, uint256 amount1) {
+878	 ( uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1 ) = IUniswapV3Pool(params.pool).positions(params.positionKey);
+879	 (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = getFeeGrowthInside( FeeGrowthInsideParams({
+880	 pool: params.pool, tickLower: params.tickLower, tickUpper: params.tickUpper, tickCurrent: params.tickCurrent, feeGrowthGlobal0X128: params.feeGrowthGlobal0X128, feeGrowthGlobal1X128: params.feeGrowthGlobal1X128 }
+881	 ) );
+882	 amount0 = uint256( FullMath.mulDiv( feeGrowthInside0X128 - feeGrowthInside0LastX128, liquidity, FixedPoint128.Q128 ) );
+883	 amount1 = uint256( FullMath.mulDiv( feeGrowthInside1X128 - feeGrowthInside1LastX128, liquidity, FixedPoint128.Q128 ) );
+884	 amount0 = amount0.add(tokensOwed0);
+885	 amount1 = amount1.add(tokensOwed1);
+886	 if (params.tickCurrent < params.tickLower) {
+887	 amount0 = amount0.add(uint256( -SqrtPriceMath.getAmount0Delta( TickMath.getSqrtRatioAtTick(params.tickLower), TickMath.getSqrtRatioAtTick(params.tickUpper), -int256(liquidity).toInt128() ) ));
+888	 }
+889	 else if (params.tickCurrent < params.tickUpper) {
+890	 amount0 = amount0.add(uint256( -SqrtPriceMath.getAmount0Delta( params.sqrtPriceX96, TickMath.getSqrtRatioAtTick(params.tickUpper), -int256(liquidity).toInt128() ) ));
+891	 amount1 = amount1.add(uint256( -SqrtPriceMath.getAmount1Delta( TickMath.getSqrtRatioAtTick(params.tickLower), params.sqrtPriceX96, -int256(liquidity).toInt128() ) ));
+892	 }
+893	 else {
+894	 amount1 = amount1.add(uint256( -SqrtPriceMath.getAmount1Delta( TickMath.getSqrtRatioAtTick(params.tickLower), TickMath.getSqrtRatioAtTick(params.tickUpper), -int256(liquidity).toInt128() ) ));
+895	 }
+896	 }
+897	 struct FeeGrowthInsideParams {
+898	 address pool;
+899	 int24 tickLower;
+900	 int24 tickUpper;
+901	 int24 tickCurrent;
+902	 uint256 feeGrowthGlobal0X128;
+903	 uint256 feeGrowthGlobal1X128;
+904	 }
+905	 function getFeeGrowthInside(FeeGrowthInsideParams memory params) internal view returns (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) {
+906	 IUniswapV3Pool _pool = IUniswapV3Pool (params.pool);
+907	 uint256 lower_feeGrowthOutside0X128;
+908	 uint256 lower_feeGrowthOutside1X128;
+909	 ( , , lower_feeGrowthOutside0X128, lower_feeGrowthOutside1X128, , , ,) = _pool.ticks(params.tickLower);
+910	 uint256 feeGrowthBelow0X128;
+911	 uint256 feeGrowthBelow1X128;
+912	 if (params.tickCurrent >= params.tickLower) {
+913	 feeGrowthBelow0X128 = lower_feeGrowthOutside0X128;
+914	 feeGrowthBelow1X128 = lower_feeGrowthOutside1X128;
+915	 }
+916	 else {
+917	 feeGrowthBelow0X128 = params.feeGrowthGlobal0X128 - lower_feeGrowthOutside0X128;
+918	 feeGrowthBelow1X128 = params.feeGrowthGlobal1X128 - lower_feeGrowthOutside1X128;
+919	 }
+920	 uint256 upper_feeGrowthOutside0X128;
+921	 uint256 upper_feeGrowthOutside1X128;
+922	 ( , , upper_feeGrowthOutside0X128, upper_feeGrowthOutside1X128, , , , ) = _pool.ticks(params.tickUpper);
+923	 uint256 feeGrowthAbove0X128;
+924	 uint256 feeGrowthAbove1X128;
+925	 if (params.tickCurrent < params.tickUpper) {
+926	 feeGrowthAbove0X128 = upper_feeGrowthOutside0X128;
+927	 feeGrowthAbove1X128 = upper_feeGrowthOutside1X128;
+928	 }
+929	 else {
+930	 feeGrowthAbove0X128 = params.feeGrowthGlobal0X128 - upper_feeGrowthOutside0X128;
+931	 feeGrowthAbove1X128 = params.feeGrowthGlobal1X128 - upper_feeGrowthOutside1X128;
+932	 }
+933	 feeGrowthInside0X128 = params.feeGrowthGlobal0X128 - feeGrowthBelow0X128 - feeGrowthAbove0X128;
+934	 feeGrowthInside1X128 = params.feeGrowthGlobal1X128 - feeGrowthBelow1X128 - feeGrowthAbove1X128;
+935	 }
+936	 }

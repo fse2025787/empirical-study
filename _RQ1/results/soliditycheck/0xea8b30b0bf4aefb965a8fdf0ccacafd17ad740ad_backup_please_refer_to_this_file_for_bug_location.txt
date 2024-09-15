@@ -1,0 +1,179 @@
+row number 
+1	   pragma solidity 0.4.24;
+2	 library SafeMath {
+3	 function add(uint a, uint b) internal pure returns (uint c) {
+4	 c = a + b;
+5	 require(c >= a);
+6	 }
+7	 function sub(uint a, uint b) internal pure returns (uint c) {
+8	 require(b <= a);
+9	 c = a - b;
+10	 }
+11	 function mul(uint a, uint b) internal pure returns (uint c) {
+12	 c = a * b;
+13	 require(a == 0 || c / a == b);
+14	 }
+15	 function div(uint a, uint b) internal pure returns (uint c) {
+16	 require(b > 0);
+17	 c = a / b;
+18	 }
+19	 }
+20	 contract Owned {
+21	 address public owner;
+22	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+23	 constructor() public {
+24	 owner = msg.sender;
+25	 }
+26	 modifier onlyOwner() {
+27	 require(msg.sender == owner);
+28	 _;
+29	 }
+30	 function transferOwnership(address newOwner) public onlyOwner {
+31	 require(newOwner != address(0));
+32	 emit OwnershipTransferred(owner, newOwner);
+33	 owner = newOwner;
+34	 }
+35	 }
+36	 contract ERC20 {
+37	 function totalSupply() public view returns (uint);
+38	 function balanceOf(address tokenOwner) public view returns (uint balance);
+39	 function allowance(address tokenOwner, address spender) public view returns (uint remaining);
+40	 function transfer(address to, uint tokens) public returns (bool success);
+41	 function approve(address spender, uint tokens) public returns (bool success);
+42	 function transferFrom(address from, address to, uint tokens) public returns (bool success);
+43	 event Transfer(address indexed from, address indexed to, uint tokens);
+44	 event Approval(address indexed tokenOwner, address indexed spender, uint tokens);
+45	 }
+46	 contract StandardToken is ERC20 {
+47	 using SafeMath for uint;
+48	 string public name;
+49	 string public symbol;
+50	 uint8 public decimals;
+51	 uint public totalSupply;
+52	 mapping(address => uint) internal balances;
+53	 mapping (address => mapping (address => uint)) internal allowed;
+54	 constructor(string _name, string _symbol, uint8 _decimals, uint _totalSupply) public {
+55	 name = _name;
+56	 symbol = _symbol;
+57	 decimals = _decimals;
+58	 totalSupply = _totalSupply;
+59	 balances[msg.sender] = _totalSupply;
+60	 emit Transfer(address(0), msg.sender, _totalSupply);
+61	 }
+62	 function totalSupply() public view returns (uint) {
+63	 return totalSupply;
+64	 }
+65	 function balanceOf(address _owner) public view returns (uint) {
+66	 return balances[_owner];
+67	 }
+68	 function allowance(address _owner, address _spender) public view returns (uint) {
+69	 return allowed[_owner][_spender];
+70	 }
+71	 function transfer(address _to, uint _value) public returns (bool) {
+72	 require(_to != address(0));
+73	 require(_value <= balances[msg.sender]);
+74	 balances[msg.sender] = balances[msg.sender].sub(_value);
+75	 balances[_to] = balances[_to].add(_value);
+76	 emit Transfer(msg.sender, _to, _value);
+77	 return true;
+78	 }
+79	 function transferFrom(address _from, address _to, uint _value) public returns (bool) {
+80	 require(_to != address(0));
+81	 require(_value <= balances[_from]);
+82	 require(_value <= allowed[_from][msg.sender]);
+83	 balances[_from] = balances[_from].sub(_value);
+84	 balances[_to] = balances[_to].add(_value);
+85	 allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
+86	 emit Transfer(_from, _to, _value);
+87	 return true;
+88	 }
+89	 function approve(address _spender, uint _value) public returns (bool) {
+90	 allowed[msg.sender][_spender] = _value;
+91	 emit Approval(msg.sender, _spender, _value);
+92	 return true;
+93	 }
+94	 }
+95	 contract VotingToken is StandardToken, Owned {
+96	 using SafeMath for uint;
+97	 uint public constant numberOfAlternatives = 6;
+98	 event Reward(address indexed to, uint amount);
+99	 event Result(address indexed votingAddress, uint amount);
+100	 ERC20 private rewardToken;
+101	 bool public opened;
+102	 bool public closed;
+103	 address[numberOfAlternatives] public votingAddresses;
+104	 constructor( string _name, string _symbol, uint8 _decimals, ERC20 _rewardToken, address[numberOfAlternatives] _votingAddresses ) public StandardToken(_name, _symbol, _decimals, 0) {
+105	 require(_votingAddresses.length == numberOfAlternatives);
+106	 rewardToken = _rewardToken;
+107	 votingAddresses = _votingAddresses;
+108	 }
+109	 function transfer(address _to, uint _value) public returns (bool) {
+110	 require(super.transfer(_to, _value));
+111	 _rewardVote(msg.sender, _to, _value);
+112	 return true;
+113	 }
+114	 function transferFrom(address _from, address _to, uint _value) public returns (bool) {
+115	 require(super.transferFrom(_from, _to, _value));
+116	 _rewardVote(_from, _to, _value);
+117	 return true;
+118	 }
+119	 function () public payable {
+120	 revert();
+121	 }
+122	 function mint(address _to, uint _amount) onlyOwner external returns (bool) {
+123	 require(!opened);
+124	 totalSupply = totalSupply.add(_amount);
+125	 balances[_to] = balances[_to].add(_amount);
+126	 emit Transfer(address(0), _to, _amount);
+127	 return true;
+128	 }
+129	 function batchMint(address[] _tos, uint[] _amounts) onlyOwner external returns (bool) {
+130	 require(!opened);
+131	 require(_tos.length == _amounts.length);
+132	 uint sum = 0;
+133	 for (uint i = 0; i < _tos.length; i++) {
+134	 address to = _tos[i];
+135	 uint amount = _amounts[i];
+136	 sum = sum.add(amount);
+137	 balances[to] = balances[to].add(amount);
+138	 emit Transfer(address(0), to, amount);
+139	 }
+140	 totalSupply = totalSupply.add(sum);
+141	 return true;
+142	 }
+143	 function open() onlyOwner external {
+144	 require(!opened);
+145	 opened = true;
+146	 }
+147	 function close() onlyOwner external {
+148	 require(opened && !closed);
+149	 closed = true;
+150	 }
+151	 function destroy(address[] tokens) onlyOwner external {
+152	 for (uint i = 0; i < tokens.length; i++) {
+153	 ERC20 token = ERC20(tokens[i]);
+154	 uint balance = token.balanceOf(this);
+155	 token.transfer(owner, balance);
+156	 }
+157	 for (uint j = 0; j < numberOfAlternatives; j++) {
+158	 address votingAddress = votingAddresses[j];
+159	 uint votes = balances[votingAddress];
+160	 emit Result(votingAddress, votes);
+161	 }
+162	 selfdestruct(owner);
+163	 }
+164	 function _rewardVote(address _from, address _to, uint _value) private {
+165	 if(_isVotingAddress(_to)) {
+166	 require(opened && !closed);
+167	 uint rewardTokens = _value.div(100);
+168	 require(rewardToken.transfer(_from, rewardTokens));
+169	 emit Reward(_from, _value);
+170	 }
+171	 }
+172	 function _isVotingAddress(address votingAddress) private view returns (bool) {
+173	 for (uint i = 0; i < numberOfAlternatives; i++) {
+174	 if (votingAddresses[i] == votingAddress) return true;
+175	 }
+176	 return false;
+177	 }
+178	 }

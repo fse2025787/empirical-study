@@ -1,0 +1,124 @@
+row number 
+1	          pragma solidity ^0.5.0;
+2	 interface IERC20 {
+3	 function totalSupply() external view returns (uint256);
+4	 function balanceOf(address account) external view returns (uint256);
+5	 function transfer(address recipient, uint256 amount) external returns (bool);
+6	 function allowance(address owner, address spender) external view returns (uint256);
+7	 function approve(address spender, uint256 amount) external returns (bool);
+8	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+9	 event Transfer(address indexed from, address indexed to, uint256 value);
+10	 event Approval(address indexed owner, address indexed spender, uint256 value);
+11	 }
+12	 pragma solidity 0.5.17;
+13	 contract MerkleAirdrop {
+14	 struct Airdrop {
+15	 bytes32 root;
+16	 string dataURI;
+17	 bool paused;
+18	 mapping(address => bool) awarded;
+19	 }
+20	 event Start(uint256 id);
+21	 event PauseChange(uint256 id, bool paused);
+22	 event Award(uint256 id, address recipient, uint256 amount);
+23	 mapping(uint256 => Airdrop) public airdrops;
+24	 IERC20 public token;
+25	 uint256 public airdropsCount;
+26	 address public core;
+27	 string private constant ERROR_AWARDED = "AWARDED";
+28	 string private constant ERROR_INVALID = "INVALID";
+29	 string private constant ERROR_PAUSED = "PAUSED";
+30	 string private constant ERROR_INVALID_BAL = "INVALID_BAL";
+31	 modifier onlyCore() {
+32	 require(msg.sender == core, "Not Authorized");
+33	 _;
+34	 }
+35	 constructor() public {
+36	 core = msg.sender;
+37	 }
+38	 function setToken(address _token) public onlyCore {
+39	 token = IERC20(_token);
+40	 }
+41	 function start(bytes32 _root, string memory _dataURI) public onlyCore {
+42	 require(token.balanceOf(address(this)) > 0, ERROR_INVALID_BAL);
+43	 uint256 id = ++airdropsCount;
+44	 airdrops[id] = Airdrop(_root, _dataURI, false);
+45	 emit Start(id);
+46	 }
+47	 function setPause(uint256 _id, bool _paused) public onlyCore {
+48	 require(_id <= airdropsCount, ERROR_INVALID);
+49	 airdrops[_id].paused = _paused;
+50	 emit PauseChange(_id, _paused);
+51	 }
+52	 function removeToken() public onlyCore {
+53	 uint256 balance = token.balanceOf(address(this));
+54	 if (balance > 0) {
+55	 token.transfer(core, balance);
+56	 }
+57	 }
+58	 function award( uint256 _id, address _recipient, uint256 _amount, bytes32[] memory _proof ) public {
+59	 require(_id <= airdropsCount, ERROR_INVALID);
+60	 Airdrop storage airdrop = airdrops[_id];
+61	 require(!airdrop.paused, ERROR_PAUSED);
+62	 bytes32 hash = keccak256(abi.encodePacked(_recipient, _amount));
+63	 require(validate(airdrop.root, _proof, hash), ERROR_INVALID);
+64	 require(!airdrops[_id].awarded[_recipient], ERROR_AWARDED);
+65	 airdrops[_id].awarded[_recipient] = true;
+66	 uint256 bal = token.balanceOf(address(this));
+67	 if (bal >= _amount) {
+68	 token.transfer(_recipient, _amount);
+69	 }
+70	 else {
+71	 revert("INVALID_CONTRACT_BALANCE");
+72	 }
+73	 emit Award(_id, _recipient, _amount);
+74	 }
+75	 function awardFromMany( uint256[] memory _ids, address _recipient, uint256[] memory _amounts, bytes memory _proofs, uint256[] memory _proofLengths ) public {
+76	 uint256 totalAmount;
+77	 uint256 marker = 32;
+78	 for (uint256 i = 0; i < _ids.length; i++) {
+79	 uint256 id = _ids[i];
+80	 require(id <= airdropsCount, ERROR_INVALID);
+81	 require(!airdrops[id].paused, ERROR_PAUSED);
+82	 bytes32[] memory proof = extractProof(_proofs, marker, _proofLengths[i]);
+83	 marker += _proofLengths[i] * 32;
+84	 bytes32 hash = keccak256(abi.encodePacked(_recipient, _amounts[i]));
+85	 require(validate(airdrops[id].root, proof, hash), ERROR_INVALID);
+86	 require(!airdrops[id].awarded[_recipient], ERROR_AWARDED);
+87	 airdrops[id].awarded[_recipient] = true;
+88	 totalAmount += _amounts[i];
+89	 emit Award(id, _recipient, _amounts[i]);
+90	 }
+91	 uint256 bal = token.balanceOf(address(this));
+92	 if (bal >= totalAmount) {
+93	 token.transfer(_recipient, totalAmount);
+94	 }
+95	 else {
+96	 revert("INVALID_CONTRACT_BALANCE");
+97	 }
+98	 }
+99	 function extractProof( bytes memory _proofs, uint256 _marker, uint256 proofLength ) public pure returns (bytes32[] memory proof) {
+100	 proof = new bytes32[](proofLength);
+101	 bytes32 el;
+102	 for (uint256 j = 0; j < proofLength; j++) {
+103	 assembly {
+104	 el := mload(add(_proofs, _marker)) }
+105	 proof[j] = el;
+106	 _marker += 32;
+107	 }
+108	 }
+109	 function validate( bytes32 root, bytes32[] memory proof, bytes32 hash ) public pure returns (bool) {
+110	 for (uint256 i = 0; i < proof.length; i++) {
+111	 if (hash < proof[i]) {
+112	 hash = keccak256(abi.encodePacked(hash, proof[i]));
+113	 }
+114	 else {
+115	 hash = keccak256(abi.encodePacked(proof[i], hash));
+116	 }
+117	 }
+118	 return hash == root;
+119	 }
+120	 function awarded(uint256 _id, address _recipient) public view returns (bool) {
+121	 return airdrops[_id].awarded[_recipient];
+122	 }
+123	 }

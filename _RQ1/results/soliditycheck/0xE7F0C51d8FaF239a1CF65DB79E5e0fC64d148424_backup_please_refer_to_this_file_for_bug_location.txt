@@ -1,0 +1,1180 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.7.6;
+3	 contract Life {
+4	 using SafeMath for uint256;
+5	 using SafeMath for uint32;
+6	 AppStorage internal s;
+7	 function bean() public view returns (IBean) {
+8	 return IBean(s.c.bean);
+9	 }
+10	 function pair() public view returns (IUniswapV2Pair) {
+11	 return IUniswapV2Pair(s.c.pair);
+12	 }
+13	 function pegPair() public view returns (IUniswapV2Pair) {
+14	 return IUniswapV2Pair(s.c.pegPair);
+15	 }
+16	 function time() external view returns (Storage.Season memory) {
+17	 return s.season;
+18	 }
+19	 function season() public view returns (uint32) {
+20	 return s.season.current;
+21	 }
+22	 function seasonTime() public virtual view returns (uint32) {
+23	 if (block.timestamp < s.season.start) return 0;
+24	 if (s.season.period == 0) return uint32(-1);
+25	 return uint32((block.timestamp.sub(s.season.start).div(s.season.period)));
+26	 }
+27	 function incentiveTime() internal view returns (uint256) {
+28	 uint256 timestamp = block.timestamp.sub( s.season.start.add(s.season.period.mul(season())) );
+29	 if (timestamp > 300) timestamp = 300;
+30	 return timestamp;
+31	 }
+32	 function increaseSupply(uint256 newSupply) internal returns (uint256, uint256) {
+33	 (uint256 newHarvestable, uint256 siloReward) = (0, 0);
+34	 if (s.f.harvestable < s.f.pods) {
+35	 uint256 notHarvestable = s.f.pods.sub(s.f.harvestable);
+36	 newHarvestable = newSupply.mul(C.getHarvestPercentage()).div(1e18);
+37	 newHarvestable = newHarvestable > notHarvestable ? notHarvestable : newHarvestable;
+38	 mintToHarvestable(newHarvestable);
+39	 }
+40	 if (s.s.seeds == 0 && s.s.stalk == 0) return (newHarvestable,0);
+41	 siloReward = newSupply.sub(newHarvestable);
+42	 if (siloReward > 0) {
+43	 mintToSilo(siloReward);
+44	 }
+45	 return (newHarvestable, siloReward);
+46	 }
+47	 function mintToSilo(uint256 amount) internal {
+48	 if (amount > 0) {
+49	 bean().mint(address(this), amount);
+50	 }
+51	 }
+52	 function mintToHarvestable(uint256 amount) internal {
+53	 bean().mint(address(this), amount);
+54	 s.f.harvestable = s.f.harvestable.add(amount);
+55	 }
+56	 function mintToAccount(address account, uint256 amount) internal {
+57	 bean().mint(account, amount);
+58	 }
+59	 function increaseSoil(uint256 amount) internal returns (int256) {
+60	 uint256 maxTotalSoil = C.getMaxSoilRatioCap().mul(bean().totalSupply()).div(1e18);
+61	 uint256 minTotalSoil = C.getMinSoilRatioCap().mul(bean().totalSupply()).div(1e18);
+62	 if (s.f.soil > maxTotalSoil) {
+63	 amount = s.f.soil.sub(maxTotalSoil);
+64	 decrementTotalSoil(amount);
+65	 return -int256(amount);
+66	 }
+67	 uint256 newTotalSoil = s.f.soil + amount;
+68	 amount = newTotalSoil <= maxTotalSoil ? amount : maxTotalSoil.sub(s.f.soil);
+69	 amount = newTotalSoil >= minTotalSoil ? amount : minTotalSoil.sub(s.f.soil);
+70	 incrementTotalSoil(amount);
+71	 return int256(amount);
+72	 }
+73	 function decreaseSoil(uint256 amount) internal {
+74	 decrementTotalSoil(amount);
+75	 }
+76	 function ensureSoilBounds() internal returns (int256) {
+77	 uint256 minTotalSoil = C.getMinSoilRatioCap().mul(bean().totalSupply()).div(1e18);
+78	 if (s.f.soil < minTotalSoil) {
+79	 uint256 amount = minTotalSoil.sub(s.f.soil);
+80	 incrementTotalSoil(amount);
+81	 return int256(amount);
+82	 }
+83	 uint256 maxTotalSoil = C.getMaxSoilRatioCap().mul(bean().totalSupply()).div(1e18);
+84	 if (s.f.soil > maxTotalSoil) {
+85	 uint256 amount = s.f.soil.sub(maxTotalSoil);
+86	 decrementTotalSoil(amount);
+87	 return -int256(amount);
+88	 }
+89	 return 0;
+90	 }
+91	 function incrementTotalSoil(uint256 amount) internal {
+92	 s.f.soil = s.f.soil.add(amount);
+93	 }
+94	 function decrementTotalSoil(uint256 amount) internal {
+95	 s.f.soil = s.f.soil.sub(amount, "Season: Not enough Soil.");
+96	 }
+97	 }
+98	 pragma solidity ^0.7.6;
+99	 contract Silo is Life {
+100	 using SafeMath for uint256;
+101	 using SafeMath for uint32;
+102	 using Decimal for Decimal.D256;
+103	 uint256 private constant BASE = 1e12;
+104	 uint256 private constant BURN_BASE = 1e20;
+105	 uint256 private constant BIG_BASE = 1e24;
+106	 function seasonOfPlenty(uint32 _s) external view returns (uint256) {
+107	 return s.sops[_s];
+108	 }
+109	 function paused() public view returns (bool) {
+110	 return s.paused;
+111	 }
+112	 function stepSilo(uint256 amount) internal {
+113	 rewardStalk();
+114	 rewardBeans(amount);
+115	 }
+116	 function rewardStalk() private {
+117	 if (s.si.beans == 0) return;
+118	 uint256 newStalk = s.si.beans.mul(C.getSeedsPerBean());
+119	 s.s.stalk = s.s.stalk.add(newStalk);
+120	 s.si.stalk = s.si.stalk.add(newStalk);
+121	 }
+122	 function rewardBeans(uint256 amount) private {
+123	 if (s.s.stalk == 0 || amount == 0) return;
+124	 s.s.stalk = s.s.stalk.add(amount.mul(C.getStalkPerBean()));
+125	 s.si.beans = s.si.beans.add(amount);
+126	 s.bean.deposited = s.bean.deposited.add(amount);
+127	 s.s.seeds = s.s.seeds.add(amount.mul(C.getSeedsPerBean()));
+128	 }
+129	 function rewardEther(uint256 amount) internal {
+130	 uint256 base;
+131	 if (s.sop.base == 0) {
+132	 base = amount.mul(BIG_BASE);
+133	 s.sop.base = BURN_BASE;
+134	 }
+135	 else base = amount.mul(s.sop.base).div(s.sop.weth);
+136	 uint256 basePerStalk = base.div(s.r.roots);
+137	 base = basePerStalk.mul(s.r.roots);
+138	 s.sops[s.r.start] = s.sops[s.r.start].add(basePerStalk);
+139	 s.sop.weth = s.sop.weth.add(amount);
+140	 s.sop.base = s.sop.base.add(base);
+141	 if (base > 0) s.sop.last = s.r.start;
+142	 }
+143	 function stepGovernance() internal {
+144	 for (uint256 i; i < s.g.activeBips.length; i++) {
+145	 uint32 bip = s.g.activeBips[i];
+146	 if (season() >= s.g.bips[bip].start.add(s.g.bips[bip].period)) {
+147	 endBip(bip, i);
+148	 i--;
+149	 }
+150	 }
+151	 }
+152	 function endBip(uint32 bipId, uint256 i) private {
+153	 s.g.bips[bipId].timestamp = uint128(block.timestamp);
+154	 s.g.bips[bipId].endTotalRoots = s.s.roots;
+155	 if (i < s.g.activeBips.length-1) s.g.activeBips[i] = s.g.activeBips[s.g.activeBips.length-1];
+156	 s.g.activeBips.pop();
+157	 }
+158	 }
+159	 pragma solidity ^0.7.6;
+160	 contract Weather is Silo {
+161	 using SafeMath for uint256;
+162	 using SafeMath for uint32;
+163	 using Decimal for Decimal.D256;
+164	 event WeatherChange(uint256 indexed season, uint256 caseId, int8 change);
+165	 event SeasonOfPlenty(uint256 indexed season, uint256 eth, uint256 harvestable);
+166	 uint32 private constant MAX_UINT32 = 2**32-1;
+167	 function weather() public view returns (Storage.Weather memory) {
+168	 return s.w;
+169	 }
+170	 function rain() public view returns (Storage.Rain memory) {
+171	 return s.r;
+172	 }
+173	 function yield() public view returns (uint32) {
+174	 return s.w.yield;
+175	 }
+176	 function reserves() public view returns (uint256, uint256) {
+177	 (uint112 reserve0, uint112 reserve1,) = pair().getReserves();
+178	 return (s.index == 0 ? reserve1 : reserve0, s.index == 0 ? reserve0 : reserve1);
+179	 }
+180	 function pegReserves() public view returns (uint256, uint256) {
+181	 (uint112 reserve0, uint112 reserve1,) = pegPair().getReserves();
+182	 return (reserve1, reserve0);
+183	 }
+184	 function stepWeather(uint256 int_price, uint256 endSoil) internal {
+185	 if (bean().totalSupply() == 0) {
+186	 s.w.yield = 1;
+187	 return;
+188	 }
+189	 Decimal.D256 memory podRate = Decimal.ratio( s.f.pods.sub(s.f.harvestable), bean().totalSupply() );
+190	 uint256 dsoil = s.w.startSoil.sub(endSoil);
+191	 Decimal.D256 memory deltaPodDemand;
+192	 uint256 lastDSoil = s.w.lastDSoil;
+193	 if (dsoil == 0) deltaPodDemand = Decimal.zero();
+194	 else if (lastDSoil == 0) deltaPodDemand = Decimal.from(1e18);
+195	 else deltaPodDemand = Decimal.ratio(dsoil, lastDSoil);
+196	 uint8 caseId = 0;
+197	 if (podRate.greaterThanOrEqualTo(C.getUpperBoundPodRate())) caseId = 24;
+198	 else if (podRate.greaterThanOrEqualTo(C.getOptimalPodRate())) caseId = 16;
+199	 else if (podRate.greaterThanOrEqualTo(C.getLowerBoundPodRate())) caseId = 8;
+200	 if ( int_price > 1e18 || (int_price == 1e18 && podRate.lessThanOrEqualTo(C.getOptimalPodRate())) ) {
+201	 caseId += 4;
+202	 }
+203	 if (deltaPodDemand.greaterThanOrEqualTo(C.getUpperBoundDPD())) {
+204	 caseId += 2;
+205	 }
+206	 else if (deltaPodDemand.greaterThanOrEqualTo(C.getLowerBoundDPD())) {
+207	 if (s.w.lastSowTime == MAX_UINT32 || !s.w.didSowBelowMin) {
+208	 caseId += 1;
+209	 }
+210	 else if (s.w.didSowFaster) {
+211	 caseId += 2;
+212	 s.w.didSowFaster = false;
+213	 }
+214	 }
+215	 s.w.lastDSoil = dsoil;
+216	 handleExtremeWeather(endSoil);
+217	 changeWeather(caseId);
+218	 handleRain(caseId);
+219	 }
+220	 function handleExtremeWeather(uint256 endSoil) private {
+221	 if (s.w.didSowBelowMin) {
+222	 s.w.didSowBelowMin = false;
+223	 s.w.lastSoilPercent = uint96(endSoil.mul(1e18).div(bean().totalSupply()));
+224	 s.w.lastSowTime = s.w.nextSowTime;
+225	 s.w.nextSowTime = MAX_UINT32;
+226	 }
+227	 else if (s.w.lastSowTime != MAX_UINT32) {
+228	 s.w.lastSowTime = MAX_UINT32;
+229	 }
+230	 }
+231	 function changeWeather(uint256 caseId) private {
+232	 int8 change = s.cases[caseId];
+233	 if (change < 0) {
+234	 if (yield() <= (uint32(-change))) {
+235	 change = 1 - int8(yield());
+236	 s.w.yield = 1;
+237	 }
+238	 else s.w.yield = yield()-(uint32(-change));
+239	 }
+240	 else s.w.yield = yield()+(uint32(change));
+241	 emit WeatherChange(season(), caseId, change);
+242	 }
+243	 function handleRain(uint256 caseId) internal {
+244	 if (caseId < 4 || caseId > 7) {
+245	 if (s.r.raining) s.r.raining = false;
+246	 return;
+247	 }
+248	 else if (!s.r.raining) {
+249	 s.r.raining = true;
+250	 s.sops[season()] = s.sops[s.r.start];
+251	 s.r.start = season();
+252	 s.r.pods = s.f.pods;
+253	 s.r.roots = s.s.roots;
+254	 }
+255	 else if (season() >= s.r.start.add(C.getRainTime())) {
+256	 if (s.r.roots > 0) sop();
+257	 }
+258	 }
+259	 function sop() private {
+260	 (uint256 newBeans, uint256 newEth) = calculateSopBeansAndEth();
+261	 if ( newEth <= s.s.roots.div(1e20) || (s.sop.base > 0 && newBeans.mul(s.sop.base).div(s.sop.weth).div(s.r.roots) == 0) ) return;
+262	 mintToSilo(newBeans);
+263	 uint256 ethBought = LibMarket.sellToWETH(newBeans, 0);
+264	 uint256 newHarvestable = 0;
+265	 if (s.f.harvestable < s.r.pods) {
+266	 newHarvestable = s.r.pods.sub(s.f.harvestable);
+267	 mintToHarvestable(newHarvestable);
+268	 }
+269	 if (ethBought == 0) return;
+270	 rewardEther(ethBought);
+271	 emit SeasonOfPlenty(season(), ethBought, newHarvestable);
+272	 }
+273	 function calculateSopBeansAndEth() private view returns (uint256, uint256) {
+274	 (uint256 ethBeanPool, uint256 beansBeanPool) = reserves();
+275	 (uint256 ethUSDCPool, uint256 usdcUSDCPool) = pegReserves();
+276	 uint256 newBeans = sqrt(ethBeanPool.mul(beansBeanPool).mul(usdcUSDCPool).div(ethUSDCPool));
+277	 if (newBeans <= beansBeanPool) return (0,0);
+278	 uint256 beans = newBeans.sub(beansBeanPool);
+279	 beans = beans.mul(10000).div(9985).add(1);
+280	 uint256 beansWithFee = beans.mul(997);
+281	 uint256 numerator = beansWithFee.mul(ethBeanPool);
+282	 uint256 denominator = beansBeanPool.mul(1000).add(beansWithFee);
+283	 uint256 eth = numerator / denominator;
+284	 return (beans, eth);
+285	 }
+286	 function sqrt(uint y) internal pure returns (uint z) {
+287	 if (y > 3) {
+288	 z = y;
+289	 uint x = y / 2 + 1;
+290	 while (x < z) {
+291	 z = x;
+292	 x = (y / x + x) / 2;
+293	 }
+294	 }
+295	 else if (y != 0) {
+296	 z = 1;
+297	 }
+298	 }
+299	 }
+300	 pragma solidity ^0.7.6;
+301	 contract Sun is Weather {
+302	 using SafeMath for uint256;
+303	 using Decimal for Decimal.D256;
+304	 event SupplyIncrease( uint256 indexed season, uint256 price, uint256 newHarvestable, uint256 newSilo, int256 newSoil );
+305	 event SupplyDecrease(uint256 indexed season, uint256 price, int256 newSoil);
+306	 event SupplyNeutral(uint256 indexed season, int256 newSoil);
+307	 function stepSun(Decimal.D256 memory beanPrice, Decimal.D256 memory usdcPrice) internal returns (uint256) {
+308	 (uint256 eth_reserve, uint256 bean_reserve) = reserves();
+309	 uint256 currentBeans = sqrt( bean_reserve.mul(eth_reserve).mul(1e6).div(beanPrice.mul(1e18).asUint256()) );
+310	 uint256 targetBeans = sqrt( bean_reserve.mul(eth_reserve).mul(1e6).div(usdcPrice.mul(1e18).asUint256()) );
+311	 uint256 price = beanPrice.mul(1e18).div(usdcPrice).asUint256();
+312	 uint256 newSilo;
+313	 if (currentBeans < targetBeans) {
+314	 newSilo = growSupply(targetBeans.sub(currentBeans), price);
+315	 }
+316	 else if (currentBeans > targetBeans) {
+317	 shrinkSupply(currentBeans.sub(targetBeans), price);
+318	 }
+319	 else {
+320	 int256 newSoil = ensureSoilBounds();
+321	 emit SupplyNeutral(season(), newSoil);
+322	 }
+323	 s.w.startSoil = s.f.soil;
+324	 return newSilo;
+325	 }
+326	 function shrinkSupply(uint256 beans, uint256 price) private {
+327	 int256 newSoil = increaseSoil(beans);
+328	 emit SupplyDecrease(season(), price, newSoil);
+329	 }
+330	 function growSupply(uint256 beans, uint256 price) private returns (uint256) {
+331	 (uint256 newHarvestable, uint256 newSilo) = increaseSupply(beans);
+332	 int256 newSoil = ensureSoilBounds();
+333	 emit SupplyIncrease(season(), price, newHarvestable, newSilo, newSoil);
+334	 return newSilo;
+335	 }
+336	 }
+337	 pragma solidity >=0.6.2;
+338	 interface IUniswapV2Router01 {
+339	 function factory() external pure returns (address);
+340	 function WETH() external pure returns (address);
+341	 function addLiquidity( address tokenA, address tokenB, uint amountADesired, uint amountBDesired, uint amountAMin, uint amountBMin, address to, uint deadline ) external returns (uint amountA, uint amountB, uint liquidity);
+342	 function addLiquidityETH( address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+343	 function removeLiquidity( address tokenA, address tokenB, uint liquidity, uint amountAMin, uint amountBMin, address to, uint deadline ) external returns (uint amountA, uint amountB);
+344	 function removeLiquidityETH( address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external returns (uint amountToken, uint amountETH);
+345	 function removeLiquidityWithPermit( address tokenA, address tokenB, uint liquidity, uint amountAMin, uint amountBMin, address to, uint deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s ) external returns (uint amountA, uint amountB);
+346	 function removeLiquidityETHWithPermit( address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s ) external returns (uint amountToken, uint amountETH);
+347	 function swapExactTokensForTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external returns (uint[] memory amounts);
+348	 function swapTokensForExactTokens( uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline ) external returns (uint[] memory amounts);
+349	 function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts);
+350	 function swapTokensForExactETH(uint amountOut, uint amountInMax, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+351	 function swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory amounts);
+352	 function swapETHForExactTokens(uint amountOut, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts);
+353	 function quote(uint amountA, uint reserveA, uint reserveB) external pure returns (uint amountB);
+354	 function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) external pure returns (uint amountOut);
+355	 function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) external pure returns (uint amountIn);
+356	 function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
+357	 function getAmountsIn(uint amountOut, address[] calldata path) external view returns (uint[] memory amounts);
+358	 }
+359	 pragma solidity >=0.6.0 <0.8.0;
+360	 interface IERC20 {
+361	 function totalSupply() external view returns (uint256);
+362	 function balanceOf(address account) external view returns (uint256);
+363	 function transfer(address recipient, uint256 amount) external returns (bool);
+364	 function allowance(address owner, address spender) external view returns (uint256);
+365	 function approve(address spender, uint256 amount) external returns (bool);
+366	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+367	 event Transfer(address indexed from, address indexed to, uint256 value);
+368	 event Approval(address indexed owner, address indexed spender, uint256 value);
+369	 }
+370	 pragma solidity ^0.7.6;
+371	 contract SeasonFacet is Sun {
+372	 using SafeMath for uint256;
+373	 using Decimal for Decimal.D256;
+374	 event Sunrise(uint256 indexed season);
+375	 event Incentivization(address indexed account, uint256 beans);
+376	 event SeasonSnapshot( uint32 indexed season, uint256 price, uint256 supply, uint256 stalk, uint256 seeds, uint256 podIndex, uint256 harvestableIndex );
+377	 function sunrise() external {
+378	 require(!paused(), "Season: Paused.");
+379	 require(seasonTime() > season(), "Season: Still current Season.");
+380	 ( Decimal.D256 memory beanPrice, Decimal.D256 memory usdcPrice ) = IOracle(address(this)).capture();
+381	 uint256 price = beanPrice.mul(1e18).div(usdcPrice).asUint256();
+382	 stepGovernance();
+383	 stepSeason();
+384	 snapshotSeason(price);
+385	 stepWeather(price, s.f.soil);
+386	 uint256 increase = stepSun(beanPrice, usdcPrice);
+387	 stepSilo(increase);
+388	 incentivize(msg.sender, C.getAdvanceIncentive());
+389	 LibCheck.balanceCheck();
+390	 emit Sunrise(season());
+391	 }
+392	 function stepSeason() private {
+393	 s.season.current += 1;
+394	 }
+395	 function snapshotSeason(uint256 price) private {
+396	 s.season.timestamp = block.timestamp;
+397	 emit SeasonSnapshot( s.season.current, price, bean().totalSupply(), s.s.stalk, s.s.seeds, s.f.pods, s.f.harvestable );
+398	 }
+399	 function incentivize(address account, uint256 amount) private {
+400	 uint256 incentive = LibIncentive.fracExp(amount, 100, incentiveTime(), 1);
+401	 mintToAccount(account, incentive);
+402	 emit Incentivization(account, incentive);
+403	 }
+404	 }
+405	 pragma solidity ^0.7.6;
+406	 interface IOracle {
+407	 function capture() external returns (Decimal.D256 memory, Decimal.D256 memory);
+408	 }
+409	 pragma solidity ^0.7.6;
+410	 library LibCheck {
+411	 using SafeMath for uint256;
+412	 function beanBalanceCheck() internal view {
+413	 AppStorage storage s = LibAppStorage.diamondStorage();
+414	 require( IBean(s.c.bean).balanceOf(address(this)) >= s.f.harvestable.sub(s.f.harvested).add(s.bean.deposited).add(s.bean.withdrawn), "Check: Bean balance fail." );
+415	 }
+416	 function lpBalanceCheck() internal view {
+417	 AppStorage storage s = LibAppStorage.diamondStorage();
+418	 require( IUniswapV2Pair(s.c.pair).balanceOf(address(this)) >= s.lp.deposited.add(s.lp.withdrawn), "Check: LP balance fail." );
+419	 }
+420	 function balanceCheck() internal view {
+421	 AppStorage storage s = LibAppStorage.diamondStorage();
+422	 require( IBean(s.c.bean).balanceOf(address(this)) >= s.f.harvestable.sub(s.f.harvested).add(s.bean.deposited).add(s.bean.withdrawn), "Check: Bean balance fail." );
+423	 require( IUniswapV2Pair(s.c.pair).balanceOf(address(this)) >= s.lp.deposited.add(s.lp.withdrawn), "Check: LP balance fail." );
+424	 }
+425	 }
+426	 pragma solidity ^0.7.6;
+427	 library LibIncentive {
+428	 function fracExp(uint k, uint q, uint n, uint x) internal pure returns (uint) {
+429	 uint p = log_two(n) + 1 + x * n / q;
+430	 uint s = 0;
+431	 uint N = 1;
+432	 uint B = 1;
+433	 for (uint i = 0; i < p; ++i){
+434	 s += k * N / B / (q**i);
+435	 N = N * (n-i);
+436	 B = B * (i+1);
+437	 }
+438	 return s;
+439	 }
+440	 function log_two(uint x) private pure returns (uint y) {
+441	 assembly {
+442	 let arg := x x := sub(x,1) x := or(x, div(x, 0x02)) x := or(x, div(x, 0x04)) x := or(x, div(x, 0x10)) x := or(x, div(x, 0x100)) x := or(x, div(x, 0x10000)) x := or(x, div(x, 0x100000000)) x := or(x, div(x, 0x10000000000000000)) x := or(x, div(x, 0x100000000000000000000000000000000)) x := add(x, 1) let m := mload(0x40) mstore(m, 0xf8f9cbfae6cc78fbefe7cdc3a1793dfcf4f0e8bbd8cec470b6a28a7a5a3e1efd) mstore(add(m,0x20), 0xf5ecf1b3e9debc68e1d9cfabc5997135bfb7a7a3938b7b606b5b4b3f2f1f0ffe) mstore(add(m,0x40), 0xf6e4ed9ff2d6b458eadcdf97bd91692de2d4da8fd2d0ac50c6ae9a8272523616) mstore(add(m,0x60), 0xc8c0b887b0a8a4489c948c7f847c6125746c645c544c444038302820181008ff) mstore(add(m,0x80), 0xf7cae577eec2a03cf3bad76fb589591debb2dd67e0aa9834bea6925f6a4a2e0e) mstore(add(m,0xa0), 0xe39ed557db96902cd38ed14fad815115c786af479b7e83247363534337271707) mstore(add(m,0xc0), 0xc976c13bb96e881cb166a933a55e490d9d56952b8d4e801485467d2362422606) mstore(add(m,0xe0), 0x753a6d1b65325d0c552a4d1345224105391a310b29122104190a110309020100) mstore(0x40, add(m, 0x100)) let magic := 0x818283848586878898a8b8c8d8e8f929395969799a9b9d9e9faaeb6bedeeff let shift := 0x100000000000000000000000000000000000000000000000000000000000000 let a := div(mul(x, magic), shift) y := div(mload(add(m,sub(255,a))), shift) y := add(y, mul(256, gt(arg, 0x8000000000000000000000000000000000000000000000000000000000000000))) }
+443	 }
+444	 }
+445	 pragma solidity ^0.7.6;
+446	 library Decimal {
+447	 using SafeMath for uint256;
+448	 uint256 constant BASE = 10**18;
+449	 struct D256 {
+450	 uint256 value;
+451	 }
+452	 function zero() internal pure returns (D256 memory) {
+453	 return D256({
+454	 value: 0 }
+455	 );
+456	 }
+457	 function one() internal pure returns (D256 memory) {
+458	 return D256({
+459	 value: BASE }
+460	 );
+461	 }
+462	 function from( uint256 a ) internal pure returns (D256 memory) {
+463	 return D256({
+464	 value: a.mul(BASE) }
+465	 );
+466	 }
+467	 function ratio( uint256 a, uint256 b ) internal pure returns (D256 memory) {
+468	 return D256({
+469	 value: getPartial(a, BASE, b) }
+470	 );
+471	 }
+472	 function add( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+473	 return D256({
+474	 value: self.value.add(b.mul(BASE)) }
+475	 );
+476	 }
+477	 function sub( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+478	 return D256({
+479	 value: self.value.sub(b.mul(BASE)) }
+480	 );
+481	 }
+482	 function sub( D256 memory self, uint256 b, string memory reason ) internal pure returns (D256 memory) {
+483	 return D256({
+484	 value: self.value.sub(b.mul(BASE), reason) }
+485	 );
+486	 }
+487	 function mul( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+488	 return D256({
+489	 value: self.value.mul(b) }
+490	 );
+491	 }
+492	 function div( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+493	 return D256({
+494	 value: self.value.div(b) }
+495	 );
+496	 }
+497	 function pow( D256 memory self, uint256 b ) internal pure returns (D256 memory) {
+498	 if (b == 0) {
+499	 return from(1);
+500	 }
+501	 D256 memory temp = D256({
+502	 value: self.value }
+503	 );
+504	 for (uint256 i = 1; i < b; i++) {
+505	 temp = mul(temp, self);
+506	 }
+507	 return temp;
+508	 }
+509	 function add( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+510	 return D256({
+511	 value: self.value.add(b.value) }
+512	 );
+513	 }
+514	 function sub( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+515	 return D256({
+516	 value: self.value.sub(b.value) }
+517	 );
+518	 }
+519	 function sub( D256 memory self, D256 memory b, string memory reason ) internal pure returns (D256 memory) {
+520	 return D256({
+521	 value: self.value.sub(b.value, reason) }
+522	 );
+523	 }
+524	 function mul( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+525	 return D256({
+526	 value: getPartial(self.value, b.value, BASE) }
+527	 );
+528	 }
+529	 function div( D256 memory self, D256 memory b ) internal pure returns (D256 memory) {
+530	 return D256({
+531	 value: getPartial(self.value, BASE, b.value) }
+532	 );
+533	 }
+534	 function equals(D256 memory self, D256 memory b) internal pure returns (bool) {
+535	 return self.value == b.value;
+536	 }
+537	 function greaterThan(D256 memory self, D256 memory b) internal pure returns (bool) {
+538	 return compareTo(self, b) == 2;
+539	 }
+540	 function lessThan(D256 memory self, D256 memory b) internal pure returns (bool) {
+541	 return compareTo(self, b) == 0;
+542	 }
+543	 function greaterThanOrEqualTo(D256 memory self, D256 memory b) internal pure returns (bool) {
+544	 return compareTo(self, b) > 0;
+545	 }
+546	 function lessThanOrEqualTo(D256 memory self, D256 memory b) internal pure returns (bool) {
+547	 return compareTo(self, b) < 2;
+548	 }
+549	 function isZero(D256 memory self) internal pure returns (bool) {
+550	 return self.value == 0;
+551	 }
+552	 function asUint256(D256 memory self) internal pure returns (uint256) {
+553	 return self.value.div(BASE);
+554	 }
+555	 function getPartial( uint256 target, uint256 numerator, uint256 denominator ) private pure returns (uint256) {
+556	 return target.mul(numerator).div(denominator);
+557	 }
+558	 function compareTo( D256 memory a, D256 memory b ) private pure returns (uint256) {
+559	 if (a.value == b.value) {
+560	 return 1;
+561	 }
+562	 return a.value > b.value ? 2 : 0;
+563	 }
+564	 }
+565	 pragma solidity ^0.7.6;
+566	 library LibMarket {
+567	 struct DiamondStorage {
+568	 address bean;
+569	 address weth;
+570	 address router;
+571	 }
+572	 struct AddLiquidity {
+573	 uint256 beanAmount;
+574	 uint256 minBeanAmount;
+575	 uint256 minEthAmount;
+576	 }
+577	 using SafeMath for uint256;
+578	 bytes32 private constant MARKET_STORAGE_POSITION = keccak256("diamond.standard.market.storage");
+579	 function diamondStorage() internal pure returns (DiamondStorage storage ds) {
+580	 bytes32 position = MARKET_STORAGE_POSITION;
+581	 assembly {
+582	 ds.slot := position }
+583	 }
+584	 function initMarket(address bean, address weth, address router) internal {
+585	 DiamondStorage storage ds = diamondStorage();
+586	 ds.bean = bean;
+587	 ds.weth = weth;
+588	 ds.router = router;
+589	 }
+590	 function buy(uint256 buyBeanAmount) internal returns (uint256 amount) {
+591	 (uint256 ethAmount, uint256 beanAmount) = _buy(buyBeanAmount, msg.value, msg.sender);
+592	 (bool success,) = msg.sender.call{
+593	 value: msg.value.sub(ethAmount) }
+594	 ("");
+595	 require(success, "Market: Refund failed.");
+596	 return beanAmount;
+597	 }
+598	 function buyAndDeposit(uint256 buyBeanAmount) internal returns (uint256 amount) {
+599	 (uint256 ethAmount, uint256 beanAmount) = _buy(buyBeanAmount, msg.value, address(this));
+600	 (bool success,) = msg.sender.call{
+601	 value: msg.value.sub(ethAmount) }
+602	 ("");
+603	 require(success, "Market: Refund failed.");
+604	 return beanAmount;
+605	 }
+606	 function sellToWETH(uint256 sellBeanAmount, uint256 minBuyEthAmount) internal returns (uint256 amount) {
+607	 (,uint256 outAmount) = _sell(sellBeanAmount, minBuyEthAmount, address(this));
+608	 return outAmount;
+609	 }
+610	 function addLiquidity(AddLiquidity calldata al) internal returns (uint256, uint256) {
+611	 (uint256 beansDeposited, uint256 ethDeposited, uint256 liquidity) = _addLiquidity( msg.value, al.beanAmount, al.minEthAmount, al.minBeanAmount );
+612	 (bool success,) = msg.sender.call{
+613	 value: msg.value.sub(ethDeposited) }
+614	 ("");
+615	 require(success, "Market: Refund failed.");
+616	 return (beansDeposited, liquidity);
+617	 }
+618	 function removeLiquidity(uint256 liqudity, uint256 minBeanAmount,uint256 minEthAmount) internal returns (uint256 beanAmount, uint256 ethAmount) {
+619	 DiamondStorage storage ds = diamondStorage();
+620	 return IUniswapV2Router02(ds.router).removeLiquidityETH( ds.bean, liqudity, minBeanAmount, minEthAmount, msg.sender, block.timestamp.add(1));
+621	 }
+622	 function addAndDepositLiquidity(AddLiquidity calldata al) internal returns (uint256) {
+623	 DiamondStorage storage ds = diamondStorage();
+624	 IBean(ds.bean).transferFrom(msg.sender, address(this), al.beanAmount);
+625	 (uint256 beans, uint256 liquidity) = addLiquidity(al);
+626	 if (al.beanAmount > beans) IBean(ds.bean).transfer(msg.sender, al.beanAmount.sub(beans));
+627	 return liquidity;
+628	 }
+629	 function swapAndAddLiquidity( uint256 buyBeanAmount, uint256 buyEthAmount, LibMarket.AddLiquidity calldata al ) internal returns (uint256) {
+630	 uint256 boughtLP;
+631	 if (buyBeanAmount > 0) boughtLP = LibMarket.buyBeansAndAddLiquidity(buyBeanAmount, al);
+632	 else if (buyEthAmount > 0) boughtLP = LibMarket.buyEthAndAddLiquidity(buyEthAmount, al);
+633	 else boughtLP = LibMarket.addAndDepositLiquidity(al);
+634	 return boughtLP;
+635	 }
+636	 function buyBeansAndAddLiquidity(uint256 buyBeanAmount, AddLiquidity calldata al) internal returns (uint256) {
+637	 DiamondStorage storage ds = diamondStorage();
+638	 address[] memory path = new address[](2);
+639	 path[0] = ds.weth;
+640	 path[1] = ds.bean;
+641	 uint256[] memory amounts = IUniswapV2Router02(ds.router).getAmountsIn(buyBeanAmount, path);
+642	 (uint256 ethSold, uint256 beans) = _buy(buyBeanAmount, amounts[0], address(this));
+643	 if (al.beanAmount > buyBeanAmount) {
+644	 IBean(ds.bean).transferFrom(msg.sender, address(this), al.beanAmount.sub(buyBeanAmount));
+645	 beans = beans.add(al.beanAmount.sub(buyBeanAmount));
+646	 }
+647	 uint256 liquidity;
+648	 uint256 ethAdded;
+649	 (beans, ethAdded, liquidity) = _addLiquidity( msg.value.sub(ethSold), beans, al.minEthAmount, al.minBeanAmount );
+650	 if (al.beanAmount > beans) IBean(ds.bean).transfer(msg.sender, al.beanAmount.sub(beans));
+651	 if (msg.value > ethAdded.add(ethSold)) {
+652	 (bool success,) = msg.sender.call{
+653	 value: msg.value.sub(ethAdded).sub(ethSold) }
+654	 ("");
+655	 require(success, "Market: Refund failed.");
+656	 }
+657	 return liquidity;
+658	 }
+659	 function buyEthAndAddLiquidity(uint256 buyWethAmount, AddLiquidity calldata al) internal returns (uint256) {
+660	 DiamondStorage storage ds = diamondStorage();
+661	 uint256 sellBeans = _amountIn(buyWethAmount);
+662	 IBean(ds.bean).transferFrom(msg.sender, address(this), al.beanAmount.add(sellBeans));
+663	 (uint256 beansSold, uint256 wethBought) = _sell(sellBeans, buyWethAmount, address(this));
+664	 if (msg.value > 0) IWETH(ds.weth).deposit{
+665	 value: msg.value}
+666	 ();
+667	 (uint256 beans, uint256 ethAdded, uint256 liquidity) = _addLiquidityWETH( msg.value.add(wethBought), al.beanAmount, al.minEthAmount, al.minBeanAmount );
+668	 if (al.beanAmount.add(sellBeans) > beans.add(beansSold)) IBean(ds.bean).transfer( msg.sender, al.beanAmount.add(sellBeans).sub(beans.add(beansSold)) );
+669	 if (ethAdded < wethBought.add(msg.value)) {
+670	 uint256 eth = wethBought.add(msg.value).sub(ethAdded);
+671	 IWETH(ds.weth).withdraw(eth);
+672	 (bool success, ) = msg.sender.call{
+673	 value: eth}
+674	 ("");
+675	 require(success, "Market: Ether transfer failed.");
+676	 }
+677	 return liquidity;
+678	 }
+679	 function _sell(uint256 sellBeanAmount, uint256 minBuyEthAmount, address to) private returns (uint256 inAmount, uint256 outAmount) {
+680	 DiamondStorage storage ds = diamondStorage();
+681	 address[] memory path = new address[](2);
+682	 path[0] = ds.bean;
+683	 path[1] = ds.weth;
+684	 uint[] memory amounts = IUniswapV2Router02(ds.router).swapExactTokensForTokens( sellBeanAmount, minBuyEthAmount, path, to, block.timestamp.add(1) );
+685	 return (amounts[0], amounts[1]);
+686	 }
+687	 function _buy(uint256 beanAmount, uint256 ethAmount, address to) private returns (uint256 inAmount, uint256 outAmount) {
+688	 DiamondStorage storage ds = diamondStorage();
+689	 address[] memory path = new address[](2);
+690	 path[0] = ds.weth;
+691	 path[1] = ds.bean;
+692	 uint[] memory amounts = IUniswapV2Router02(ds.router).swapExactETHForTokens{
+693	 value: ethAmount}
+694	 ( beanAmount, path, to, block.timestamp.add(1) );
+695	 return (amounts[0], amounts[1]);
+696	 }
+697	 function _addLiquidity(uint256 ethAmount, uint256 beanAmount, uint256 minEthAmount, uint256 minBeanAmount) private returns (uint256, uint256, uint256) {
+698	 DiamondStorage storage ds = diamondStorage();
+699	 return IUniswapV2Router02(ds.router).addLiquidityETH{
+700	 value: ethAmount}
+701	 ( ds.bean, beanAmount, minBeanAmount, minEthAmount, address(this), block.timestamp.add(1));
+702	 }
+703	 function _addLiquidityWETH(uint256 wethAmount, uint256 beanAmount, uint256 minWethAmount, uint256 minBeanAmount) private returns (uint256, uint256, uint256) {
+704	 DiamondStorage storage ds = diamondStorage();
+705	 return IUniswapV2Router02(ds.router).addLiquidity( ds.bean, ds.weth, beanAmount, wethAmount, minBeanAmount, minWethAmount, address(this), block.timestamp.add(1));
+706	 }
+707	 function _amountIn(uint256 buyWethAmount) private view returns (uint256) {
+708	 DiamondStorage storage ds = diamondStorage();
+709	 address[] memory path = new address[](2);
+710	 path[0] = ds.bean;
+711	 path[1] = ds.weth;
+712	 uint256[] memory amounts = IUniswapV2Router02(ds.router).getAmountsIn(buyWethAmount, path);
+713	 return amounts[0];
+714	 }
+715	 }
+716	 pragma solidity >=0.6.0 <0.8.0;
+717	 library SafeMath {
+718	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+719	 uint256 c = a + b;
+720	 if (c < a) return (false, 0);
+721	 return (true, c);
+722	 }
+723	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+724	 if (b > a) return (false, 0);
+725	 return (true, a - b);
+726	 }
+727	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+728	 if (a == 0) return (true, 0);
+729	 uint256 c = a * b;
+730	 if (c / a != b) return (false, 0);
+731	 return (true, c);
+732	 }
+733	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+734	 if (b == 0) return (false, 0);
+735	 return (true, a / b);
+736	 }
+737	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+738	 if (b == 0) return (false, 0);
+739	 return (true, a % b);
+740	 }
+741	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+742	 uint256 c = a + b;
+743	 require(c >= a, "SafeMath: addition overflow");
+744	 return c;
+745	 }
+746	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+747	 require(b <= a, "SafeMath: subtraction overflow");
+748	 return a - b;
+749	 }
+750	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+751	 if (a == 0) return 0;
+752	 uint256 c = a * b;
+753	 require(c / a == b, "SafeMath: multiplication overflow");
+754	 return c;
+755	 }
+756	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+757	 require(b > 0, "SafeMath: division by zero");
+758	 return a / b;
+759	 }
+760	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+761	 require(b > 0, "SafeMath: modulo by zero");
+762	 return a % b;
+763	 }
+764	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+765	 require(b <= a, errorMessage);
+766	 return a - b;
+767	 }
+768	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+769	 require(b > 0, errorMessage);
+770	 return a / b;
+771	 }
+772	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+773	 require(b > 0, errorMessage);
+774	 return a % b;
+775	 }
+776	 }
+777	 pragma solidity >=0.6.2;
+778	 interface IUniswapV2Router02 is IUniswapV2Router01 {
+779	 function removeLiquidityETHSupportingFeeOnTransferTokens( address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external returns (uint amountETH);
+780	 function removeLiquidityETHWithPermitSupportingFeeOnTransferTokens( address token, uint liquidity, uint amountTokenMin, uint amountETHMin, address to, uint deadline, bool approveMax, uint8 v, bytes32 r, bytes32 s ) external returns (uint amountETH);
+781	 function swapExactTokensForTokensSupportingFeeOnTransferTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external;
+782	 function swapExactETHForTokensSupportingFeeOnTransferTokens( uint amountOutMin, address[] calldata path, address to, uint deadline ) external payable;
+783	 function swapExactTokensForETHSupportingFeeOnTransferTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external;
+784	 }
+785	 pragma solidity ^0.7.6;
+786	 abstract contract IBean is IERC20 {
+787	 function burn(uint256 amount) public virtual;
+788	 function burnFrom(address account, uint256 amount) public virtual;
+789	 function mint(address account, uint256 amount) public virtual returns (bool);
+790	 }
+791	 pragma solidity ^0.7.6;
+792	 interface IWETH is IERC20 {
+793	 function deposit() external payable;
+794	 function withdraw(uint) external;
+795	 }
+796	 pragma solidity ^0.7.6;
+797	 library LibInternal {
+798	 bytes32 constant DIAMOND_STORAGE_POSITION = keccak256("diamond.standard.diamond.storage");
+799	 struct FacetAddressAndPosition {
+800	 address facetAddress;
+801	 uint16 functionSelectorPosition;
+802	 }
+803	 struct FacetFunctionSelectors {
+804	 bytes4[] functionSelectors;
+805	 uint16 facetAddressPosition;
+806	 }
+807	 struct DiamondStorage {
+808	 mapping(bytes4 => FacetAddressAndPosition) selectorToFacetAndPosition;
+809	 mapping(address => FacetFunctionSelectors) facetFunctionSelectors;
+810	 address[] facetAddresses;
+811	 mapping(bytes4 => bool) supportedInterfaces;
+812	 address contractOwner;
+813	 }
+814	 function diamondStorage() internal pure returns (DiamondStorage storage ds) {
+815	 bytes32 position = DIAMOND_STORAGE_POSITION;
+816	 assembly {
+817	 ds.slot := position }
+818	 }
+819	 struct Claim {
+820	 uint32[] beanWithdrawals;
+821	 uint32[] lpWithdrawals;
+822	 uint256[] plots;
+823	 bool claimEth;
+824	 bool convertLP;
+825	 uint256 minBeanAmount;
+826	 uint256 minEthAmount;
+827	 }
+828	 function updateSilo(address account) internal {
+829	 DiamondStorage storage ds = diamondStorage();
+830	 bytes4 functionSelector = bytes4(keccak256("updateSilo(address)"));
+831	 address facet = ds.selectorToFacetAndPosition[functionSelector].facetAddress;
+832	 bytes memory myFunctionCall = abi.encodeWithSelector(functionSelector, account);
+833	 (bool success,) = address(facet).delegatecall(myFunctionCall);
+834	 require(success, "Silo: updateSilo failed.");
+835	 }
+836	 function updateBip(uint32 bip) internal {
+837	 DiamondStorage storage ds = diamondStorage();
+838	 bytes4 functionSelector = bytes4(keccak256("updateBip(uint32)"));
+839	 address facet = ds.selectorToFacetAndPosition[functionSelector].facetAddress;
+840	 bytes memory myFunctionCall = abi.encodeWithSelector(functionSelector, bip);
+841	 (bool success,) = address(facet).delegatecall(myFunctionCall);
+842	 require(success, "Silo: updateBip failed.");
+843	 }
+844	 function stalkFor(uint32 bip) internal returns (uint256) {
+845	 DiamondStorage storage ds = diamondStorage();
+846	 bytes4 functionSelector = bytes4(keccak256("stalkFor(uint32)"));
+847	 address facet = ds.selectorToFacetAndPosition[functionSelector].facetAddress;
+848	 bytes memory myFunctionCall = abi.encodeWithSelector(functionSelector, bip);
+849	 (bool success, bytes memory data) = address(facet).delegatecall(myFunctionCall);
+850	 require(success, "Governance: stalkFor failed.");
+851	 uint stalk;
+852	 assembly {
+853	 stalk := mload(add(data, add(0x20, 0))) }
+854	 return stalk;
+855	 }
+856	 function claim(Claim calldata c) internal {
+857	 DiamondStorage storage ds = diamondStorage();
+858	 bytes4 functionSelector = bytes4(keccak256("claim((uint32[],uint32[],uint256[],bool,bool,uint256,uint256))"));
+859	 address facet = ds.selectorToFacetAndPosition[functionSelector].facetAddress;
+860	 bytes memory myFunctionCall = abi.encodeWithSelector(functionSelector, c);
+861	 (bool success,) = address(facet).delegatecall(myFunctionCall);
+862	 require(success, "Claim: claim failed.");
+863	 }
+864	 }
+865	 pragma solidity >=0.5.0;
+866	 interface IUniswapV2Pair {
+867	 event Approval(address indexed owner, address indexed spender, uint value);
+868	 event Transfer(address indexed from, address indexed to, uint value);
+869	 function name() external pure returns (string memory);
+870	 function symbol() external pure returns (string memory);
+871	 function decimals() external pure returns (uint8);
+872	 function totalSupply() external view returns (uint);
+873	 function balanceOf(address owner) external view returns (uint);
+874	 function allowance(address owner, address spender) external view returns (uint);
+875	 function approve(address spender, uint value) external returns (bool);
+876	 function transfer(address to, uint value) external returns (bool);
+877	 function transferFrom(address from, address to, uint value) external returns (bool);
+878	 function DOMAIN_SEPARATOR() external view returns (bytes32);
+879	 function PERMIT_TYPEHASH() external pure returns (bytes32);
+880	 function nonces(address owner) external view returns (uint);
+881	 function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+882	 event Mint(address indexed sender, uint amount0, uint amount1);
+883	 event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+884	 event Swap( address indexed sender, uint amount0In, uint amount1In, uint amount0Out, uint amount1Out, address indexed to );
+885	 event Sync(uint112 reserve0, uint112 reserve1);
+886	 function MINIMUM_LIQUIDITY() external pure returns (uint);
+887	 function factory() external view returns (address);
+888	 function token0() external view returns (address);
+889	 function token1() external view returns (address);
+890	 function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+891	 function price0CumulativeLast() external view returns (uint);
+892	 function price1CumulativeLast() external view returns (uint);
+893	 function kLast() external view returns (uint);
+894	 function mint(address to) external returns (uint liquidity);
+895	 function burn(address to) external returns (uint amount0, uint amount1);
+896	 function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
+897	 function skim(address to) external;
+898	 function sync() external;
+899	 function initialize(address, address) external;
+900	 }
+901	 pragma solidity ^0.7.6;
+902	 contract Account {
+903	 struct Field {
+904	 mapping(uint256 => uint256) plots;
+905	 mapping(address => uint256) podAllowances;
+906	 }
+907	 struct AssetSilo {
+908	 mapping(uint32 => uint256) withdrawals;
+909	 mapping(uint32 => uint256) deposits;
+910	 mapping(uint32 => uint256) depositSeeds;
+911	 }
+912	 struct Silo {
+913	 uint256 stalk;
+914	 uint256 seeds;
+915	 }
+916	 struct SeasonOfPlenty {
+917	 uint256 base;
+918	 uint256 roots;
+919	 uint256 basePerRoot;
+920	 }
+921	 struct State {
+922	 Field field;
+923	 AssetSilo bean;
+924	 AssetSilo lp;
+925	 Silo s;
+926	 uint32 lockedUntil;
+927	 uint32 lastUpdate;
+928	 uint32 lastSop;
+929	 uint32 lastRain;
+930	 SeasonOfPlenty sop;
+931	 uint256 roots;
+932	 }
+933	 }
+934	 contract Storage {
+935	 struct Contracts {
+936	 address bean;
+937	 address pair;
+938	 address pegPair;
+939	 address weth;
+940	 }
+941	 struct Field {
+942	 uint256 soil;
+943	 uint256 pods;
+944	 uint256 harvested;
+945	 uint256 harvestable;
+946	 }
+947	 struct Bip {
+948	 address proposer;
+949	 uint32 start;
+950	 uint32 period;
+951	 bool executed;
+952	 int pauseOrUnpause;
+953	 uint128 timestamp;
+954	 uint256 roots;
+955	 uint256 endTotalRoots;
+956	 }
+957	 struct DiamondCut {
+958	 IDiamondCut.FacetCut[] diamondCut;
+959	 address initAddress;
+960	 bytes initData;
+961	 }
+962	 struct Governance {
+963	 uint32[] activeBips;
+964	 uint32 bipIndex;
+965	 mapping(uint32 => DiamondCut) diamondCuts;
+966	 mapping(uint32 => mapping(address => bool)) voted;
+967	 mapping(uint32 => Bip) bips;
+968	 }
+969	 struct AssetSilo {
+970	 uint256 deposited;
+971	 uint256 withdrawn;
+972	 }
+973	 struct IncreaseSilo {
+974	 uint256 beans;
+975	 uint256 stalk;
+976	 }
+977	 struct SeasonOfPlenty {
+978	 uint256 weth;
+979	 uint256 base;
+980	 uint32 last;
+981	 }
+982	 struct Silo {
+983	 uint256 stalk;
+984	 uint256 seeds;
+985	 uint256 roots;
+986	 }
+987	 struct Oracle {
+988	 bool initialized;
+989	 uint256 cumulative;
+990	 uint256 pegCumulative;
+991	 uint32 timestamp;
+992	 uint32 pegTimestamp;
+993	 }
+994	 struct Rain {
+995	 uint32 start;
+996	 bool raining;
+997	 uint256 pods;
+998	 uint256 roots;
+999	 }
+1000	 struct Season {
+1001	 uint32 current;
+1002	 uint256 start;
+1003	 uint256 period;
+1004	 uint256 timestamp;
+1005	 }
+1006	 struct Weather {
+1007	 uint256 startSoil;
+1008	 uint256 lastDSoil;
+1009	 uint96 lastSoilPercent;
+1010	 uint32 lastSowTime;
+1011	 uint32 nextSowTime;
+1012	 uint32 yield;
+1013	 bool didSowBelowMin;
+1014	 bool didSowFaster;
+1015	 }
+1016	 }
+1017	 struct AppStorage {
+1018	 uint8 index;
+1019	 int8[32] cases;
+1020	 bool paused;
+1021	 uint128 pausedAt;
+1022	 Storage.Season season;
+1023	 Storage.Contracts c;
+1024	 Storage.Field f;
+1025	 Storage.Governance g;
+1026	 Storage.Oracle o;
+1027	 Storage.Rain r;
+1028	 Storage.Silo s;
+1029	 uint256 depreciated1;
+1030	 Storage.Weather w;
+1031	 Storage.AssetSilo bean;
+1032	 Storage.AssetSilo lp;
+1033	 Storage.IncreaseSilo si;
+1034	 Storage.SeasonOfPlenty sop;
+1035	 uint256 depreciated2;
+1036	 uint256 depreciated3;
+1037	 uint256 depreciated4;
+1038	 uint256 depreciated5;
+1039	 uint256 depreciated6;
+1040	 mapping (uint32 => uint256) sops;
+1041	 mapping (address => Account.State) a;
+1042	 uint32 bip0Start;
+1043	 }
+1044	 pragma solidity ^0.7.6;
+1045	 library C {
+1046	 using Decimal for Decimal.D256;
+1047	 using SafeMath for uint256;
+1048	 uint256 private constant CHAIN_ID = 1;
+1049	 uint256 private constant CURRENT_SEASON_PERIOD = 3600;
+1050	 uint256 private constant HARVESET_PERCENTAGE = 5e17;
+1051	 uint256 private constant POD_RATE_LOWER_BOUND = 5e16;
+1052	 uint256 private constant OPTIMAL_POD_RATE = 15e16;
+1053	 uint256 private constant POD_RATE_UPPER_BOUND = 25e16;
+1054	 uint256 private constant DELTA_POD_DEMAND_LOWER_BOUND = 95e16;
+1055	 uint256 private constant DELTA_POD_DEMAND_UPPER_BOUND = 105e16;
+1056	 uint256 private constant STEADY_SOW_TIME = 60;
+1057	 uint256 private constant RAIN_TIME = 24;
+1058	 uint32 private constant GOVERNANCE_PERIOD = 168;
+1059	 uint32 private constant GOVERNANCE_EMERGENCY_PERIOD = 86400;
+1060	 uint256 private constant GOVERNANCE_PASS_THRESHOLD = 5e17;
+1061	 uint256 private constant GOVERNANCE_EMERGENCY_THRESHOLD_NUMERATOR = 2;
+1062	 uint256 private constant GOVERNANCE_EMERGENCY_THRESHOLD_DEMONINATOR = 3;
+1063	 uint32 private constant GOVERNANCE_EXPIRATION = 24;
+1064	 uint256 private constant GOVERNANCE_PROPOSAL_THRESHOLD = 1e15;
+1065	 uint256 private constant BASE_COMMIT_INCENTIVE = 1e8;
+1066	 uint256 private constant MAX_PROPOSITIONS = 5;
+1067	 uint256 private constant BASE_ADVANCE_INCENTIVE = 1e8;
+1068	 uint32 private constant WITHDRAW_TIME = 25;
+1069	 uint256 private constant SEEDS_PER_BEAN = 2;
+1070	 uint256 private constant SEEDS_PER_LP_BEAN = 4;
+1071	 uint256 private constant STALK_PER_BEAN = 10000;
+1072	 uint256 private constant ROOTS_BASE = 1e12;
+1073	 uint256 private constant SOIL_MAX_RATIO_CAP = 25e16;
+1074	 uint256 private constant SOIL_MIN_RATIO_CAP = 1e15;
+1075	 function getSeasonPeriod() internal pure returns (uint256) {
+1076	 return CURRENT_SEASON_PERIOD;
+1077	 }
+1078	 function getGovernancePeriod() internal pure returns (uint32) {
+1079	 return GOVERNANCE_PERIOD;
+1080	 }
+1081	 function getGovernanceEmergencyPeriod() internal pure returns (uint32) {
+1082	 return GOVERNANCE_EMERGENCY_PERIOD;
+1083	 }
+1084	 function getGovernanceExpiration() internal pure returns (uint256) {
+1085	 return GOVERNANCE_EXPIRATION;
+1086	 }
+1087	 function getGovernancePassThreshold() internal pure returns (Decimal.D256 memory) {
+1088	 return Decimal.D256({
+1089	 value: GOVERNANCE_PASS_THRESHOLD}
+1090	 );
+1091	 }
+1092	 function getGovernanceEmergencyThreshold() internal pure returns (Decimal.D256 memory) {
+1093	 return Decimal.ratio(GOVERNANCE_EMERGENCY_THRESHOLD_NUMERATOR,GOVERNANCE_EMERGENCY_THRESHOLD_DEMONINATOR);
+1094	 }
+1095	 function getGovernanceProposalThreshold() internal pure returns (Decimal.D256 memory) {
+1096	 return Decimal.D256({
+1097	 value: GOVERNANCE_PROPOSAL_THRESHOLD}
+1098	 );
+1099	 }
+1100	 function getAdvanceIncentive() internal pure returns (uint256) {
+1101	 return BASE_ADVANCE_INCENTIVE;
+1102	 }
+1103	 function getCommitIncentive() internal pure returns (uint256) {
+1104	 return BASE_COMMIT_INCENTIVE;
+1105	 }
+1106	 function getSiloWithdrawSeasons() internal pure returns (uint32) {
+1107	 return WITHDRAW_TIME;
+1108	 }
+1109	 function getMinSoilRatioCap() internal pure returns (uint256) {
+1110	 return SOIL_MIN_RATIO_CAP;
+1111	 }
+1112	 function getMaxSoilRatioCap() internal pure returns (uint256) {
+1113	 return SOIL_MAX_RATIO_CAP;
+1114	 }
+1115	 function getHarvestPercentage() internal pure returns (uint256) {
+1116	 return HARVESET_PERCENTAGE;
+1117	 }
+1118	 function getChainId() internal pure returns (uint256) {
+1119	 return CHAIN_ID;
+1120	 }
+1121	 function getOptimalPodRate() internal pure returns (Decimal.D256 memory) {
+1122	 return Decimal.ratio(OPTIMAL_POD_RATE,1e18);
+1123	 }
+1124	 function getUpperBoundPodRate() internal pure returns (Decimal.D256 memory) {
+1125	 return Decimal.ratio(POD_RATE_UPPER_BOUND,1e18);
+1126	 }
+1127	 function getLowerBoundPodRate() internal pure returns (Decimal.D256 memory) {
+1128	 return Decimal.ratio(POD_RATE_LOWER_BOUND,1e18);
+1129	 }
+1130	 function getUpperBoundDPD() internal pure returns (Decimal.D256 memory) {
+1131	 return Decimal.ratio(DELTA_POD_DEMAND_UPPER_BOUND,1e18);
+1132	 }
+1133	 function getLowerBoundDPD() internal pure returns (Decimal.D256 memory) {
+1134	 return Decimal.ratio(DELTA_POD_DEMAND_LOWER_BOUND,1e18);
+1135	 }
+1136	 function getSteadySowTime() internal pure returns (uint256) {
+1137	 return STEADY_SOW_TIME;
+1138	 }
+1139	 function getRainTime() internal pure returns (uint256) {
+1140	 return RAIN_TIME;
+1141	 }
+1142	 function getMaxPropositions() internal pure returns (uint256) {
+1143	 return MAX_PROPOSITIONS;
+1144	 }
+1145	 function getSeedsPerBean() internal pure returns (uint256) {
+1146	 return SEEDS_PER_BEAN;
+1147	 }
+1148	 function getSeedsPerLPBean() internal pure returns (uint256) {
+1149	 return SEEDS_PER_LP_BEAN;
+1150	 }
+1151	 function getStalkPerBean() internal pure returns (uint256) {
+1152	 return STALK_PER_BEAN;
+1153	 }
+1154	 function getStalkPerLPSeed() internal pure returns (uint256) {
+1155	 return STALK_PER_BEAN/SEEDS_PER_LP_BEAN;
+1156	 }
+1157	 function getRootsBase() internal pure returns (uint256) {
+1158	 return ROOTS_BASE;
+1159	 }
+1160	 }
+1161	 pragma solidity ^0.7.6;
+1162	 interface IDiamondCut {
+1163	 enum FacetCutAction {
+1164	 Add, Replace, Remove}
+1165	 struct FacetCut {
+1166	 address facetAddress;
+1167	 FacetCutAction action;
+1168	 bytes4[] functionSelectors;
+1169	 }
+1170	 function diamondCut( FacetCut[] calldata _diamondCut, address _init, bytes calldata _calldata ) external;
+1171	 event DiamondCut(FacetCut[] _diamondCut, address _init, bytes _calldata);
+1172	 }
+1173	 pragma solidity ^0.7.6;
+1174	 library LibAppStorage {
+1175	 function diamondStorage() internal pure returns (AppStorage storage ds) {
+1176	 assembly {
+1177	 ds.slot := 0 }
+1178	 }
+1179	 }

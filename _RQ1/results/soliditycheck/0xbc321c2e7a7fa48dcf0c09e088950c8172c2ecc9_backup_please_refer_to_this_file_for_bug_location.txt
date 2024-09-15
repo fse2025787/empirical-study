@@ -1,0 +1,520 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity >=0.6.12;
+3	 interface IERC20 {
+4	 function totalSupply() external view returns (uint256);
+5	 function balanceOf(address account) external view returns (uint256);
+6	 function allowance(address owner, address spender) external view returns (uint256);
+7	 function approve(address spender, uint256 amount) external returns (bool);
+8	 event Transfer(address indexed from, address indexed to, uint256 value);
+9	 event Approval(address indexed owner, address indexed spender, uint256 value);
+10	 function permit( address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s ) external;
+11	 }
+12	 interface IFlashBorrower {
+13	 function onFlashLoan( address sender, IERC20 token, uint256 amount, uint256 fee, bytes calldata data ) external;
+14	 }
+15	 interface IBatchFlashBorrower {
+16	 function onBatchFlashLoan( address sender, IERC20[] calldata tokens, uint256[] calldata amounts, uint256[] calldata fees, bytes calldata data ) external;
+17	 }
+18	 interface IWETH {
+19	 function deposit() external payable;
+20	 function withdraw(uint256) external;
+21	 }
+22	 interface IStrategy {
+23	 function skim(uint256 amount) external;
+24	 function harvest(uint256 balance, address sender) external returns (int256 amountAdded);
+25	 function withdraw(uint256 amount) external returns (uint256 actualAmount);
+26	 function exit(uint256 balance) external returns (int256 amountAdded);
+27	 }
+28	 library BoringERC20 {
+29	 bytes4 private constant SIG_SYMBOL = 0x95d89b41;
+30	 bytes4 private constant SIG_NAME = 0x06fdde03;
+31	 bytes4 private constant SIG_DECIMALS = 0x313ce567;
+32	 bytes4 private constant SIG_TRANSFER = 0xa9059cbb;
+33	 bytes4 private constant SIG_TRANSFER_FROM = 0x23b872dd;
+34	 function safeTransfer( IERC20 token, address to, uint256 amount ) internal {
+35	 (bool success, bytes memory data) = address(token).call(abi.encodeWithSelector(SIG_TRANSFER, to, amount));
+36	 require(success && (data.length == 0 || abi.decode(data, (bool))), "BoringERC20: Transfer failed");
+37	 }
+38	 function safeTransferFrom( IERC20 token, address from, address to, uint256 amount ) internal {
+39	 (bool success, bytes memory data) = address(token).call(abi.encodeWithSelector(SIG_TRANSFER_FROM, from, to, amount));
+40	 require(success && (data.length == 0 || abi.decode(data, (bool))), "BoringERC20: TransferFrom failed");
+41	 }
+42	 }
+43	 library BoringMath {
+44	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+45	 require((c = a + b) >= b, "BoringMath: Add Overflow");
+46	 }
+47	 function sub(uint256 a, uint256 b) internal pure returns (uint256 c) {
+48	 require((c = a - b) <= a, "BoringMath: Underflow");
+49	 }
+50	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+51	 require(b == 0 || (c = a * b) / b == a, "BoringMath: Mul Overflow");
+52	 }
+53	 function to128(uint256 a) internal pure returns (uint128 c) {
+54	 require(a <= uint128(-1), "BoringMath: uint128 Overflow");
+55	 c = uint128(a);
+56	 }
+57	 function to64(uint256 a) internal pure returns (uint64 c) {
+58	 require(a <= uint64(-1), "BoringMath: uint64 Overflow");
+59	 c = uint64(a);
+60	 }
+61	 function to32(uint256 a) internal pure returns (uint32 c) {
+62	 require(a <= uint32(-1), "BoringMath: uint32 Overflow");
+63	 c = uint32(a);
+64	 }
+65	 }
+66	 library BoringMath128 {
+67	 function add(uint128 a, uint128 b) internal pure returns (uint128 c) {
+68	 require((c = a + b) >= b, "BoringMath: Add Overflow");
+69	 }
+70	 function sub(uint128 a, uint128 b) internal pure returns (uint128 c) {
+71	 require((c = a - b) <= a, "BoringMath: Underflow");
+72	 }
+73	 }
+74	 library BoringMath64 {
+75	 function add(uint64 a, uint64 b) internal pure returns (uint64 c) {
+76	 require((c = a + b) >= b, "BoringMath: Add Overflow");
+77	 }
+78	 function sub(uint64 a, uint64 b) internal pure returns (uint64 c) {
+79	 require((c = a - b) <= a, "BoringMath: Underflow");
+80	 }
+81	 }
+82	 library BoringMath32 {
+83	 function add(uint32 a, uint32 b) internal pure returns (uint32 c) {
+84	 require((c = a + b) >= b, "BoringMath: Add Overflow");
+85	 }
+86	 function sub(uint32 a, uint32 b) internal pure returns (uint32 c) {
+87	 require((c = a - b) <= a, "BoringMath: Underflow");
+88	 }
+89	 }
+90	 struct Rebase {
+91	 uint128 elastic;
+92	 uint128 base;
+93	 }
+94	 library RebaseLibrary {
+95	 using BoringMath for uint256;
+96	 using BoringMath128 for uint128;
+97	 function toBase( Rebase memory total, uint256 elastic, bool roundUp ) internal pure returns (uint256 base) {
+98	 if (total.elastic == 0) {
+99	 base = elastic;
+100	 }
+101	 else {
+102	 base = elastic.mul(total.base) / total.elastic;
+103	 if (roundUp && base.mul(total.elastic) / total.base < elastic) {
+104	 base = base.add(1);
+105	 }
+106	 }
+107	 }
+108	 function toElastic( Rebase memory total, uint256 base, bool roundUp ) internal pure returns (uint256 elastic) {
+109	 if (total.base == 0) {
+110	 elastic = base;
+111	 }
+112	 else {
+113	 elastic = base.mul(total.elastic) / total.base;
+114	 if (roundUp && elastic.mul(total.base) / total.elastic < base) {
+115	 elastic = elastic.add(1);
+116	 }
+117	 }
+118	 }
+119	 function add( Rebase memory total, uint256 elastic, bool roundUp ) internal pure returns (Rebase memory, uint256 base) {
+120	 base = toBase(total, elastic, roundUp);
+121	 total.elastic = total.elastic.add(elastic.to128());
+122	 total.base = total.base.add(base.to128());
+123	 return (total, base);
+124	 }
+125	 function sub( Rebase memory total, uint256 base, bool roundUp ) internal pure returns (Rebase memory, uint256 elastic) {
+126	 elastic = toElastic(total, base, roundUp);
+127	 total.elastic = total.elastic.sub(elastic.to128());
+128	 total.base = total.base.sub(base.to128());
+129	 return (total, elastic);
+130	 }
+131	 function add( Rebase memory total, uint256 elastic, uint256 base ) internal pure returns (Rebase memory) {
+132	 total.elastic = total.elastic.add(elastic.to128());
+133	 total.base = total.base.add(base.to128());
+134	 return total;
+135	 }
+136	 function sub( Rebase memory total, uint256 elastic, uint256 base ) internal pure returns (Rebase memory) {
+137	 total.elastic = total.elastic.sub(elastic.to128());
+138	 total.base = total.base.sub(base.to128());
+139	 return total;
+140	 }
+141	 function addElastic(Rebase storage total, uint256 elastic) internal returns (uint256 newElastic) {
+142	 newElastic = total.elastic = total.elastic.add(elastic.to128());
+143	 }
+144	 function subElastic(Rebase storage total, uint256 elastic) internal returns (uint256 newElastic) {
+145	 newElastic = total.elastic = total.elastic.sub(elastic.to128());
+146	 }
+147	 }
+148	 contract BoringOwnableData {
+149	 address public owner;
+150	 address public pendingOwner;
+151	 }
+152	 contract BoringOwnable is BoringOwnableData {
+153	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+154	 constructor() {
+155	 owner = msg.sender;
+156	 emit OwnershipTransferred(address(0), msg.sender);
+157	 }
+158	 function transferOwnership( address newOwner, bool direct, bool renounce ) public onlyOwner {
+159	 if (direct) {
+160	 require(newOwner != address(0) || renounce, "Ownable: zero address");
+161	 emit OwnershipTransferred(owner, newOwner);
+162	 owner = newOwner;
+163	 pendingOwner = address(0);
+164	 }
+165	 else {
+166	 pendingOwner = newOwner;
+167	 }
+168	 }
+169	 function claimOwnership() public {
+170	 address _pendingOwner = pendingOwner;
+171	 require(msg.sender == _pendingOwner, "Ownable: caller != pending owner");
+172	 emit OwnershipTransferred(owner, _pendingOwner);
+173	 owner = _pendingOwner;
+174	 pendingOwner = address(0);
+175	 }
+176	 modifier onlyOwner() {
+177	 require(msg.sender == owner, "Ownable: caller is not the owner");
+178	 _;
+179	 }
+180	 }
+181	 interface IMasterContract {
+182	 function init(bytes calldata data) external payable;
+183	 }
+184	 contract BoringFactory {
+185	 event LogDeploy(address indexed masterContract, bytes data, address indexed cloneAddress);
+186	 mapping(address => address) public masterContractOf;
+187	 function deploy( address masterContract, bytes calldata data, bool useCreate2 ) public payable returns (address cloneAddress) {
+188	 require(masterContract != address(0), "BoringFactory: No masterContract");
+189	 bytes20 targetBytes = bytes20(masterContract);
+190	 if (useCreate2) {
+191	 bytes32 salt = keccak256(data);
+192	 assembly {
+193	 let clone := mload(0x40) mstore(clone, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(clone, 0x14), targetBytes) mstore(add(clone, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000) cloneAddress := create2(0, clone, 0x37, salt) }
+194	 }
+195	 else {
+196	 assembly {
+197	 let clone := mload(0x40) mstore(clone, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(clone, 0x14), targetBytes) mstore(add(clone, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000) cloneAddress := create(0, clone, 0x37) }
+198	 }
+199	 masterContractOf[cloneAddress] = masterContract;
+200	 IMasterContract(cloneAddress).init{
+201	 value: msg.value}
+202	 (data);
+203	 emit LogDeploy(masterContract, data, cloneAddress);
+204	 }
+205	 }
+206	 contract MasterContractManager is BoringOwnable, BoringFactory {
+207	 event LogWhiteListMasterContract(address indexed masterContract, bool approved);
+208	 event LogSetMasterContractApproval(address indexed masterContract, address indexed user, bool approved);
+209	 event LogRegisterProtocol(address indexed protocol);
+210	 mapping(address => mapping(address => bool)) public masterContractApproved;
+211	 mapping(address => bool) public whitelistedMasterContracts;
+212	 mapping(address => uint256) public nonces;
+213	 bytes32 private constant DOMAIN_SEPARATOR_SIGNATURE_HASH = keccak256("EIP712Domain(string name,uint256 chainId,address verifyingContract)");
+214	 string private constant EIP191_PREFIX_FOR_EIP712_STRUCTURED_DATA = "\x19\x01";
+215	 bytes32 private constant APPROVAL_SIGNATURE_HASH = keccak256("SetMasterContractApproval(string warning,address user,address masterContract,bool approved,uint256 nonce)");
+216	 bytes32 private immutable _DOMAIN_SEPARATOR;
+217	 uint256 private immutable DOMAIN_SEPARATOR_CHAIN_ID;
+218	 constructor() {
+219	 uint256 chainId;
+220	 assembly {
+221	 chainId := chainid() }
+222	 _DOMAIN_SEPARATOR = _calculateDomainSeparator(DOMAIN_SEPARATOR_CHAIN_ID = chainId);
+223	 }
+224	 function _calculateDomainSeparator(uint256 chainId) private view returns (bytes32) {
+225	 return keccak256(abi.encode(DOMAIN_SEPARATOR_SIGNATURE_HASH, keccak256("CoffinBox V1"), chainId, address(this)));
+226	 }
+227	 function DOMAIN_SEPARATOR() public view returns (bytes32) {
+228	 uint256 chainId;
+229	 assembly {
+230	 chainId := chainid() }
+231	 return chainId == DOMAIN_SEPARATOR_CHAIN_ID ? _DOMAIN_SEPARATOR : _calculateDomainSeparator(chainId);
+232	 }
+233	 function registerProtocol() public {
+234	 masterContractOf[msg.sender] = msg.sender;
+235	 emit LogRegisterProtocol(msg.sender);
+236	 }
+237	 function whitelistMasterContract(address masterContract, bool approved) public onlyOwner {
+238	 require(masterContract != address(0), "MasterCMgr: Cannot approve 0");
+239	 whitelistedMasterContracts[masterContract] = approved;
+240	 emit LogWhiteListMasterContract(masterContract, approved);
+241	 }
+242	 function setMasterContractApproval( address user, address masterContract, bool approved, uint8 v, bytes32 r, bytes32 s ) public {
+243	 require(masterContract != address(0), "MasterCMgr: masterC not set");
+244	 if (r == 0 && s == 0 && v == 0) {
+245	 require(user == msg.sender, "MasterCMgr: user not sender");
+246	 require(masterContractOf[user] == address(0), "MasterCMgr: user is clone");
+247	 require(whitelistedMasterContracts[masterContract], "MasterCMgr: not whitelisted");
+248	 }
+249	 else {
+250	 require(user != address(0), "MasterCMgr: User cannot be 0");
+251	 bytes32 digest = keccak256( abi.encodePacked( EIP191_PREFIX_FOR_EIP712_STRUCTURED_DATA, DOMAIN_SEPARATOR(), keccak256( abi.encode( APPROVAL_SIGNATURE_HASH, approved ? keccak256("Give FULL access to funds in (and approved to) CoffinBox?") : keccak256("Revoke access to CoffinBox?"), user, masterContract, approved, nonces[user]++ ) ) ) );
+252	 address recoveredAddress = ecrecover(digest, v, r, s);
+253	 require(recoveredAddress == user, "MasterCMgr: Invalid Signature");
+254	 }
+255	 masterContractApproved[masterContract][user] = approved;
+256	 emit LogSetMasterContractApproval(masterContract, user, approved);
+257	 }
+258	 }
+259	 contract BaseBoringBatchable {
+260	 function _getRevertMsg(bytes memory _returnData) internal pure returns (string memory) {
+261	 if (_returnData.length < 68) return "Transaction reverted silently";
+262	 assembly {
+263	 _returnData := add(_returnData, 0x04) }
+264	 return abi.decode(_returnData, (string));
+265	 }
+266	 function batch(bytes[] calldata calls, bool revertOnFail) external payable returns (bool[] memory successes, bytes[] memory results) {
+267	 successes = new bool[](calls.length);
+268	 results = new bytes[](calls.length);
+269	 for (uint256 i = 0; i < calls.length; i++) {
+270	 (bool success, bytes memory result) = address(this).delegatecall(calls[i]);
+271	 require(success || !revertOnFail, _getRevertMsg(result));
+272	 successes[i] = success;
+273	 results[i] = result;
+274	 }
+275	 }
+276	 }
+277	 contract BoringBatchable is BaseBoringBatchable {
+278	 function permitToken( IERC20 token, address from, address to, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s ) public {
+279	 token.permit(from, to, amount, deadline, v, r, s);
+280	 }
+281	 }
+282	 contract CoffinBox is MasterContractManager, BoringBatchable {
+283	 using BoringMath for uint256;
+284	 using BoringMath128 for uint128;
+285	 using BoringERC20 for IERC20;
+286	 using RebaseLibrary for Rebase;
+287	 event LogDeposit(IERC20 indexed token, address indexed from, address indexed to, uint256 amount, uint256 share);
+288	 event LogWithdraw(IERC20 indexed token, address indexed from, address indexed to, uint256 amount, uint256 share);
+289	 event LogTransfer(IERC20 indexed token, address indexed from, address indexed to, uint256 share);
+290	 event LogFlashLoan(address indexed borrower, IERC20 indexed token, uint256 amount, uint256 feeAmount, address indexed receiver);
+291	 event LogStrategyTargetPercentage(IERC20 indexed token, uint256 targetPercentage);
+292	 event LogStrategyQueued(IERC20 indexed token, IStrategy indexed strategy);
+293	 event LogStrategySet(IERC20 indexed token, IStrategy indexed strategy);
+294	 event LogStrategyInvest(IERC20 indexed token, uint256 amount);
+295	 event LogStrategyDivest(IERC20 indexed token, uint256 amount);
+296	 event LogStrategyProfit(IERC20 indexed token, uint256 amount);
+297	 event LogStrategyLoss(IERC20 indexed token, uint256 amount);
+298	 struct StrategyData {
+299	 uint64 strategyStartDate;
+300	 uint64 targetPercentage;
+301	 uint128 balance;
+302	 }
+303	 IERC20 private immutable wethToken;
+304	 IERC20 private constant USE_ETHEREUM = IERC20(0);
+305	 uint256 private constant FLASH_LOAN_FEE = 50;
+306	 uint256 private constant FLASH_LOAN_FEE_PRECISION = 1e5;
+307	 uint256 private constant STRATEGY_DELAY = 2 weeks;
+308	 uint256 private constant MAX_TARGET_PERCENTAGE = 95;
+309	 uint256 private constant MINIMUM_SHARE_BALANCE = 1000;
+310	 mapping(IERC20 => mapping(address => uint256)) public balanceOf;
+311	 mapping(IERC20 => Rebase) public totals;
+312	 mapping(IERC20 => IStrategy) public strategy;
+313	 mapping(IERC20 => IStrategy) public pendingStrategy;
+314	 mapping(IERC20 => StrategyData) public strategyData;
+315	 constructor(IERC20 wethToken_) {
+316	 wethToken = wethToken_;
+317	 }
+318	 modifier allowed(address from) {
+319	 if (from != msg.sender && from != address(this)) {
+320	 address masterContract = masterContractOf[msg.sender];
+321	 require(masterContract != address(0), "CoffinBox: no masterContract");
+322	 require(masterContractApproved[masterContract][from], "CoffinBox: Transfer not approved");
+323	 }
+324	 _;
+325	 }
+326	 function _tokenBalanceOf(IERC20 token) internal view returns (uint256 amount) {
+327	 amount = token.balanceOf(address(this)).add(strategyData[token].balance);
+328	 }
+329	 function toShare( IERC20 token, uint256 amount, bool roundUp ) external view returns (uint256 share) {
+330	 share = totals[token].toBase(amount, roundUp);
+331	 }
+332	 function toAmount( IERC20 token, uint256 share, bool roundUp ) external view returns (uint256 amount) {
+333	 amount = totals[token].toElastic(share, roundUp);
+334	 }
+335	 function deposit( IERC20 token_, address from, address to, uint256 amount, uint256 share ) public payable allowed(from) returns (uint256 amountOut, uint256 shareOut) {
+336	 require(to != address(0), "CoffinBox: to not set");
+337	 IERC20 token = token_ == USE_ETHEREUM ? wethToken : token_;
+338	 Rebase memory total = totals[token];
+339	 require(total.elastic != 0 || token.totalSupply() > 0, "CoffinBox: No tokens");
+340	 if (share == 0) {
+341	 share = total.toBase(amount, false);
+342	 if (total.base.add(share.to128()) < MINIMUM_SHARE_BALANCE) {
+343	 return (0, 0);
+344	 }
+345	 }
+346	 else {
+347	 amount = total.toElastic(share, true);
+348	 }
+349	 require( from != address(this) || token_ == USE_ETHEREUM || amount <= _tokenBalanceOf(token).sub(total.elastic), "CoffinBox: Skim too much" );
+350	 balanceOf[token][to] = balanceOf[token][to].add(share);
+351	 total.base = total.base.add(share.to128());
+352	 total.elastic = total.elastic.add(amount.to128());
+353	 totals[token] = total;
+354	 if (token_ == USE_ETHEREUM) {
+355	 IWETH(address(wethToken)).deposit{
+356	 value: amount}
+357	 ();
+358	 }
+359	 else if (from != address(this)) {
+360	 token.safeTransferFrom(from, address(this), amount);
+361	 }
+362	 emit LogDeposit(token, from, to, amount, share);
+363	 amountOut = amount;
+364	 shareOut = share;
+365	 }
+366	 function withdraw( IERC20 token_, address from, address to, uint256 amount, uint256 share ) public allowed(from) returns (uint256 amountOut, uint256 shareOut) {
+367	 require(to != address(0), "CoffinBox: to not set");
+368	 IERC20 token = token_ == USE_ETHEREUM ? wethToken : token_;
+369	 Rebase memory total = totals[token];
+370	 if (share == 0) {
+371	 share = total.toBase(amount, true);
+372	 }
+373	 else {
+374	 amount = total.toElastic(share, false);
+375	 }
+376	 balanceOf[token][from] = balanceOf[token][from].sub(share);
+377	 total.elastic = total.elastic.sub(amount.to128());
+378	 total.base = total.base.sub(share.to128());
+379	 require(total.base >= MINIMUM_SHARE_BALANCE || total.base == 0, "CoffinBox: cannot empty");
+380	 totals[token] = total;
+381	 if (token_ == USE_ETHEREUM) {
+382	 IWETH(address(wethToken)).withdraw(amount);
+383	 (bool success, ) = to.call{
+384	 value: amount}
+385	 ("");
+386	 require(success, "CoffinBox: ETH transfer failed");
+387	 }
+388	 else {
+389	 token.safeTransfer(to, amount);
+390	 }
+391	 emit LogWithdraw(token, from, to, amount, share);
+392	 amountOut = amount;
+393	 shareOut = share;
+394	 }
+395	 function transfer( IERC20 token, address from, address to, uint256 share ) public allowed(from) {
+396	 require(to != address(0), "CoffinBox: to not set");
+397	 balanceOf[token][from] = balanceOf[token][from].sub(share);
+398	 balanceOf[token][to] = balanceOf[token][to].add(share);
+399	 emit LogTransfer(token, from, to, share);
+400	 }
+401	 function transferMultiple( IERC20 token, address from, address[] calldata tos, uint256[] calldata shares ) public allowed(from) {
+402	 require(tos[0] != address(0), "CoffinBox: to[0] not set");
+403	 uint256 totalAmount;
+404	 uint256 len = tos.length;
+405	 for (uint256 i = 0; i < len; i++) {
+406	 address to = tos[i];
+407	 balanceOf[token][to] = balanceOf[token][to].add(shares[i]);
+408	 totalAmount = totalAmount.add(shares[i]);
+409	 emit LogTransfer(token, from, to, shares[i]);
+410	 }
+411	 balanceOf[token][from] = balanceOf[token][from].sub(totalAmount);
+412	 }
+413	 function flashLoan( IFlashBorrower borrower, address receiver, IERC20 token, uint256 amount, bytes calldata data ) public {
+414	 uint256 fee = amount.mul(FLASH_LOAN_FEE) / FLASH_LOAN_FEE_PRECISION;
+415	 token.safeTransfer(receiver, amount);
+416	 borrower.onFlashLoan(msg.sender, token, amount, fee, data);
+417	 require(_tokenBalanceOf(token) >= totals[token].addElastic(fee.to128()), "CoffinBox: Wrong amount");
+418	 emit LogFlashLoan(address(borrower), token, amount, fee, receiver);
+419	 }
+420	 function batchFlashLoan( IBatchFlashBorrower borrower, address[] calldata receivers, IERC20[] calldata tokens, uint256[] calldata amounts, bytes calldata data ) public {
+421	 uint256[] memory fees = new uint256[](tokens.length);
+422	 uint256 len = tokens.length;
+423	 for (uint256 i = 0; i < len; i++) {
+424	 uint256 amount = amounts[i];
+425	 fees[i] = amount.mul(FLASH_LOAN_FEE) / FLASH_LOAN_FEE_PRECISION;
+426	 tokens[i].safeTransfer(receivers[i], amounts[i]);
+427	 }
+428	 borrower.onBatchFlashLoan(msg.sender, tokens, amounts, fees, data);
+429	 for (uint256 i = 0; i < len; i++) {
+430	 IERC20 token = tokens[i];
+431	 require(_tokenBalanceOf(token) >= totals[token].addElastic(fees[i].to128()), "CoffinBox: Wrong amount");
+432	 emit LogFlashLoan(address(borrower), token, amounts[i], fees[i], receivers[i]);
+433	 }
+434	 }
+435	 function setStrategyTargetPercentage(IERC20 token, uint64 targetPercentage_) public onlyOwner {
+436	 require(targetPercentage_ <= MAX_TARGET_PERCENTAGE, "StrategyManager: Target too high");
+437	 strategyData[token].targetPercentage = targetPercentage_;
+438	 emit LogStrategyTargetPercentage(token, targetPercentage_);
+439	 }
+440	 function setStrategy(IERC20 token, IStrategy newStrategy) public onlyOwner {
+441	 StrategyData memory data = strategyData[token];
+442	 IStrategy pending = pendingStrategy[token];
+443	 if (data.strategyStartDate == 0 || pending != newStrategy) {
+444	 pendingStrategy[token] = newStrategy;
+445	 data.strategyStartDate = (block.timestamp + STRATEGY_DELAY).to64();
+446	 emit LogStrategyQueued(token, newStrategy);
+447	 }
+448	 else {
+449	 require(data.strategyStartDate != 0 && block.timestamp >= data.strategyStartDate, "StrategyManager: Too early");
+450	 if (address(strategy[token]) != address(0)) {
+451	 int256 balanceChange = strategy[token].exit(data.balance);
+452	 if (balanceChange > 0) {
+453	 uint256 add = uint256(balanceChange);
+454	 totals[token].addElastic(add);
+455	 emit LogStrategyProfit(token, add);
+456	 }
+457	 else if (balanceChange < 0) {
+458	 uint256 sub = uint256(-balanceChange);
+459	 totals[token].subElastic(sub);
+460	 emit LogStrategyLoss(token, sub);
+461	 }
+462	 emit LogStrategyDivest(token, data.balance);
+463	 }
+464	 strategy[token] = pending;
+465	 data.strategyStartDate = 0;
+466	 data.balance = 0;
+467	 pendingStrategy[token] = IStrategy(0);
+468	 emit LogStrategySet(token, newStrategy);
+469	 }
+470	 strategyData[token] = data;
+471	 }
+472	 function harvest( IERC20 token, bool balance, uint256 maxChangeAmount ) public {
+473	 StrategyData memory data = strategyData[token];
+474	 IStrategy _strategy = strategy[token];
+475	 int256 balanceChange = _strategy.harvest(data.balance, msg.sender);
+476	 if (balanceChange == 0 && !balance) {
+477	 return;
+478	 }
+479	 uint256 totalElastic = totals[token].elastic;
+480	 if (balanceChange > 0) {
+481	 uint256 add = uint256(balanceChange);
+482	 totalElastic = totalElastic.add(add);
+483	 totals[token].elastic = totalElastic.to128();
+484	 emit LogStrategyProfit(token, add);
+485	 }
+486	 else if (balanceChange < 0) {
+487	 uint256 sub = uint256(-balanceChange);
+488	 totalElastic = totalElastic.sub(sub);
+489	 totals[token].elastic = totalElastic.to128();
+490	 data.balance = data.balance.sub(sub.to128());
+491	 emit LogStrategyLoss(token, sub);
+492	 }
+493	 if (balance) {
+494	 uint256 targetBalance = totalElastic.mul(data.targetPercentage) / 100;
+495	 if (data.balance < targetBalance) {
+496	 uint256 amountOut = targetBalance.sub(data.balance);
+497	 if (maxChangeAmount != 0 && amountOut > maxChangeAmount) {
+498	 amountOut = maxChangeAmount;
+499	 }
+500	 token.safeTransfer(address(_strategy), amountOut);
+501	 data.balance = data.balance.add(amountOut.to128());
+502	 _strategy.skim(amountOut);
+503	 emit LogStrategyInvest(token, amountOut);
+504	 }
+505	 else if (data.balance > targetBalance) {
+506	 uint256 amountIn = data.balance.sub(targetBalance.to128());
+507	 if (maxChangeAmount != 0 && amountIn > maxChangeAmount) {
+508	 amountIn = maxChangeAmount;
+509	 }
+510	 uint256 actualAmountIn = _strategy.withdraw(amountIn);
+511	 data.balance = data.balance.sub(actualAmountIn.to128());
+512	 emit LogStrategyDivest(token, actualAmountIn);
+513	 }
+514	 }
+515	 strategyData[token] = data;
+516	 }
+517	 receive() external payable {
+518	 }
+519	 }

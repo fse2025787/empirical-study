@@ -1,0 +1,587 @@
+row number 
+1	     pragma solidity ^0.4.23;
+2	 contract ERC20Basic {
+3	 function totalSupply() public view returns (uint256);
+4	 function balanceOf(address who) public view returns (uint256);
+5	 function transfer(address to, uint256 value) public returns (bool);
+6	 event Transfer(address indexed from, address indexed to, uint256 value);
+7	 }
+8	 contract ERC20 is ERC20Basic {
+9	 function allowance(address owner, address spender) public view returns (uint256);
+10	 function transferFrom(address from, address to, uint256 value) public returns (bool);
+11	 function approve(address spender, uint256 value) public returns (bool);
+12	 event Approval( address indexed owner, address indexed spender, uint256 value );
+13	 }
+14	 library SafeMath {
+15	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+16	 if (a == 0) {
+17	 return 0;
+18	 }
+19	 c = a * b;
+20	 assert(c / a == b);
+21	 return c;
+22	 }
+23	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+24	 return a / b;
+25	 }
+26	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+27	 assert(b <= a);
+28	 return a - b;
+29	 }
+30	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+31	 c = a + b;
+32	 assert(c >= a);
+33	 return c;
+34	 }
+35	 }
+36	 contract Crowdsale {
+37	 using SafeMath for uint256;
+38	 ERC20 public token;
+39	 address public wallet;
+40	 uint256 public rate;
+41	 uint256 public weiRaised;
+42	 event TokenPurchase( address indexed purchaser, address indexed beneficiary, uint256 value, uint256 amount );
+43	 constructor(uint256 _rate, address _wallet, ERC20 _token) public {
+44	 require(_rate > 0);
+45	 require(_wallet != address(0));
+46	 require(_token != address(0));
+47	 rate = _rate;
+48	 wallet = _wallet;
+49	 token = _token;
+50	 }
+51	 function () external payable {
+52	 buyTokens(msg.sender);
+53	 }
+54	 function buyTokens(address _beneficiary) public payable {
+55	 uint256 weiAmount = msg.value;
+56	 _preValidatePurchase(_beneficiary, weiAmount);
+57	 uint256 tokens = _getTokenAmount(weiAmount);
+58	 weiRaised = weiRaised.add(weiAmount);
+59	 _processPurchase(_beneficiary, tokens);
+60	 emit TokenPurchase( msg.sender, _beneficiary, weiAmount, tokens );
+61	 _updatePurchasingState(_beneficiary, weiAmount);
+62	 _forwardFunds();
+63	 _postValidatePurchase(_beneficiary, weiAmount);
+64	 }
+65	 function _preValidatePurchase( address _beneficiary, uint256 _weiAmount ) internal {
+66	 require(_beneficiary != address(0));
+67	 require(_weiAmount != 0);
+68	 }
+69	 function _postValidatePurchase( address _beneficiary, uint256 _weiAmount ) internal {
+70	 }
+71	 function _deliverTokens( address _beneficiary, uint256 _tokenAmount ) internal {
+72	 token.transfer(_beneficiary, _tokenAmount);
+73	 }
+74	 function _processPurchase( address _beneficiary, uint256 _tokenAmount ) internal {
+75	 _deliverTokens(_beneficiary, _tokenAmount);
+76	 }
+77	 function _updatePurchasingState( address _beneficiary, uint256 _weiAmount ) internal {
+78	 }
+79	 function _getTokenAmount(uint256 _weiAmount) internal view returns (uint256) {
+80	 return _weiAmount.mul(rate);
+81	 }
+82	 function _forwardFunds() internal {
+83	 wallet.transfer(msg.value);
+84	 }
+85	 }
+86	 contract Ownable {
+87	 address public owner;
+88	 event OwnershipRenounced(address indexed previousOwner);
+89	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+90	 constructor() public {
+91	 owner = msg.sender;
+92	 }
+93	 modifier onlyOwner() {
+94	 require(msg.sender == owner);
+95	 _;
+96	 }
+97	 function renounceOwnership() public onlyOwner {
+98	 emit OwnershipRenounced(owner);
+99	 owner = address(0);
+100	 }
+101	 function transferOwnership(address _newOwner) public onlyOwner {
+102	 _transferOwnership(_newOwner);
+103	 }
+104	 function _transferOwnership(address _newOwner) internal {
+105	 require(_newOwner != address(0));
+106	 emit OwnershipTransferred(owner, _newOwner);
+107	 owner = _newOwner;
+108	 }
+109	 }
+110	 contract TimedCrowdsale is Crowdsale {
+111	 using SafeMath for uint256;
+112	 uint256 public openingTime;
+113	 uint256 public closingTime;
+114	 modifier onlyWhileOpen {
+115	 require(block.timestamp >= openingTime && block.timestamp <= closingTime);
+116	 _;
+117	 }
+118	 constructor(uint256 _openingTime, uint256 _closingTime) public {
+119	 require(_openingTime >= block.timestamp);
+120	 require(_closingTime >= _openingTime);
+121	 openingTime = _openingTime;
+122	 closingTime = _closingTime;
+123	 }
+124	 function hasClosed() public view returns (bool) {
+125	 return block.timestamp > closingTime;
+126	 }
+127	 function _preValidatePurchase( address _beneficiary, uint256 _weiAmount ) internal onlyWhileOpen {
+128	 super._preValidatePurchase(_beneficiary, _weiAmount);
+129	 }
+130	 }
+131	 contract FinalizableCrowdsale is TimedCrowdsale, Ownable {
+132	 using SafeMath for uint256;
+133	 bool public isFinalized = false;
+134	 event Finalized();
+135	 function finalize() onlyOwner public {
+136	 require(!isFinalized);
+137	 require(hasClosed());
+138	 finalization();
+139	 emit Finalized();
+140	 isFinalized = true;
+141	 }
+142	 function finalization() internal {
+143	 }
+144	 }
+145	 contract RefundVault is Ownable {
+146	 using SafeMath for uint256;
+147	 enum State {
+148	 Active, Refunding, Closed }
+149	 mapping (address => uint256) public deposited;
+150	 address public wallet;
+151	 State public state;
+152	 event Closed();
+153	 event RefundsEnabled();
+154	 event Refunded(address indexed beneficiary, uint256 weiAmount);
+155	 constructor(address _wallet) public {
+156	 require(_wallet != address(0));
+157	 wallet = _wallet;
+158	 state = State.Active;
+159	 }
+160	 function deposit(address investor) onlyOwner public payable {
+161	 require(state == State.Active);
+162	 deposited[investor] = deposited[investor].add(msg.value);
+163	 }
+164	 function close() onlyOwner public {
+165	 require(state == State.Active);
+166	 state = State.Closed;
+167	 emit Closed();
+168	 wallet.transfer(address(this).balance);
+169	 }
+170	 function enableRefunds() onlyOwner public {
+171	 require(state == State.Active);
+172	 state = State.Refunding;
+173	 emit RefundsEnabled();
+174	 }
+175	 function refund(address investor) public {
+176	 require(state == State.Refunding);
+177	 uint256 depositedValue = deposited[investor];
+178	 deposited[investor] = 0;
+179	 investor.transfer(depositedValue);
+180	 emit Refunded(investor, depositedValue);
+181	 }
+182	 }
+183	 contract BasicToken is ERC20Basic {
+184	 using SafeMath for uint256;
+185	 mapping(address => uint256) balances;
+186	 uint256 totalSupply_;
+187	 function totalSupply() public view returns (uint256) {
+188	 return totalSupply_;
+189	 }
+190	 function transfer(address _to, uint256 _value) public returns (bool) {
+191	 require(_to != address(0));
+192	 require(_value <= balances[msg.sender]);
+193	 balances[msg.sender] = balances[msg.sender].sub(_value);
+194	 balances[_to] = balances[_to].add(_value);
+195	 emit Transfer(msg.sender, _to, _value);
+196	 return true;
+197	 }
+198	 function balanceOf(address _owner) public view returns (uint256) {
+199	 return balances[_owner];
+200	 }
+201	 }
+202	 contract StandardToken is ERC20, BasicToken {
+203	 mapping (address => mapping (address => uint256)) internal allowed;
+204	 function transferFrom( address _from, address _to, uint256 _value ) public returns (bool) {
+205	 require(_to != address(0));
+206	 require(_value <= balances[_from]);
+207	 require(_value <= allowed[_from][msg.sender]);
+208	 balances[_from] = balances[_from].sub(_value);
+209	 balances[_to] = balances[_to].add(_value);
+210	 allowed[_from][msg.sender] = allowed[_from][msg.sender].sub(_value);
+211	 emit Transfer(_from, _to, _value);
+212	 return true;
+213	 }
+214	 function approve(address _spender, uint256 _value) public returns (bool) {
+215	 allowed[msg.sender][_spender] = _value;
+216	 emit Approval(msg.sender, _spender, _value);
+217	 return true;
+218	 }
+219	 function allowance( address _owner, address _spender ) public view returns (uint256) {
+220	 return allowed[_owner][_spender];
+221	 }
+222	 function increaseApproval( address _spender, uint _addedValue ) public returns (bool) {
+223	 allowed[msg.sender][_spender] = ( allowed[msg.sender][_spender].add(_addedValue));
+224	 emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+225	 return true;
+226	 }
+227	 function decreaseApproval( address _spender, uint _subtractedValue ) public returns (bool) {
+228	 uint oldValue = allowed[msg.sender][_spender];
+229	 if (_subtractedValue > oldValue) {
+230	 allowed[msg.sender][_spender] = 0;
+231	 }
+232	 else {
+233	 allowed[msg.sender][_spender] = oldValue.sub(_subtractedValue);
+234	 }
+235	 emit Approval(msg.sender, _spender, allowed[msg.sender][_spender]);
+236	 return true;
+237	 }
+238	 }
+239	 contract MintableToken is StandardToken, Ownable {
+240	 event Mint(address indexed to, uint256 amount);
+241	 event MintFinished();
+242	 bool public mintingFinished = false;
+243	 modifier canMint() {
+244	 require(!mintingFinished);
+245	 _;
+246	 }
+247	 modifier hasMintPermission() {
+248	 require(msg.sender == owner);
+249	 _;
+250	 }
+251	 function mint( address _to, uint256 _amount ) hasMintPermission canMint public returns (bool) {
+252	 totalSupply_ = totalSupply_.add(_amount);
+253	 balances[_to] = balances[_to].add(_amount);
+254	 emit Mint(_to, _amount);
+255	 emit Transfer(address(0), _to, _amount);
+256	 return true;
+257	 }
+258	 function finishMinting() onlyOwner canMint public returns (bool) {
+259	 mintingFinished = true;
+260	 emit MintFinished();
+261	 return true;
+262	 }
+263	 }
+264	 contract FreezableToken is StandardToken {
+265	 mapping (bytes32 => uint64) internal chains;
+266	 mapping (bytes32 => uint) internal freezings;
+267	 mapping (address => uint) internal freezingBalance;
+268	 event Freezed(address indexed to, uint64 release, uint amount);
+269	 event Released(address indexed owner, uint amount);
+270	 function balanceOf(address _owner) public view returns (uint256 balance) {
+271	 return super.balanceOf(_owner) + freezingBalance[_owner];
+272	 }
+273	 function actualBalanceOf(address _owner) public view returns (uint256 balance) {
+274	 return super.balanceOf(_owner);
+275	 }
+276	 function freezingBalanceOf(address _owner) public view returns (uint256 balance) {
+277	 return freezingBalance[_owner];
+278	 }
+279	 function freezingCount(address _addr) public view returns (uint count) {
+280	 uint64 release = chains[toKey(_addr, 0)];
+281	 while (release != 0) {
+282	 count++;
+283	 release = chains[toKey(_addr, release)];
+284	 }
+285	 }
+286	 function getFreezing(address _addr, uint _index) public view returns (uint64 _release, uint _balance) {
+287	 for (uint i = 0; i < _index + 1; i++) {
+288	 _release = chains[toKey(_addr, _release)];
+289	 if (_release == 0) {
+290	 return;
+291	 }
+292	 }
+293	 _balance = freezings[toKey(_addr, _release)];
+294	 }
+295	 function freezeTo(address _to, uint _amount, uint64 _until) public {
+296	 require(_to != address(0));
+297	 require(_amount <= balances[msg.sender]);
+298	 balances[msg.sender] = balances[msg.sender].sub(_amount);
+299	 bytes32 currentKey = toKey(_to, _until);
+300	 freezings[currentKey] = freezings[currentKey].add(_amount);
+301	 freezingBalance[_to] = freezingBalance[_to].add(_amount);
+302	 freeze(_to, _until);
+303	 emit Transfer(msg.sender, _to, _amount);
+304	 emit Freezed(_to, _until, _amount);
+305	 }
+306	 function releaseOnce() public {
+307	 bytes32 headKey = toKey(msg.sender, 0);
+308	 uint64 head = chains[headKey];
+309	 require(head != 0);
+310	 require(uint64(block.timestamp) > head);
+311	 bytes32 currentKey = toKey(msg.sender, head);
+312	 uint64 next = chains[currentKey];
+313	 uint amount = freezings[currentKey];
+314	 delete freezings[currentKey];
+315	 balances[msg.sender] = balances[msg.sender].add(amount);
+316	 freezingBalance[msg.sender] = freezingBalance[msg.sender].sub(amount);
+317	 if (next == 0) {
+318	 delete chains[headKey];
+319	 }
+320	 else {
+321	 chains[headKey] = next;
+322	 delete chains[currentKey];
+323	 }
+324	 emit Released(msg.sender, amount);
+325	 }
+326	 function releaseAll() public returns (uint tokens) {
+327	 uint release;
+328	 uint balance;
+329	 (release, balance) = getFreezing(msg.sender, 0);
+330	 while (release != 0 && block.timestamp > release) {
+331	 releaseOnce();
+332	 tokens += balance;
+333	 (release, balance) = getFreezing(msg.sender, 0);
+334	 }
+335	 }
+336	 function toKey(address _addr, uint _release) internal pure returns (bytes32 result) {
+337	 result = 0x5749534800000000000000000000000000000000000000000000000000000000;
+338	 assembly {
+339	 result := or(result, mul(_addr, 0x10000000000000000)) result := or(result, _release) }
+340	 }
+341	 function freeze(address _to, uint64 _until) internal {
+342	 require(_until > block.timestamp);
+343	 bytes32 key = toKey(_to, _until);
+344	 bytes32 parentKey = toKey(_to, uint64(0));
+345	 uint64 next = chains[parentKey];
+346	 if (next == 0) {
+347	 chains[parentKey] = _until;
+348	 return;
+349	 }
+350	 bytes32 nextKey = toKey(_to, next);
+351	 uint parent;
+352	 while (next != 0 && _until > next) {
+353	 parent = next;
+354	 parentKey = nextKey;
+355	 next = chains[nextKey];
+356	 nextKey = toKey(_to, next);
+357	 }
+358	 if (_until == next) {
+359	 return;
+360	 }
+361	 if (next != 0) {
+362	 chains[key] = next;
+363	 }
+364	 chains[parentKey] = _until;
+365	 }
+366	 }
+367	 contract BurnableToken is BasicToken {
+368	 event Burn(address indexed burner, uint256 value);
+369	 function burn(uint256 _value) public {
+370	 _burn(msg.sender, _value);
+371	 }
+372	 function _burn(address _who, uint256 _value) internal {
+373	 require(_value <= balances[_who]);
+374	 balances[_who] = balances[_who].sub(_value);
+375	 totalSupply_ = totalSupply_.sub(_value);
+376	 emit Burn(_who, _value);
+377	 emit Transfer(_who, address(0), _value);
+378	 }
+379	 }
+380	 contract Pausable is Ownable {
+381	 event Pause();
+382	 event Unpause();
+383	 bool public paused = false;
+384	 modifier whenNotPaused() {
+385	 require(!paused);
+386	 _;
+387	 }
+388	 modifier whenPaused() {
+389	 require(paused);
+390	 _;
+391	 }
+392	 function pause() onlyOwner whenNotPaused public {
+393	 paused = true;
+394	 emit Pause();
+395	 }
+396	 function unpause() onlyOwner whenPaused public {
+397	 paused = false;
+398	 emit Unpause();
+399	 }
+400	 }
+401	 contract FreezableMintableToken is FreezableToken, MintableToken {
+402	 function mintAndFreeze(address _to, uint _amount, uint64 _until) public onlyOwner canMint returns (bool) {
+403	 totalSupply_ = totalSupply_.add(_amount);
+404	 bytes32 currentKey = toKey(_to, _until);
+405	 freezings[currentKey] = freezings[currentKey].add(_amount);
+406	 freezingBalance[_to] = freezingBalance[_to].add(_amount);
+407	 freeze(_to, _until);
+408	 emit Mint(_to, _amount);
+409	 emit Freezed(_to, _until, _amount);
+410	 emit Transfer(msg.sender, _to, _amount);
+411	 return true;
+412	 }
+413	 }
+414	 contract Consts {
+415	 uint public constant TOKEN_DECIMALS = 18;
+416	 uint8 public constant TOKEN_DECIMALS_UINT8 = 18;
+417	 uint public constant TOKEN_DECIMAL_MULTIPLIER = 10 ** TOKEN_DECIMALS;
+418	 string public constant TOKEN_NAME = "Airgead Token";
+419	 string public constant TOKEN_SYMBOL = "AED";
+420	 bool public constant PAUSED = true;
+421	 address public constant TARGET_USER = 0x97c78dB18D54fC94897C1b114A3F1D7785d98C5E;
+422	 uint public constant START_TIME = 1537963016;
+423	 bool public constant CONTINUE_MINTING = true;
+424	 }
+425	 contract CappedCrowdsale is Crowdsale {
+426	 using SafeMath for uint256;
+427	 uint256 public cap;
+428	 constructor(uint256 _cap) public {
+429	 require(_cap > 0);
+430	 cap = _cap;
+431	 }
+432	 function capReached() public view returns (bool) {
+433	 return weiRaised >= cap;
+434	 }
+435	 function _preValidatePurchase( address _beneficiary, uint256 _weiAmount ) internal {
+436	 super._preValidatePurchase(_beneficiary, _weiAmount);
+437	 require(weiRaised.add(_weiAmount) <= cap);
+438	 }
+439	 }
+440	 contract MintedCrowdsale is Crowdsale {
+441	 function _deliverTokens( address _beneficiary, uint256 _tokenAmount ) internal {
+442	 require(MintableToken(token).mint(_beneficiary, _tokenAmount));
+443	 }
+444	 }
+445	 contract MainToken is Consts, FreezableMintableToken, BurnableToken, Pausable {
+446	 function name() public pure returns (string _name) {
+447	 return TOKEN_NAME;
+448	 }
+449	 function symbol() public pure returns (string _symbol) {
+450	 return TOKEN_SYMBOL;
+451	 }
+452	 function decimals() public pure returns (uint8 _decimals) {
+453	 return TOKEN_DECIMALS_UINT8;
+454	 }
+455	 function transferFrom(address _from, address _to, uint256 _value) public returns (bool _success) {
+456	 require(!paused);
+457	 return super.transferFrom(_from, _to, _value);
+458	 }
+459	 function transfer(address _to, uint256 _value) public returns (bool _success) {
+460	 require(!paused);
+461	 return super.transfer(_to, _value);
+462	 }
+463	 }
+464	 contract RefundableCrowdsale is FinalizableCrowdsale {
+465	 using SafeMath for uint256;
+466	 uint256 public goal;
+467	 RefundVault public vault;
+468	 constructor(uint256 _goal) public {
+469	 require(_goal > 0);
+470	 vault = new RefundVault(wallet);
+471	 goal = _goal;
+472	 }
+473	 function claimRefund() public {
+474	 require(isFinalized);
+475	 require(!goalReached());
+476	 vault.refund(msg.sender);
+477	 }
+478	 function goalReached() public view returns (bool) {
+479	 return weiRaised >= goal;
+480	 }
+481	 function finalization() internal {
+482	 if (goalReached()) {
+483	 vault.close();
+484	 }
+485	 else {
+486	 vault.enableRefunds();
+487	 }
+488	 super.finalization();
+489	 }
+490	 function _forwardFunds() internal {
+491	 vault.deposit.value(msg.value)(msg.sender);
+492	 }
+493	 }
+494	 contract MainCrowdsale is Consts, FinalizableCrowdsale, MintedCrowdsale, CappedCrowdsale {
+495	 function hasStarted() public view returns (bool) {
+496	 return now >= openingTime;
+497	 }
+498	 function startTime() public view returns (uint256) {
+499	 return openingTime;
+500	 }
+501	 function endTime() public view returns (uint256) {
+502	 return closingTime;
+503	 }
+504	 function hasClosed() public view returns (bool) {
+505	 return super.hasClosed() || capReached();
+506	 }
+507	 function hasEnded() public view returns (bool) {
+508	 return hasClosed();
+509	 }
+510	 function finalization() internal {
+511	 super.finalization();
+512	 if (PAUSED) {
+513	 MainToken(token).unpause();
+514	 }
+515	 if (!CONTINUE_MINTING) {
+516	 require(MintableToken(token).finishMinting());
+517	 }
+518	 Ownable(token).transferOwnership(TARGET_USER);
+519	 }
+520	 function _getTokenAmount(uint256 _weiAmount) internal view returns (uint256) {
+521	 return _weiAmount.mul(rate).div(1 ether);
+522	 }
+523	 }
+524	 contract TemplateCrowdsale is Consts, MainCrowdsale , RefundableCrowdsale {
+525	 event Initialized();
+526	 event TimesChanged(uint startTime, uint endTime, uint oldStartTime, uint oldEndTime);
+527	 bool public initialized = false;
+528	 constructor(MintableToken _token) public Crowdsale(175 * TOKEN_DECIMAL_MULTIPLIER, 0x97c78dB18D54fC94897C1b114A3F1D7785d98C5E, _token) TimedCrowdsale(START_TIME > now ? START_TIME : now, 1544792160) CappedCrowdsale(382857142857142857142857) RefundableCrowdsale(45714285714285714285714) {
+529	 }
+530	 function init() public onlyOwner {
+531	 require(!initialized);
+532	 initialized = true;
+533	 if (PAUSED) {
+534	 MainToken(token).pause();
+535	 }
+536	 address[1] memory addresses = [address(0x97c78db18d54fc94897c1b114a3f1d7785d98c5e)];
+537	 uint[1] memory amounts = [uint(33000000000000000000000000)];
+538	 uint64[1] memory freezes = [uint64(0)];
+539	 for (uint i = 0; i < addresses.length; i++) {
+540	 if (freezes[i] == 0) {
+541	 MainToken(token).mint(addresses[i], amounts[i]);
+542	 }
+543	 else {
+544	 MainToken(token).mintAndFreeze(addresses[i], amounts[i], freezes[i]);
+545	 }
+546	 }
+547	 transferOwnership(TARGET_USER);
+548	 emit Initialized();
+549	 }
+550	 function setStartTime(uint _startTime) public onlyOwner {
+551	 require(now < openingTime);
+552	 require(_startTime > openingTime);
+553	 require(_startTime < closingTime);
+554	 emit TimesChanged(_startTime, closingTime, openingTime, closingTime);
+555	 openingTime = _startTime;
+556	 }
+557	 function setEndTime(uint _endTime) public onlyOwner {
+558	 require(now < closingTime);
+559	 require(now < _endTime);
+560	 require(_endTime > openingTime);
+561	 emit TimesChanged(openingTime, _endTime, openingTime, closingTime);
+562	 closingTime = _endTime;
+563	 }
+564	 function setTimes(uint _startTime, uint _endTime) public onlyOwner {
+565	 require(_endTime > _startTime);
+566	 uint oldStartTime = openingTime;
+567	 uint oldEndTime = closingTime;
+568	 bool changed = false;
+569	 if (_startTime != oldStartTime) {
+570	 require(_startTime > now);
+571	 require(now < oldStartTime);
+572	 require(_startTime > oldStartTime);
+573	 openingTime = _startTime;
+574	 changed = true;
+575	 }
+576	 if (_endTime != oldEndTime) {
+577	 require(now < oldEndTime);
+578	 require(now < _endTime);
+579	 closingTime = _endTime;
+580	 changed = true;
+581	 }
+582	 if (changed) {
+583	 emit TimesChanged(openingTime, _endTime, openingTime, closingTime);
+584	 }
+585	 }
+586	 }

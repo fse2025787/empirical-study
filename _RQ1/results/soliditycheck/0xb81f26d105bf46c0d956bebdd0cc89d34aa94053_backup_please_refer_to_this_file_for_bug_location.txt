@@ -1,0 +1,491 @@
+row number 
+1	   pragma solidity ^0.4.19;
+2	 contract DSMath {
+3	 function add(uint x, uint y) internal pure returns (uint z) {
+4	 require((z = x + y) >= x);
+5	 }
+6	 function sub(uint x, uint y) internal pure returns (uint z) {
+7	 require((z = x - y) <= x);
+8	 }
+9	 function mul(uint x, uint y) internal pure returns (uint z) {
+10	 require(y == 0 || (z = x * y) / y == x);
+11	 }
+12	 function min(uint x, uint y) internal pure returns (uint z) {
+13	 return x <= y ? x : y;
+14	 }
+15	 function max(uint x, uint y) internal pure returns (uint z) {
+16	 return x >= y ? x : y;
+17	 }
+18	 function imin(int x, int y) internal pure returns (int z) {
+19	 return x <= y ? x : y;
+20	 }
+21	 function imax(int x, int y) internal pure returns (int z) {
+22	 return x >= y ? x : y;
+23	 }
+24	 uint constant WAD = 10 ** 18;
+25	 uint constant RAY = 10 ** 27;
+26	 function wmul(uint x, uint y) internal pure returns (uint z) {
+27	 z = add(mul(x, y), WAD / 2) / WAD;
+28	 }
+29	 function rmul(uint x, uint y) internal pure returns (uint z) {
+30	 z = add(mul(x, y), RAY / 2) / RAY;
+31	 }
+32	 function wdiv(uint x, uint y) internal pure returns (uint z) {
+33	 z = add(mul(x, WAD), y / 2) / y;
+34	 }
+35	 function rdiv(uint x, uint y) internal pure returns (uint z) {
+36	 z = add(mul(x, RAY), y / 2) / y;
+37	 }
+38	 function rpow(uint x, uint n) internal pure returns (uint z) {
+39	 z = n % 2 != 0 ? x : RAY;
+40	 for (n /= 2; n != 0; n /= 2) {
+41	 x = rmul(x, x);
+42	 if (n % 2 != 0) {
+43	 z = rmul(z, x);
+44	 }
+45	 }
+46	 }
+47	 }
+48	 contract ERC20Events {
+49	 event Approval(address indexed src, address indexed guy, uint wad);
+50	 event Transfer(address indexed src, address indexed dst, uint wad);
+51	 }
+52	 contract ERC20 is ERC20Events {
+53	 function totalSupply() public view returns (uint);
+54	 function balanceOf(address guy) public view returns (uint);
+55	 function allowance(address src, address guy) public view returns (uint);
+56	 function approve(address guy, uint wad) public returns (bool);
+57	 function transfer(address dst, uint wad) public returns (bool);
+58	 function transferFrom( address src, address dst, uint wad ) public returns (bool);
+59	 }
+60	 contract DSAuthority {
+61	 function canCall( address src, address dst, bytes4 sig ) public view returns (bool);
+62	 }
+63	 contract DSAuthEvents {
+64	 event LogSetAuthority (address indexed authority);
+65	 event LogSetOwner (address indexed owner);
+66	 }
+67	 contract DSAuth is DSAuthEvents {
+68	 DSAuthority public authority;
+69	 address public owner;
+70	 constructor() public {
+71	 owner = msg.sender;
+72	 emit LogSetOwner(msg.sender);
+73	 }
+74	 function setOwner(address owner_) public auth {
+75	 owner = owner_;
+76	 emit LogSetOwner(owner);
+77	 }
+78	 function setAuthority(DSAuthority authority_) public auth {
+79	 authority = authority_;
+80	 emit LogSetAuthority(authority);
+81	 }
+82	 modifier auth {
+83	 require(isAuthorized(msg.sender, msg.sig));
+84	 _;
+85	 }
+86	 function isAuthorized(address src, bytes4 sig) internal view returns (bool) {
+87	 if (src == address(this)) {
+88	 return true;
+89	 }
+90	 else if (src == owner) {
+91	 return true;
+92	 }
+93	 else if (authority == DSAuthority(0)) {
+94	 return false;
+95	 }
+96	 else {
+97	 return authority.canCall(src, this, sig);
+98	 }
+99	 }
+100	 }
+101	 contract DSNote {
+102	 event LogNote( bytes4 indexed sig, address indexed guy, bytes32 indexed foo, bytes32 indexed bar, uint wad, bytes fax ) anonymous;
+103	 modifier note {
+104	 bytes32 foo;
+105	 bytes32 bar;
+106	 assembly {
+107	 foo := calldataload(4) bar := calldataload(36) }
+108	 emit LogNote(msg.sig, msg.sender, foo, bar, msg.value, msg.data);
+109	 _;
+110	 }
+111	 }
+112	 contract DSStop is DSNote, DSAuth {
+113	 bool public stopped;
+114	 modifier stoppable {
+115	 require(!stopped);
+116	 _;
+117	 }
+118	 function stop() public auth note {
+119	 stopped = true;
+120	 }
+121	 function start() public auth note {
+122	 stopped = false;
+123	 }
+124	 }
+125	 contract DSTokenBase is ERC20, DSMath {
+126	 uint256 _supply;
+127	 mapping (address => uint256) _balances;
+128	 mapping (address => mapping (address => uint256)) _approvals;
+129	 constructor(uint supply) public {
+130	 _balances[msg.sender] = supply;
+131	 _supply = supply;
+132	 }
+133	 function totalSupply() public view returns (uint) {
+134	 return _supply;
+135	 }
+136	 function balanceOf(address src) public view returns (uint) {
+137	 return _balances[src];
+138	 }
+139	 function allowance(address src, address guy) public view returns (uint) {
+140	 return _approvals[src][guy];
+141	 }
+142	 function transfer(address dst, uint wad) public returns (bool) {
+143	 return transferFrom(msg.sender, dst, wad);
+144	 }
+145	 function transferFrom(address src, address dst, uint wad) public returns (bool) {
+146	 if (src != msg.sender) {
+147	 _approvals[src][msg.sender] = sub(_approvals[src][msg.sender], wad);
+148	 }
+149	 _balances[src] = sub(_balances[src], wad);
+150	 _balances[dst] = add(_balances[dst], wad);
+151	 emit Transfer(src, dst, wad);
+152	 return true;
+153	 }
+154	 function approve(address guy, uint wad) public returns (bool) {
+155	 _approvals[msg.sender][guy] = wad;
+156	 emit Approval(msg.sender, guy, wad);
+157	 return true;
+158	 }
+159	 }
+160	 contract DSToken is DSTokenBase(0), DSStop {
+161	 bytes32 public symbol;
+162	 uint256 public decimals = 18;
+163	 constructor(bytes32 symbol_) public {
+164	 symbol = symbol_;
+165	 }
+166	 event Mint(address indexed guy, uint wad);
+167	 event Burn(address indexed guy, uint wad);
+168	 function approve(address guy) public stoppable returns (bool) {
+169	 return super.approve(guy, uint(-1));
+170	 }
+171	 function approve(address guy, uint wad) public stoppable returns (bool) {
+172	 return super.approve(guy, wad);
+173	 }
+174	 function transferFrom(address src, address dst, uint wad) public stoppable returns (bool) {
+175	 if (src != msg.sender && _approvals[src][msg.sender] != uint(-1)) {
+176	 _approvals[src][msg.sender] = sub(_approvals[src][msg.sender], wad);
+177	 }
+178	 _balances[src] = sub(_balances[src], wad);
+179	 _balances[dst] = add(_balances[dst], wad);
+180	 emit Transfer(src, dst, wad);
+181	 return true;
+182	 }
+183	 function push(address dst, uint wad) public {
+184	 transferFrom(msg.sender, dst, wad);
+185	 }
+186	 function pull(address src, uint wad) public {
+187	 transferFrom(src, msg.sender, wad);
+188	 }
+189	 function move(address src, address dst, uint wad) public {
+190	 transferFrom(src, dst, wad);
+191	 }
+192	 function mint(uint wad) public {
+193	 mint(msg.sender, wad);
+194	 }
+195	 function burn(uint wad) public {
+196	 burn(msg.sender, wad);
+197	 }
+198	 function mint(address guy, uint wad) public auth stoppable {
+199	 _balances[guy] = add(_balances[guy], wad);
+200	 _supply = add(_supply, wad);
+201	 emit Mint(guy, wad);
+202	 }
+203	 function burn(address guy, uint wad) public auth stoppable {
+204	 if (guy != msg.sender && _approvals[guy][msg.sender] != uint(-1)) {
+205	 _approvals[guy][msg.sender] = sub(_approvals[guy][msg.sender], wad);
+206	 }
+207	 _balances[guy] = sub(_balances[guy], wad);
+208	 _supply = sub(_supply, wad);
+209	 emit Burn(guy, wad);
+210	 }
+211	 bytes32 public name = "";
+212	 function setName(bytes32 name_) public auth {
+213	 name = name_;
+214	 }
+215	 }
+216	 contract ERC223ReceivingContract {
+217	 function tokenFallback(address _from, uint256 _value, bytes _data) public;
+218	 }
+219	 contract TokenController {
+220	 function proxyPayment(address _owner) payable public returns (bool);
+221	 function onTransfer(address _from, address _to, uint _amount) public returns (bool);
+222	 function onApprove(address _owner, address _spender, uint _amount) public returns (bool);
+223	 }
+224	 contract Controlled {
+225	 modifier onlyController {
+226	 if (msg.sender != controller) revert();
+227	 _;
+228	 }
+229	 address public controller;
+230	 constructor() {
+231	 controller = msg.sender;
+232	 }
+233	 function changeController(address _newController) onlyController {
+234	 controller = _newController;
+235	 }
+236	 }
+237	 contract ApproveAndCallFallBack {
+238	 function receiveApproval(address from, uint256 _amount, address _token, bytes _data);
+239	 }
+240	 contract ERC223 {
+241	 function transfer(address to, uint amount, bytes data) public returns (bool ok);
+242	 function transferFrom(address from, address to, uint256 amount, bytes data) public returns (bool ok);
+243	 function transfer(address to, uint amount, bytes data, string custom_fallback) public returns (bool ok);
+244	 function transferFrom(address from, address to, uint256 amount, bytes data, string custom_fallback) public returns (bool ok);
+245	 event ERC223Transfer(address indexed from, address indexed to, uint amount, bytes data);
+246	 event ReceivingContractTokenFallbackFailed(address indexed from, address indexed to, uint amount);
+247	 }
+248	 contract AKC is DSToken("AKC"), ERC223, Controlled {
+249	 constructor() {
+250	 setName("ARTWOOK Coin");
+251	 }
+252	 function transferFrom(address _from, address _to, uint256 _amount ) public returns (bool success) {
+253	 if (isContract(controller)) {
+254	 if (!TokenController(controller).onTransfer(_from, _to, _amount)) revert();
+255	 }
+256	 success = super.transferFrom(_from, _to, _amount);
+257	 if (success && isContract(_to)) {
+258	 if(!_to.call(bytes4(keccak256("tokenFallback(address,uint256)")), _from, _amount)) {
+259	 emit ReceivingContractTokenFallbackFailed(_from, _to, _amount);
+260	 }
+261	 }
+262	 }
+263	 function transferFrom(address _from, address _to, uint256 _amount, bytes _data) public returns (bool success) {
+264	 if (isContract(controller)) {
+265	 if (!TokenController(controller).onTransfer(_from, _to, _amount)) revert();
+266	 }
+267	 require(super.transferFrom(_from, _to, _amount));
+268	 if (isContract(_to)) {
+269	 ERC223ReceivingContract receiver = ERC223ReceivingContract(_to);
+270	 receiver.tokenFallback(_from, _amount, _data);
+271	 }
+272	 emit ERC223Transfer(_from, _to, _amount, _data);
+273	 return true;
+274	 }
+275	 function transfer( address _to, uint256 _amount, bytes _data) public returns (bool success) {
+276	 return transferFrom(msg.sender, _to, _amount, _data);
+277	 }
+278	 function transferFrom(address _from, address _to, uint256 _amount, bytes _data, string _custom_fallback) public returns (bool success) {
+279	 if (isContract(controller)) {
+280	 if (!TokenController(controller).onTransfer(_from, _to, _amount)) revert();
+281	 }
+282	 require(super.transferFrom(_from, _to, _amount));
+283	 if (isContract(_to)) {
+284	 if(_to == address(this)) revert();
+285	 ERC223ReceivingContract receiver = ERC223ReceivingContract(_to);
+286	 receiver.call.value(0)(bytes4(keccak256(_custom_fallback)), _from, _amount, _data);
+287	 }
+288	 emit ERC223Transfer(_from, _to, _amount, _data);
+289	 return true;
+290	 }
+291	 function transfer( address _to, uint _amount, bytes _data, string _custom_fallback) public returns (bool success) {
+292	 return transferFrom(msg.sender, _to, _amount, _data, _custom_fallback);
+293	 }
+294	 function approve(address _spender, uint256 _amount) returns (bool success) {
+295	 if (isContract(controller)) {
+296	 if (!TokenController(controller).onApprove(msg.sender, _spender, _amount)) revert();
+297	 }
+298	 return super.approve(_spender, _amount);
+299	 }
+300	 function mint(address _guy, uint _wad) auth stoppable {
+301	 super.mint(_guy, _wad);
+302	 Transfer(0, _guy, _wad);
+303	 }
+304	 function burn(address _guy, uint _wad) auth stoppable {
+305	 super.burn(_guy, _wad);
+306	 Transfer(_guy, 0, _wad);
+307	 }
+308	 function approveAndCall(address _spender, uint256 _amount, bytes _extraData ) returns (bool success) {
+309	 if (!approve(_spender, _amount)) revert();
+310	 ApproveAndCallFallBack(_spender).receiveApproval( msg.sender, _amount, this, _extraData );
+311	 return true;
+312	 }
+313	 function isContract(address _addr) constant internal returns(bool) {
+314	 uint size;
+315	 if (_addr == 0) return false;
+316	 assembly {
+317	 size := extcodesize(_addr) }
+318	 return size>0;
+319	 }
+320	 function () payable {
+321	 if (isContract(controller)) {
+322	 if (! TokenController(controller).proxyPayment.value(msg.value)(msg.sender)) revert();
+323	 }
+324	 else {
+325	 revert();
+326	 }
+327	 }
+328	 function claimTokens(address _token) onlyController {
+329	 if (_token == 0x0) {
+330	 controller.transfer(this.balance);
+331	 return;
+332	 }
+333	 ERC20 token = ERC20(_token);
+334	 uint balance = token.balanceOf(this);
+335	 token.transfer(controller, balance);
+336	 emit ClaimedTokens(_token, controller, balance);
+337	 }
+338	 event ClaimedTokens(address indexed _token, address indexed _controller, uint _amount);
+339	 }
+340	 library SafeMath {
+341	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+342	 if (a == 0) {
+343	 return 0;
+344	 }
+345	 uint256 c = a * b;
+346	 assert(c / a == b);
+347	 return c;
+348	 }
+349	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+350	 uint256 c = a / b;
+351	 return c;
+352	 }
+353	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+354	 assert(b <= a);
+355	 return a - b;
+356	 }
+357	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+358	 uint256 c = a + b;
+359	 assert(c >= a);
+360	 return c;
+361	 }
+362	 }
+363	 contract Ownable {
+364	 address public owner;
+365	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+366	 constructor() public {
+367	 owner = msg.sender;
+368	 }
+369	 modifier onlyOwner() {
+370	 require(msg.sender == owner);
+371	 _;
+372	 }
+373	 function transferOwnership(address newOwner) public onlyOwner {
+374	 require(newOwner != address(0));
+375	 owner = newOwner;
+376	 emit OwnershipTransferred(owner, newOwner);
+377	 }
+378	 }
+379	 contract Pausable is Ownable {
+380	 bool public paused = false;
+381	 event Pause();
+382	 event Unpause();
+383	 modifier whenNotPaused() {
+384	 require(!paused);
+385	 _;
+386	 }
+387	 modifier whenPaused() {
+388	 require(paused);
+389	 _;
+390	 }
+391	 function pause() onlyOwner whenNotPaused public {
+392	 paused = true;
+393	 emit Pause();
+394	 }
+395	 function unpause() onlyOwner whenPaused public {
+396	 paused = false;
+397	 emit Unpause();
+398	 }
+399	 }
+400	 contract Withdrawable is Ownable {
+401	 function withdrawEther(address _to, uint _value) onlyOwner public returns(bool) {
+402	 require(_to != address(0));
+403	 require(address(this).balance >= _value);
+404	 _to.transfer(_value);
+405	 return true;
+406	 }
+407	 function withdrawTokens(ERC20 _token, address _to, uint _value) onlyOwner public returns(bool) {
+408	 require(_to != address(0));
+409	 return _token.transfer(_to, _value);
+410	 }
+411	 }
+412	 contract AKCCrowdsale is Pausable, Withdrawable {
+413	 using SafeMath for uint;
+414	 struct Step {
+415	 uint priceTokenWei;
+416	 uint minInvestEth;
+417	 uint timestamp;
+418	 uint tokensSold;
+419	 uint collectedWei;
+420	 }
+421	 AKC public token;
+422	 address public beneficiary;
+423	 Step[] public steps;
+424	 uint8 public currentStep = 0;
+425	 uint public totalTokensSold = 0;
+426	 uint public totalCollectedWei = 0;
+427	 bool public crowdsaleClosed = false;
+428	 uint public totalTokensForSale = 0;
+429	 event Purchase(address indexed holder, uint256 tokenAmount, uint256 etherAmount);
+430	 event NextStep(uint8 step);
+431	 event CrowdsaleClose();
+432	 function AKCCrowdsale(AKC akctoken, uint phase1, uint phase2, uint phase3, uint phase4, address multiSigWallet) public {
+433	 require(token==address(0));
+434	 token = akctoken;
+435	 beneficiary = multiSigWallet;
+436	 totalTokensForSale = 9000000 ether;
+437	 uint oneEther = 1 ether;
+438	 steps.push(Step(oneEther.div(3450), 1 ether, phase1, 0, 0));
+439	 steps.push(Step(oneEther.div(3300), 1 ether, phase2, 0, 0));
+440	 steps.push(Step(oneEther.div(3150), 1 ether, phase3, 0, 0));
+441	 steps.push(Step(oneEther.div(3000), 1 ether, phase4, 0, 0));
+442	 }
+443	 function() external payable {
+444	 purchase(msg.sender);
+445	 }
+446	 function purchase(address sender) whenNotPaused payable public {
+447	 require(!crowdsaleClosed);
+448	 require(now>steps[0].timestamp);
+449	 if (now > steps[1].timestamp && currentStep < 1){
+450	 currentStep = 1;
+451	 emit NextStep(currentStep);
+452	 }
+453	 if (now > steps[2].timestamp && currentStep < 2){
+454	 currentStep = 2;
+455	 emit NextStep(currentStep);
+456	 }
+457	 if (now > steps[3].timestamp && currentStep < 3){
+458	 currentStep = 3;
+459	 emit NextStep(currentStep);
+460	 }
+461	 require(msg.value >= steps[currentStep].minInvestEth);
+462	 require(totalTokensSold < totalTokensForSale);
+463	 uint sum = msg.value;
+464	 uint amount = sum.div(steps[currentStep].priceTokenWei).mul(1 ether);
+465	 uint retSum = 0;
+466	 if(totalTokensSold.add(amount) > totalTokensForSale) {
+467	 uint retAmount = totalTokensSold.add(amount).sub(totalTokensForSale);
+468	 retSum = retAmount.mul(steps[currentStep].priceTokenWei).div(1 ether);
+469	 amount = amount.sub(retAmount);
+470	 sum = sum.sub(retSum);
+471	 }
+472	 totalTokensSold = totalTokensSold.add(amount);
+473	 totalCollectedWei = totalCollectedWei.add(sum);
+474	 steps[currentStep].tokensSold = steps[currentStep].tokensSold.add(amount);
+475	 steps[currentStep].collectedWei = steps[currentStep].collectedWei.add(sum);
+476	 token.transfer(sender, amount);
+477	 if(retSum > 0) {
+478	 sender.transfer(retSum);
+479	 }
+480	 beneficiary.transfer(address(this).balance);
+481	 emit Purchase(sender, amount, sum);
+482	 }
+483	 function closeCrowdsale() onlyOwner public {
+484	 require(!crowdsaleClosed);
+485	 beneficiary.transfer(address(this).balance);
+486	 token.transfer(beneficiary, token.balanceOf(address(this)));
+487	 crowdsaleClosed = true;
+488	 emit CrowdsaleClose();
+489	 }
+490	 }

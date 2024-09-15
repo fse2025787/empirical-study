@@ -1,0 +1,497 @@
+row number 
+1	   pragma solidity ^0.4.21;
+2	 library BWUtility {
+3	 function ceil(uint _amount, uint _multiple) pure public returns (uint) {
+4	 return ((_amount + _multiple - 1) / _multiple) * _multiple;
+5	 }
+6	 function isAdjacent(uint8 _x1, uint8 _y1, uint8 _x2, uint8 _y2) pure public returns (bool) {
+7	 return ((_x1 == _x2 && (_y2 - _y1 == 1 || _y1 - _y2 == 1))) || ((_y1 == _y2 && (_x2 - _x1 == 1 || _x1 - _x2 == 1))) || ((_x2 - _x1 == 1 && (_y2 - _y1 == 1 || _y1 - _y2 == 1))) || ((_x1 - _x2 == 1 && (_y2 - _y1 == 1 || _y1 - _y2 == 1)));
+8	 }
+9	 function toTileId(uint8 _x, uint8 _y) pure public returns (uint16) {
+10	 return uint16(_x) << 8 | uint16(_y);
+11	 }
+12	 function fromTileId(uint16 _tileId) pure public returns (uint8, uint8) {
+13	 uint8 y = uint8(_tileId);
+14	 uint8 x = uint8(_tileId >> 8);
+15	 return (x, y);
+16	 }
+17	 function getBoostFromTile(address _claimer, address _attacker, address _defender, uint _blockValue) pure public returns (uint, uint) {
+18	 if (_claimer == _attacker) {
+19	 return (_blockValue, 0);
+20	 }
+21	 else if (_claimer == _defender) {
+22	 return (0, _blockValue);
+23	 }
+24	 }
+25	 }
+26	 contract BWData {
+27	 address public owner;
+28	 address private bwService;
+29	 address private bw;
+30	 address private bwMarket;
+31	 uint private blockValueBalance = 0;
+32	 uint private feeBalance = 0;
+33	 uint private BASE_TILE_PRICE_WEI = 1 finney;
+34	 mapping (address => User) private users;
+35	 mapping (uint16 => Tile) private tiles;
+36	 struct User {
+37	 uint creationTime;
+38	 bool censored;
+39	 uint battleValue;
+40	 }
+41	 struct Tile {
+42	 address claimer;
+43	 uint blockValue;
+44	 uint creationTime;
+45	 uint sellPrice;
+46	 }
+47	 struct Boost {
+48	 uint8 numAttackBoosts;
+49	 uint8 numDefendBoosts;
+50	 uint attackBoost;
+51	 uint defendBoost;
+52	 }
+53	 constructor() public {
+54	 owner = msg.sender;
+55	 }
+56	 function () payable public {
+57	 revert();
+58	 }
+59	 function kill() public isOwner {
+60	 selfdestruct(owner);
+61	 }
+62	 modifier isValidCaller {
+63	 if (msg.sender != bwService && msg.sender != bw && msg.sender != bwMarket) {
+64	 revert();
+65	 }
+66	 _;
+67	 }
+68	 modifier isOwner {
+69	 if (msg.sender != owner) {
+70	 revert();
+71	 }
+72	 _;
+73	 }
+74	 function setBwServiceValidCaller(address _bwService) public isOwner {
+75	 bwService = _bwService;
+76	 }
+77	 function setBwValidCaller(address _bw) public isOwner {
+78	 bw = _bw;
+79	 }
+80	 function setBwMarketValidCaller(address _bwMarket) public isOwner {
+81	 bwMarket = _bwMarket;
+82	 }
+83	 function addUser(address _msgSender) public isValidCaller {
+84	 User storage user = users[_msgSender];
+85	 require(user.creationTime == 0);
+86	 user.creationTime = block.timestamp;
+87	 }
+88	 function hasUser(address _user) view public isValidCaller returns (bool) {
+89	 return users[_user].creationTime != 0;
+90	 }
+91	 function getTile(uint16 _tileId) view public isValidCaller returns (address, uint, uint, uint) {
+92	 Tile storage currentTile = tiles[_tileId];
+93	 return (currentTile.claimer, currentTile.blockValue, currentTile.creationTime, currentTile.sellPrice);
+94	 }
+95	 function getTileClaimerAndBlockValue(uint16 _tileId) view public isValidCaller returns (address, uint) {
+96	 Tile storage currentTile = tiles[_tileId];
+97	 return (currentTile.claimer, currentTile.blockValue);
+98	 }
+99	 function isNewTile(uint16 _tileId) view public isValidCaller returns (bool) {
+100	 Tile storage currentTile = tiles[_tileId];
+101	 return currentTile.creationTime == 0;
+102	 }
+103	 function storeClaim(uint16 _tileId, address _claimer, uint _blockValue) public isValidCaller {
+104	 tiles[_tileId] = Tile(_claimer, _blockValue, block.timestamp, 0);
+105	 }
+106	 function updateTileBlockValue(uint16 _tileId, uint _blockValue) public isValidCaller {
+107	 tiles[_tileId].blockValue = _blockValue;
+108	 }
+109	 function setClaimerForTile(uint16 _tileId, address _claimer) public isValidCaller {
+110	 tiles[_tileId].claimer = _claimer;
+111	 }
+112	 function updateTileTimeStamp(uint16 _tileId) public isValidCaller {
+113	 tiles[_tileId].creationTime = block.timestamp;
+114	 }
+115	 function getCurrentClaimerForTile(uint16 _tileId) view public isValidCaller returns (address) {
+116	 Tile storage currentTile = tiles[_tileId];
+117	 if (currentTile.creationTime == 0) {
+118	 return 0;
+119	 }
+120	 return currentTile.claimer;
+121	 }
+122	 function getCurrentBlockValueAndSellPriceForTile(uint16 _tileId) view public isValidCaller returns (uint, uint) {
+123	 Tile storage currentTile = tiles[_tileId];
+124	 if (currentTile.creationTime == 0) {
+125	 return (0, 0);
+126	 }
+127	 return (currentTile.blockValue, currentTile.sellPrice);
+128	 }
+129	 function getBlockValueBalance() view public isValidCaller returns (uint){
+130	 return blockValueBalance;
+131	 }
+132	 function setBlockValueBalance(uint _blockValueBalance) public isValidCaller {
+133	 blockValueBalance = _blockValueBalance;
+134	 }
+135	 function getFeeBalance() view public isValidCaller returns (uint) {
+136	 return feeBalance;
+137	 }
+138	 function setFeeBalance(uint _feeBalance) public isValidCaller {
+139	 feeBalance = _feeBalance;
+140	 }
+141	 function getUserBattleValue(address _userId) view public isValidCaller returns (uint) {
+142	 return users[_userId].battleValue;
+143	 }
+144	 function setUserBattleValue(address _userId, uint _battleValue) public isValidCaller {
+145	 users[_userId].battleValue = _battleValue;
+146	 }
+147	 function verifyAmount(address _msgSender, uint _msgValue, uint _amount, bool _useBattleValue) view public isValidCaller {
+148	 User storage user = users[_msgSender];
+149	 require(user.creationTime != 0);
+150	 if (_useBattleValue) {
+151	 require(_msgValue == 0);
+152	 require(user.battleValue >= _amount);
+153	 }
+154	 else {
+155	 require(_amount == _msgValue);
+156	 }
+157	 }
+158	 function addBoostFromTile(Tile _tile, address _attacker, address _defender, Boost memory _boost) pure private {
+159	 if (_tile.claimer == _attacker) {
+160	 require(_boost.attackBoost + _tile.blockValue >= _tile.blockValue);
+161	 _boost.attackBoost += _tile.blockValue;
+162	 _boost.numAttackBoosts += 1;
+163	 }
+164	 else if (_tile.claimer == _defender) {
+165	 require(_boost.defendBoost + _tile.blockValue >= _tile.blockValue);
+166	 _boost.defendBoost += _tile.blockValue;
+167	 _boost.numDefendBoosts += 1;
+168	 }
+169	 }
+170	 function calculateBattleBoost(uint16 _tileId, address _attacker, address _defender) view public isValidCaller returns (uint, uint) {
+171	 uint8 x;
+172	 uint8 y;
+173	 (x, y) = BWUtility.fromTileId(_tileId);
+174	 Boost memory boost = Boost(0, 0, 0, 0);
+175	 if (y != 255) {
+176	 if (x != 255) {
+177	 addBoostFromTile(tiles[BWUtility.toTileId(x+1, y+1)], _attacker, _defender, boost);
+178	 }
+179	 addBoostFromTile(tiles[BWUtility.toTileId(x, y+1)], _attacker, _defender, boost);
+180	 if (x != 0) {
+181	 addBoostFromTile(tiles[BWUtility.toTileId(x-1, y+1)], _attacker, _defender, boost);
+182	 }
+183	 }
+184	 if (x != 255) {
+185	 addBoostFromTile(tiles[BWUtility.toTileId(x+1, y)], _attacker, _defender, boost);
+186	 }
+187	 if (x != 0) {
+188	 addBoostFromTile(tiles[BWUtility.toTileId(x-1, y)], _attacker, _defender, boost);
+189	 }
+190	 if (y != 0) {
+191	 if(x != 255) {
+192	 addBoostFromTile(tiles[BWUtility.toTileId(x+1, y-1)], _attacker, _defender, boost);
+193	 }
+194	 addBoostFromTile(tiles[BWUtility.toTileId(x, y-1)], _attacker, _defender, boost);
+195	 if(x != 0) {
+196	 addBoostFromTile(tiles[BWUtility.toTileId(x-1, y-1)], _attacker, _defender, boost);
+197	 }
+198	 }
+199	 boost.attackBoost = (boost.attackBoost / 10 * boost.numAttackBoosts);
+200	 boost.defendBoost = (boost.defendBoost / 10 * boost.numDefendBoosts);
+201	 return (boost.attackBoost, boost.defendBoost);
+202	 }
+203	 function censorUser(address _userAddress, bool _censored) public isValidCaller {
+204	 User storage user = users[_userAddress];
+205	 require(user.creationTime != 0);
+206	 user.censored = _censored;
+207	 }
+208	 function deleteTile(uint16 _tileId) public isValidCaller {
+209	 delete tiles[_tileId];
+210	 }
+211	 function setSellPrice(uint16 _tileId, uint _sellPrice) public isValidCaller {
+212	 tiles[_tileId].sellPrice = _sellPrice;
+213	 }
+214	 function deleteOffer(uint16 _tileId) public isValidCaller {
+215	 tiles[_tileId].sellPrice = 0;
+216	 }
+217	 }
+218	 library SafeMath {
+219	 function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+220	 if (a == 0) {
+221	 return 0;
+222	 }
+223	 c = a * b;
+224	 assert(c / a == b);
+225	 return c;
+226	 }
+227	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+228	 return a / b;
+229	 }
+230	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+231	 assert(b <= a);
+232	 return a - b;
+233	 }
+234	 function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+235	 c = a + b;
+236	 assert(c >= a);
+237	 return c;
+238	 }
+239	 }
+240	 interface ERC20I {
+241	 function transfer(address _recipient, uint256 _amount) external returns (bool);
+242	 function balanceOf(address _holder) external view returns (uint256);
+243	 }
+244	 contract BWService {
+245	 using SafeMath for uint256;
+246	 address private owner;
+247	 address private bw;
+248	 address private bwMarket;
+249	 BWData private bwData;
+250	 uint private seed = 42;
+251	 uint private WITHDRAW_FEE = 5;
+252	 uint private ATTACK_FEE = 5;
+253	 uint private ATTACK_BOOST_CAP = 300;
+254	 uint private DEFEND_BOOST_CAP = 300;
+255	 uint private ATTACK_BOOST_MULTIPLIER = 100;
+256	 uint private DEFEND_BOOST_MULTIPLIER = 100;
+257	 mapping (uint16 => address) private localGames;
+258	 modifier isOwner {
+259	 if (msg.sender != owner) {
+260	 revert();
+261	 }
+262	 _;
+263	 }
+264	 modifier isValidCaller {
+265	 if (msg.sender != bw && msg.sender != bwMarket) {
+266	 revert();
+267	 }
+268	 _;
+269	 }
+270	 event TileClaimed(uint16 tileId, address newClaimer, uint priceInWei, uint creationTime);
+271	 event TileFortified(uint16 tileId, address claimer, uint addedValueInWei, uint priceInWei, uint fortifyTime);
+272	 event TileAttackedSuccessfully(uint16 tileId, address attacker, uint attackAmount, uint totalAttackAmount, address defender, uint defendAmount, uint totalDefendAmount, uint attackRoll, uint attackTime);
+273	 event TileDefendedSuccessfully(uint16 tileId, address attacker, uint attackAmount, uint totalAttackAmount, address defender, uint defendAmount, uint totalDefendAmount, uint attackRoll, uint defendTime);
+274	 event BlockValueMoved(uint16 sourceTileId, uint16 destTileId, address owner, uint movedBlockValue, uint postSourceValue, uint postDestValue, uint moveTime);
+275	 event UserBattleValueUpdated(address userAddress, uint battleValue, bool isWithdraw);
+276	 constructor(address _bwData) public {
+277	 bwData = BWData(_bwData);
+278	 owner = msg.sender;
+279	 }
+280	 function () payable public {
+281	 revert();
+282	 }
+283	 function kill() public isOwner {
+284	 selfdestruct(owner);
+285	 }
+286	 function setValidBwCaller(address _bw) public isOwner {
+287	 bw = _bw;
+288	 }
+289	 function setValidBwMarketCaller(address _bwMarket) public isOwner {
+290	 bwMarket = _bwMarket;
+291	 }
+292	 function setWithdrawFee(uint _feePercentage) public isOwner {
+293	 WITHDRAW_FEE = _feePercentage;
+294	 }
+295	 function setAttackFee(uint _feePercentage) public isOwner {
+296	 ATTACK_FEE = _feePercentage;
+297	 }
+298	 function setAttackBoostMultipler(uint _multiplierPercentage) public isOwner {
+299	 ATTACK_BOOST_MULTIPLIER = _multiplierPercentage;
+300	 }
+301	 function setDefendBoostMultiplier(uint _multiplierPercentage) public isOwner {
+302	 DEFEND_BOOST_MULTIPLIER = _multiplierPercentage;
+303	 }
+304	 function setAttackBoostCap(uint _capPercentage) public isOwner {
+305	 ATTACK_BOOST_CAP = _capPercentage;
+306	 }
+307	 function setDefendBoostCap(uint _capPercentage) public isOwner {
+308	 DEFEND_BOOST_CAP = _capPercentage;
+309	 }
+310	 function storeInitialClaim(address _msgSender, uint16[] _claimedTileIds, uint _claimAmount, bool _useBattleValue) public isValidCaller {
+311	 uint tileCount = _claimedTileIds.length;
+312	 require(tileCount > 0);
+313	 require(_claimAmount >= 1 finney * tileCount);
+314	 require(_claimAmount % tileCount == 0);
+315	 uint valuePerBlockInWei = _claimAmount.div(tileCount);
+316	 require(valuePerBlockInWei >= 5 finney);
+317	 if (_useBattleValue) {
+318	 subUserBattleValue(_msgSender, _claimAmount, false);
+319	 }
+320	 addGlobalBlockValueBalance(_claimAmount);
+321	 uint16 tileId;
+322	 bool isNewTile;
+323	 for (uint16 i = 0; i < tileCount; i++) {
+324	 tileId = _claimedTileIds[i];
+325	 isNewTile = bwData.isNewTile(tileId);
+326	 require(isNewTile);
+327	 emit TileClaimed(tileId, _msgSender, valuePerBlockInWei, block.timestamp);
+328	 bwData.storeClaim(tileId, _msgSender, valuePerBlockInWei);
+329	 }
+330	 }
+331	 function fortifyClaims(address _msgSender, uint16[] _claimedTileIds, uint _fortifyAmount, bool _useBattleValue) public isValidCaller {
+332	 uint tileCount = _claimedTileIds.length;
+333	 require(tileCount > 0);
+334	 address(this).balance.add(_fortifyAmount);
+335	 require(_fortifyAmount % tileCount == 0);
+336	 uint addedValuePerTileInWei = _fortifyAmount.div(tileCount);
+337	 require(_fortifyAmount >= 1 finney * tileCount);
+338	 address claimer;
+339	 uint blockValue;
+340	 for (uint16 i = 0; i < tileCount; i++) {
+341	 (claimer, blockValue) = bwData.getTileClaimerAndBlockValue(_claimedTileIds[i]);
+342	 require(claimer != 0);
+343	 require(claimer == _msgSender);
+344	 if (_useBattleValue) {
+345	 subUserBattleValue(_msgSender, addedValuePerTileInWei, false);
+346	 }
+347	 fortifyClaim(_msgSender, _claimedTileIds[i], addedValuePerTileInWei);
+348	 }
+349	 }
+350	 function fortifyClaim(address _msgSender, uint16 _claimedTileId, uint _fortifyAmount) private {
+351	 uint blockValue;
+352	 uint sellPrice;
+353	 (blockValue, sellPrice) = bwData.getCurrentBlockValueAndSellPriceForTile(_claimedTileId);
+354	 uint updatedBlockValue = blockValue.add(_fortifyAmount);
+355	 emit TileFortified(_claimedTileId, _msgSender, _fortifyAmount, updatedBlockValue, block.timestamp);
+356	 bwData.updateTileBlockValue(_claimedTileId, updatedBlockValue);
+357	 addGlobalBlockValueBalance(_fortifyAmount);
+358	 }
+359	 function random(uint _upper) private returns (uint) {
+360	 seed = uint(keccak256(blockhash(block.number - 1), block.coinbase, block.timestamp, seed, address(0x3f5CE5FBFe3E9af3971dD833D26bA9b5C936f0bE).balance));
+361	 return seed % _upper;
+362	 }
+363	 function attackTile(address _msgSender, uint16 _tileId, uint _attackAmount, bool _useBattleValue) public isValidCaller {
+364	 require(_attackAmount >= 1 finney);
+365	 require(_attackAmount % 1 finney == 0);
+366	 address claimer;
+367	 uint blockValue;
+368	 (claimer, blockValue) = bwData.getTileClaimerAndBlockValue(_tileId);
+369	 require(claimer != 0);
+370	 require(claimer != _msgSender);
+371	 require(claimer != owner);
+372	 uint attackBoost;
+373	 uint defendBoost;
+374	 (attackBoost, defendBoost) = bwData.calculateBattleBoost(_tileId, _msgSender, claimer);
+375	 attackBoost = attackBoost.mul(ATTACK_BOOST_MULTIPLIER).div(100);
+376	 defendBoost = defendBoost.mul(DEFEND_BOOST_MULTIPLIER).div(100);
+377	 if (attackBoost > _attackAmount.mul(ATTACK_BOOST_CAP).div(100)) {
+378	 attackBoost = _attackAmount.mul(ATTACK_BOOST_CAP).div(100);
+379	 }
+380	 if (defendBoost > blockValue.mul(DEFEND_BOOST_CAP).div(100)) {
+381	 defendBoost = blockValue.mul(DEFEND_BOOST_CAP).div(100);
+382	 }
+383	 uint totalAttackAmount = _attackAmount.add(attackBoost);
+384	 uint totalDefendAmount = blockValue.add(defendBoost);
+385	 require(totalAttackAmount.div(10) <= totalDefendAmount);
+386	 require(totalAttackAmount >= totalDefendAmount.div(10));
+387	 uint attackFeeAmount = _attackAmount.mul(ATTACK_FEE).div(100);
+388	 uint attackAmountAfterFee = _attackAmount.sub(attackFeeAmount);
+389	 updateFeeBalance(attackFeeAmount);
+390	 uint attackRoll = random(totalAttackAmount.add(totalDefendAmount));
+391	 if (attackRoll > totalDefendAmount) {
+392	 bwData.setClaimerForTile(_tileId, _msgSender);
+393	 if (_useBattleValue) {
+394	 addUserBattleValue(_msgSender, attackAmountAfterFee);
+395	 subUserBattleValue(_msgSender, attackAmountAfterFee, false);
+396	 }
+397	 else {
+398	 addUserBattleValue(_msgSender, attackAmountAfterFee);
+399	 }
+400	 addUserBattleValue(claimer, 0);
+401	 bwData.updateTileTimeStamp(_tileId);
+402	 emit TileAttackedSuccessfully(_tileId, _msgSender, attackAmountAfterFee, totalAttackAmount, claimer, blockValue, totalDefendAmount, attackRoll, block.timestamp);
+403	 }
+404	 else {
+405	 bwData.setClaimerForTile(_tileId, claimer);
+406	 if (_useBattleValue) {
+407	 subUserBattleValue(_msgSender, attackAmountAfterFee, false);
+408	 }
+409	 addUserBattleValue(claimer, attackAmountAfterFee);
+410	 emit TileDefendedSuccessfully(_tileId, _msgSender, attackAmountAfterFee, totalAttackAmount, claimer, blockValue, totalDefendAmount, attackRoll, block.timestamp);
+411	 }
+412	 }
+413	 function updateFeeBalance(uint attackFeeAmount) private {
+414	 uint feeBalance = bwData.getFeeBalance();
+415	 feeBalance = feeBalance.add(attackFeeAmount);
+416	 bwData.setFeeBalance(feeBalance);
+417	 }
+418	 function moveBlockValue(address _msgSender, uint8 _xSource, uint8 _ySource, uint8 _xDest, uint8 _yDest, uint _moveAmount) public isValidCaller {
+419	 uint16 sourceTileId = BWUtility.toTileId(_xSource, _ySource);
+420	 uint16 destTileId = BWUtility.toTileId(_xDest, _yDest);
+421	 address sourceTileClaimer;
+422	 address destTileClaimer;
+423	 uint sourceTileBlockValue;
+424	 uint destTileBlockValue;
+425	 (sourceTileClaimer, sourceTileBlockValue) = bwData.getTileClaimerAndBlockValue(sourceTileId);
+426	 (destTileClaimer, destTileBlockValue) = bwData.getTileClaimerAndBlockValue(destTileId);
+427	 uint newBlockValue = sourceTileBlockValue.sub(_moveAmount);
+428	 require(newBlockValue == 0 || newBlockValue >= 5 finney);
+429	 require(sourceTileClaimer == _msgSender);
+430	 require(destTileClaimer == _msgSender);
+431	 require(_moveAmount >= 1 finney);
+432	 require(_moveAmount % 1 finney == 0);
+433	 require(BWUtility.isAdjacent(_xSource, _ySource, _xDest, _yDest));
+434	 sourceTileBlockValue = sourceTileBlockValue.sub(_moveAmount);
+435	 destTileBlockValue = destTileBlockValue.add(_moveAmount);
+436	 if (sourceTileBlockValue == 0) {
+437	 bwData.deleteTile(sourceTileId);
+438	 }
+439	 else {
+440	 bwData.updateTileBlockValue(sourceTileId, sourceTileBlockValue);
+441	 bwData.deleteOffer(sourceTileId);
+442	 }
+443	 bwData.updateTileBlockValue(destTileId, destTileBlockValue);
+444	 bwData.deleteOffer(destTileId);
+445	 emit BlockValueMoved(sourceTileId, destTileId, _msgSender, _moveAmount, sourceTileBlockValue, destTileBlockValue, block.timestamp);
+446	 }
+447	 function verifyAmount(address _msgSender, uint _msgValue, uint _amount, bool _useBattleValue) view public isValidCaller {
+448	 if (_useBattleValue) {
+449	 require(_msgValue == 0);
+450	 require(bwData.getUserBattleValue(_msgSender) >= _amount);
+451	 }
+452	 else {
+453	 require(_amount == _msgValue);
+454	 }
+455	 }
+456	 function setLocalGame(uint16 _tileId, address localGameAddress) public isOwner {
+457	 localGames[_tileId] = localGameAddress;
+458	 }
+459	 function getLocalGame(uint16 _tileId) view public isValidCaller returns (address) {
+460	 return localGames[_tileId];
+461	 }
+462	 function withdrawBattleValue(address msgSender, uint _battleValueInWei) public isValidCaller returns (uint) {
+463	 uint fee = _battleValueInWei.mul(WITHDRAW_FEE).div(100);
+464	 uint amountToWithdraw = _battleValueInWei.sub(fee);
+465	 uint feeBalance = bwData.getFeeBalance();
+466	 feeBalance = feeBalance.add(fee);
+467	 bwData.setFeeBalance(feeBalance);
+468	 subUserBattleValue(msgSender, _battleValueInWei, true);
+469	 return amountToWithdraw;
+470	 }
+471	 function addUserBattleValue(address _userId, uint _amount) public isValidCaller {
+472	 uint userBattleValue = bwData.getUserBattleValue(_userId);
+473	 uint newBattleValue = userBattleValue.add(_amount);
+474	 bwData.setUserBattleValue(_userId, newBattleValue);
+475	 emit UserBattleValueUpdated(_userId, newBattleValue, false);
+476	 }
+477	 function subUserBattleValue(address _userId, uint _amount, bool _isWithdraw) public isValidCaller {
+478	 uint userBattleValue = bwData.getUserBattleValue(_userId);
+479	 require(_amount <= userBattleValue);
+480	 uint newBattleValue = userBattleValue.sub(_amount);
+481	 bwData.setUserBattleValue(_userId, newBattleValue);
+482	 emit UserBattleValueUpdated(_userId, newBattleValue, _isWithdraw);
+483	 }
+484	 function addGlobalBlockValueBalance(uint _amount) public isValidCaller {
+485	 uint blockValueBalance = bwData.getBlockValueBalance();
+486	 bwData.setBlockValueBalance(blockValueBalance.add(_amount));
+487	 }
+488	 function subGlobalBlockValueBalance(uint _amount) public isValidCaller {
+489	 uint blockValueBalance = bwData.getBlockValueBalance();
+490	 bwData.setBlockValueBalance(blockValueBalance.sub(_amount));
+491	 }
+492	 function transferTokens(address _tokenAddress, address _recipient) public isOwner {
+493	 ERC20I token = ERC20I(_tokenAddress);
+494	 require(token.transfer(_recipient, token.balanceOf(this)));
+495	 }
+496	 }

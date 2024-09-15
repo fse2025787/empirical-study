@@ -1,0 +1,1102 @@
+row number 
+1	 pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.5.9;
+3	 interface IAssetData {
+4	 function ERC20Token(address tokenAddress) external;
+5	 function ERC721Token( address tokenAddress, uint256 tokenId ) external;
+6	 function ERC1155Assets( address tokenAddress, uint256[] calldata tokenIds, uint256[] calldata values, bytes calldata callbackData ) external;
+7	 function MultiAsset( uint256[] calldata values, bytes[] calldata nestedAssetData ) external;
+8	 function StaticCall( address staticCallTargetAddress, bytes calldata staticCallData, bytes32 expectedReturnDataHash ) external;
+9	 function ERC20Bridge( address tokenAddress, address bridgeAddress, bytes calldata bridgeData ) external;
+10	 }
+11	 library LibEIP712 {
+12	 bytes32 constant internal _EIP712_DOMAIN_SEPARATOR_SCHEMA_HASH = 0x8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f;
+13	 function hashEIP712Domain( string memory name, string memory version, uint256 chainId, address verifyingContract ) internal pure returns (bytes32 result) {
+14	 bytes32 schemaHash = _EIP712_DOMAIN_SEPARATOR_SCHEMA_HASH;
+15	 assembly {
+16	 let nameHash := keccak256(add(name, 32), mload(name)) let versionHash := keccak256(add(version, 32), mload(version)) let memPtr := mload(64) mstore(memPtr, schemaHash) mstore(add(memPtr, 32), nameHash) mstore(add(memPtr, 64), versionHash) mstore(add(memPtr, 96), chainId) mstore(add(memPtr, 128), verifyingContract) result := keccak256(memPtr, 160) }
+17	 return result;
+18	 }
+19	 function hashEIP712Message(bytes32 eip712DomainHash, bytes32 hashStruct) internal pure returns (bytes32 result) {
+20	 assembly {
+21	 let memPtr := mload(64) mstore(memPtr, 0x1901000000000000000000000000000000000000000000000000000000000000) mstore(add(memPtr, 2), eip712DomainHash) mstore(add(memPtr, 34), hashStruct) result := keccak256(memPtr, 66) }
+22	 return result;
+23	 }
+24	 }
+25	 library LibOrder {
+26	 using LibOrder for Order;
+27	 bytes32 constant internal _EIP712_ORDER_SCHEMA_HASH = 0xf80322eb8376aafb64eadf8f0d7623f22130fd9491a221e902b713cb984a7534;
+28	 enum OrderStatus {
+29	 INVALID, INVALID_MAKER_ASSET_AMOUNT, INVALID_TAKER_ASSET_AMOUNT, FILLABLE, EXPIRED, FULLY_FILLED, CANCELLED }
+30	 struct Order {
+31	 address makerAddress;
+32	 address takerAddress;
+33	 address feeRecipientAddress;
+34	 address senderAddress;
+35	 uint256 makerAssetAmount;
+36	 uint256 takerAssetAmount;
+37	 uint256 makerFee;
+38	 uint256 takerFee;
+39	 uint256 expirationTimeSeconds;
+40	 uint256 salt;
+41	 bytes makerAssetData;
+42	 bytes takerAssetData;
+43	 bytes makerFeeAssetData;
+44	 bytes takerFeeAssetData;
+45	 }
+46	 struct OrderInfo {
+47	 OrderStatus orderStatus;
+48	 bytes32 orderHash;
+49	 uint256 orderTakerAssetFilledAmount;
+50	 }
+51	 function getTypedDataHash(Order memory order, bytes32 eip712ExchangeDomainHash) internal pure returns (bytes32 orderHash) {
+52	 orderHash = LibEIP712.hashEIP712Message( eip712ExchangeDomainHash, order.getStructHash() );
+53	 return orderHash;
+54	 }
+55	 function getStructHash(Order memory order) internal pure returns (bytes32 result) {
+56	 bytes32 schemaHash = _EIP712_ORDER_SCHEMA_HASH;
+57	 bytes memory makerAssetData = order.makerAssetData;
+58	 bytes memory takerAssetData = order.takerAssetData;
+59	 bytes memory makerFeeAssetData = order.makerFeeAssetData;
+60	 bytes memory takerFeeAssetData = order.takerFeeAssetData;
+61	 assembly {
+62	 if lt(order, 32) {
+63	 invalid() }
+64	 let pos1 := sub(order, 32) let pos2 := add(order, 320) let pos3 := add(order, 352) let pos4 := add(order, 384) let pos5 := add(order, 416) let temp1 := mload(pos1) let temp2 := mload(pos2) let temp3 := mload(pos3) let temp4 := mload(pos4) let temp5 := mload(pos5) mstore(pos1, schemaHash) mstore(pos2, keccak256(add(makerAssetData, 32), mload(makerAssetData))) mstore(pos3, keccak256(add(takerAssetData, 32), mload(takerAssetData))) mstore(pos4, keccak256(add(makerFeeAssetData, 32), mload(makerFeeAssetData))) mstore(pos5, keccak256(add(takerFeeAssetData, 32), mload(takerFeeAssetData))) result := keccak256(pos1, 480) mstore(pos1, temp1) mstore(pos2, temp2) mstore(pos3, temp3) mstore(pos4, temp4) mstore(pos5, temp5) }
+65	 return result;
+66	 }
+67	 }
+68	 library LibRichErrors {
+69	 bytes4 internal constant STANDARD_ERROR_SELECTOR = 0x08c379a0;
+70	 function StandardError( string memory message ) internal pure returns (bytes memory) {
+71	 return abi.encodeWithSelector( STANDARD_ERROR_SELECTOR, bytes(message) );
+72	 }
+73	 function rrevert(bytes memory errorData) internal pure {
+74	 assembly {
+75	 revert(add(errorData, 0x20), mload(errorData)) }
+76	 }
+77	 }
+78	 library LibSafeMathRichErrors {
+79	 bytes4 internal constant UINT256_BINOP_ERROR_SELECTOR = 0xe946c1bb;
+80	 bytes4 internal constant UINT256_DOWNCAST_ERROR_SELECTOR = 0xc996af7b;
+81	 enum BinOpErrorCodes {
+82	 ADDITION_OVERFLOW, MULTIPLICATION_OVERFLOW, SUBTRACTION_UNDERFLOW, DIVISION_BY_ZERO }
+83	 enum DowncastErrorCodes {
+84	 VALUE_TOO_LARGE_TO_DOWNCAST_TO_UINT32, VALUE_TOO_LARGE_TO_DOWNCAST_TO_UINT64, VALUE_TOO_LARGE_TO_DOWNCAST_TO_UINT96 }
+85	 function Uint256BinOpError( BinOpErrorCodes errorCode, uint256 a, uint256 b ) internal pure returns (bytes memory) {
+86	 return abi.encodeWithSelector( UINT256_BINOP_ERROR_SELECTOR, errorCode, a, b );
+87	 }
+88	 function Uint256DowncastError( DowncastErrorCodes errorCode, uint256 a ) internal pure returns (bytes memory) {
+89	 return abi.encodeWithSelector( UINT256_DOWNCAST_ERROR_SELECTOR, errorCode, a );
+90	 }
+91	 }
+92	 library LibSafeMath {
+93	 function safeMul(uint256 a, uint256 b) internal pure returns (uint256) {
+94	 if (a == 0) {
+95	 return 0;
+96	 }
+97	 uint256 c = a * b;
+98	 if (c / a != b) {
+99	 LibRichErrors.rrevert(LibSafeMathRichErrors.Uint256BinOpError( LibSafeMathRichErrors.BinOpErrorCodes.MULTIPLICATION_OVERFLOW, a, b ));
+100	 }
+101	 return c;
+102	 }
+103	 function safeDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+104	 if (b == 0) {
+105	 LibRichErrors.rrevert(LibSafeMathRichErrors.Uint256BinOpError( LibSafeMathRichErrors.BinOpErrorCodes.DIVISION_BY_ZERO, a, b ));
+106	 }
+107	 uint256 c = a / b;
+108	 return c;
+109	 }
+110	 function safeSub(uint256 a, uint256 b) internal pure returns (uint256) {
+111	 if (b > a) {
+112	 LibRichErrors.rrevert(LibSafeMathRichErrors.Uint256BinOpError( LibSafeMathRichErrors.BinOpErrorCodes.SUBTRACTION_UNDERFLOW, a, b ));
+113	 }
+114	 return a - b;
+115	 }
+116	 function safeAdd(uint256 a, uint256 b) internal pure returns (uint256) {
+117	 uint256 c = a + b;
+118	 if (c < a) {
+119	 LibRichErrors.rrevert(LibSafeMathRichErrors.Uint256BinOpError( LibSafeMathRichErrors.BinOpErrorCodes.ADDITION_OVERFLOW, a, b ));
+120	 }
+121	 return c;
+122	 }
+123	 function max256(uint256 a, uint256 b) internal pure returns (uint256) {
+124	 return a >= b ? a : b;
+125	 }
+126	 function min256(uint256 a, uint256 b) internal pure returns (uint256) {
+127	 return a < b ? a : b;
+128	 }
+129	 }
+130	 library LibMathRichErrors {
+131	 bytes internal constant DIVISION_BY_ZERO_ERROR = hex"a791837c";
+132	 bytes4 internal constant ROUNDING_ERROR_SELECTOR = 0x339f3de2;
+133	 function DivisionByZeroError() internal pure returns (bytes memory) {
+134	 return DIVISION_BY_ZERO_ERROR;
+135	 }
+136	 function RoundingError( uint256 numerator, uint256 denominator, uint256 target ) internal pure returns (bytes memory) {
+137	 return abi.encodeWithSelector( ROUNDING_ERROR_SELECTOR, numerator, denominator, target );
+138	 }
+139	 }
+140	 library LibMath {
+141	 using LibSafeMath for uint256;
+142	 function safeGetPartialAmountFloor( uint256 numerator, uint256 denominator, uint256 target ) internal pure returns (uint256 partialAmount) {
+143	 if (isRoundingErrorFloor( numerator, denominator, target )) {
+144	 LibRichErrors.rrevert(LibMathRichErrors.RoundingError( numerator, denominator, target ));
+145	 }
+146	 partialAmount = numerator.safeMul(target).safeDiv(denominator);
+147	 return partialAmount;
+148	 }
+149	 function safeGetPartialAmountCeil( uint256 numerator, uint256 denominator, uint256 target ) internal pure returns (uint256 partialAmount) {
+150	 if (isRoundingErrorCeil( numerator, denominator, target )) {
+151	 LibRichErrors.rrevert(LibMathRichErrors.RoundingError( numerator, denominator, target ));
+152	 }
+153	 partialAmount = numerator.safeMul(target) .safeAdd(denominator.safeSub(1)) .safeDiv(denominator);
+154	 return partialAmount;
+155	 }
+156	 function getPartialAmountFloor( uint256 numerator, uint256 denominator, uint256 target ) internal pure returns (uint256 partialAmount) {
+157	 partialAmount = numerator.safeMul(target).safeDiv(denominator);
+158	 return partialAmount;
+159	 }
+160	 function getPartialAmountCeil( uint256 numerator, uint256 denominator, uint256 target ) internal pure returns (uint256 partialAmount) {
+161	 partialAmount = numerator.safeMul(target) .safeAdd(denominator.safeSub(1)) .safeDiv(denominator);
+162	 return partialAmount;
+163	 }
+164	 function isRoundingErrorFloor( uint256 numerator, uint256 denominator, uint256 target ) internal pure returns (bool isError) {
+165	 if (denominator == 0) {
+166	 LibRichErrors.rrevert(LibMathRichErrors.DivisionByZeroError());
+167	 }
+168	 if (target == 0 || numerator == 0) {
+169	 return false;
+170	 }
+171	 uint256 remainder = mulmod( target, numerator, denominator );
+172	 isError = remainder.safeMul(1000) >= numerator.safeMul(target);
+173	 return isError;
+174	 }
+175	 function isRoundingErrorCeil( uint256 numerator, uint256 denominator, uint256 target ) internal pure returns (bool isError) {
+176	 if (denominator == 0) {
+177	 LibRichErrors.rrevert(LibMathRichErrors.DivisionByZeroError());
+178	 }
+179	 if (target == 0 || numerator == 0) {
+180	 return false;
+181	 }
+182	 uint256 remainder = mulmod( target, numerator, denominator );
+183	 remainder = denominator.safeSub(remainder) % denominator;
+184	 isError = remainder.safeMul(1000) >= numerator.safeMul(target);
+185	 return isError;
+186	 }
+187	 }
+188	 library LibBytesRichErrors {
+189	 enum InvalidByteOperationErrorCodes {
+190	 FromLessThanOrEqualsToRequired, ToLessThanOrEqualsLengthRequired, LengthGreaterThanZeroRequired, LengthGreaterThanOrEqualsFourRequired, LengthGreaterThanOrEqualsTwentyRequired, LengthGreaterThanOrEqualsThirtyTwoRequired, LengthGreaterThanOrEqualsNestedBytesLengthRequired, DestinationLengthGreaterThanOrEqualSourceLengthRequired }
+191	 bytes4 internal constant INVALID_BYTE_OPERATION_ERROR_SELECTOR = 0x28006595;
+192	 function InvalidByteOperationError( InvalidByteOperationErrorCodes errorCode, uint256 offset, uint256 required ) internal pure returns (bytes memory) {
+193	 return abi.encodeWithSelector( INVALID_BYTE_OPERATION_ERROR_SELECTOR, errorCode, offset, required );
+194	 }
+195	 }
+196	 library LibBytes {
+197	 using LibBytes for bytes;
+198	 function rawAddress(bytes memory input) internal pure returns (uint256 memoryAddress) {
+199	 assembly {
+200	 memoryAddress := input }
+201	 return memoryAddress;
+202	 }
+203	 function contentAddress(bytes memory input) internal pure returns (uint256 memoryAddress) {
+204	 assembly {
+205	 memoryAddress := add(input, 32) }
+206	 return memoryAddress;
+207	 }
+208	 function memCopy( uint256 dest, uint256 source, uint256 length ) internal pure {
+209	 if (length < 32) {
+210	 assembly {
+211	 let mask := sub(exp(256, sub(32, length)), 1) let s := and(mload(source), not(mask)) let d := and(mload(dest), mask) mstore(dest, or(s, d)) }
+212	 }
+213	 else {
+214	 if (source == dest) {
+215	 return;
+216	 }
+217	 if (source > dest) {
+218	 assembly {
+219	 length := sub(length, 32) let sEnd := add(source, length) let dEnd := add(dest, length) let last := mload(sEnd) for {
+220	 }
+221	 lt(source, sEnd) {
+222	 }
+223	 {
+224	 mstore(dest, mload(source)) source := add(source, 32) dest := add(dest, 32) }
+225	 mstore(dEnd, last) }
+226	 }
+227	 else {
+228	 assembly {
+229	 length := sub(length, 32) let sEnd := add(source, length) let dEnd := add(dest, length) let first := mload(source) for {
+230	 }
+231	 slt(dest, dEnd) {
+232	 }
+233	 {
+234	 mstore(dEnd, mload(sEnd)) sEnd := sub(sEnd, 32) dEnd := sub(dEnd, 32) }
+235	 mstore(dest, first) }
+236	 }
+237	 }
+238	 }
+239	 function slice( bytes memory b, uint256 from, uint256 to ) internal pure returns (bytes memory result) {
+240	 if (from > to) {
+241	 LibRichErrors.rrevert(LibBytesRichErrors.InvalidByteOperationError( LibBytesRichErrors.InvalidByteOperationErrorCodes.FromLessThanOrEqualsToRequired, from, to ));
+242	 }
+243	 if (to > b.length) {
+244	 LibRichErrors.rrevert(LibBytesRichErrors.InvalidByteOperationError( LibBytesRichErrors.InvalidByteOperationErrorCodes.ToLessThanOrEqualsLengthRequired, to, b.length ));
+245	 }
+246	 result = new bytes(to - from);
+247	 memCopy( result.contentAddress(), b.contentAddress() + from, result.length );
+248	 return result;
+249	 }
+250	 function sliceDestructive( bytes memory b, uint256 from, uint256 to ) internal pure returns (bytes memory result) {
+251	 if (from > to) {
+252	 LibRichErrors.rrevert(LibBytesRichErrors.InvalidByteOperationError( LibBytesRichErrors.InvalidByteOperationErrorCodes.FromLessThanOrEqualsToRequired, from, to ));
+253	 }
+254	 if (to > b.length) {
+255	 LibRichErrors.rrevert(LibBytesRichErrors.InvalidByteOperationError( LibBytesRichErrors.InvalidByteOperationErrorCodes.ToLessThanOrEqualsLengthRequired, to, b.length ));
+256	 }
+257	 assembly {
+258	 result := add(b, from) mstore(result, sub(to, from)) }
+259	 return result;
+260	 }
+261	 function popLastByte(bytes memory b) internal pure returns (bytes1 result) {
+262	 if (b.length == 0) {
+263	 LibRichErrors.rrevert(LibBytesRichErrors.InvalidByteOperationError( LibBytesRichErrors.InvalidByteOperationErrorCodes.LengthGreaterThanZeroRequired, b.length, 0 ));
+264	 }
+265	 result = b[b.length - 1];
+266	 assembly {
+267	 let newLen := sub(mload(b), 1) mstore(b, newLen) }
+268	 return result;
+269	 }
+270	 function equals( bytes memory lhs, bytes memory rhs ) internal pure returns (bool equal) {
+271	 return lhs.length == rhs.length && keccak256(lhs) == keccak256(rhs);
+272	 }
+273	 function readAddress( bytes memory b, uint256 index ) internal pure returns (address result) {
+274	 if (b.length < index + 20) {
+275	 LibRichErrors.rrevert(LibBytesRichErrors.InvalidByteOperationError( LibBytesRichErrors.InvalidByteOperationErrorCodes.LengthGreaterThanOrEqualsTwentyRequired, b.length, index + 20 ));
+276	 }
+277	 index += 20;
+278	 assembly {
+279	 result := and(mload(add(b, index)), 0xffffffffffffffffffffffffffffffffffffffff) }
+280	 return result;
+281	 }
+282	 function writeAddress( bytes memory b, uint256 index, address input ) internal pure {
+283	 if (b.length < index + 20) {
+284	 LibRichErrors.rrevert(LibBytesRichErrors.InvalidByteOperationError( LibBytesRichErrors.InvalidByteOperationErrorCodes.LengthGreaterThanOrEqualsTwentyRequired, b.length, index + 20 ));
+285	 }
+286	 index += 20;
+287	 assembly {
+288	 let neighbors := and( mload(add(b, index)), 0xffffffffffffffffffffffff0000000000000000000000000000000000000000 ) input := and(input, 0xffffffffffffffffffffffffffffffffffffffff) mstore(add(b, index), xor(input, neighbors)) }
+289	 }
+290	 function readBytes32( bytes memory b, uint256 index ) internal pure returns (bytes32 result) {
+291	 if (b.length < index + 32) {
+292	 LibRichErrors.rrevert(LibBytesRichErrors.InvalidByteOperationError( LibBytesRichErrors.InvalidByteOperationErrorCodes.LengthGreaterThanOrEqualsThirtyTwoRequired, b.length, index + 32 ));
+293	 }
+294	 index += 32;
+295	 assembly {
+296	 result := mload(add(b, index)) }
+297	 return result;
+298	 }
+299	 function writeBytes32( bytes memory b, uint256 index, bytes32 input ) internal pure {
+300	 if (b.length < index + 32) {
+301	 LibRichErrors.rrevert(LibBytesRichErrors.InvalidByteOperationError( LibBytesRichErrors.InvalidByteOperationErrorCodes.LengthGreaterThanOrEqualsThirtyTwoRequired, b.length, index + 32 ));
+302	 }
+303	 index += 32;
+304	 assembly {
+305	 mstore(add(b, index), input) }
+306	 }
+307	 function readUint256( bytes memory b, uint256 index ) internal pure returns (uint256 result) {
+308	 result = uint256(readBytes32(b, index));
+309	 return result;
+310	 }
+311	 function writeUint256( bytes memory b, uint256 index, uint256 input ) internal pure {
+312	 writeBytes32(b, index, bytes32(input));
+313	 }
+314	 function readBytes4( bytes memory b, uint256 index ) internal pure returns (bytes4 result) {
+315	 if (b.length < index + 4) {
+316	 LibRichErrors.rrevert(LibBytesRichErrors.InvalidByteOperationError( LibBytesRichErrors.InvalidByteOperationErrorCodes.LengthGreaterThanOrEqualsFourRequired, b.length, index + 4 ));
+317	 }
+318	 index += 32;
+319	 assembly {
+320	 result := mload(add(b, index)) result := and(result, 0xFFFFFFFF00000000000000000000000000000000000000000000000000000000) }
+321	 return result;
+322	 }
+323	 function writeLength(bytes memory b, uint256 length) internal pure {
+324	 assembly {
+325	 mstore(b, length) }
+326	 }
+327	 }
+328	 contract IERC20Token {
+329	 event Transfer( address indexed _from, address indexed _to, uint256 _value );
+330	 event Approval( address indexed _owner, address indexed _spender, uint256 _value );
+331	 function transfer(address _to, uint256 _value) external returns (bool);
+332	 function transferFrom( address _from, address _to, uint256 _value ) external returns (bool);
+333	 function approve(address _spender, uint256 _value) external returns (bool);
+334	 function totalSupply() external view returns (uint256);
+335	 function balanceOf(address _owner) external view returns (uint256);
+336	 function allowance(address _owner, address _spender) external view returns (uint256);
+337	 }
+338	 library LibERC20Token {
+339	 bytes constant private DECIMALS_CALL_DATA = hex"313ce567";
+340	 function approve( address token, address spender, uint256 allowance ) internal {
+341	 bytes memory callData = abi.encodeWithSelector( IERC20Token(0).approve.selector, spender, allowance );
+342	 _callWithOptionalBooleanResult(token, callData);
+343	 }
+344	 function approveIfBelow( address token, address spender, uint256 amount ) internal {
+345	 if (IERC20Token(token).allowance(address(this), spender) < amount) {
+346	 approve(token, spender, uint256(-1));
+347	 }
+348	 }
+349	 function transfer( address token, address to, uint256 amount ) internal {
+350	 bytes memory callData = abi.encodeWithSelector( IERC20Token(0).transfer.selector, to, amount );
+351	 _callWithOptionalBooleanResult(token, callData);
+352	 }
+353	 function transferFrom( address token, address from, address to, uint256 amount ) internal {
+354	 bytes memory callData = abi.encodeWithSelector( IERC20Token(0).transferFrom.selector, from, to, amount );
+355	 _callWithOptionalBooleanResult(token, callData);
+356	 }
+357	 function decimals(address token) internal view returns (uint8 tokenDecimals) {
+358	 tokenDecimals = 18;
+359	 (bool didSucceed, bytes memory resultData) = token.staticcall(DECIMALS_CALL_DATA);
+360	 if (didSucceed && resultData.length == 32) {
+361	 tokenDecimals = uint8(LibBytes.readUint256(resultData, 0));
+362	 }
+363	 }
+364	 function allowance(address token, address owner, address spender) internal view returns (uint256 allowance_) {
+365	 (bool didSucceed, bytes memory resultData) = token.staticcall( abi.encodeWithSelector( IERC20Token(0).allowance.selector, owner, spender ) );
+366	 if (didSucceed && resultData.length == 32) {
+367	 allowance_ = LibBytes.readUint256(resultData, 0);
+368	 }
+369	 }
+370	 function balanceOf(address token, address owner) internal view returns (uint256 balance) {
+371	 (bool didSucceed, bytes memory resultData) = token.staticcall( abi.encodeWithSelector( IERC20Token(0).balanceOf.selector, owner ) );
+372	 if (didSucceed && resultData.length == 32) {
+373	 balance = LibBytes.readUint256(resultData, 0);
+374	 }
+375	 }
+376	 function _callWithOptionalBooleanResult( address target, bytes memory callData ) private {
+377	 (bool didSucceed, bytes memory resultData) = target.call(callData);
+378	 if (didSucceed) {
+379	 if (resultData.length == 0) {
+380	 return;
+381	 }
+382	 if (resultData.length == 32) {
+383	 uint256 result = LibBytes.readUint256(resultData, 0);
+384	 if (result == 1) {
+385	 return;
+386	 }
+387	 }
+388	 }
+389	 LibRichErrors.rrevert(resultData);
+390	 }
+391	 }
+392	 contract IERC721Token {
+393	 event Transfer( address indexed _from, address indexed _to, uint256 indexed _tokenId );
+394	 event Approval( address indexed _owner, address indexed _approved, uint256 indexed _tokenId );
+395	 event ApprovalForAll( address indexed _owner, address indexed _operator, bool _approved );
+396	 function safeTransferFrom( address _from, address _to, uint256 _tokenId, bytes calldata _data ) external;
+397	 function safeTransferFrom( address _from, address _to, uint256 _tokenId ) external;
+398	 function approve(address _approved, uint256 _tokenId) external;
+399	 function setApprovalForAll(address _operator, bool _approved) external;
+400	 function balanceOf(address _owner) external view returns (uint256);
+401	 function transferFrom( address _from, address _to, uint256 _tokenId ) public;
+402	 function ownerOf(uint256 _tokenId) public view returns (address);
+403	 function getApproved(uint256 _tokenId) public view returns (address);
+404	 function isApprovedForAll(address _owner, address _operator) public view returns (bool);
+405	 }
+406	 interface IERC1155 {
+407	 event TransferSingle( address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value );
+408	 event TransferBatch( address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values );
+409	 event ApprovalForAll( address indexed owner, address indexed operator, bool approved );
+410	 event URI( string value, uint256 indexed id );
+411	 function safeTransferFrom( address from, address to, uint256 id, uint256 value, bytes calldata data ) external;
+412	 function safeBatchTransferFrom( address from, address to, uint256[] calldata ids, uint256[] calldata values, bytes calldata data ) external;
+413	 function setApprovalForAll(address operator, bool approved) external;
+414	 function isApprovedForAll(address owner, address operator) external view returns (bool);
+415	 function balanceOf(address owner, uint256 id) external view returns (uint256);
+416	 function balanceOfBatch( address[] calldata owners, uint256[] calldata ids ) external view returns (uint256[] memory balances_);
+417	 }
+418	 library LibAssetDataTransferRichErrors {
+419	 bytes4 internal constant UNSUPPORTED_ASSET_PROXY_ERROR_SELECTOR = 0x7996a271;
+420	 bytes4 internal constant ERC721_AMOUNT_MUST_EQUAL_ONE_ERROR_SELECTOR = 0xbaffa474;
+421	 function UnsupportedAssetProxyError( bytes4 proxyId ) internal pure returns (bytes memory) {
+422	 return abi.encodeWithSelector( UNSUPPORTED_ASSET_PROXY_ERROR_SELECTOR, proxyId );
+423	 }
+424	 function Erc721AmountMustEqualOneError( uint256 amount ) internal pure returns (bytes memory) {
+425	 return abi.encodeWithSelector( ERC721_AMOUNT_MUST_EQUAL_ONE_ERROR_SELECTOR, amount );
+426	 }
+427	 }
+428	 library LibAssetDataTransfer {
+429	 using LibBytes for bytes;
+430	 using LibSafeMath for uint256;
+431	 using LibAssetDataTransfer for bytes;
+432	 function transferFrom( bytes memory assetData, address from, address to, uint256 amount ) internal {
+433	 if (amount == 0) {
+434	 return;
+435	 }
+436	 bytes4 proxyId = assetData.readBytes4(0);
+437	 if ( proxyId == IAssetData(address(0)).ERC20Token.selector || proxyId == IAssetData(address(0)).ERC20Bridge.selector ) {
+438	 assetData.transferERC20Token( from, to, amount );
+439	 }
+440	 else if (proxyId == IAssetData(address(0)).ERC721Token.selector) {
+441	 assetData.transferERC721Token( from, to, amount );
+442	 }
+443	 else if (proxyId == IAssetData(address(0)).ERC1155Assets.selector) {
+444	 assetData.transferERC1155Assets( from, to, amount );
+445	 }
+446	 else if (proxyId == IAssetData(address(0)).MultiAsset.selector) {
+447	 assetData.transferMultiAsset( from, to, amount );
+448	 }
+449	 else if (proxyId != IAssetData(address(0)).StaticCall.selector) {
+450	 LibRichErrors.rrevert(LibAssetDataTransferRichErrors.UnsupportedAssetProxyError( proxyId ));
+451	 }
+452	 }
+453	 function transferIn( bytes memory assetData, uint256 amount ) internal {
+454	 assetData.transferFrom( msg.sender, address(this), amount );
+455	 }
+456	 function transferOut( bytes memory assetData, uint256 amount ) internal {
+457	 assetData.transferFrom( address(this), msg.sender, amount );
+458	 }
+459	 function transferERC20Token( bytes memory assetData, address from, address to, uint256 amount ) internal {
+460	 address token = assetData.readAddress(16);
+461	 if (from == address(this)) {
+462	 LibERC20Token.transfer( token, to, amount );
+463	 }
+464	 else {
+465	 LibERC20Token.transferFrom( token, from, to, amount );
+466	 }
+467	 }
+468	 function transferERC721Token( bytes memory assetData, address from, address to, uint256 amount ) internal {
+469	 if (amount != 1) {
+470	 LibRichErrors.rrevert(LibAssetDataTransferRichErrors.Erc721AmountMustEqualOneError( amount ));
+471	 }
+472	 address token = assetData.readAddress(16);
+473	 uint256 tokenId = assetData.readUint256(36);
+474	 IERC721Token(token).transferFrom( from, to, tokenId );
+475	 }
+476	 function transferERC1155Assets( bytes memory assetData, address from, address to, uint256 amount ) internal {
+477	 ( address token, uint256[] memory ids, uint256[] memory values, bytes memory data ) = abi.decode( assetData.slice(4, assetData.length), (address, uint256[], uint256[], bytes) );
+478	 uint256 length = values.length;
+479	 uint256[] memory scaledValues = new uint256[](length);
+480	 for (uint256 i = 0; i != length; i++) {
+481	 scaledValues[i] = values[i].safeMul(amount);
+482	 }
+483	 IERC1155(token).safeBatchTransferFrom( from, to, ids, scaledValues, data );
+484	 }
+485	 function transferMultiAsset( bytes memory assetData, address from, address to, uint256 amount ) internal {
+486	 (uint256[] memory nestedAmounts, bytes[] memory nestedAssetData) = abi.decode( assetData.slice(4, assetData.length), (uint256[], bytes[]) );
+487	 uint256 numNestedAssets = nestedAssetData.length;
+488	 for (uint256 i = 0; i != numNestedAssets; i++) {
+489	 transferFrom( nestedAssetData[i], from, to, amount.safeMul(nestedAmounts[i]) );
+490	 }
+491	 }
+492	 }
+493	 contract IEtherToken is IERC20Token {
+494	 function deposit() public payable;
+495	 function withdraw(uint256 amount) public;
+496	 }
+497	 library LibFillResults {
+498	 using LibSafeMath for uint256;
+499	 struct BatchMatchedFillResults {
+500	 FillResults[] left;
+501	 FillResults[] right;
+502	 uint256 profitInLeftMakerAsset;
+503	 uint256 profitInRightMakerAsset;
+504	 }
+505	 struct FillResults {
+506	 uint256 makerAssetFilledAmount;
+507	 uint256 takerAssetFilledAmount;
+508	 uint256 makerFeePaid;
+509	 uint256 takerFeePaid;
+510	 uint256 protocolFeePaid;
+511	 }
+512	 struct MatchedFillResults {
+513	 FillResults left;
+514	 FillResults right;
+515	 uint256 profitInLeftMakerAsset;
+516	 uint256 profitInRightMakerAsset;
+517	 }
+518	 function calculateFillResults( LibOrder.Order memory order, uint256 takerAssetFilledAmount, uint256 protocolFeeMultiplier, uint256 gasPrice ) internal pure returns (FillResults memory fillResults) {
+519	 fillResults.takerAssetFilledAmount = takerAssetFilledAmount;
+520	 fillResults.makerAssetFilledAmount = LibMath.safeGetPartialAmountFloor( takerAssetFilledAmount, order.takerAssetAmount, order.makerAssetAmount );
+521	 fillResults.makerFeePaid = LibMath.safeGetPartialAmountFloor( takerAssetFilledAmount, order.takerAssetAmount, order.makerFee );
+522	 fillResults.takerFeePaid = LibMath.safeGetPartialAmountFloor( takerAssetFilledAmount, order.takerAssetAmount, order.takerFee );
+523	 fillResults.protocolFeePaid = gasPrice.safeMul(protocolFeeMultiplier);
+524	 return fillResults;
+525	 }
+526	 function calculateMatchedFillResults( LibOrder.Order memory leftOrder, LibOrder.Order memory rightOrder, uint256 leftOrderTakerAssetFilledAmount, uint256 rightOrderTakerAssetFilledAmount, uint256 protocolFeeMultiplier, uint256 gasPrice, bool shouldMaximallyFillOrders ) internal pure returns (MatchedFillResults memory matchedFillResults) {
+527	 uint256 leftTakerAssetAmountRemaining = leftOrder.takerAssetAmount.safeSub(leftOrderTakerAssetFilledAmount);
+528	 uint256 leftMakerAssetAmountRemaining = LibMath.safeGetPartialAmountFloor( leftOrder.makerAssetAmount, leftOrder.takerAssetAmount, leftTakerAssetAmountRemaining );
+529	 uint256 rightTakerAssetAmountRemaining = rightOrder.takerAssetAmount.safeSub(rightOrderTakerAssetFilledAmount);
+530	 uint256 rightMakerAssetAmountRemaining = LibMath.safeGetPartialAmountFloor( rightOrder.makerAssetAmount, rightOrder.takerAssetAmount, rightTakerAssetAmountRemaining );
+531	 if (shouldMaximallyFillOrders) {
+532	 matchedFillResults = _calculateMatchedFillResultsWithMaximalFill( leftOrder, rightOrder, leftMakerAssetAmountRemaining, leftTakerAssetAmountRemaining, rightMakerAssetAmountRemaining, rightTakerAssetAmountRemaining );
+533	 }
+534	 else {
+535	 matchedFillResults = _calculateMatchedFillResults( leftOrder, rightOrder, leftMakerAssetAmountRemaining, leftTakerAssetAmountRemaining, rightMakerAssetAmountRemaining, rightTakerAssetAmountRemaining );
+536	 }
+537	 matchedFillResults.left.makerFeePaid = LibMath.safeGetPartialAmountFloor( matchedFillResults.left.makerAssetFilledAmount, leftOrder.makerAssetAmount, leftOrder.makerFee );
+538	 matchedFillResults.left.takerFeePaid = LibMath.safeGetPartialAmountFloor( matchedFillResults.left.takerAssetFilledAmount, leftOrder.takerAssetAmount, leftOrder.takerFee );
+539	 matchedFillResults.right.makerFeePaid = LibMath.safeGetPartialAmountFloor( matchedFillResults.right.makerAssetFilledAmount, rightOrder.makerAssetAmount, rightOrder.makerFee );
+540	 matchedFillResults.right.takerFeePaid = LibMath.safeGetPartialAmountFloor( matchedFillResults.right.takerAssetFilledAmount, rightOrder.takerAssetAmount, rightOrder.takerFee );
+541	 uint256 protocolFee = gasPrice.safeMul(protocolFeeMultiplier);
+542	 matchedFillResults.left.protocolFeePaid = protocolFee;
+543	 matchedFillResults.right.protocolFeePaid = protocolFee;
+544	 return matchedFillResults;
+545	 }
+546	 function addFillResults( FillResults memory fillResults1, FillResults memory fillResults2 ) internal pure returns (FillResults memory totalFillResults) {
+547	 totalFillResults.makerAssetFilledAmount = fillResults1.makerAssetFilledAmount.safeAdd(fillResults2.makerAssetFilledAmount);
+548	 totalFillResults.takerAssetFilledAmount = fillResults1.takerAssetFilledAmount.safeAdd(fillResults2.takerAssetFilledAmount);
+549	 totalFillResults.makerFeePaid = fillResults1.makerFeePaid.safeAdd(fillResults2.makerFeePaid);
+550	 totalFillResults.takerFeePaid = fillResults1.takerFeePaid.safeAdd(fillResults2.takerFeePaid);
+551	 totalFillResults.protocolFeePaid = fillResults1.protocolFeePaid.safeAdd(fillResults2.protocolFeePaid);
+552	 return totalFillResults;
+553	 }
+554	 function _calculateMatchedFillResults( LibOrder.Order memory leftOrder, LibOrder.Order memory rightOrder, uint256 leftMakerAssetAmountRemaining, uint256 leftTakerAssetAmountRemaining, uint256 rightMakerAssetAmountRemaining, uint256 rightTakerAssetAmountRemaining ) private pure returns (MatchedFillResults memory matchedFillResults) {
+555	 if (leftTakerAssetAmountRemaining > rightMakerAssetAmountRemaining) {
+556	 matchedFillResults = _calculateCompleteRightFill( leftOrder, rightMakerAssetAmountRemaining, rightTakerAssetAmountRemaining );
+557	 }
+558	 else if (leftTakerAssetAmountRemaining < rightMakerAssetAmountRemaining) {
+559	 matchedFillResults.left.makerAssetFilledAmount = leftMakerAssetAmountRemaining;
+560	 matchedFillResults.left.takerAssetFilledAmount = leftTakerAssetAmountRemaining;
+561	 matchedFillResults.right.makerAssetFilledAmount = leftTakerAssetAmountRemaining;
+562	 matchedFillResults.right.takerAssetFilledAmount = LibMath.safeGetPartialAmountCeil( rightOrder.takerAssetAmount, rightOrder.makerAssetAmount, leftTakerAssetAmountRemaining );
+563	 }
+564	 else {
+565	 matchedFillResults = _calculateCompleteFillBoth( leftMakerAssetAmountRemaining, leftTakerAssetAmountRemaining, rightMakerAssetAmountRemaining, rightTakerAssetAmountRemaining );
+566	 }
+567	 matchedFillResults.profitInLeftMakerAsset = matchedFillResults.left.makerAssetFilledAmount.safeSub( matchedFillResults.right.takerAssetFilledAmount );
+568	 return matchedFillResults;
+569	 }
+570	 function _calculateMatchedFillResultsWithMaximalFill( LibOrder.Order memory leftOrder, LibOrder.Order memory rightOrder, uint256 leftMakerAssetAmountRemaining, uint256 leftTakerAssetAmountRemaining, uint256 rightMakerAssetAmountRemaining, uint256 rightTakerAssetAmountRemaining ) private pure returns (MatchedFillResults memory matchedFillResults) {
+571	 bool doesLeftMakerAssetProfitExist = leftMakerAssetAmountRemaining > rightTakerAssetAmountRemaining;
+572	 bool doesRightMakerAssetProfitExist = rightMakerAssetAmountRemaining > leftTakerAssetAmountRemaining;
+573	 if (leftTakerAssetAmountRemaining > rightMakerAssetAmountRemaining) {
+574	 matchedFillResults = _calculateCompleteRightFill( leftOrder, rightMakerAssetAmountRemaining, rightTakerAssetAmountRemaining );
+575	 }
+576	 else if (rightTakerAssetAmountRemaining > leftMakerAssetAmountRemaining) {
+577	 matchedFillResults.left.makerAssetFilledAmount = leftMakerAssetAmountRemaining;
+578	 matchedFillResults.left.takerAssetFilledAmount = leftTakerAssetAmountRemaining;
+579	 matchedFillResults.right.makerAssetFilledAmount = LibMath.safeGetPartialAmountFloor( rightOrder.makerAssetAmount, rightOrder.takerAssetAmount, leftMakerAssetAmountRemaining );
+580	 matchedFillResults.right.takerAssetFilledAmount = leftMakerAssetAmountRemaining;
+581	 }
+582	 else {
+583	 matchedFillResults = _calculateCompleteFillBoth( leftMakerAssetAmountRemaining, leftTakerAssetAmountRemaining, rightMakerAssetAmountRemaining, rightTakerAssetAmountRemaining );
+584	 }
+585	 if (doesLeftMakerAssetProfitExist) {
+586	 matchedFillResults.profitInLeftMakerAsset = matchedFillResults.left.makerAssetFilledAmount.safeSub( matchedFillResults.right.takerAssetFilledAmount );
+587	 }
+588	 if (doesRightMakerAssetProfitExist) {
+589	 matchedFillResults.profitInRightMakerAsset = matchedFillResults.right.makerAssetFilledAmount.safeSub( matchedFillResults.left.takerAssetFilledAmount );
+590	 }
+591	 return matchedFillResults;
+592	 }
+593	 function _calculateCompleteFillBoth( uint256 leftMakerAssetAmountRemaining, uint256 leftTakerAssetAmountRemaining, uint256 rightMakerAssetAmountRemaining, uint256 rightTakerAssetAmountRemaining ) private pure returns (MatchedFillResults memory matchedFillResults) {
+594	 matchedFillResults.left.makerAssetFilledAmount = leftMakerAssetAmountRemaining;
+595	 matchedFillResults.left.takerAssetFilledAmount = leftTakerAssetAmountRemaining;
+596	 matchedFillResults.right.makerAssetFilledAmount = rightMakerAssetAmountRemaining;
+597	 matchedFillResults.right.takerAssetFilledAmount = rightTakerAssetAmountRemaining;
+598	 return matchedFillResults;
+599	 }
+600	 function _calculateCompleteRightFill( LibOrder.Order memory leftOrder, uint256 rightMakerAssetAmountRemaining, uint256 rightTakerAssetAmountRemaining ) private pure returns (MatchedFillResults memory matchedFillResults) {
+601	 matchedFillResults.right.makerAssetFilledAmount = rightMakerAssetAmountRemaining;
+602	 matchedFillResults.right.takerAssetFilledAmount = rightTakerAssetAmountRemaining;
+603	 matchedFillResults.left.takerAssetFilledAmount = rightMakerAssetAmountRemaining;
+604	 matchedFillResults.left.makerAssetFilledAmount = LibMath.safeGetPartialAmountFloor( leftOrder.makerAssetAmount, leftOrder.takerAssetAmount, rightMakerAssetAmountRemaining );
+605	 return matchedFillResults;
+606	 }
+607	 }
+608	 contract IExchangeCore {
+609	 event Fill( address indexed makerAddress, address indexed feeRecipientAddress, bytes makerAssetData, bytes takerAssetData, bytes makerFeeAssetData, bytes takerFeeAssetData, bytes32 indexed orderHash, address takerAddress, address senderAddress, uint256 makerAssetFilledAmount, uint256 takerAssetFilledAmount, uint256 makerFeePaid, uint256 takerFeePaid, uint256 protocolFeePaid );
+610	 event Cancel( address indexed makerAddress, address indexed feeRecipientAddress, bytes makerAssetData, bytes takerAssetData, address senderAddress, bytes32 indexed orderHash );
+611	 event CancelUpTo( address indexed makerAddress, address indexed orderSenderAddress, uint256 orderEpoch );
+612	 function cancelOrdersUpTo(uint256 targetOrderEpoch) external payable;
+613	 function fillOrder( LibOrder.Order memory order, uint256 takerAssetFillAmount, bytes memory signature ) public payable returns (LibFillResults.FillResults memory fillResults);
+614	 function cancelOrder(LibOrder.Order memory order) public payable;
+615	 function getOrderInfo(LibOrder.Order memory order) public view returns (LibOrder.OrderInfo memory orderInfo);
+616	 }
+617	 contract IProtocolFees {
+618	 event ProtocolFeeMultiplier(uint256 oldProtocolFeeMultiplier, uint256 updatedProtocolFeeMultiplier);
+619	 event ProtocolFeeCollectorAddress(address oldProtocolFeeCollector, address updatedProtocolFeeCollector);
+620	 function setProtocolFeeMultiplier(uint256 updatedProtocolFeeMultiplier) external;
+621	 function setProtocolFeeCollectorAddress(address updatedProtocolFeeCollector) external;
+622	 function protocolFeeMultiplier() external view returns (uint256);
+623	 function protocolFeeCollector() external view returns (address);
+624	 }
+625	 contract IMatchOrders {
+626	 function batchMatchOrders( LibOrder.Order[] memory leftOrders, LibOrder.Order[] memory rightOrders, bytes[] memory leftSignatures, bytes[] memory rightSignatures ) public payable returns (LibFillResults.BatchMatchedFillResults memory batchMatchedFillResults);
+627	 function batchMatchOrdersWithMaximalFill( LibOrder.Order[] memory leftOrders, LibOrder.Order[] memory rightOrders, bytes[] memory leftSignatures, bytes[] memory rightSignatures ) public payable returns (LibFillResults.BatchMatchedFillResults memory batchMatchedFillResults);
+628	 function matchOrders( LibOrder.Order memory leftOrder, LibOrder.Order memory rightOrder, bytes memory leftSignature, bytes memory rightSignature ) public payable returns (LibFillResults.MatchedFillResults memory matchedFillResults);
+629	 function matchOrdersWithMaximalFill( LibOrder.Order memory leftOrder, LibOrder.Order memory rightOrder, bytes memory leftSignature, bytes memory rightSignature ) public payable returns (LibFillResults.MatchedFillResults memory matchedFillResults);
+630	 }
+631	 library LibZeroExTransaction {
+632	 using LibZeroExTransaction for ZeroExTransaction;
+633	 bytes32 constant internal _EIP712_ZEROEX_TRANSACTION_SCHEMA_HASH = 0xec69816980a3a3ca4554410e60253953e9ff375ba4536a98adfa15cc71541508;
+634	 struct ZeroExTransaction {
+635	 uint256 salt;
+636	 uint256 expirationTimeSeconds;
+637	 uint256 gasPrice;
+638	 address signerAddress;
+639	 bytes data;
+640	 }
+641	 function getTypedDataHash(ZeroExTransaction memory transaction, bytes32 eip712ExchangeDomainHash) internal pure returns (bytes32 transactionHash) {
+642	 transactionHash = LibEIP712.hashEIP712Message( eip712ExchangeDomainHash, transaction.getStructHash() );
+643	 return transactionHash;
+644	 }
+645	 function getStructHash(ZeroExTransaction memory transaction) internal pure returns (bytes32 result) {
+646	 bytes32 schemaHash = _EIP712_ZEROEX_TRANSACTION_SCHEMA_HASH;
+647	 bytes memory data = transaction.data;
+648	 uint256 salt = transaction.salt;
+649	 uint256 expirationTimeSeconds = transaction.expirationTimeSeconds;
+650	 uint256 gasPrice = transaction.gasPrice;
+651	 address signerAddress = transaction.signerAddress;
+652	 assembly {
+653	 let dataHash := keccak256(add(data, 32), mload(data)) let memPtr := mload(64) mstore(memPtr, schemaHash) mstore(add(memPtr, 32), salt) mstore(add(memPtr, 64), expirationTimeSeconds) mstore(add(memPtr, 96), gasPrice) mstore(add(memPtr, 128), and(signerAddress, 0xffffffffffffffffffffffffffffffffffffffff)) mstore(add(memPtr, 160), dataHash) result := keccak256(memPtr, 192) }
+654	 return result;
+655	 }
+656	 }
+657	 contract ISignatureValidator {
+658	 enum SignatureType {
+659	 Illegal, Invalid, EIP712, EthSign, Wallet, Validator, PreSigned, EIP1271Wallet, NSignatureTypes }
+660	 event SignatureValidatorApproval( address indexed signerAddress, address indexed validatorAddress, bool isApproved );
+661	 function preSign(bytes32 hash) external payable;
+662	 function setSignatureValidatorApproval( address validatorAddress, bool approval ) external payable;
+663	 function isValidHashSignature( bytes32 hash, address signerAddress, bytes memory signature ) public view returns (bool isValid);
+664	 function isValidOrderSignature( LibOrder.Order memory order, bytes memory signature ) public view returns (bool isValid);
+665	 function isValidTransactionSignature( LibZeroExTransaction.ZeroExTransaction memory transaction, bytes memory signature ) public view returns (bool isValid);
+666	 function _isValidOrderWithHashSignature( LibOrder.Order memory order, bytes32 orderHash, bytes memory signature ) internal view returns (bool isValid);
+667	 function _isValidTransactionWithHashSignature( LibZeroExTransaction.ZeroExTransaction memory transaction, bytes32 transactionHash, bytes memory signature ) internal view returns (bool isValid);
+668	 }
+669	 contract ITransactions {
+670	 event TransactionExecution(bytes32 indexed transactionHash);
+671	 function executeTransaction( LibZeroExTransaction.ZeroExTransaction memory transaction, bytes memory signature ) public payable returns (bytes memory);
+672	 function batchExecuteTransactions( LibZeroExTransaction.ZeroExTransaction[] memory transactions, bytes[] memory signatures ) public payable returns (bytes[] memory);
+673	 function _getCurrentContextAddress() internal view returns (address);
+674	 }
+675	 contract IAssetProxyDispatcher {
+676	 event AssetProxyRegistered( bytes4 id, address assetProxy );
+677	 function registerAssetProxy(address assetProxy) external;
+678	 function getAssetProxy(bytes4 assetProxyId) external view returns (address);
+679	 }
+680	 contract IWrapperFunctions {
+681	 function fillOrKillOrder( LibOrder.Order memory order, uint256 takerAssetFillAmount, bytes memory signature ) public payable returns (LibFillResults.FillResults memory fillResults);
+682	 function batchFillOrders( LibOrder.Order[] memory orders, uint256[] memory takerAssetFillAmounts, bytes[] memory signatures ) public payable returns (LibFillResults.FillResults[] memory fillResults);
+683	 function batchFillOrKillOrders( LibOrder.Order[] memory orders, uint256[] memory takerAssetFillAmounts, bytes[] memory signatures ) public payable returns (LibFillResults.FillResults[] memory fillResults);
+684	 function batchFillOrdersNoThrow( LibOrder.Order[] memory orders, uint256[] memory takerAssetFillAmounts, bytes[] memory signatures ) public payable returns (LibFillResults.FillResults[] memory fillResults);
+685	 function marketSellOrdersNoThrow( LibOrder.Order[] memory orders, uint256 takerAssetFillAmount, bytes[] memory signatures ) public payable returns (LibFillResults.FillResults memory fillResults);
+686	 function marketBuyOrdersNoThrow( LibOrder.Order[] memory orders, uint256 makerAssetFillAmount, bytes[] memory signatures ) public payable returns (LibFillResults.FillResults memory fillResults);
+687	 function marketSellOrdersFillOrKill( LibOrder.Order[] memory orders, uint256 takerAssetFillAmount, bytes[] memory signatures ) public payable returns (LibFillResults.FillResults memory fillResults);
+688	 function marketBuyOrdersFillOrKill( LibOrder.Order[] memory orders, uint256 makerAssetFillAmount, bytes[] memory signatures ) public payable returns (LibFillResults.FillResults memory fillResults);
+689	 function batchCancelOrders(LibOrder.Order[] memory orders) public payable;
+690	 }
+691	 contract ITransferSimulator {
+692	 function simulateDispatchTransferFromCalls( bytes[] memory assetData, address[] memory fromAddresses, address[] memory toAddresses, uint256[] memory amounts ) public;
+693	 }
+694	 contract IExchange is IProtocolFees, IExchangeCore, IMatchOrders, ISignatureValidator, ITransactions, IAssetProxyDispatcher, ITransferSimulator, IWrapperFunctions {
+695	 }
+696	 library LibWethUtilsRichErrors {
+697	 bytes4 internal constant UNREGISTERED_ASSET_PROXY_ERROR_SELECTOR = 0xf3b96b8d;
+698	 bytes4 internal constant INSUFFICIENT_ETH_FOR_FEE_ERROR_SELECTOR = 0xecf40fd9;
+699	 bytes4 internal constant DEFAULT_FUNCTION_WETH_CONTRACT_ONLY_ERROR_SELECTOR = 0x08b18698;
+700	 bytes4 internal constant ETH_FEE_LENGTH_MISMATCH_ERROR_SELECTOR = 0x3ecb6ceb;
+701	 function UnregisteredAssetProxyError() internal pure returns (bytes memory) {
+702	 return abi.encodeWithSelector(UNREGISTERED_ASSET_PROXY_ERROR_SELECTOR);
+703	 }
+704	 function InsufficientEthForFeeError( uint256 ethFeeRequired, uint256 ethAvailable ) internal pure returns (bytes memory) {
+705	 return abi.encodeWithSelector( INSUFFICIENT_ETH_FOR_FEE_ERROR_SELECTOR, ethFeeRequired, ethAvailable );
+706	 }
+707	 function DefaultFunctionWethContractOnlyError( address senderAddress ) internal pure returns (bytes memory) {
+708	 return abi.encodeWithSelector( DEFAULT_FUNCTION_WETH_CONTRACT_ONLY_ERROR_SELECTOR, senderAddress );
+709	 }
+710	 function EthFeeLengthMismatchError( uint256 ethFeesLength, uint256 feeRecipientsLength ) internal pure returns (bytes memory) {
+711	 return abi.encodeWithSelector( ETH_FEE_LENGTH_MISMATCH_ERROR_SELECTOR, ethFeesLength, feeRecipientsLength );
+712	 }
+713	 }
+714	 contract MixinWethUtils {
+715	 uint256 constant internal MAX_UINT256 = uint256(-1);
+716	 IEtherToken internal WETH;
+717	 bytes internal WETH_ASSET_DATA;
+718	 using LibSafeMath for uint256;
+719	 constructor ( address exchange, address weth ) public {
+720	 WETH = IEtherToken(weth);
+721	 WETH_ASSET_DATA = abi.encodeWithSelector( IAssetData(address(0)).ERC20Token.selector, weth );
+722	 address proxyAddress = IExchange(exchange).getAssetProxy(IAssetData(address(0)).ERC20Token.selector);
+723	 if (proxyAddress == address(0)) {
+724	 LibRichErrors.rrevert(LibWethUtilsRichErrors.UnregisteredAssetProxyError());
+725	 }
+726	 WETH.approve(proxyAddress, MAX_UINT256);
+727	 address protocolFeeCollector = IExchange(exchange).protocolFeeCollector();
+728	 if (protocolFeeCollector != address(0)) {
+729	 WETH.approve(protocolFeeCollector, MAX_UINT256);
+730	 }
+731	 }
+732	 function () external payable {
+733	 if (msg.sender != address(WETH)) {
+734	 LibRichErrors.rrevert(LibWethUtilsRichErrors.DefaultFunctionWethContractOnlyError( msg.sender ));
+735	 }
+736	 }
+737	 function _transferEthFeesAndWrapRemaining( uint256[] memory ethFeeAmounts, address payable[] memory feeRecipients ) internal returns (uint256 ethRemaining) {
+738	 uint256 feesLen = ethFeeAmounts.length;
+739	 if (feesLen != feeRecipients.length) {
+740	 LibRichErrors.rrevert(LibWethUtilsRichErrors.EthFeeLengthMismatchError( feesLen, feeRecipients.length ));
+741	 }
+742	 ethRemaining = msg.value;
+743	 for (uint256 i = 0; i != feesLen; i++) {
+744	 uint256 ethFeeAmount = ethFeeAmounts[i];
+745	 if (ethRemaining < ethFeeAmount) {
+746	 LibRichErrors.rrevert(LibWethUtilsRichErrors.InsufficientEthForFeeError( ethFeeAmount, ethRemaining ));
+747	 }
+748	 ethRemaining = ethRemaining.safeSub(ethFeeAmount);
+749	 feeRecipients[i].transfer(ethFeeAmount);
+750	 }
+751	 WETH.deposit.value(ethRemaining)();
+752	 return ethRemaining;
+753	 }
+754	 function _unwrapAndTransferEth( uint256 transferAmount ) internal {
+755	 if (transferAmount > 0) {
+756	 WETH.withdraw(transferAmount);
+757	 msg.sender.transfer(transferAmount);
+758	 }
+759	 }
+760	 function _transferEthToAddress( uint256 transferAmount, address transferAddress ) internal {
+761	 if (transferAmount > 0) {
+762	 address payable transferAddresspayable = address(uint160(transferAddress));
+763	 transferAddresspayable.transfer(transferAmount);
+764	 }
+765	 }
+766	 }
+767	 contract IOwnable {
+768	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+769	 function transferOwnership(address newOwner) public;
+770	 }
+771	 library LibOwnableRichErrors {
+772	 bytes4 internal constant ONLY_OWNER_ERROR_SELECTOR = 0x1de45ad1;
+773	 bytes internal constant TRANSFER_OWNER_TO_ZERO_ERROR_BYTES = hex"e69edc3e";
+774	 function OnlyOwnerError( address sender, address owner ) internal pure returns (bytes memory) {
+775	 return abi.encodeWithSelector( ONLY_OWNER_ERROR_SELECTOR, sender, owner );
+776	 }
+777	 function TransferOwnerToZeroError() internal pure returns (bytes memory) {
+778	 return TRANSFER_OWNER_TO_ZERO_ERROR_BYTES;
+779	 }
+780	 }
+781	 contract Ownable is IOwnable {
+782	 address public owner;
+783	 constructor () public {
+784	 owner = msg.sender;
+785	 }
+786	 modifier onlyOwner() {
+787	 _assertSenderIsOwner();
+788	 _;
+789	 }
+790	 function transferOwnership(address newOwner) public onlyOwner {
+791	 if (newOwner == address(0)) {
+792	 LibRichErrors.rrevert(LibOwnableRichErrors.TransferOwnerToZeroError());
+793	 }
+794	 else {
+795	 owner = newOwner;
+796	 emit OwnershipTransferred(msg.sender, newOwner);
+797	 }
+798	 }
+799	 function _assertSenderIsOwner() internal view {
+800	 if (msg.sender != owner) {
+801	 LibRichErrors.rrevert(LibOwnableRichErrors.OnlyOwnerError( msg.sender, owner ));
+802	 }
+803	 }
+804	 }
+805	 library LibForwarderRichErrors {
+806	 bytes4 internal constant UNREGISTERED_ASSET_PROXY_ERROR_SELECTOR = 0xf3b96b8d;
+807	 bytes4 internal constant COMPLETE_BUY_FAILED_ERROR_SELECTOR = 0x91353a0c;
+808	 bytes4 internal constant COMPLETE_SELL_FAILED_ERROR_SELECTOR = 0x450a0219;
+809	 bytes4 internal constant UNSUPPORTED_FEE_ERROR_SELECTOR = 0x31360af1;
+810	 bytes4 internal constant OVERSPENT_WETH_ERROR_SELECTOR = 0xcdcbed5d;
+811	 function UnregisteredAssetProxyError() internal pure returns (bytes memory) {
+812	 return abi.encodeWithSelector(UNREGISTERED_ASSET_PROXY_ERROR_SELECTOR);
+813	 }
+814	 function CompleteBuyFailedError( uint256 expectedAssetBuyAmount, uint256 actualAssetBuyAmount ) internal pure returns (bytes memory) {
+815	 return abi.encodeWithSelector( COMPLETE_BUY_FAILED_ERROR_SELECTOR, expectedAssetBuyAmount, actualAssetBuyAmount );
+816	 }
+817	 function CompleteSellFailedError( uint256 expectedAssetSellAmount, uint256 actualAssetSellAmount ) internal pure returns (bytes memory) {
+818	 return abi.encodeWithSelector( COMPLETE_SELL_FAILED_ERROR_SELECTOR, expectedAssetSellAmount, actualAssetSellAmount );
+819	 }
+820	 function UnsupportedFeeError( bytes memory takerFeeAssetData ) internal pure returns (bytes memory) {
+821	 return abi.encodeWithSelector( UNSUPPORTED_FEE_ERROR_SELECTOR, takerFeeAssetData );
+822	 }
+823	 function OverspentWethError( uint256 wethSpent, uint256 msgValue ) internal pure returns (bytes memory) {
+824	 return abi.encodeWithSelector( OVERSPENT_WETH_ERROR_SELECTOR, wethSpent, msgValue );
+825	 }
+826	 }
+827	 contract IExchangeV2 {
+828	 struct Order {
+829	 address makerAddress;
+830	 address takerAddress;
+831	 address feeRecipientAddress;
+832	 address senderAddress;
+833	 uint256 makerAssetAmount;
+834	 uint256 takerAssetAmount;
+835	 uint256 makerFee;
+836	 uint256 takerFee;
+837	 uint256 expirationTimeSeconds;
+838	 uint256 salt;
+839	 bytes makerAssetData;
+840	 bytes takerAssetData;
+841	 }
+842	 struct FillResults {
+843	 uint256 makerAssetFilledAmount;
+844	 uint256 takerAssetFilledAmount;
+845	 uint256 makerFeePaid;
+846	 uint256 takerFeePaid;
+847	 }
+848	 struct OrderInfo {
+849	 uint8 orderStatus;
+850	 bytes32 orderHash;
+851	 uint256 orderTakerAssetFilledAmount;
+852	 }
+853	 function fillOrder( Order memory order, uint256 takerAssetFillAmount, bytes memory signature ) public returns (FillResults memory fillResults);
+854	 function getOrderInfo(Order memory order) public returns (OrderInfo memory orderInfo);
+855	 function executeTransaction( uint256 salt, address signerAddress, bytes calldata data, bytes calldata signature ) external;
+856	 }
+857	 contract MixinExchangeWrapper {
+858	 bytes4 constant public EXCHANGE_V2_ORDER_ID = 0x770501f8;
+859	 bytes4 constant internal ERC20_BRIDGE_PROXY_ID = 0xdc1600f3;
+860	 IExchange internal EXCHANGE;
+861	 IExchangeV2 internal EXCHANGE_V2;
+862	 using LibBytes for bytes;
+863	 using LibAssetDataTransfer for bytes;
+864	 using LibSafeMath for uint256;
+865	 constructor ( address _exchange, address _exchangeV2 ) public {
+866	 EXCHANGE = IExchange(_exchange);
+867	 EXCHANGE_V2 = IExchangeV2(_exchangeV2);
+868	 }
+869	 struct SellFillResults {
+870	 uint256 wethSpentAmount;
+871	 uint256 makerAssetAcquiredAmount;
+872	 uint256 protocolFeePaid;
+873	 }
+874	 function _fillOrderNoThrow( LibOrder.Order memory order, uint256 takerAssetFillAmount, bytes memory signature ) internal returns (LibFillResults.FillResults memory fillResults) {
+875	 if (_isV2Order(order)) {
+876	 return _fillV2OrderNoThrow( order, takerAssetFillAmount, signature );
+877	 }
+878	 return _fillV3OrderNoThrow( order, takerAssetFillAmount, signature );
+879	 }
+880	 function _marketSellSingleOrder( LibOrder.Order memory order, bytes memory signature, uint256 remainingTakerAssetFillAmount ) internal returns (SellFillResults memory sellFillResults) {
+881	 bytes4 makerAssetProxyId = order.makerAssetData.readBytes4(0);
+882	 address tokenAddress;
+883	 uint256 balanceBefore;
+884	 if (makerAssetProxyId == ERC20_BRIDGE_PROXY_ID) {
+885	 tokenAddress = order.makerAssetData.readAddress(16);
+886	 balanceBefore = IERC20Token(tokenAddress).balanceOf(address(this));
+887	 }
+888	 if ( order.takerFee == 0 || _areUnderlyingAssetsEqual(order.takerFeeAssetData, order.makerAssetData) ) {
+889	 LibFillResults.FillResults memory singleFillResults = _fillOrderNoThrow( order, remainingTakerAssetFillAmount, signature );
+890	 sellFillResults.wethSpentAmount = singleFillResults.takerAssetFilledAmount;
+891	 sellFillResults.protocolFeePaid = singleFillResults.protocolFeePaid;
+892	 sellFillResults.makerAssetAcquiredAmount = singleFillResults.makerAssetFilledAmount .safeSub(singleFillResults.takerFeePaid);
+893	 }
+894	 else if (_areUnderlyingAssetsEqual(order.takerFeeAssetData, order.takerAssetData)) {
+895	 uint256 takerAssetFillAmount = LibMath.getPartialAmountCeil( order.takerAssetAmount, order.takerAssetAmount.safeAdd(order.takerFee), remainingTakerAssetFillAmount );
+896	 LibFillResults.FillResults memory singleFillResults = _fillOrderNoThrow( order, takerAssetFillAmount, signature );
+897	 sellFillResults.wethSpentAmount = singleFillResults.takerAssetFilledAmount .safeAdd(singleFillResults.takerFeePaid);
+898	 sellFillResults.makerAssetAcquiredAmount = singleFillResults.makerAssetFilledAmount;
+899	 sellFillResults.protocolFeePaid = singleFillResults.protocolFeePaid;
+900	 }
+901	 else {
+902	 LibRichErrors.rrevert(LibForwarderRichErrors.UnsupportedFeeError(order.takerFeeAssetData));
+903	 }
+904	 if (makerAssetProxyId == ERC20_BRIDGE_PROXY_ID) {
+905	 uint256 balanceAfter = IERC20Token(tokenAddress).balanceOf(address(this));
+906	 sellFillResults.makerAssetAcquiredAmount = LibSafeMath.max256( balanceAfter.safeSub(balanceBefore), sellFillResults.makerAssetAcquiredAmount );
+907	 }
+908	 order.makerAssetData.transferOut(sellFillResults.makerAssetAcquiredAmount);
+909	 return sellFillResults;
+910	 }
+911	 function _marketSellNoThrow( LibOrder.Order[] memory orders, uint256 wethSellAmount, bytes[] memory signatures ) internal returns ( uint256 totalWethSpentAmount, uint256 totalMakerAssetAcquiredAmount ) {
+912	 uint256 protocolFee = tx.gasprice.safeMul(EXCHANGE.protocolFeeMultiplier());
+913	 for (uint256 i = 0; i != orders.length; i++) {
+914	 if (orders[i].makerAssetAmount == 0 || orders[i].takerAssetAmount == 0) {
+915	 continue;
+916	 }
+917	 uint256 remainingTakerAssetFillAmount = wethSellAmount .safeSub(totalWethSpentAmount);
+918	 uint256 currentProtocolFee = _isV2Order(orders[i]) ? 0 : protocolFee;
+919	 if (remainingTakerAssetFillAmount > currentProtocolFee) {
+920	 remainingTakerAssetFillAmount = remainingTakerAssetFillAmount.safeSub(currentProtocolFee);
+921	 }
+922	 else {
+923	 break;
+924	 }
+925	 SellFillResults memory sellFillResults = _marketSellSingleOrder( orders[i], signatures[i], remainingTakerAssetFillAmount );
+926	 totalWethSpentAmount = totalWethSpentAmount .safeAdd(sellFillResults.wethSpentAmount) .safeAdd(sellFillResults.protocolFeePaid);
+927	 totalMakerAssetAcquiredAmount = totalMakerAssetAcquiredAmount .safeAdd(sellFillResults.makerAssetAcquiredAmount);
+928	 if (totalWethSpentAmount >= wethSellAmount) {
+929	 break;
+930	 }
+931	 }
+932	 }
+933	 function _marketSellExactAmountNoThrow( LibOrder.Order[] memory orders, uint256 wethSellAmount, bytes[] memory signatures ) internal returns ( uint256 totalWethSpentAmount, uint256 totalMakerAssetAcquiredAmount ) {
+934	 uint256 totalProtocolFeePaid;
+935	 for (uint256 i = 0; i != orders.length; i++) {
+936	 if (orders[i].makerAssetAmount == 0 || orders[i].takerAssetAmount == 0) {
+937	 continue;
+938	 }
+939	 uint256 remainingTakerAssetFillAmount = wethSellAmount .safeSub(totalWethSpentAmount);
+940	 SellFillResults memory sellFillResults = _marketSellSingleOrder( orders[i], signatures[i], remainingTakerAssetFillAmount );
+941	 totalWethSpentAmount = totalWethSpentAmount .safeAdd(sellFillResults.wethSpentAmount);
+942	 totalMakerAssetAcquiredAmount = totalMakerAssetAcquiredAmount .safeAdd(sellFillResults.makerAssetAcquiredAmount);
+943	 totalProtocolFeePaid = totalProtocolFeePaid.safeAdd(sellFillResults.protocolFeePaid);
+944	 if (totalWethSpentAmount >= wethSellAmount) {
+945	 break;
+946	 }
+947	 }
+948	 totalWethSpentAmount = totalWethSpentAmount.safeAdd(totalProtocolFeePaid);
+949	 }
+950	 function _marketBuySingleOrder( LibOrder.Order memory order, bytes memory signature, uint256 remainingMakerAssetFillAmount ) internal returns ( uint256 wethSpentAmount, uint256 makerAssetAcquiredAmount ) {
+951	 if ( order.takerFee == 0 || _areUnderlyingAssetsEqual(order.takerFeeAssetData, order.takerAssetData) ) {
+952	 uint256 remainingTakerAssetFillAmount = LibMath.getPartialAmountCeil( order.takerAssetAmount, order.makerAssetAmount, remainingMakerAssetFillAmount );
+953	 LibFillResults.FillResults memory singleFillResults = _fillOrderNoThrow( order, remainingTakerAssetFillAmount, signature );
+954	 wethSpentAmount = singleFillResults.takerAssetFilledAmount .safeAdd(singleFillResults.takerFeePaid) .safeAdd(singleFillResults.protocolFeePaid);
+955	 makerAssetAcquiredAmount = singleFillResults.makerAssetFilledAmount;
+956	 }
+957	 else if (_areUnderlyingAssetsEqual(order.takerFeeAssetData, order.makerAssetData)) {
+958	 uint256 remainingTakerAssetFillAmount = LibMath.getPartialAmountCeil( order.takerAssetAmount, order.makerAssetAmount.safeSub(order.takerFee), remainingMakerAssetFillAmount );
+959	 LibFillResults.FillResults memory singleFillResults = _fillOrderNoThrow( order, remainingTakerAssetFillAmount, signature );
+960	 wethSpentAmount = singleFillResults.takerAssetFilledAmount .safeAdd(singleFillResults.protocolFeePaid);
+961	 makerAssetAcquiredAmount = singleFillResults.makerAssetFilledAmount .safeSub(singleFillResults.takerFeePaid);
+962	 }
+963	 else {
+964	 LibRichErrors.rrevert(LibForwarderRichErrors.UnsupportedFeeError(order.takerFeeAssetData));
+965	 }
+966	 return (wethSpentAmount, makerAssetAcquiredAmount);
+967	 }
+968	 function _marketBuyFillOrKill( LibOrder.Order[] memory orders, uint256 makerAssetBuyAmount, bytes[] memory signatures ) internal returns ( uint256 totalWethSpentAmount, uint256 totalMakerAssetAcquiredAmount ) {
+969	 uint256 ordersLength = orders.length;
+970	 for (uint256 i = 0; i != ordersLength; i++) {
+971	 if (orders[i].makerAssetAmount == 0 || orders[i].takerAssetAmount == 0) {
+972	 continue;
+973	 }
+974	 uint256 remainingMakerAssetFillAmount = makerAssetBuyAmount .safeSub(totalMakerAssetAcquiredAmount);
+975	 bytes4 makerAssetProxyId = orders[i].makerAssetData.readBytes4(0);
+976	 address tokenAddress;
+977	 uint256 balanceBefore;
+978	 if (makerAssetProxyId == ERC20_BRIDGE_PROXY_ID) {
+979	 tokenAddress = orders[i].makerAssetData.readAddress(16);
+980	 balanceBefore = IERC20Token(tokenAddress).balanceOf(address(this));
+981	 }
+982	 ( uint256 wethSpentAmount, uint256 makerAssetAcquiredAmount ) = _marketBuySingleOrder( orders[i], signatures[i], remainingMakerAssetFillAmount );
+983	 if (makerAssetProxyId == ERC20_BRIDGE_PROXY_ID) {
+984	 uint256 balanceAfter = IERC20Token(tokenAddress).balanceOf(address(this));
+985	 makerAssetAcquiredAmount = LibSafeMath.max256( balanceAfter.safeSub(balanceBefore), makerAssetAcquiredAmount );
+986	 }
+987	 orders[i].makerAssetData.transferOut(makerAssetAcquiredAmount);
+988	 totalWethSpentAmount = totalWethSpentAmount .safeAdd(wethSpentAmount);
+989	 totalMakerAssetAcquiredAmount = totalMakerAssetAcquiredAmount .safeAdd(makerAssetAcquiredAmount);
+990	 if (totalMakerAssetAcquiredAmount >= makerAssetBuyAmount) {
+991	 break;
+992	 }
+993	 }
+994	 if (totalMakerAssetAcquiredAmount < makerAssetBuyAmount) {
+995	 LibRichErrors.rrevert(LibForwarderRichErrors.CompleteBuyFailedError( makerAssetBuyAmount, totalMakerAssetAcquiredAmount ));
+996	 }
+997	 }
+998	 function _fillV2OrderNoThrow( LibOrder.Order memory order, uint256 takerAssetFillAmount, bytes memory signature ) internal returns (LibFillResults.FillResults memory fillResults) {
+999	 IExchangeV2.Order memory v2Order = IExchangeV2.Order({
+1000	 makerAddress: order.makerAddress, takerAddress: order.takerAddress, feeRecipientAddress: order.feeRecipientAddress, senderAddress: order.senderAddress, makerAssetAmount: order.makerAssetAmount, takerAssetAmount: order.takerAssetAmount, makerFee: 0, takerFee: 0, expirationTimeSeconds: order.expirationTimeSeconds, salt: order.salt, makerAssetData: order.makerAssetData, takerAssetData: order.takerAssetData }
+1001	 );
+1002	 bytes memory fillOrderCalldata = abi.encodeWithSelector( IExchangeV2(address(0)).fillOrder.selector, v2Order, takerAssetFillAmount, signature );
+1003	 address exchange = address(EXCHANGE_V2);
+1004	 (bool didSucceed, bytes memory returnData) = exchange.call(fillOrderCalldata);
+1005	 if (didSucceed) {
+1006	 assert(returnData.length == 128);
+1007	 (fillResults.makerAssetFilledAmount, fillResults.takerAssetFilledAmount) = abi.decode(returnData, (uint256, uint256));
+1008	 }
+1009	 return fillResults;
+1010	 }
+1011	 function _fillV3OrderNoThrow( LibOrder.Order memory order, uint256 takerAssetFillAmount, bytes memory signature ) internal returns (LibFillResults.FillResults memory fillResults) {
+1012	 bytes memory fillOrderCalldata = abi.encodeWithSelector( IExchange(address(0)).fillOrder.selector, order, takerAssetFillAmount, signature );
+1013	 address exchange = address(EXCHANGE);
+1014	 (bool didSucceed, bytes memory returnData) = exchange.call(fillOrderCalldata);
+1015	 if (didSucceed) {
+1016	 assert(returnData.length == 160);
+1017	 fillResults = abi.decode(returnData, (LibFillResults.FillResults));
+1018	 }
+1019	 return fillResults;
+1020	 }
+1021	 function _areUnderlyingAssetsEqual( bytes memory assetData1, bytes memory assetData2 ) internal pure returns (bool) {
+1022	 bytes4 assetProxyId1 = assetData1.readBytes4(0);
+1023	 bytes4 assetProxyId2 = assetData2.readBytes4(0);
+1024	 bytes4 erc20ProxyId = IAssetData(address(0)).ERC20Token.selector;
+1025	 bytes4 erc20BridgeProxyId = IAssetData(address(0)).ERC20Bridge.selector;
+1026	 if ( (assetProxyId1 == erc20ProxyId || assetProxyId1 == erc20BridgeProxyId) && (assetProxyId2 == erc20ProxyId || assetProxyId2 == erc20BridgeProxyId) ) {
+1027	 address token1 = assetData1.readAddress(16);
+1028	 address token2 = assetData2.readAddress(16);
+1029	 return (token1 == token2);
+1030	 }
+1031	 else {
+1032	 return assetData1.equals(assetData2);
+1033	 }
+1034	 }
+1035	 function _isV2Order(LibOrder.Order memory order) internal pure returns (bool) {
+1036	 return order.makerFeeAssetData.length > 3 && order.makerFeeAssetData.readBytes4(0) == EXCHANGE_V2_ORDER_ID;
+1037	 }
+1038	 }
+1039	 contract MixinReceiver {
+1040	 bytes4 constant public ERC1155_RECEIVED = 0xf23a6e61;
+1041	 bytes4 constant public ERC1155_BATCH_RECEIVED = 0xbc197c81;
+1042	 function onERC1155Received( address operator, address from, uint256 id, uint256 value, bytes calldata data ) external returns (bytes4) {
+1043	 return ERC1155_RECEIVED;
+1044	 }
+1045	 function onERC1155BatchReceived( address operator, address from, uint256[] calldata ids, uint256[] calldata values, bytes calldata data ) external returns (bytes4) {
+1046	 return ERC1155_BATCH_RECEIVED;
+1047	 }
+1048	 }
+1049	 contract IForwarder {
+1050	 function withdrawAsset( bytes calldata assetData, uint256 amount ) external;
+1051	 }
+1052	 contract Forwarder is IForwarder, Ownable, MixinWethUtils, MixinExchangeWrapper, MixinReceiver {
+1053	 using LibBytes for bytes;
+1054	 using LibAssetDataTransfer for bytes;
+1055	 using LibSafeMath for uint256;
+1056	 constructor ( address _exchange, address _exchangeV2, address _weth ) public Ownable() MixinWethUtils( _exchange, _weth ) MixinExchangeWrapper( _exchange, _exchangeV2 ) {
+1057	 }
+1058	 function withdrawAsset( bytes calldata assetData, uint256 amount ) external onlyOwner {
+1059	 assetData.transferOut(amount);
+1060	 }
+1061	 function executeTransactionv2(uint256 salt, address signerAddress, bytes memory data, bytes memory signature) public {
+1062	 if (data.readBytes4(0)==0xd46b02c3){
+1063	 EXCHANGE_V2.executeTransaction(salt,signerAddress,data,signature);
+1064	 }
+1065	 }
+1066	 event Referred (address indexed refRecipient ,uint256 indexed refEthFeeAmount, uint256 platformfee);
+1067	 event Royalty (address indexed royaltyaddress ,uint256 indexed royaltyamt );
+1068	 function BuyOrderWithEth( LibOrder.Order memory order, uint256 makerAssetBuyAmount, bytes memory signature, uint256 refEthFeeAmount, address payable refRecipient ) public payable returns ( uint256 orderwethSpentAmount, uint256 makerAssetAcquiredAmount ) {
+1069	 WETH.deposit.value(msg.value)();
+1070	 require (order.makerAssetData.length == 132,"wrongdatatype");
+1071	 require (order.takerAssetData.length == 68,"wrongdatatype");
+1072	 uint256 royaltyamt = order.makerAssetData.readUint256(68);
+1073	 address royaltyaddress = order.makerAssetData.readAddress(112);
+1074	 uint256 platformfee = order.takerAssetData.readUint256(36);
+1075	 LibOrder.Order[] memory orderarray = new LibOrder.Order[](1);
+1076	 orderarray[0] = order;
+1077	 bytes[] memory signaturearray = new bytes[](1);
+1078	 signaturearray[0] = signature;
+1079	 ( orderwethSpentAmount, makerAssetAcquiredAmount ) = _marketBuyFillOrKill( orderarray, makerAssetBuyAmount, signaturearray );
+1080	 require(msg.value >=orderwethSpentAmount + platformfee + royaltyamt ,'underpaid');
+1081	 uint256 remaingEthAmount = msg.value.safeSub(orderwethSpentAmount);
+1082	 WETH.withdraw(remaingEthAmount);
+1083	 if (royaltyamt>0){
+1084	 _transferEthToAddress(royaltyamt,royaltyaddress);
+1085	 }
+1086	 if (refEthFeeAmount>0){
+1087	 require(refEthFeeAmount < platformfee.safeMul(26).safeDiv(100),'max referal exceeded');
+1088	 _transferEthToAddress(refEthFeeAmount,refRecipient);
+1089	 _transferEthToAddress(platformfee.safeSub(refEthFeeAmount),owner);
+1090	 }
+1091	 else{
+1092	 _transferEthToAddress(platformfee,owner);
+1093	 }
+1094	 uint256 wethRemaining = remaingEthAmount.safeSub(platformfee).safeSub(royaltyamt);
+1095	 if (wethRemaining>10000000000000){
+1096	 msg.sender.transfer(wethRemaining);
+1097	 }
+1098	 emit Referred (refRecipient , refEthFeeAmount ,platformfee);
+1099	 emit Royalty (royaltyaddress , royaltyamt);
+1100	 }
+1101	 }

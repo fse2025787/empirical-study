@@ -1,0 +1,102 @@
+row number 
+1	             pragma solidity >=0.5.15 >=0.6.12;
+2	 contract Auth {
+3	 mapping (address => uint256) public wards;
+4	 event Rely(address indexed usr);
+5	 event Deny(address indexed usr);
+6	 function rely(address usr) external auth {
+7	 wards[usr] = 1;
+8	 emit Rely(usr);
+9	 }
+10	 function deny(address usr) external auth {
+11	 wards[usr] = 0;
+12	 emit Deny(usr);
+13	 }
+14	 modifier auth {
+15	 require(wards[msg.sender] == 1, "not-authorized");
+16	 _;
+17	 }
+18	 }
+19	 interface AuthLike_4 {
+20	 function rely(address) external;
+21	 function deny(address) external;
+22	 }
+23	 interface DependLike_4 {
+24	 function depend(bytes32, address) external;
+25	 }
+26	 interface BorrowerDeployerLike {
+27	 function collector() external returns (address);
+28	 function feed() external returns (address);
+29	 function shelf() external returns (address);
+30	 function title() external returns (address);
+31	 }
+32	 interface LenderDeployerLike_2 {
+33	 function assessor() external returns (address);
+34	 function reserve() external returns (address);
+35	 function poolAdmin() external returns (address);
+36	 }
+37	 interface AdapterDeployerLike_1 {
+38	 function mgr() external returns (address);
+39	 function wireAdapter() external;
+40	 }
+41	 interface PoolAdminLike_2 {
+42	 function rely(address) external;
+43	 function relyAdmin(address) external;
+44	 }
+45	 contract TinlakeRoot is Auth {
+46	 BorrowerDeployerLike public borrowerDeployer;
+47	 LenderDeployerLike_2 public lenderDeployer;
+48	 AdapterDeployerLike_1 public adapterDeployer;
+49	 bool public deployed;
+50	 address public deployUsr;
+51	 address public immutable governance;
+52	 address public oracle;
+53	 address[] public poolAdmins;
+54	 constructor (address deployUsr_, address governance_) {
+55	 deployUsr = deployUsr_;
+56	 governance = governance_;
+57	 wards[governance_] = 1;
+58	 emit Rely(governance_);
+59	 }
+60	 function prepare(address lender_, address borrower_, address adapter_, address oracle_, address[] memory poolAdmins_) public {
+61	 require(deployUsr == msg.sender);
+62	 borrowerDeployer = BorrowerDeployerLike(borrower_);
+63	 lenderDeployer = LenderDeployerLike_2(lender_);
+64	 if (adapter_ != address(0)) adapterDeployer = AdapterDeployerLike_1(adapter_);
+65	 oracle = oracle_;
+66	 poolAdmins = poolAdmins_;
+67	 deployUsr = address(0);
+68	 }
+69	 function prepare(address lender_, address borrower_, address adapter_) public {
+70	 prepare(lender_, borrower_, adapter_, address(0), new address[](0));
+71	 }
+72	 function prepare(address lender_, address borrower_) public {
+73	 prepare(lender_, borrower_, address(0), address(0), new address[](0));
+74	 }
+75	 function deploy() public {
+76	 require(address(borrowerDeployer) != address(0) && address(lenderDeployer) != address(0) && deployed == false);
+77	 deployed = true;
+78	 address reserve_ = lenderDeployer.reserve();
+79	 address shelf_ = borrowerDeployer.shelf();
+80	 address assessor_ = lenderDeployer.assessor();
+81	 DependLike_4(borrowerDeployer.collector()).depend("reserve", reserve_);
+82	 DependLike_4(borrowerDeployer.shelf()).depend("lender", reserve_);
+83	 DependLike_4(borrowerDeployer.shelf()).depend("reserve", reserve_);
+84	 DependLike_4(borrowerDeployer.shelf()).depend("assessor", assessor_);
+85	 address navFeed = borrowerDeployer.feed();
+86	 DependLike_4(reserve_).depend("shelf", shelf_);
+87	 DependLike_4(assessor_).depend("navFeed", navFeed);
+88	 if (oracle != address(0)) AuthLike_4(navFeed).rely(oracle);
+89	 PoolAdminLike_2 poolAdmin = PoolAdminLike_2(lenderDeployer.poolAdmin());
+90	 PoolAdminLike_2(poolAdmin).rely(governance);
+91	 for (uint i = 0; i < poolAdmins.length; i++) {
+92	 PoolAdminLike_2(poolAdmin).relyAdmin(poolAdmins[i]);
+93	 }
+94	 }
+95	 function relyContract(address target, address usr) public auth {
+96	 AuthLike_4(target).rely(usr);
+97	 }
+98	 function denyContract(address target, address usr) public auth {
+99	 AuthLike_4(target).deny(usr);
+100	 }
+101	 }

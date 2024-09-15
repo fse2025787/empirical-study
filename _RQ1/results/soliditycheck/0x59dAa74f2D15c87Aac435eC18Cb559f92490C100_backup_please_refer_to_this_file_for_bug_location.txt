@@ -1,0 +1,432 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.6.0;
+3	 library LibParam {
+4	 bytes32 private constant STATIC_MASK = 0x0100000000000000000000000000000000000000000000000000000000000000;
+5	 bytes32 private constant PARAMS_MASK = 0x0000000000000000000000000000000000000000000000000000000000000001;
+6	 bytes32 private constant REFS_MASK = 0x00000000000000000000000000000000000000000000000000000000000000FF;
+7	 bytes32 private constant RETURN_NUM_MASK = 0x00FF000000000000000000000000000000000000000000000000000000000000;
+8	 uint256 private constant REFS_LIMIT = 22;
+9	 uint256 private constant PARAMS_SIZE_LIMIT = 64;
+10	 uint256 private constant RETURN_NUM_OFFSET = 240;
+11	 function isStatic(bytes32 conf) internal pure returns (bool) {
+12	 if (conf & STATIC_MASK == 0) return true;
+13	 else return false;
+14	 }
+15	 function isReferenced(bytes32 conf) internal pure returns (bool) {
+16	 if (getReturnNum(conf) == 0) return false;
+17	 else return true;
+18	 }
+19	 function getReturnNum(bytes32 conf) internal pure returns (uint256 num) {
+20	 bytes32 temp = (conf & RETURN_NUM_MASK) >> RETURN_NUM_OFFSET;
+21	 num = uint256(temp);
+22	 }
+23	 function getParams(bytes32 conf) internal pure returns (uint256[] memory refs, uint256[] memory params) {
+24	 require(!isStatic(conf), "Static params");
+25	 uint256 n = REFS_LIMIT;
+26	 while (conf & REFS_MASK == REFS_MASK && n > 0) {
+27	 n--;
+28	 conf = conf >> 8;
+29	 }
+30	 require(n > 0, "No dynamic param");
+31	 refs = new uint256[](n);
+32	 params = new uint256[](n);
+33	 for (uint256 i = 0; i < n; i++) {
+34	 refs[i] = uint256(conf & REFS_MASK);
+35	 conf = conf >> 8;
+36	 }
+37	 uint256 i = 0;
+38	 for (uint256 k = 0; k < PARAMS_SIZE_LIMIT; k++) {
+39	 if (conf & PARAMS_MASK != 0) {
+40	 require(i < n, "Location count exceeds ref count");
+41	 params[i] = k * 32 + 4;
+42	 i++;
+43	 }
+44	 conf = conf >> 1;
+45	 }
+46	 require(i == n, "Location count less than ref count");
+47	 }
+48	 }
+49	 pragma solidity ^0.6.0;
+50	 library LibStack {
+51	 function setAddress(bytes32[] storage _stack, address _input) internal {
+52	 _stack.push(bytes32(uint256(uint160(_input))));
+53	 }
+54	 function set(bytes32[] storage _stack, bytes32 _input) internal {
+55	 _stack.push(_input);
+56	 }
+57	 function setHandlerType(bytes32[] storage _stack, Config.HandlerType _input) internal {
+58	 _stack.push(bytes12(uint96(_input)));
+59	 }
+60	 function getAddress(bytes32[] storage _stack) internal returns (address ret) {
+61	 ret = address(uint160(uint256(peek(_stack))));
+62	 _stack.pop();
+63	 }
+64	 function getSig(bytes32[] storage _stack) internal returns (bytes4 ret) {
+65	 ret = bytes4(peek(_stack));
+66	 _stack.pop();
+67	 }
+68	 function get(bytes32[] storage _stack) internal returns (bytes32 ret) {
+69	 ret = peek(_stack);
+70	 _stack.pop();
+71	 }
+72	 function peek(bytes32[] storage _stack) internal view returns (bytes32 ret) {
+73	 require(_stack.length > 0, "stack empty");
+74	 ret = _stack[_stack.length - 1];
+75	 }
+76	 }
+77	 pragma solidity ^0.6.0;
+78	 library LibCache {
+79	 function set( mapping(bytes32 => bytes32) storage _cache, bytes32 _key, bytes32 _value ) internal {
+80	 _cache[_key] = _value;
+81	 }
+82	 function setAddress( mapping(bytes32 => bytes32) storage _cache, bytes32 _key, address _value ) internal {
+83	 _cache[_key] = bytes32(uint256(uint160(_value)));
+84	 }
+85	 function setUint256( mapping(bytes32 => bytes32) storage _cache, bytes32 _key, uint256 _value ) internal {
+86	 _cache[_key] = bytes32(_value);
+87	 }
+88	 function getAddress( mapping(bytes32 => bytes32) storage _cache, bytes32 _key ) internal view returns (address ret) {
+89	 ret = address(uint160(uint256(_cache[_key])));
+90	 }
+91	 function getUint256( mapping(bytes32 => bytes32) storage _cache, bytes32 _key ) internal view returns (uint256 ret) {
+92	 ret = uint256(_cache[_key]);
+93	 }
+94	 function get(mapping(bytes32 => bytes32) storage _cache, bytes32 _key) internal view returns (bytes32 ret) {
+95	 ret = _cache[_key];
+96	 }
+97	 }
+98	 pragma solidity ^0.6.0;
+99	 contract Storage {
+100	 using LibCache for mapping(bytes32 => bytes32);
+101	 using LibStack for bytes32[];
+102	 bytes32[] public stack;
+103	 mapping(bytes32 => bytes32) public cache;
+104	 bytes32 public constant MSG_SENDER_KEY = 0xb2f2618cecbbb6e7468cc0f2aa43858ad8d153e0280b22285e28e853bb9d453a;
+105	 bytes32 public constant CUBE_COUNTER_KEY = 0xf9543f11459ccccd21306c8881aaab675ff49d988c1162fd1dd9bbcdbe4446be;
+106	 modifier isStackEmpty() {
+107	 require(stack.length == 0, "Stack not empty");
+108	 _;
+109	 }
+110	 modifier isCubeCounterZero() {
+111	 require(_getCubeCounter() == 0, "Cube counter not zero");
+112	 _;
+113	 }
+114	 modifier isInitialized() {
+115	 require(_getSender() != address(0), "Sender is not initialized");
+116	 _;
+117	 }
+118	 modifier isNotInitialized() {
+119	 require(_getSender() == address(0), "Sender is initialized");
+120	 _;
+121	 }
+122	 function _setSender() internal isNotInitialized {
+123	 cache.setAddress(MSG_SENDER_KEY, msg.sender);
+124	 }
+125	 function _resetSender() internal {
+126	 cache.setAddress(MSG_SENDER_KEY, address(0));
+127	 }
+128	 function _getSender() internal view returns (address) {
+129	 return cache.getAddress(MSG_SENDER_KEY);
+130	 }
+131	 function _addCubeCounter() internal {
+132	 cache.setUint256(CUBE_COUNTER_KEY, _getCubeCounter() + 1);
+133	 }
+134	 function _resetCubeCounter() internal {
+135	 cache.setUint256(CUBE_COUNTER_KEY, 0);
+136	 }
+137	 function _getCubeCounter() internal view returns (uint256) {
+138	 return cache.getUint256(CUBE_COUNTER_KEY);
+139	 }
+140	 }
+141	 pragma solidity ^0.6.0;
+142	 contract Config {
+143	 bytes4 public constant POSTPROCESS_SIG = 0xc2722916;
+144	 uint256 public constant PERCENTAGE_BASE = 1 ether;
+145	 enum HandlerType {
+146	 Token, Custom, Others}
+147	 }
+148	 pragma solidity ^0.6.0;
+149	 interface IRegistry {
+150	 function handlers(address) external view returns (bytes32);
+151	 function callers(address) external view returns (bytes32);
+152	 function bannedAgents(address) external view returns (uint256);
+153	 function fHalt() external view returns (bool);
+154	 function isValidHandler(address handler) external view returns (bool);
+155	 function isValidCaller(address handler) external view returns (bool);
+156	 }
+157	 pragma solidity ^0.6.0;
+158	 interface IProxy {
+159	 function batchExec(address[] calldata tos, bytes32[] calldata configs, bytes[] memory datas) external payable;
+160	 function execs(address[] calldata tos, bytes32[] calldata configs, bytes[] memory datas) external payable;
+161	 }
+162	 pragma solidity >=0.6.2 <0.8.0;
+163	 library Address {
+164	 function isContract(address account) internal view returns (bool) {
+165	 uint256 size;
+166	 assembly {
+167	 size := extcodesize(account) }
+168	 return size > 0;
+169	 }
+170	 function sendValue(address payable recipient, uint256 amount) internal {
+171	 require(address(this).balance >= amount, "Address: insufficient balance");
+172	 (bool success, ) = recipient.call{
+173	 value: amount }
+174	 ("");
+175	 require(success, "Address: unable to send value, recipient may have reverted");
+176	 }
+177	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+178	 return functionCall(target, data, "Address: low-level call failed");
+179	 }
+180	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+181	 return functionCallWithValue(target, data, 0, errorMessage);
+182	 }
+183	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+184	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+185	 }
+186	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+187	 require(address(this).balance >= value, "Address: insufficient balance for call");
+188	 require(isContract(target), "Address: call to non-contract");
+189	 (bool success, bytes memory returndata) = target.call{
+190	 value: value }
+191	 (data);
+192	 return _verifyCallResult(success, returndata, errorMessage);
+193	 }
+194	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+195	 return functionStaticCall(target, data, "Address: low-level static call failed");
+196	 }
+197	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+198	 require(isContract(target), "Address: static call to non-contract");
+199	 (bool success, bytes memory returndata) = target.staticcall(data);
+200	 return _verifyCallResult(success, returndata, errorMessage);
+201	 }
+202	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+203	 if (success) {
+204	 return returndata;
+205	 }
+206	 else {
+207	 if (returndata.length > 0) {
+208	 assembly {
+209	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+210	 }
+211	 else {
+212	 revert(errorMessage);
+213	 }
+214	 }
+215	 }
+216	 }
+217	 pragma solidity >=0.6.0 <0.8.0;
+218	 library SafeMath {
+219	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+220	 uint256 c = a + b;
+221	 require(c >= a, "SafeMath: addition overflow");
+222	 return c;
+223	 }
+224	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+225	 return sub(a, b, "SafeMath: subtraction overflow");
+226	 }
+227	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+228	 require(b <= a, errorMessage);
+229	 uint256 c = a - b;
+230	 return c;
+231	 }
+232	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+233	 if (a == 0) {
+234	 return 0;
+235	 }
+236	 uint256 c = a * b;
+237	 require(c / a == b, "SafeMath: multiplication overflow");
+238	 return c;
+239	 }
+240	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+241	 return div(a, b, "SafeMath: division by zero");
+242	 }
+243	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+244	 require(b > 0, errorMessage);
+245	 uint256 c = a / b;
+246	 return c;
+247	 }
+248	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+249	 return mod(a, b, "SafeMath: modulo by zero");
+250	 }
+251	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+252	 require(b != 0, errorMessage);
+253	 return a % b;
+254	 }
+255	 }
+256	 pragma solidity >=0.6.0 <0.8.0;
+257	 interface IERC20 {
+258	 function totalSupply() external view returns (uint256);
+259	 function balanceOf(address account) external view returns (uint256);
+260	 function transfer(address recipient, uint256 amount) external returns (bool);
+261	 function allowance(address owner, address spender) external view returns (uint256);
+262	 function approve(address spender, uint256 amount) external returns (bool);
+263	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+264	 event Transfer(address indexed from, address indexed to, uint256 value);
+265	 event Approval(address indexed owner, address indexed spender, uint256 value);
+266	 }
+267	 pragma solidity >=0.6.0 <0.8.0;
+268	 library SafeERC20 {
+269	 using SafeMath for uint256;
+270	 using Address for address;
+271	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+272	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+273	 }
+274	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+275	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+276	 }
+277	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+278	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+279	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+280	 }
+281	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+282	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+283	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+284	 }
+285	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+286	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+287	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+288	 }
+289	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+290	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+291	 if (returndata.length > 0) {
+292	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+293	 }
+294	 }
+295	 }
+296	 pragma solidity ^0.6.0;
+297	 contract Proxy is IProxy, Storage, Config {
+298	 using Address for address;
+299	 using SafeERC20 for IERC20;
+300	 using LibParam for bytes32;
+301	 modifier isNotBanned() {
+302	 require(registry.bannedAgents(address(this)) == 0, "Banned");
+303	 _;
+304	 }
+305	 modifier isNotHalted() {
+306	 require(registry.fHalt() == false, "Halted");
+307	 _;
+308	 }
+309	 IRegistry public immutable registry;
+310	 constructor(address _registry) public {
+311	 registry = IRegistry(_registry);
+312	 }
+313	 fallback() external payable isNotHalted isNotBanned isInitialized {
+314	 require(_isValidCaller(msg.sender), "Invalid caller");
+315	 address target = address(bytes20(registry.callers(msg.sender)));
+316	 bytes memory result = _exec(target, msg.data);
+317	 uint256 size = result.length;
+318	 assembly {
+319	 let loc := add(result, 0x20) return(loc, size) }
+320	 }
+321	 receive() external payable {
+322	 require(Address.isContract(msg.sender), "Not allowed from EOA");
+323	 }
+324	 function batchExec( address[] calldata tos, bytes32[] calldata configs, bytes[] memory datas ) external payable override isNotHalted isNotBanned {
+325	 _preProcess();
+326	 _execs(tos, configs, datas);
+327	 _postProcess();
+328	 }
+329	 function execs( address[] calldata tos, bytes32[] calldata configs, bytes[] memory datas ) external payable override isNotHalted isNotBanned isInitialized {
+330	 require(msg.sender == address(this), "Does not allow external calls");
+331	 _execs(tos, configs, datas);
+332	 }
+333	 function _execs( address[] memory tos, bytes32[] memory configs, bytes[] memory datas ) internal {
+334	 bytes32[256] memory localStack;
+335	 uint256 index = 0;
+336	 require( tos.length == datas.length, "Tos and datas length inconsistent" );
+337	 require( tos.length == configs.length, "Tos and configs length inconsistent" );
+338	 for (uint256 i = 0; i < tos.length; i++) {
+339	 bytes32 config = configs[i];
+340	 if (!config.isStatic()) {
+341	 _trim(datas[i], config, localStack, index);
+342	 }
+343	 bytes memory result = _exec(tos[i], datas[i]);
+344	 if (config.isReferenced()) {
+345	 uint256 num = config.getReturnNum();
+346	 uint256 newIndex = _parse(localStack, result, index);
+347	 require( newIndex == index + num, "Return num and parsed return num not matched" );
+348	 index = newIndex;
+349	 }
+350	 _setPostProcess(tos[i]);
+351	 }
+352	 }
+353	 function _trim( bytes memory data, bytes32 config, bytes32[256] memory localStack, uint256 index ) internal pure {
+354	 (uint256[] memory refs, uint256[] memory params) = config.getParams();
+355	 for (uint256 i = 0; i < refs.length; i++) {
+356	 require(refs[i] < index, "Reference to out of localStack");
+357	 bytes32 ref = localStack[refs[i]];
+358	 uint256 offset = params[i];
+359	 uint256 base = PERCENTAGE_BASE;
+360	 assembly {
+361	 let loc := add(add(data, 0x20), offset) let m := mload(loc) if iszero(iszero(m)) {
+362	 let p := mul(m, ref) if iszero(eq(div(p, m), ref)) {
+363	 revert(0, 0) }
+364	 ref := div(p, base) }
+365	 mstore(loc, ref) }
+366	 }
+367	 }
+368	 function _parse( bytes32[256] memory localStack, bytes memory ret, uint256 index ) internal pure returns (uint256 newIndex) {
+369	 uint256 len = ret.length;
+370	 require(len % 32 == 0, "illegal length for _parse");
+371	 newIndex = index + len / 32;
+372	 require(newIndex <= 256, "stack overflow");
+373	 assembly {
+374	 let offset := shl(5, index) for {
+375	 let i := 0 }
+376	 lt(i, len) {
+377	 i := add(i, 0x20) }
+378	 {
+379	 mstore( add(localStack, add(i, offset)), mload(add(add(ret, i), 0x20)) ) }
+380	 }
+381	 }
+382	 function _exec(address _to, bytes memory _data) internal returns (bytes memory result) {
+383	 require(_isValidHandler(_to), "Invalid handler");
+384	 _addCubeCounter();
+385	 assembly {
+386	 let succeeded := delegatecall( sub(gas(), 5000), _to, add(_data, 0x20), mload(_data), 0, 0 ) let size := returndatasize() result := mload(0x40) mstore( 0x40, add(result, and(add(add(size, 0x20), 0x1f), not(0x1f))) ) mstore(result, size) returndatacopy(add(result, 0x20), 0, size) switch iszero(succeeded) case 1 {
+387	 revert(add(result, 0x20), size) }
+388	 }
+389	 }
+390	 function _setPostProcess(address _to) internal {
+391	 if (stack.length == 0) {
+392	 return;
+393	 }
+394	 else if ( stack.peek() == bytes32(bytes12(uint96(HandlerType.Custom))) ) {
+395	 stack.pop();
+396	 if (bytes4(stack.peek()) != 0x00000000) stack.setAddress(_to);
+397	 stack.setHandlerType(HandlerType.Custom);
+398	 }
+399	 }
+400	 function _preProcess() internal virtual isStackEmpty isCubeCounterZero {
+401	 _setSender();
+402	 }
+403	 function _postProcess() internal {
+404	 while (stack.length > 0) {
+405	 bytes32 top = stack.get();
+406	 HandlerType handlerType = HandlerType(uint96(bytes12(top)));
+407	 if (handlerType == HandlerType.Token) {
+408	 address addr = address(uint160(uint256(top)));
+409	 uint256 amount = IERC20(addr).balanceOf(address(this));
+410	 if (amount > 0) IERC20(addr).safeTransfer(msg.sender, amount);
+411	 }
+412	 else if (handlerType == HandlerType.Custom) {
+413	 address addr = stack.getAddress();
+414	 _exec(addr, abi.encodeWithSelector(POSTPROCESS_SIG));
+415	 }
+416	 else {
+417	 revert("Invalid handler type");
+418	 }
+419	 }
+420	 uint256 amount = address(this).balance;
+421	 if (amount > 0) msg.sender.transfer(amount);
+422	 _resetSender();
+423	 _resetCubeCounter();
+424	 }
+425	 function _isValidHandler(address handler) internal view returns (bool) {
+426	 return registry.isValidHandler(handler);
+427	 }
+428	 function _isValidCaller(address caller) internal view returns (bool) {
+429	 return registry.isValidCaller(caller);
+430	 }
+431	 }

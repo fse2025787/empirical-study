@@ -1,0 +1,447 @@
+row number 
+1	         pragma solidity >=0.6.0 <0.8.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity ^0.7.0;
+12	 abstract contract Ownable is Context {
+13	 address private _owner;
+14	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+15	 constructor () {
+16	 address msgSender = _msgSender();
+17	 _owner = msgSender;
+18	 emit OwnershipTransferred(address(0), msgSender);
+19	 }
+20	 function owner() public view virtual returns (address) {
+21	 return _owner;
+22	 }
+23	 modifier onlyOwner() {
+24	 require(owner() == _msgSender(), "Ownable: caller is not the owner");
+25	 _;
+26	 }
+27	 function renounceOwnership() public virtual onlyOwner {
+28	 emit OwnershipTransferred(_owner, address(0));
+29	 _owner = address(0);
+30	 }
+31	 function transferOwnership(address newOwner) public virtual onlyOwner {
+32	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+33	 emit OwnershipTransferred(_owner, newOwner);
+34	 _owner = newOwner;
+35	 }
+36	 }
+37	 pragma solidity ^0.7.0;
+38	 interface IERC20 {
+39	 function totalSupply() external view returns (uint256);
+40	 function balanceOf(address account) external view returns (uint256);
+41	 function transfer(address recipient, uint256 amount) external returns (bool);
+42	 function allowance(address owner, address spender) external view returns (uint256);
+43	 function approve(address spender, uint256 amount) external returns (bool);
+44	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+45	 event Transfer(address indexed from, address indexed to, uint256 value);
+46	 event Approval(address indexed owner, address indexed spender, uint256 value);
+47	 }
+48	 pragma solidity 0.7.6;
+49	 contract TotemVesting is Context, Ownable {
+50	 using SafeMath for uint256;
+51	 struct VestingSchedule {
+52	 uint256 totalAmount;
+53	 uint256 amountWithdrawn;
+54	 }
+55	 mapping(address => VestingSchedule) public recipients;
+56	 uint256 public startTime;
+57	 bool public isStartTimeSet;
+58	 uint256 public withdrawInterval;
+59	 uint256 public releasePeriods;
+60	 uint256 public lockPeriods;
+61	 uint256 public totalAmount;
+62	 uint256 public unallocatedAmount;
+63	 TotemToken public totemToken;
+64	 event VestingScheduleRegistered( address registeredAddress, uint256 totalAmount );
+65	 event Withdraw(address registeredAddress, uint256 amountWithdrawn);
+66	 event StartTimeSet(uint256 startTime);
+67	 constructor( TotemToken _totemToken, uint256 _totalAmount, uint256 _withdrawInterval, uint256 _releasePeriods, uint256 _lockPeriods ) {
+68	 require(_totalAmount > 0);
+69	 require(_withdrawInterval > 0);
+70	 require(_releasePeriods > 0);
+71	 totemToken = _totemToken;
+72	 totalAmount = _totalAmount;
+73	 unallocatedAmount = _totalAmount;
+74	 withdrawInterval = _withdrawInterval;
+75	 releasePeriods = _releasePeriods;
+76	 lockPeriods = _lockPeriods;
+77	 isStartTimeSet = false;
+78	 }
+79	 function addRecipient(address _newRecipient, uint256 _totalAmount) public onlyOwner {
+80	 require(!isStartTimeSet || startTime > block.timestamp);
+81	 require(_newRecipient != address(0));
+82	 if (recipients[_newRecipient].totalAmount > 0) {
+83	 unallocatedAmount = unallocatedAmount.add( recipients[_newRecipient].totalAmount );
+84	 }
+85	 require(_totalAmount > 0 && _totalAmount <= unallocatedAmount);
+86	 recipients[_newRecipient] = VestingSchedule({
+87	 totalAmount: _totalAmount, amountWithdrawn: 0 }
+88	 );
+89	 unallocatedAmount = unallocatedAmount.sub(_totalAmount);
+90	 emit VestingScheduleRegistered(_newRecipient, _totalAmount);
+91	 }
+92	 function setStartTime(uint256 _newStartTime) public onlyOwner {
+93	 require(!isStartTimeSet || startTime > block.timestamp);
+94	 require(_newStartTime > block.timestamp);
+95	 startTime = _newStartTime;
+96	 isStartTimeSet = true;
+97	 emit StartTimeSet(_newStartTime);
+98	 }
+99	 function vested(address beneficiary) public view virtual returns (uint256 _amountVested) {
+100	 VestingSchedule memory _vestingSchedule = recipients[beneficiary];
+101	 if ( !isStartTimeSet || (_vestingSchedule.totalAmount == 0) || (lockPeriods == 0 && releasePeriods == 0) || (block.timestamp < startTime) ) {
+102	 return 0;
+103	 }
+104	 uint256 endLock = withdrawInterval.mul(lockPeriods);
+105	 if (block.timestamp < startTime.add(endLock)) {
+106	 return 0;
+107	 }
+108	 uint256 _end = withdrawInterval.mul(lockPeriods.add(releasePeriods));
+109	 if (block.timestamp >= startTime.add(_end)) {
+110	 return _vestingSchedule.totalAmount;
+111	 }
+112	 uint256 period = block.timestamp.sub(startTime).div(withdrawInterval) + 1;
+113	 if (period <= lockPeriods) {
+114	 return 0;
+115	 }
+116	 if (period >= lockPeriods.add(releasePeriods)) {
+117	 return _vestingSchedule.totalAmount;
+118	 }
+119	 uint256 lockAmount = _vestingSchedule.totalAmount.div(releasePeriods);
+120	 uint256 vestedAmount = period.sub(lockPeriods).mul(lockAmount);
+121	 return vestedAmount;
+122	 }
+123	 function withdrawable(address beneficiary) public view returns (uint256 amount) {
+124	 return vested(beneficiary).sub(recipients[beneficiary].amountWithdrawn);
+125	 }
+126	 function withdraw() public {
+127	 VestingSchedule storage vestingSchedule = recipients[_msgSender()];
+128	 if (vestingSchedule.totalAmount == 0) return;
+129	 uint256 _vested = vested(msg.sender);
+130	 uint256 _withdrawable = withdrawable(msg.sender);
+131	 vestingSchedule.amountWithdrawn = _vested;
+132	 if (_withdrawable > 0) {
+133	 require(totemToken.transfer(_msgSender(), _withdrawable));
+134	 emit Withdraw(_msgSender(), _withdrawable);
+135	 }
+136	 }
+137	 }
+138	 pragma solidity ^0.7.0;
+139	 contract ERC20 is Context, IERC20 {
+140	 using SafeMath for uint256;
+141	 mapping (address => uint256) private _balances;
+142	 mapping (address => mapping (address => uint256)) private _allowances;
+143	 uint256 private _totalSupply;
+144	 string private _name;
+145	 string private _symbol;
+146	 uint8 private _decimals;
+147	 constructor (string memory name_, string memory symbol_) {
+148	 _name = name_;
+149	 _symbol = symbol_;
+150	 _decimals = 18;
+151	 }
+152	 function name() public view virtual returns (string memory) {
+153	 return _name;
+154	 }
+155	 function symbol() public view virtual returns (string memory) {
+156	 return _symbol;
+157	 }
+158	 function decimals() public view virtual returns (uint8) {
+159	 return _decimals;
+160	 }
+161	 function totalSupply() public view virtual override returns (uint256) {
+162	 return _totalSupply;
+163	 }
+164	 function balanceOf(address account) public view virtual override returns (uint256) {
+165	 return _balances[account];
+166	 }
+167	 function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+168	 _transfer(_msgSender(), recipient, amount);
+169	 return true;
+170	 }
+171	 function allowance(address owner, address spender) public view virtual override returns (uint256) {
+172	 return _allowances[owner][spender];
+173	 }
+174	 function approve(address spender, uint256 amount) public virtual override returns (bool) {
+175	 _approve(_msgSender(), spender, amount);
+176	 return true;
+177	 }
+178	 function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+179	 _transfer(sender, recipient, amount);
+180	 _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+181	 return true;
+182	 }
+183	 function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+184	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+185	 return true;
+186	 }
+187	 function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+188	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+189	 return true;
+190	 }
+191	 function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+192	 require(sender != address(0), "ERC20: transfer from the zero address");
+193	 require(recipient != address(0), "ERC20: transfer to the zero address");
+194	 _beforeTokenTransfer(sender, recipient, amount);
+195	 _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+196	 _balances[recipient] = _balances[recipient].add(amount);
+197	 emit Transfer(sender, recipient, amount);
+198	 }
+199	 function _mint(address account, uint256 amount) internal virtual {
+200	 require(account != address(0), "ERC20: mint to the zero address");
+201	 _beforeTokenTransfer(address(0), account, amount);
+202	 _totalSupply = _totalSupply.add(amount);
+203	 _balances[account] = _balances[account].add(amount);
+204	 emit Transfer(address(0), account, amount);
+205	 }
+206	 function _burn(address account, uint256 amount) internal virtual {
+207	 require(account != address(0), "ERC20: burn from the zero address");
+208	 _beforeTokenTransfer(account, address(0), amount);
+209	 _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+210	 _totalSupply = _totalSupply.sub(amount);
+211	 emit Transfer(account, address(0), amount);
+212	 }
+213	 function _approve(address owner, address spender, uint256 amount) internal virtual {
+214	 require(owner != address(0), "ERC20: approve from the zero address");
+215	 require(spender != address(0), "ERC20: approve to the zero address");
+216	 _allowances[owner][spender] = amount;
+217	 emit Approval(owner, spender, amount);
+218	 }
+219	 function _setupDecimals(uint8 decimals_) internal virtual {
+220	 _decimals = decimals_;
+221	 }
+222	 function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual {
+223	 }
+224	 }
+225	 interface ILockerUser {
+226	 function locker() external view returns (ILocker);
+227	 event SetLocker(address indexed locker);
+228	 }
+229	 pragma solidity 0.7.6;
+230	 contract StrategicVesting is TotemVesting {
+231	 uint256 public constant TOTAL_AMOUNT = 1500000 * (10**18);
+232	 uint256 public constant WITHDRAW_INTERVAL = 30 days;
+233	 uint256 public constant RELEASE_PERIODS = 5;
+234	 uint256 public constant LOCK_PERIODS = 0;
+235	 constructor(TotemToken _totemToken) TotemVesting( _totemToken, TOTAL_AMOUNT, WITHDRAW_INTERVAL, RELEASE_PERIODS, LOCK_PERIODS ) {
+236	 }
+237	 }
+238	 pragma solidity ^0.7.0;
+239	 library SafeMath {
+240	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+241	 uint256 c = a + b;
+242	 if (c < a) return (false, 0);
+243	 return (true, c);
+244	 }
+245	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+246	 if (b > a) return (false, 0);
+247	 return (true, a - b);
+248	 }
+249	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+250	 if (a == 0) return (true, 0);
+251	 uint256 c = a * b;
+252	 if (c / a != b) return (false, 0);
+253	 return (true, c);
+254	 }
+255	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+256	 if (b == 0) return (false, 0);
+257	 return (true, a / b);
+258	 }
+259	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+260	 if (b == 0) return (false, 0);
+261	 return (true, a % b);
+262	 }
+263	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+264	 uint256 c = a + b;
+265	 require(c >= a, "SafeMath: addition overflow");
+266	 return c;
+267	 }
+268	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+269	 require(b <= a, "SafeMath: subtraction overflow");
+270	 return a - b;
+271	 }
+272	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+273	 if (a == 0) return 0;
+274	 uint256 c = a * b;
+275	 require(c / a == b, "SafeMath: multiplication overflow");
+276	 return c;
+277	 }
+278	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+279	 require(b > 0, "SafeMath: division by zero");
+280	 return a / b;
+281	 }
+282	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+283	 require(b > 0, "SafeMath: modulo by zero");
+284	 return a % b;
+285	 }
+286	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+287	 require(b <= a, errorMessage);
+288	 return a - b;
+289	 }
+290	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+291	 require(b > 0, errorMessage);
+292	 return a / b;
+293	 }
+294	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+295	 require(b > 0, errorMessage);
+296	 return a % b;
+297	 }
+298	 }
+299	 pragma solidity 0.7.6;
+300	 contract TotemToken is ILockerUser, Context, ERC20, Ownable {
+301	 using BasisPoints for uint256;
+302	 using SafeMath for uint256;
+303	 string public constant NAME = "Totem Token";
+304	 string public constant SYMBOL = "TOTM";
+305	 uint8 public constant DECIMALS = 18;
+306	 uint256 public constant INITIAL_SUPPLY = 10000000 * (10**uint256(DECIMALS));
+307	 address public CommunityDevelopmentAddr;
+308	 address public StakingRewardsAddr;
+309	 address public LiquidityPoolAddr;
+310	 address public PublicSaleAddr;
+311	 address public AdvisorsAddr;
+312	 address public SeedInvestmentAddr;
+313	 address public PrivateSaleAddr;
+314	 address public TeamAllocationAddr;
+315	 address public StrategicRoundAddr;
+316	 uint256 public constant COMMUNITY_DEVELOPMENT = 1000000 * (10**uint256(DECIMALS));
+317	 uint256 public constant STAKING_REWARDS = 1650000 * (10**uint256(DECIMALS));
+318	 uint256 public constant LIQUIDITY_POOL = 600000 * (10**uint256(DECIMALS));
+319	 uint256 public constant ADVISORS = 850000 * (10**uint256(DECIMALS));
+320	 uint256 public constant SEED_INVESTMENT = 450000 * (10**uint256(DECIMALS));
+321	 uint256 public constant PRIVATE_SALE = 2000000 * (10**uint256(DECIMALS));
+322	 uint256 public constant TEAM_ALLOCATION = 1500000 * (10**uint256(DECIMALS));
+323	 uint256 public constant LAUNCH_POOL = 5882352941 * (10**uint256(DECIMALS - 5));
+324	 uint256 public constant PUBLIC_SALE = 450000 * (10**uint256(DECIMALS)) + LAUNCH_POOL;
+325	 uint256 public constant STRATEGIC_ROUND = 1500000 * (10**uint256(DECIMALS)) - LAUNCH_POOL;
+326	 uint256 public taxRate = 300;
+327	 address public taxationWallet;
+328	 bool private _isDistributionComplete = false;
+329	 mapping(address => bool) public taxExempt;
+330	 ILocker public override locker;
+331	 constructor() ERC20(NAME, SYMBOL) {
+332	 taxationWallet = _msgSender();
+333	 _mint(address(this), INITIAL_SUPPLY);
+334	 }
+335	 function setLocker(address _locker) external onlyOwner() {
+336	 require(_locker != address(0), "_locker cannot be address(0)");
+337	 locker = ILocker(_locker);
+338	 emit SetLocker(_locker);
+339	 }
+340	 function setDistributionTeamsAddresses( address _CommunityDevelopmentAddr, address _StakingRewardsAddr, address _LiquidityPoolAddr, address _PublicSaleAddr, address _AdvisorsAddr, address _SeedInvestmentAddr, address _PrivateSaleAddr, address _TeamAllocationAddr, address _StrategicRoundAddr ) public onlyOwner {
+341	 require(!_isDistributionComplete);
+342	 require(_CommunityDevelopmentAddr != address(0));
+343	 require(_StakingRewardsAddr != address(0));
+344	 require(_LiquidityPoolAddr != address(0));
+345	 require(_PublicSaleAddr != address(0));
+346	 require(_AdvisorsAddr != address(0));
+347	 require(_SeedInvestmentAddr != address(0));
+348	 require(_PrivateSaleAddr != address(0));
+349	 require(_TeamAllocationAddr != address(0));
+350	 require(_StrategicRoundAddr != address(0));
+351	 CommunityDevelopmentAddr = _CommunityDevelopmentAddr;
+352	 StakingRewardsAddr = _StakingRewardsAddr;
+353	 LiquidityPoolAddr = _LiquidityPoolAddr;
+354	 PublicSaleAddr = _PublicSaleAddr;
+355	 AdvisorsAddr = _AdvisorsAddr;
+356	 SeedInvestmentAddr = _SeedInvestmentAddr;
+357	 PrivateSaleAddr = _PrivateSaleAddr;
+358	 TeamAllocationAddr = _TeamAllocationAddr;
+359	 StrategicRoundAddr = _StrategicRoundAddr;
+360	 }
+361	 function distributeTokens() public onlyOwner {
+362	 require((!_isDistributionComplete));
+363	 _transfer( address(this), CommunityDevelopmentAddr, COMMUNITY_DEVELOPMENT );
+364	 _transfer(address(this), StakingRewardsAddr, STAKING_REWARDS);
+365	 _transfer(address(this), LiquidityPoolAddr, LIQUIDITY_POOL);
+366	 _transfer(address(this), PublicSaleAddr, PUBLIC_SALE);
+367	 _transfer(address(this), AdvisorsAddr, ADVISORS);
+368	 _transfer(address(this), SeedInvestmentAddr, SEED_INVESTMENT);
+369	 _transfer(address(this), PrivateSaleAddr, PRIVATE_SALE);
+370	 _transfer(address(this), TeamAllocationAddr, TEAM_ALLOCATION);
+371	 _transfer(address(this), StrategicRoundAddr, STRATEGIC_ROUND);
+372	 setTaxExemptStatus(CommunityDevelopmentAddr, true);
+373	 setTaxExemptStatus(StakingRewardsAddr, true);
+374	 setTaxExemptStatus(LiquidityPoolAddr, true);
+375	 setTaxExemptStatus(PublicSaleAddr, true);
+376	 setTaxExemptStatus(AdvisorsAddr, true);
+377	 setTaxExemptStatus(SeedInvestmentAddr, true);
+378	 setTaxExemptStatus(PrivateSaleAddr, true);
+379	 setTaxExemptStatus(TeamAllocationAddr, true);
+380	 setTaxExemptStatus(StrategicRoundAddr, true);
+381	 _isDistributionComplete = true;
+382	 }
+383	 function setTaxRate(uint256 newTaxRate) public onlyOwner {
+384	 require(newTaxRate < 10000, "Tax connot be over 100% (10000 BP)");
+385	 taxRate = newTaxRate;
+386	 }
+387	 function setTaxExemptStatus(address account, bool status) public onlyOwner {
+388	 require(account != address(0));
+389	 taxExempt[account] = status;
+390	 }
+391	 function setTaxationWallet(address newTaxationWallet) public onlyOwner {
+392	 require(newTaxationWallet != address(0));
+393	 taxationWallet = newTaxationWallet;
+394	 }
+395	 function _transfer( address sender, address recipient, uint256 amount ) internal virtual override {
+396	 if (address(locker) != address(0)) {
+397	 locker.lockOrGetPenalty(sender, recipient);
+398	 }
+399	 ERC20._transfer(sender, recipient, amount);
+400	 }
+401	 function _transferWithTax( address sender, address recipient, uint256 amount ) internal {
+402	 require(sender != address(0), "ERC20: transfer from the zero address");
+403	 require(recipient != address(0), "ERC20: transfer to the zero address");
+404	 require(sender != recipient, "Cannot self transfer");
+405	 uint256 tax = amount.mulBP(taxRate);
+406	 uint256 tokensToTransfer = amount.sub(tax);
+407	 _transfer(sender, taxationWallet, tax);
+408	 _transfer(sender, recipient, tokensToTransfer);
+409	 }
+410	 function transfer(address recipient, uint256 amount) public override returns (bool) {
+411	 require(_msgSender() != recipient, "ERC20: cannot self transfer");
+412	 !taxExempt[_msgSender()] ? _transferWithTax(_msgSender(), recipient, amount) : _transfer(_msgSender(), recipient, amount);
+413	 return true;
+414	 }
+415	 function transferFrom( address sender, address recipient, uint256 amount ) public override returns (bool) {
+416	 !taxExempt[sender] ? _transferWithTax(sender, recipient, amount) : _transfer(sender, recipient, amount);
+417	 approve( _msgSender(), allowance(sender, _msgSender()).sub( amount, "Transfer amount exceeds allowance" ) );
+418	 return true;
+419	 }
+420	 }
+421	 pragma solidity 0.7.6;
+422	 interface ILocker {
+423	 function lockOrGetPenalty(address source, address dest) external returns (bool, uint256);
+424	 }
+425	 pragma solidity 0.7.6;
+426	 library BasisPoints {
+427	 using SafeMath for uint256;
+428	 uint256 private constant BASIS_POINTS = 10000;
+429	 function mulBP(uint256 amt, uint256 bp) internal pure returns (uint256) {
+430	 return amt.mul(bp).div(BASIS_POINTS);
+431	 }
+432	 function divBP(uint256 amt, uint256 bp) internal pure returns (uint256) {
+433	 require(bp > 0, "Cannot divide by zero.");
+434	 return amt.mul(BASIS_POINTS).div(bp);
+435	 }
+436	 function addBP(uint256 amt, uint256 bp) internal pure returns (uint256) {
+437	 if (amt == 0) return 0;
+438	 if (bp == 0) return amt;
+439	 return amt.add(mulBP(amt, bp));
+440	 }
+441	 function subBP(uint256 amt, uint256 bp) internal pure returns (uint256) {
+442	 if (amt == 0) return 0;
+443	 if (bp == 0) return amt;
+444	 return amt.sub(mulBP(amt, bp));
+445	 }
+446	 }

@@ -1,0 +1,111 @@
+row number 
+1	   pragma solidity^0.4.24;
+2	 contract DSAuthority {
+3	 function canCall( address src, address dst, bytes4 sig ) public view returns (bool);
+4	 }
+5	 contract DSAuthEvents {
+6	 event LogSetAuthority (address indexed authority);
+7	 event LogSetOwner (address indexed owner);
+8	 }
+9	 contract DSAuth is DSAuthEvents {
+10	 DSAuthority public authority;
+11	 address public owner;
+12	 constructor() public {
+13	 owner = msg.sender;
+14	 emit LogSetOwner(msg.sender);
+15	 }
+16	 function setOwner(address owner_) public auth {
+17	 owner = owner_;
+18	 emit LogSetOwner(owner);
+19	 }
+20	 function setAuthority(DSAuthority authority_) public auth {
+21	 authority = authority_;
+22	 emit LogSetAuthority(authority);
+23	 }
+24	 modifier auth {
+25	 require(isAuthorized(msg.sender, msg.sig));
+26	 _;
+27	 }
+28	 function isAuthorized(address src, bytes4 sig) internal view returns (bool) {
+29	 if (src == address(this)) {
+30	 return true;
+31	 }
+32	 else if (src == owner) {
+33	 return true;
+34	 }
+35	 else if (authority == DSAuthority(0)) {
+36	 return false;
+37	 }
+38	 else {
+39	 return authority.canCall(src, this, sig);
+40	 }
+41	 }
+42	 }
+43	 contract NicknameRegistrar is DSAuth {
+44	 uint public namePrice = 10 finney;
+45	 mapping (address => string) public names;
+46	 mapping (bytes32 => address) internal _addresses;
+47	 mapping (address => string) public pendingNameTransfers;
+48	 mapping (bytes32 => bool) internal _inTransfer;
+49	 modifier onlyUniqueName(string name) {
+50	 require(!nameTaken(name), "Name taken!");
+51	 _;
+52	 }
+53	 modifier onlyPaid() {
+54	 require(msg.value >= namePrice, "Not enough value sent!");
+55	 _;
+56	 }
+57	 modifier limitedLength(string s) {
+58	 require(bytes(s).length <= 32, "Name too long!");
+59	 require(bytes(s).length >= 1, "Name too short!");
+60	 _;
+61	 }
+62	 event NameSet(address addr, string name);
+63	 event NameUnset(address addr);
+64	 event NameTransferRequested(address from, address to, string name);
+65	 event NameTransferAccepted(address by, string name);
+66	 function nameTaken(string name) public view returns(bool) {
+67	 return _addresses[stringToBytes32(name)] != address(0x0) || _inTransfer[stringToBytes32(name)];
+68	 }
+69	 function hasName(address addr) public view returns(bool) {
+70	 return bytes(names[addr]).length > 0;
+71	 }
+72	 function addresses(string name) public view returns(address) {
+73	 return _addresses[stringToBytes32(name)];
+74	 }
+75	 function setMyName(string newName) public payable onlyUniqueName(newName) limitedLength(newName) onlyPaid {
+76	 names[msg.sender] = newName;
+77	 _addresses[stringToBytes32(newName)] = msg.sender;
+78	 emit NameSet(msg.sender, newName);
+79	 }
+80	 function unsetMyName() public {
+81	 _addresses[stringToBytes32(names[msg.sender])] = address(0x0);
+82	 names[msg.sender] = "";
+83	 emit NameUnset(msg.sender);
+84	 }
+85	 function transferMyName(address to) public payable onlyPaid {
+86	 require(hasName(msg.sender), "You don't have a name to transfer!");
+87	 pendingNameTransfers[to] = names[msg.sender];
+88	 _inTransfer[stringToBytes32(names[msg.sender])] = true;
+89	 emit NameTransferRequested(msg.sender, to, names[msg.sender]);
+90	 names[msg.sender] = "";
+91	 }
+92	 function acceptNameTranfer() public limitedLength(pendingNameTransfers[msg.sender]) {
+93	 names[msg.sender] = pendingNameTransfers[msg.sender];
+94	 _addresses[stringToBytes32(pendingNameTransfers[msg.sender])] = msg.sender;
+95	 _inTransfer[stringToBytes32(pendingNameTransfers[msg.sender])] = false;
+96	 pendingNameTransfers[msg.sender] = "";
+97	 emit NameTransferAccepted(msg.sender, names[msg.sender]);
+98	 }
+99	 function getMoney() public auth {
+100	 owner.transfer(address(this).balance);
+101	 }
+102	 function stringToBytes32(string memory source) internal pure returns (bytes32 result) {
+103	 bytes memory tempEmptyStringTest = bytes(source);
+104	 if (tempEmptyStringTest.length == 0) {
+105	 return 0x0;
+106	 }
+107	 assembly {
+108	 result := mload(add(source, 32)) }
+109	 }
+110	 }

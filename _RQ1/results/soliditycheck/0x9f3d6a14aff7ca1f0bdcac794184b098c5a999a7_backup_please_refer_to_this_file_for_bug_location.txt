@@ -1,0 +1,170 @@
+row number 
+1	   pragma solidity ^0.4.23;
+2	 contract RouletteRules {
+3	 function getTotalBetAmount(bytes32 first16, bytes32 second16) public pure returns(uint totalBetAmount);
+4	 function getBetResult(bytes32 betTypes, bytes32 first16, bytes32 second16, uint wheelResult) public view returns(uint wonAmount);
+5	 }
+6	 contract OracleRoulette {
+7	 RouletteRules rouletteRules;
+8	 address developer;
+9	 address operator;
+10	 bool shouldGateGuard;
+11	 uint sinceGateGuarded;
+12	 constructor(address _rouletteRules) public payable {
+13	 rouletteRules = RouletteRules(_rouletteRules);
+14	 developer = msg.sender;
+15	 operator = msg.sender;
+16	 shouldGateGuard = false;
+17	 sinceGateGuarded = ~uint(0);
+18	 }
+19	 modifier onlyDeveloper() {
+20	 require(msg.sender == developer);
+21	 _;
+22	 }
+23	 modifier onlyOperator() {
+24	 require(msg.sender == operator);
+25	 _;
+26	 }
+27	 modifier onlyDeveloperOrOperator() {
+28	 require(msg.sender == developer || msg.sender == operator);
+29	 _;
+30	 }
+31	 modifier shouldGateGuardForEffectiveTime() {
+32	 require(shouldGateGuard == true && (sinceGateGuarded - now) > 10 minutes);
+33	 _;
+34	 }
+35	 function changeDeveloper(address newDeveloper) external onlyDeveloper {
+36	 developer = newDeveloper;
+37	 }
+38	 function changeOperator(address newOperator) external onlyDeveloper {
+39	 operator = newOperator;
+40	 }
+41	 function setShouldGateGuard(bool flag) external onlyDeveloperOrOperator {
+42	 if (flag) sinceGateGuarded = now;
+43	 shouldGateGuard = flag;
+44	 }
+45	 function setRouletteRules(address _newRouletteRules) external onlyDeveloperOrOperator shouldGateGuardForEffectiveTime {
+46	 rouletteRules = RouletteRules(_newRouletteRules);
+47	 }
+48	 function destroyContract() external onlyDeveloper shouldGateGuardForEffectiveTime {
+49	 selfdestruct(developer);
+50	 }
+51	 function withdrawFund(uint amount) external onlyDeveloper shouldGateGuardForEffectiveTime {
+52	 require(address(this).balance >= amount);
+53	 msg.sender.transfer(amount);
+54	 }
+55	 function () external payable {
+56	 }
+57	 uint BET_UNIT = 0.0002 ether;
+58	 uint BLOCK_TARGET_DELAY = 0;
+59	 uint constant MAXIMUM_DISTANCE_FROM_BLOCK_TARGET_DELAY = 250;
+60	 uint MAX_BET = 1 ether;
+61	 uint MAX_GAME_PER_BLOCK = 10;
+62	 function setBetUnit(uint newBetUnitInWei) external onlyDeveloperOrOperator shouldGateGuardForEffectiveTime {
+63	 require(newBetUnitInWei > 0);
+64	 BET_UNIT = newBetUnitInWei;
+65	 }
+66	 function setBlockTargetDelay(uint newTargetDelay) external onlyDeveloperOrOperator {
+67	 require(newTargetDelay >= 0);
+68	 BLOCK_TARGET_DELAY = newTargetDelay;
+69	 }
+70	 function setMaxBet(uint newMaxBet) external onlyDeveloperOrOperator {
+71	 MAX_BET = newMaxBet;
+72	 }
+73	 function setMaxGamePerBlock(uint newMaxGamePerBlock) external onlyDeveloperOrOperator {
+74	 MAX_GAME_PER_BLOCK = newMaxGamePerBlock;
+75	 }
+76	 event GameError(address player, string message);
+77	 event GameStarted(address player, uint gameId, uint targetBlock);
+78	 event GameEnded(address player, uint wheelResult, uint wonAmount);
+79	 function placeBet(bytes32 betTypes, bytes32 first16, bytes32 second16) external payable {
+80	 if (shouldGateGuard == true) {
+81	 emit GameError(msg.sender, "Entrance not allowed!");
+82	 revert();
+83	 }
+84	 uint betAmount = rouletteRules.getTotalBetAmount(first16, second16) * BET_UNIT;
+85	 if (betAmount == 0 || msg.value != betAmount || msg.value > MAX_BET) {
+86	 emit GameError(msg.sender, "Wrong bet amount!");
+87	 revert();
+88	 }
+89	 uint targetBlock = block.number + BLOCK_TARGET_DELAY;
+90	 uint historyLength = gameHistory.length;
+91	 if (historyLength > 0) {
+92	 uint counter;
+93	 for (uint i = historyLength - 1; i >= 0; i--) {
+94	 if (gameHistory[i].targetBlock == targetBlock) {
+95	 counter++;
+96	 if (counter > MAX_GAME_PER_BLOCK) {
+97	 emit GameError(msg.sender, "Reached max game per block!");
+98	 revert();
+99	 }
+100	 }
+101	 else break;
+102	 }
+103	 }
+104	 Game memory newGame = Game(uint8(GameStatus.PENDING), 100, msg.sender, targetBlock, betTypes, first16, second16);
+105	 uint gameId = gameHistory.push(newGame) - 1;
+106	 emit GameStarted(msg.sender, gameId, targetBlock);
+107	 }
+108	 function resolveBet(uint gameId) external {
+109	 Game storage game = gameHistory[gameId];
+110	 if (game.status != uint(GameStatus.PENDING)) {
+111	 emit GameError(game.player, "Game is not pending!");
+112	 revert();
+113	 }
+114	 if (block.number <= game.targetBlock) {
+115	 emit GameError(game.player, "Too early to resolve bet!");
+116	 revert();
+117	 }
+118	 if (block.number - game.targetBlock > MAXIMUM_DISTANCE_FROM_BLOCK_TARGET_DELAY) {
+119	 game.status = uint8(GameStatus.REJECTED);
+120	 emit GameError(game.player, "Too late to resolve bet!");
+121	 revert();
+122	 }
+123	 bytes32 blockHash = blockhash(game.targetBlock);
+124	 if (blockHash == 0) {
+125	 game.status = uint8(GameStatus.REJECTED);
+126	 emit GameError(game.player, "blockhash() returned zero!");
+127	 revert();
+128	 }
+129	 game.wheelResult = uint8(keccak256(blockHash, game.player, address(this))) % 37;
+130	 uint wonAmount = rouletteRules.getBetResult(game.betTypes, game.first16, game.second16, game.wheelResult) * BET_UNIT;
+131	 game.status = uint8(GameStatus.RESOLVED);
+132	 if (wonAmount > 0) {
+133	 game.player.transfer(wonAmount);
+134	 }
+135	 emit GameEnded(game.player, game.wheelResult, wonAmount);
+136	 }
+137	 Game[] private gameHistory;
+138	 enum GameStatus {
+139	 INITIAL, PENDING, RESOLVED, REJECTED }
+140	 struct Game {
+141	 uint8 status;
+142	 uint8 wheelResult;
+143	 address player;
+144	 uint256 targetBlock;
+145	 bytes32 betTypes;
+146	 bytes32 first16;
+147	 bytes32 second16;
+148	 }
+149	 function queryGameStatus(uint gameId) external view returns(uint8) {
+150	 Game memory game = gameHistory[gameId];
+151	 return uint8(game.status);
+152	 }
+153	 function queryBetUnit() external view returns(uint) {
+154	 return BET_UNIT;
+155	 }
+156	 function queryGameHistory(uint gameId) external view returns( address player, uint256 targetBlock, uint8 status, uint8 wheelResult, bytes32 betTypes, bytes32 first16, bytes32 second16 ) {
+157	 Game memory g = gameHistory[gameId];
+158	 player = g.player;
+159	 targetBlock = g.targetBlock;
+160	 status = g.status;
+161	 wheelResult = g.wheelResult;
+162	 betTypes = g.betTypes;
+163	 first16 = g.first16;
+164	 second16 = g.second16;
+165	 }
+166	 function queryGameHistoryLength() external view returns(uint length) {
+167	 return gameHistory.length;
+168	 }
+169	 }

@@ -1,0 +1,84 @@
+row number 
+1	      pragma solidity >=0.5.15;
+2	 contract Auth {
+3	 mapping (address => uint256) public wards;
+4	 event Rely(address indexed usr);
+5	 event Deny(address indexed usr);
+6	 function rely(address usr) external auth {
+7	 wards[usr] = 1;
+8	 emit Rely(usr);
+9	 }
+10	 function deny(address usr) external auth {
+11	 wards[usr] = 0;
+12	 emit Deny(usr);
+13	 }
+14	 modifier auth {
+15	 require(wards[msg.sender] == 1, "not-authorized");
+16	 _;
+17	 }
+18	 }
+19	 pragma solidity >=0.7.6;
+20	 interface TrancheLike {
+21	 function supplyOrder(address usr, uint256 currencyAmount) external;
+22	 function redeemOrder(address usr, uint256 tokenAmount) external;
+23	 function disburse(address usr) external returns ( uint256 payoutCurrencyAmount, uint256 payoutTokenAmount, uint256 remainingSupplyCurrency, uint256 remainingRedeemToken );
+24	 function disburse(address usr, uint256 endEpoch) external returns ( uint256 payoutCurrencyAmount, uint256 payoutTokenAmount, uint256 remainingSupplyCurrency, uint256 remainingRedeemToken );
+25	 function currency() external view returns (address);
+26	 }
+27	 interface RestrictedTokenLike {
+28	 function hasMember(address) external view returns (bool);
+29	 }
+30	 interface EIP2612PermitLike {
+31	 function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+32	 }
+33	 interface DaiPermitLike {
+34	 function permit( address holder, address spender, uint256 nonce, uint256 expiry, bool allowed, uint8 v, bytes32 r, bytes32 s ) external;
+35	 }
+36	 contract Operator is Auth {
+37	 TrancheLike public tranche;
+38	 RestrictedTokenLike public token;
+39	 event SupplyOrder(uint256 indexed amount);
+40	 event RedeemOrder(uint256 indexed amount);
+41	 event Depend(bytes32 indexed contractName, address addr);
+42	 constructor(address tranche_) {
+43	 tranche = TrancheLike(tranche_);
+44	 wards[msg.sender] = 1;
+45	 emit Rely(msg.sender);
+46	 }
+47	 function depend(bytes32 contractName, address addr) public auth {
+48	 if (contractName == "tranche") tranche = TrancheLike(addr);
+49	 else if (contractName == "token") token = RestrictedTokenLike(addr);
+50	 else revert();
+51	 emit Depend(contractName, addr);
+52	 }
+53	 function supplyOrder(uint256 amount) public {
+54	 require((token.hasMember(msg.sender) == true), "user-not-allowed-to-hold-token");
+55	 tranche.supplyOrder(msg.sender, amount);
+56	 emit SupplyOrder(amount);
+57	 }
+58	 function redeemOrder(uint256 amount) public {
+59	 require((token.hasMember(msg.sender) == true), "user-not-allowed-to-hold-token");
+60	 tranche.redeemOrder(msg.sender, amount);
+61	 emit RedeemOrder(amount);
+62	 }
+63	 function disburse() external returns ( uint256 payoutCurrencyAmount, uint256 payoutTokenAmount, uint256 remainingSupplyCurrency, uint256 remainingRedeemToken ) {
+64	 require((token.hasMember(msg.sender) == true), "user-not-allowed-to-hold-token");
+65	 return tranche.disburse(msg.sender);
+66	 }
+67	 function disburse(uint256 endEpoch) external returns ( uint256 payoutCurrencyAmount, uint256 payoutTokenAmount, uint256 remainingSupplyCurrency, uint256 remainingRedeemToken ) {
+68	 require((token.hasMember(msg.sender) == true), "user-not-allowed-to-hold-token");
+69	 return tranche.disburse(msg.sender, endEpoch);
+70	 }
+71	 function supplyOrderWithDaiPermit(uint256 amount, uint256 nonce, uint256 expiry, uint8 v, bytes32 r, bytes32 s) public {
+72	 DaiPermitLike(tranche.currency()).permit(msg.sender, address(tranche), nonce, expiry, true, v, r, s);
+73	 supplyOrder(amount);
+74	 }
+75	 function supplyOrderWithPermit(uint256 amount, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) public {
+76	 EIP2612PermitLike(tranche.currency()).permit(msg.sender, address(tranche), value, deadline, v, r, s);
+77	 supplyOrder(amount);
+78	 }
+79	 function redeemOrderWithPermit(uint256 amount, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) public {
+80	 EIP2612PermitLike(address(token)).permit(msg.sender, address(tranche), value, deadline, v, r, s);
+81	 redeemOrder(amount);
+82	 }
+83	 }

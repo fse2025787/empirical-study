@@ -1,0 +1,180 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 library ArrayUtils {
+3	 function removeByIdx(uint256[] array,uint256 idx) public pure returns(uint256[] memory){
+4	 uint256[] memory ans = copy(array,array.length-1);
+5	 while((idx+1) < array.length){
+6	 ans[idx] = array[idx+1];
+7	 idx++;
+8	 }
+9	 return ans;
+10	 }
+11	 function copy(uint256[] array,uint256 len) public pure returns(uint256[] memory){
+12	 uint256[] memory ans = new uint256[](len);
+13	 len = len > array.length? array.length : len;
+14	 for(uint256 i =0; i<len; i++){
+15	 ans[i] = array[i];
+16	 }
+17	 return ans;
+18	 }
+19	 function getHash(uint256[] array) public pure returns(uint256) {
+20	 uint256 baseStep =100;
+21	 uint256 pow = 1;
+22	 uint256 ans = 0;
+23	 for(uint256 i=0; i<array.length; i++){
+24	 ans= ans+ uint256(array[i] *pow ) ;
+25	 pow= pow* baseStep;
+26	 }
+27	 return ans;
+28	 }
+29	 function contains(address[] adrs,address adr)public pure returns(bool){
+30	 for(uint256 i=0; i<adrs.length; i++){
+31	 if(adrs[i] == adr) return true;
+32	 }
+33	 return false;
+34	 }
+35	 }
+36	 library PlayerReply{
+37	 using ArrayUtils for address[];
+38	 using ArrayUtils for uint256[];
+39	 uint256 constant VISABLE_NONE = 0;
+40	 uint256 constant VISABLE_FINAL = 1;
+41	 uint256 constant VISABLE_ALL = 2;
+42	 uint256 constant VISABLE_OWNER = 3;
+43	 uint256 constant VISABLE_BUYED = 4;
+44	 uint256 constant HIDE_TIME = 5*60;
+45	 uint256 constant GRAND_TOTAL_TIME = 10*60;
+46	 struct Data{
+47	 address[] ownerIds;
+48	 uint256 aCount;
+49	 uint256 bCount;
+50	 uint256[] answer;
+51	 uint replyAt;
+52	 }
+53	 struct List{
+54	 uint256 size;
+55	 mapping (uint256 => uint256) hashIds;
+56	 mapping (uint256 => Data) map;
+57	 mapping (uint256=>uint256) sellPriceMap;
+58	 mapping (uint256=>address) seller;
+59	 mapping (uint256=>address[]) buyer;
+60	 }
+61	 function init(Data storage d,uint256 ac,uint256 bc,address own) internal{
+62	 d.ownerIds.push(own) ;
+63	 d.aCount = ac;
+64	 d.bCount = bc;
+65	 d.replyAt = now;
+66	 }
+67	 function clear(List storage ds) internal{
+68	 for(uint256 i =0; i<ds.size; i++){
+69	 uint256 key = ds.hashIds[i];
+70	 delete ds.map[key];
+71	 delete ds.sellPriceMap[key];
+72	 delete ds.seller[key];
+73	 delete ds.buyer[key];
+74	 delete ds.hashIds[i];
+75	 }
+76	 ds.size = 0;
+77	 }
+78	 function setSellPrice(List storage ds,uint256 ansHash,uint256 price) internal {
+79	 require(ds.map[ansHash].ownerIds.contains(msg.sender));
+80	 require(ds.seller[ansHash] == address(0));
+81	 ds.seller[ansHash] = msg.sender;
+82	 ds.sellPriceMap[ansHash] = price;
+83	 }
+84	 function getSellPrice(List storage ds,uint256 idx) public view returns(uint256) {
+85	 return ds.sellPriceMap[ds.hashIds[idx]] ;
+86	 }
+87	 function isOwner(Data storage d) internal view returns(bool){
+88	 return d.replyAt>0 && d.answer.length>0 && d.ownerIds.contains(msg.sender);
+89	 }
+90	 function isWined(Data storage d) internal view returns(bool){
+91	 return d.replyAt>0 && d.answer.length>0 && d.aCount == d.answer.length ;
+92	 }
+93	 function getWin(List storage ds) internal view returns(Data storage lastAns){
+94	 for(uint256 i=0; i<ds.size; i++){
+95	 Data storage d = get(ds,i);
+96	 if(isWined(d)){
+97	 return d;
+98	 }
+99	 }
+100	 return lastAns;
+101	 }
+102	 function getVisibleType(List storage ds,uint256 ansHash) internal view returns(uint256) {
+103	 Data storage d = ds.map[ansHash];
+104	 if(d.ownerIds.contains(msg.sender)){
+105	 return VISABLE_OWNER;
+106	 }
+107	 else if(d.answer.length == d.aCount){
+108	 return VISABLE_FINAL;
+109	 }
+110	 else if(ds.buyer[ansHash].contains(msg.sender)){
+111	 return VISABLE_BUYED;
+112	 }
+113	 else if((now - d.replyAt)> HIDE_TIME && ds.sellPriceMap[ansHash] == 0){
+114	 return VISABLE_ALL;
+115	 }
+116	 return VISABLE_NONE;
+117	 }
+118	 function getReplay(List storage ds,uint256 idx) internal view returns( uint256 , uint256, uint256[], uint, uint256, uint256, uint256 ) {
+119	 uint256 ansHash = ds.hashIds[idx];
+120	 uint256 sellPrice = ds.sellPriceMap[ansHash];
+121	 Data storage d= ds.map[ansHash];
+122	 uint256 vt = getVisibleType(ds,ansHash);
+123	 return ( d.aCount, d.bCount, vt!=VISABLE_NONE ? d.answer : new uint256[](0), now-d.replyAt, vt, sellPrice, vt!=VISABLE_NONE ? ansHash : 0 );
+124	 }
+125	 function listBestScore(List storage ds) internal view returns( uint256 aCount , uint256 bCount , uint256 bestCount ){
+126	 uint256 sorce = 0;
+127	 for(uint256 i=0; i<ds.size; i++){
+128	 Data storage d = get(ds,i);
+129	 uint256 curSore = (d.aCount *100) + d.bCount;
+130	 if(curSore > sorce){
+131	 aCount = d.aCount;
+132	 bCount = d.bCount;
+133	 sorce = curSore;
+134	 bestCount = 1;
+135	 }
+136	 else if(curSore == sorce){
+137	 bestCount++;
+138	 }
+139	 }
+140	 }
+141	 function getOrGenByAnwser(List storage ds,uint256[] ans) internal returns(Data storage ){
+142	 uint256 ansHash = ans.getHash();
+143	 Data storage d = ds.map[ansHash];
+144	 if(d.answer.length>0) return d;
+145	 d.answer = ans;
+146	 ds.hashIds[ds.size] = ansHash;
+147	 ds.size ++;
+148	 return d;
+149	 }
+150	 function get(List storage ds,uint256 idx) public view returns(Data storage){
+151	 return ds.map[ ds.hashIds[idx]];
+152	 }
+153	 function getByHash(List storage ds ,uint256 ansHash)public view returns(Data storage){
+154	 return ds.map[ansHash];
+155	 }
+156	 function getLastReplyAt(List storage list) internal view returns(uint256){
+157	 return list.size>0 ? (now- get(list,list.size-1).replyAt) : 0;
+158	 }
+159	 function getLastReply(List storage ds) internal view returns(Data storage d){
+160	 if( ds.size>0){
+161	 return get(ds,ds.size-1);
+162	 }
+163	 return d;
+164	 }
+165	 function countByGrand(List storage ds) internal view returns(uint256) {
+166	 if(ds.size == 0 ) return 0;
+167	 uint256 count = 0;
+168	 uint256 _lastAt = now;
+169	 uint256 lastIdx = ds.size-1;
+170	 Data memory d = get(ds,lastIdx-count);
+171	 while((_lastAt - d.replyAt)<= GRAND_TOTAL_TIME ){
+172	 count++;
+173	 _lastAt = d.replyAt;
+174	 if(count>lastIdx) return count;
+175	 d = get(ds,lastIdx-count);
+176	 }
+177	 return count;
+178	 }
+179	 }

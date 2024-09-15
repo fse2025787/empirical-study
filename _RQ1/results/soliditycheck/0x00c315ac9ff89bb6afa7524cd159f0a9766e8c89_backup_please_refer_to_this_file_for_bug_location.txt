@@ -1,0 +1,140 @@
+row number 
+1	   pragma solidity ^0.4.23;
+2	 contract IMDEX {
+3	 bytes32 public standard;
+4	 bytes32 public name;
+5	 bytes32 public symbol;
+6	 uint256 public totalSupply;
+7	 uint8 public decimals;
+8	 bool public allowTransactions;
+9	 mapping (address => uint256) public balanceOf;
+10	 mapping (address => mapping (address => uint256)) public allowance;
+11	 function transfer(address _to, uint256 _value)public returns (bool success);
+12	 function approveAndCall(address _spender, uint256 _value, bytes _extraData) public returns (bool success);
+13	 function approve(address _spender, uint256 _value) public returns (bool success);
+14	 function transferFrom(address _from, address _to, uint256 _value) public returns (bool success);
+15	 }
+16	 contract SafeMath {
+17	 function safeMul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+18	 if (a == 0) {
+19	 return 0;
+20	 }
+21	 c = a * b;
+22	 assert(c / a == b);
+23	 return c;
+24	 }
+25	 function safeDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+26	 return a / b;
+27	 }
+28	 function safeSub(uint256 a, uint256 b) internal pure returns (uint256) {
+29	 assert(b <= a);
+30	 return a - b;
+31	 }
+32	 function safeAdd(uint256 a, uint256 b) internal pure returns (uint256 c) {
+33	 c = a + b;
+34	 assert(c >= a);
+35	 return c;
+36	 }
+37	 }
+38	 contract IMDEXDexchange is SafeMath {
+39	 address public owner;
+40	 address IMDEXtoken = 0x46705E8fef2E868FACAFeDc45F47114EC01c2EEd;
+41	 mapping (address => uint256) public invalidOrder;
+42	 event SetOwner(address indexed previousOwner, address indexed newOwner);
+43	 modifier onlyOwner {
+44	 require(msg.sender == owner);
+45	 _;
+46	 }
+47	 function IMDEXsetOwner(address newOwner)public onlyOwner {
+48	 emit SetOwner(owner, newOwner);
+49	 owner = newOwner;
+50	 }
+51	 function IMDEXinvalidateOrdersBefore(address user, uint256 nonce) public onlyAdmin {
+52	 require(nonce > invalidOrder[user]);
+53	 invalidOrder[user] = nonce;
+54	 }
+55	 mapping (address => mapping (address => uint256)) public tokens;
+56	 mapping (address => bool) public admins;
+57	 mapping (address => uint256) public lastActiveTransaction;
+58	 address public feeAccount;
+59	 uint256 public inactivityReleasePeriod;
+60	 event Trade(address tokenBuy, uint256 amountBuy, address tokenSell, uint256 amountSell, address get, address give);
+61	 event Deposit(address token, address user, uint256 amount, uint256 balance);
+62	 event Withdraw(address token, address user, uint256 amount, uint256 balance);
+63	 function IMDEXsetInactivityReleasePeriod(uint256 expiry) public onlyAdmin returns (bool success) {
+64	 require(expiry < 1000000);
+65	 inactivityReleasePeriod = expiry;
+66	 return true;
+67	 }
+68	 constructor(address feeAccount_) public {
+69	 owner = msg.sender;
+70	 feeAccount = feeAccount_;
+71	 inactivityReleasePeriod = 100000;
+72	 }
+73	 function IMDEXsetAdmin(address admin, bool isAdmin) public onlyOwner {
+74	 admins[admin] = isAdmin;
+75	 }
+76	 modifier onlyAdmin {
+77	 require(msg.sender == owner && admins[msg.sender]);
+78	 _;
+79	 }
+80	 function() external {
+81	 revert();
+82	 }
+83	 function IMDEXdepositToken(address token, uint256 amount) public {
+84	 tokens[token][msg.sender] = safeAdd(tokens[token][msg.sender], amount);
+85	 lastActiveTransaction[msg.sender] = block.number;
+86	 require(IMDEX(token).transferFrom(msg.sender, this, amount));
+87	 emit Deposit(token, msg.sender, amount, tokens[token][msg.sender]);
+88	 }
+89	 function IMDEXdeposit() public payable {
+90	 tokens[address(0)][msg.sender] = safeAdd(tokens[address(0)][msg.sender], msg.value);
+91	 lastActiveTransaction[msg.sender] = block.number;
+92	 emit Deposit(address(0), msg.sender, msg.value, tokens[address(0)][msg.sender]);
+93	 }
+94	 function IMDEXwithdrawToken(address token, uint256 amount) public returns (bool) {
+95	 require(safeSub(block.number, lastActiveTransaction[msg.sender]) > inactivityReleasePeriod);
+96	 require(tokens[token][msg.sender] > amount);
+97	 tokens[token][msg.sender] = safeSub(tokens[token][msg.sender], amount);
+98	 if (token == address(0)) {
+99	 msg.sender.transfer(amount);
+100	 }
+101	 else {
+102	 require(IMDEX(token).transfer(msg.sender, amount));
+103	 }
+104	 emit Withdraw(token, msg.sender, amount, tokens[token][msg.sender]);
+105	 }
+106	 function IMDEXadminWithdraw(address token, uint256 amount, address user, uint256 feeWithdrawal) public onlyAdmin returns (bool) {
+107	 if (feeWithdrawal > 50 finney) feeWithdrawal = 50 finney;
+108	 require(tokens[token][user] > amount);
+109	 tokens[token][user] = safeSub(tokens[token][user], amount);
+110	 tokens[token][feeAccount] = safeAdd(tokens[token][feeAccount], safeMul(feeWithdrawal, amount) / 1 ether);
+111	 amount = safeMul((1 ether - feeWithdrawal), amount) / 1 ether;
+112	 if (token == address(0)) {
+113	 user.transfer(amount);
+114	 }
+115	 else {
+116	 require(IMDEX(token).transfer(user, amount));
+117	 }
+118	 lastActiveTransaction[user] = block.number;
+119	 emit Withdraw(token, user, amount, tokens[token][user]);
+120	 }
+121	 function balanceOf(address token, address user) public constant returns (uint256) {
+122	 return tokens[token][user];
+123	 }
+124	 function IMDEXtrade(uint256[8] X, address[4] Y) public onlyAdmin returns (bool) {
+125	 require(invalidOrder[Y[2]] < X[3]);
+126	 if (X[6] > 100 finney) X[6] = 100 finney;
+127	 if (X[7] > 100 finney) X[7] = 100 finney;
+128	 require(tokens[Y[0]][Y[3]] > X[4]);
+129	 require(tokens[Y[1]][Y[2]] > (safeMul(X[1], X[4]) / X[0]));
+130	 tokens[Y[0]][Y[3]] = safeSub(tokens[Y[0]][Y[3]], X[4]);
+131	 tokens[Y[0]][Y[2]] = safeAdd(tokens[Y[0]][Y[2]], safeMul(X[4], ((1 ether) - X[6])) / (1 ether));
+132	 tokens[Y[0]][feeAccount] = safeAdd(tokens[Y[0]][feeAccount], safeMul(X[4], X[6]) / (1 ether));
+133	 tokens[Y[1]][Y[2]] = safeSub(tokens[Y[1]][Y[2]], safeMul(X[1], X[4]) / X[0]);
+134	 tokens[Y[1]][Y[3]] = safeAdd(tokens[Y[1]][Y[3]], safeMul(safeMul(((1 ether) - X[7]), X[1]), X[4]) / X[0] / (1 ether));
+135	 tokens[Y[1]][feeAccount] = safeAdd(tokens[Y[1]][feeAccount], safeMul(safeMul(X[7], X[1]), X[4]) / X[0] / (1 ether));
+136	 lastActiveTransaction[Y[2]] = block.number;
+137	 lastActiveTransaction[Y[3]] = block.number;
+138	 }
+139	 }

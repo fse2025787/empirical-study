@@ -1,0 +1,1399 @@
+row number 
+1	     contract CErc20Storage {
+2	 address public underlying;
+3	 address public implementation;
+4	 }
+5	 contract CSupplyCapStorage {
+6	 uint256 public internalCash;
+7	 }
+8	 contract CErc20Interface is CErc20Storage {
+9	 function mint(uint mintAmount) external returns (uint);
+10	 function redeem(uint redeemTokens) external returns (uint);
+11	 function redeemUnderlying(uint redeemAmount) external returns (uint);
+12	 function borrow(uint borrowAmount) external returns (uint);
+13	 function repayBorrow(uint repayAmount) external returns (uint);
+14	 function liquidateBorrow(address borrower, uint repayAmount, CTokenInterface cTokenCollateral) external returns (uint);
+15	 function _addReserves(uint addAmount) external returns (uint);
+16	 }
+17	 pragma solidity ^0.5.16;
+18	 contract CTokenStorage {
+19	 bool internal _notEntered;
+20	 string public name;
+21	 string public symbol;
+22	 uint8 public decimals;
+23	 uint internal constant borrowRateMaxMantissa = 0.0005e16;
+24	 uint internal constant reserveFactorMaxMantissa = 1e18;
+25	 address payable public admin;
+26	 address payable public pendingAdmin;
+27	 ComptrollerInterface public comptroller;
+28	 InterestRateModel public interestRateModel;
+29	 uint internal initialExchangeRateMantissa;
+30	 uint public reserveFactorMantissa;
+31	 uint public accrualBlockNumber;
+32	 uint public borrowIndex;
+33	 uint public totalBorrows;
+34	 uint public totalReserves;
+35	 uint public totalSupply;
+36	 mapping (address => uint) internal accountTokens;
+37	 mapping (address => mapping (address => uint)) internal transferAllowances;
+38	 struct BorrowSnapshot {
+39	 uint principal;
+40	 uint interestIndex;
+41	 }
+42	 mapping(address => BorrowSnapshot) internal accountBorrows;
+43	 }
+44	 pragma solidity ^0.5.16;
+45	 contract CarefulMath {
+46	 enum MathError {
+47	 NO_ERROR, DIVISION_BY_ZERO, INTEGER_OVERFLOW, INTEGER_UNDERFLOW }
+48	 function mulUInt(uint a, uint b) internal pure returns (MathError, uint) {
+49	 if (a == 0) {
+50	 return (MathError.NO_ERROR, 0);
+51	 }
+52	 uint c = a * b;
+53	 if (c / a != b) {
+54	 return (MathError.INTEGER_OVERFLOW, 0);
+55	 }
+56	 else {
+57	 return (MathError.NO_ERROR, c);
+58	 }
+59	 }
+60	 function divUInt(uint a, uint b) internal pure returns (MathError, uint) {
+61	 if (b == 0) {
+62	 return (MathError.DIVISION_BY_ZERO, 0);
+63	 }
+64	 return (MathError.NO_ERROR, a / b);
+65	 }
+66	 function subUInt(uint a, uint b) internal pure returns (MathError, uint) {
+67	 if (b <= a) {
+68	 return (MathError.NO_ERROR, a - b);
+69	 }
+70	 else {
+71	 return (MathError.INTEGER_UNDERFLOW, 0);
+72	 }
+73	 }
+74	 function addUInt(uint a, uint b) internal pure returns (MathError, uint) {
+75	 uint c = a + b;
+76	 if (c >= a) {
+77	 return (MathError.NO_ERROR, c);
+78	 }
+79	 else {
+80	 return (MathError.INTEGER_OVERFLOW, 0);
+81	 }
+82	 }
+83	 function addThenSubUInt(uint a, uint b, uint c) internal pure returns (MathError, uint) {
+84	 (MathError err0, uint sum) = addUInt(a, b);
+85	 if (err0 != MathError.NO_ERROR) {
+86	 return (err0, 0);
+87	 }
+88	 return subUInt(sum, c);
+89	 }
+90	 }
+91	 contract CCollateralCapStorage {
+92	 uint256 public totalCollateralTokens;
+93	 mapping (address => uint) public accountCollateralTokens;
+94	 mapping (address => bool) public isCollateralTokenInit;
+95	 uint256 public collateralCap;
+96	 }
+97	 contract CTokenInterface is CTokenStorage {
+98	 bool public constant isCToken = true;
+99	 event AccrueInterest(uint cashPrior, uint interestAccumulated, uint borrowIndex, uint totalBorrows);
+100	 event Mint(address minter, uint mintAmount, uint mintTokens);
+101	 event Redeem(address redeemer, uint redeemAmount, uint redeemTokens);
+102	 event Borrow(address borrower, uint borrowAmount, uint accountBorrows, uint totalBorrows);
+103	 event RepayBorrow(address payer, address borrower, uint repayAmount, uint accountBorrows, uint totalBorrows);
+104	 event LiquidateBorrow(address liquidator, address borrower, uint repayAmount, address cTokenCollateral, uint seizeTokens);
+105	 event NewPendingAdmin(address oldPendingAdmin, address newPendingAdmin);
+106	 event NewAdmin(address oldAdmin, address newAdmin);
+107	 event NewComptroller(ComptrollerInterface oldComptroller, ComptrollerInterface newComptroller);
+108	 event NewMarketInterestRateModel(InterestRateModel oldInterestRateModel, InterestRateModel newInterestRateModel);
+109	 event NewReserveFactor(uint oldReserveFactorMantissa, uint newReserveFactorMantissa);
+110	 event ReservesAdded(address benefactor, uint addAmount, uint newTotalReserves);
+111	 event ReservesReduced(address admin, uint reduceAmount, uint newTotalReserves);
+112	 event Transfer(address indexed from, address indexed to, uint amount);
+113	 event Approval(address indexed owner, address indexed spender, uint amount);
+114	 event Failure(uint error, uint info, uint detail);
+115	 function transfer(address dst, uint amount) external returns (bool);
+116	 function transferFrom(address src, address dst, uint amount) external returns (bool);
+117	 function approve(address spender, uint amount) external returns (bool);
+118	 function allowance(address owner, address spender) external view returns (uint);
+119	 function balanceOf(address owner) external view returns (uint);
+120	 function balanceOfUnderlying(address owner) external returns (uint);
+121	 function getAccountSnapshot(address account) external view returns (uint, uint, uint, uint);
+122	 function borrowRatePerBlock() external view returns (uint);
+123	 function supplyRatePerBlock() external view returns (uint);
+124	 function totalBorrowsCurrent() external returns (uint);
+125	 function borrowBalanceCurrent(address account) external returns (uint);
+126	 function borrowBalanceStored(address account) public view returns (uint);
+127	 function exchangeRateCurrent() public returns (uint);
+128	 function exchangeRateStored() public view returns (uint);
+129	 function getCash() external view returns (uint);
+130	 function accrueInterest() public returns (uint);
+131	 function seize(address liquidator, address borrower, uint seizeTokens) external returns (uint);
+132	 function _setPendingAdmin(address payable newPendingAdmin) external returns (uint);
+133	 function _acceptAdmin() external returns (uint);
+134	 function _setComptroller(ComptrollerInterface newComptroller) public returns (uint);
+135	 function _setReserveFactor(uint newReserveFactorMantissa) external returns (uint);
+136	 function _reduceReserves(uint reduceAmount) external returns (uint);
+137	 function _setInterestRateModel(InterestRateModel newInterestRateModel) public returns (uint);
+138	 }
+139	 contract CCapableErc20Interface is CErc20Interface, CSupplyCapStorage {
+140	 uint public constant flashFeeBips = 3;
+141	 event Flashloan(address indexed receiver, uint amount, uint totalFee, uint reservesFee);
+142	 function gulp() external;
+143	 function flashLoan(address receiver, uint amount, bytes calldata params) external;
+144	 }
+145	 contract TokenErrorReporter {
+146	 enum Error {
+147	 NO_ERROR, UNAUTHORIZED, BAD_INPUT, COMPTROLLER_REJECTION, COMPTROLLER_CALCULATION_ERROR, INTEREST_RATE_MODEL_ERROR, INVALID_ACCOUNT_PAIR, INVALID_CLOSE_AMOUNT_REQUESTED, INVALID_COLLATERAL_FACTOR, MATH_ERROR, MARKET_NOT_FRESH, MARKET_NOT_LISTED, TOKEN_INSUFFICIENT_ALLOWANCE, TOKEN_INSUFFICIENT_BALANCE, TOKEN_INSUFFICIENT_CASH, TOKEN_TRANSFER_IN_FAILED, TOKEN_TRANSFER_OUT_FAILED }
+148	 enum FailureInfo {
+149	 ACCEPT_ADMIN_PENDING_ADMIN_CHECK, ACCRUE_INTEREST_BORROW_RATE_CALCULATION_FAILED, BORROW_ACCRUE_INTEREST_FAILED, BORROW_CASH_NOT_AVAILABLE, BORROW_FRESHNESS_CHECK, BORROW_MARKET_NOT_LISTED, BORROW_COMPTROLLER_REJECTION, LIQUIDATE_ACCRUE_BORROW_INTEREST_FAILED, LIQUIDATE_ACCRUE_COLLATERAL_INTEREST_FAILED, LIQUIDATE_COLLATERAL_FRESHNESS_CHECK, LIQUIDATE_COMPTROLLER_REJECTION, LIQUIDATE_COMPTROLLER_CALCULATE_AMOUNT_SEIZE_FAILED, LIQUIDATE_CLOSE_AMOUNT_IS_UINT_MAX, LIQUIDATE_CLOSE_AMOUNT_IS_ZERO, LIQUIDATE_FRESHNESS_CHECK, LIQUIDATE_LIQUIDATOR_IS_BORROWER, LIQUIDATE_REPAY_BORROW_FRESH_FAILED, LIQUIDATE_SEIZE_COMPTROLLER_REJECTION, LIQUIDATE_SEIZE_LIQUIDATOR_IS_BORROWER, LIQUIDATE_SEIZE_TOO_MUCH, MINT_ACCRUE_INTEREST_FAILED, MINT_COMPTROLLER_REJECTION, MINT_FRESHNESS_CHECK, MINT_TRANSFER_IN_FAILED, MINT_TRANSFER_IN_NOT_POSSIBLE, REDEEM_ACCRUE_INTEREST_FAILED, REDEEM_COMPTROLLER_REJECTION, REDEEM_FRESHNESS_CHECK, REDEEM_TRANSFER_OUT_NOT_POSSIBLE, REDUCE_RESERVES_ACCRUE_INTEREST_FAILED, REDUCE_RESERVES_ADMIN_CHECK, REDUCE_RESERVES_CASH_NOT_AVAILABLE, REDUCE_RESERVES_FRESH_CHECK, REDUCE_RESERVES_VALIDATION, REPAY_BORROW_ACCRUE_INTEREST_FAILED, REPAY_BORROW_COMPTROLLER_REJECTION, REPAY_BORROW_FRESHNESS_CHECK, REPAY_BORROW_TRANSFER_IN_NOT_POSSIBLE, SET_COLLATERAL_FACTOR_OWNER_CHECK, SET_COLLATERAL_FACTOR_VALIDATION, SET_COMPTROLLER_OWNER_CHECK, SET_INTEREST_RATE_MODEL_ACCRUE_INTEREST_FAILED, SET_INTEREST_RATE_MODEL_FRESH_CHECK, SET_INTEREST_RATE_MODEL_OWNER_CHECK, SET_MAX_ASSETS_OWNER_CHECK, SET_ORACLE_MARKET_NOT_LISTED, SET_PENDING_ADMIN_OWNER_CHECK, SET_RESERVE_FACTOR_ACCRUE_INTEREST_FAILED, SET_RESERVE_FACTOR_ADMIN_CHECK, SET_RESERVE_FACTOR_FRESH_CHECK, SET_RESERVE_FACTOR_BOUNDS_CHECK, TRANSFER_COMPTROLLER_REJECTION, TRANSFER_NOT_ALLOWED, ADD_RESERVES_ACCRUE_INTEREST_FAILED, ADD_RESERVES_FRESH_CHECK, ADD_RESERVES_TRANSFER_IN_NOT_POSSIBLE }
+150	 event Failure(uint error, uint info, uint detail);
+151	 function fail(Error err, FailureInfo info) internal returns (uint) {
+152	 emit Failure(uint(err), uint(info), 0);
+153	 return uint(err);
+154	 }
+155	 function failOpaque(Error err, FailureInfo info, uint opaqueError) internal returns (uint) {
+156	 emit Failure(uint(err), uint(info), opaqueError);
+157	 return uint(err);
+158	 }
+159	 }
+160	 pragma solidity ^0.5.16;
+161	 contract Exponential is CarefulMath {
+162	 uint constant expScale = 1e18;
+163	 uint constant doubleScale = 1e36;
+164	 uint constant halfExpScale = expScale/2;
+165	 uint constant mantissaOne = expScale;
+166	 struct Exp {
+167	 uint mantissa;
+168	 }
+169	 struct Double {
+170	 uint mantissa;
+171	 }
+172	 function getExp(uint num, uint denom) pure internal returns (MathError, Exp memory) {
+173	 (MathError err0, uint scaledNumerator) = mulUInt(num, expScale);
+174	 if (err0 != MathError.NO_ERROR) {
+175	 return (err0, Exp({
+176	 mantissa: 0}
+177	 ));
+178	 }
+179	 (MathError err1, uint rational) = divUInt(scaledNumerator, denom);
+180	 if (err1 != MathError.NO_ERROR) {
+181	 return (err1, Exp({
+182	 mantissa: 0}
+183	 ));
+184	 }
+185	 return (MathError.NO_ERROR, Exp({
+186	 mantissa: rational}
+187	 ));
+188	 }
+189	 function addExp(Exp memory a, Exp memory b) pure internal returns (MathError, Exp memory) {
+190	 (MathError error, uint result) = addUInt(a.mantissa, b.mantissa);
+191	 return (error, Exp({
+192	 mantissa: result}
+193	 ));
+194	 }
+195	 function subExp(Exp memory a, Exp memory b) pure internal returns (MathError, Exp memory) {
+196	 (MathError error, uint result) = subUInt(a.mantissa, b.mantissa);
+197	 return (error, Exp({
+198	 mantissa: result}
+199	 ));
+200	 }
+201	 function mulScalar(Exp memory a, uint scalar) pure internal returns (MathError, Exp memory) {
+202	 (MathError err0, uint scaledMantissa) = mulUInt(a.mantissa, scalar);
+203	 if (err0 != MathError.NO_ERROR) {
+204	 return (err0, Exp({
+205	 mantissa: 0}
+206	 ));
+207	 }
+208	 return (MathError.NO_ERROR, Exp({
+209	 mantissa: scaledMantissa}
+210	 ));
+211	 }
+212	 function mulScalarTruncate(Exp memory a, uint scalar) pure internal returns (MathError, uint) {
+213	 (MathError err, Exp memory product) = mulScalar(a, scalar);
+214	 if (err != MathError.NO_ERROR) {
+215	 return (err, 0);
+216	 }
+217	 return (MathError.NO_ERROR, truncate(product));
+218	 }
+219	 function mulScalarTruncateAddUInt(Exp memory a, uint scalar, uint addend) pure internal returns (MathError, uint) {
+220	 (MathError err, Exp memory product) = mulScalar(a, scalar);
+221	 if (err != MathError.NO_ERROR) {
+222	 return (err, 0);
+223	 }
+224	 return addUInt(truncate(product), addend);
+225	 }
+226	 function mul_ScalarTruncate(Exp memory a, uint scalar) pure internal returns (uint) {
+227	 Exp memory product = mul_(a, scalar);
+228	 return truncate(product);
+229	 }
+230	 function mul_ScalarTruncateAddUInt(Exp memory a, uint scalar, uint addend) pure internal returns (uint) {
+231	 Exp memory product = mul_(a, scalar);
+232	 return add_(truncate(product), addend);
+233	 }
+234	 function divScalar(Exp memory a, uint scalar) pure internal returns (MathError, Exp memory) {
+235	 (MathError err0, uint descaledMantissa) = divUInt(a.mantissa, scalar);
+236	 if (err0 != MathError.NO_ERROR) {
+237	 return (err0, Exp({
+238	 mantissa: 0}
+239	 ));
+240	 }
+241	 return (MathError.NO_ERROR, Exp({
+242	 mantissa: descaledMantissa}
+243	 ));
+244	 }
+245	 function divScalarByExp(uint scalar, Exp memory divisor) pure internal returns (MathError, Exp memory) {
+246	 (MathError err0, uint numerator) = mulUInt(expScale, scalar);
+247	 if (err0 != MathError.NO_ERROR) {
+248	 return (err0, Exp({
+249	 mantissa: 0}
+250	 ));
+251	 }
+252	 return getExp(numerator, divisor.mantissa);
+253	 }
+254	 function divScalarByExpTruncate(uint scalar, Exp memory divisor) pure internal returns (MathError, uint) {
+255	 (MathError err, Exp memory fraction) = divScalarByExp(scalar, divisor);
+256	 if (err != MathError.NO_ERROR) {
+257	 return (err, 0);
+258	 }
+259	 return (MathError.NO_ERROR, truncate(fraction));
+260	 }
+261	 function div_ScalarByExp(uint scalar, Exp memory divisor) pure internal returns (Exp memory) {
+262	 uint numerator = mul_(expScale, scalar);
+263	 return Exp({
+264	 mantissa: div_(numerator, divisor)}
+265	 );
+266	 }
+267	 function div_ScalarByExpTruncate(uint scalar, Exp memory divisor) pure internal returns (uint) {
+268	 Exp memory fraction = div_ScalarByExp(scalar, divisor);
+269	 return truncate(fraction);
+270	 }
+271	 function mulExp(Exp memory a, Exp memory b) pure internal returns (MathError, Exp memory) {
+272	 (MathError err0, uint doubleScaledProduct) = mulUInt(a.mantissa, b.mantissa);
+273	 if (err0 != MathError.NO_ERROR) {
+274	 return (err0, Exp({
+275	 mantissa: 0}
+276	 ));
+277	 }
+278	 (MathError err1, uint doubleScaledProductWithHalfScale) = addUInt(halfExpScale, doubleScaledProduct);
+279	 if (err1 != MathError.NO_ERROR) {
+280	 return (err1, Exp({
+281	 mantissa: 0}
+282	 ));
+283	 }
+284	 (MathError err2, uint product) = divUInt(doubleScaledProductWithHalfScale, expScale);
+285	 assert(err2 == MathError.NO_ERROR);
+286	 return (MathError.NO_ERROR, Exp({
+287	 mantissa: product}
+288	 ));
+289	 }
+290	 function mulExp(uint a, uint b) pure internal returns (MathError, Exp memory) {
+291	 return mulExp(Exp({
+292	 mantissa: a}
+293	 ), Exp({
+294	 mantissa: b}
+295	 ));
+296	 }
+297	 function mulExp3(Exp memory a, Exp memory b, Exp memory c) pure internal returns (MathError, Exp memory) {
+298	 (MathError err, Exp memory ab) = mulExp(a, b);
+299	 if (err != MathError.NO_ERROR) {
+300	 return (err, ab);
+301	 }
+302	 return mulExp(ab, c);
+303	 }
+304	 function divExp(Exp memory a, Exp memory b) pure internal returns (MathError, Exp memory) {
+305	 return getExp(a.mantissa, b.mantissa);
+306	 }
+307	 function truncate(Exp memory exp) pure internal returns (uint) {
+308	 return exp.mantissa / expScale;
+309	 }
+310	 function lessThanExp(Exp memory left, Exp memory right) pure internal returns (bool) {
+311	 return left.mantissa < right.mantissa;
+312	 }
+313	 function lessThanOrEqualExp(Exp memory left, Exp memory right) pure internal returns (bool) {
+314	 return left.mantissa <= right.mantissa;
+315	 }
+316	 function isZeroExp(Exp memory value) pure internal returns (bool) {
+317	 return value.mantissa == 0;
+318	 }
+319	 function safe224(uint n, string memory errorMessage) pure internal returns (uint224) {
+320	 require(n < 2**224, errorMessage);
+321	 return uint224(n);
+322	 }
+323	 function safe32(uint n, string memory errorMessage) pure internal returns (uint32) {
+324	 require(n < 2**32, errorMessage);
+325	 return uint32(n);
+326	 }
+327	 function add_(Exp memory a, Exp memory b) pure internal returns (Exp memory) {
+328	 return Exp({
+329	 mantissa: add_(a.mantissa, b.mantissa)}
+330	 );
+331	 }
+332	 function add_(Double memory a, Double memory b) pure internal returns (Double memory) {
+333	 return Double({
+334	 mantissa: add_(a.mantissa, b.mantissa)}
+335	 );
+336	 }
+337	 function add_(uint a, uint b) pure internal returns (uint) {
+338	 return add_(a, b, "addition overflow");
+339	 }
+340	 function add_(uint a, uint b, string memory errorMessage) pure internal returns (uint) {
+341	 uint c = a + b;
+342	 require(c >= a, errorMessage);
+343	 return c;
+344	 }
+345	 function sub_(Exp memory a, Exp memory b) pure internal returns (Exp memory) {
+346	 return Exp({
+347	 mantissa: sub_(a.mantissa, b.mantissa)}
+348	 );
+349	 }
+350	 function sub_(Double memory a, Double memory b) pure internal returns (Double memory) {
+351	 return Double({
+352	 mantissa: sub_(a.mantissa, b.mantissa)}
+353	 );
+354	 }
+355	 function sub_(uint a, uint b) pure internal returns (uint) {
+356	 return sub_(a, b, "subtraction underflow");
+357	 }
+358	 function sub_(uint a, uint b, string memory errorMessage) pure internal returns (uint) {
+359	 require(b <= a, errorMessage);
+360	 return a - b;
+361	 }
+362	 function mul_(Exp memory a, Exp memory b) pure internal returns (Exp memory) {
+363	 return Exp({
+364	 mantissa: mul_(a.mantissa, b.mantissa) / expScale}
+365	 );
+366	 }
+367	 function mul_(Exp memory a, uint b) pure internal returns (Exp memory) {
+368	 return Exp({
+369	 mantissa: mul_(a.mantissa, b)}
+370	 );
+371	 }
+372	 function mul_(uint a, Exp memory b) pure internal returns (uint) {
+373	 return mul_(a, b.mantissa) / expScale;
+374	 }
+375	 function mul_(Double memory a, Double memory b) pure internal returns (Double memory) {
+376	 return Double({
+377	 mantissa: mul_(a.mantissa, b.mantissa) / doubleScale}
+378	 );
+379	 }
+380	 function mul_(Double memory a, uint b) pure internal returns (Double memory) {
+381	 return Double({
+382	 mantissa: mul_(a.mantissa, b)}
+383	 );
+384	 }
+385	 function mul_(uint a, Double memory b) pure internal returns (uint) {
+386	 return mul_(a, b.mantissa) / doubleScale;
+387	 }
+388	 function mul_(uint a, uint b) pure internal returns (uint) {
+389	 return mul_(a, b, "multiplication overflow");
+390	 }
+391	 function mul_(uint a, uint b, string memory errorMessage) pure internal returns (uint) {
+392	 if (a == 0 || b == 0) {
+393	 return 0;
+394	 }
+395	 uint c = a * b;
+396	 require(c / a == b, errorMessage);
+397	 return c;
+398	 }
+399	 function div_(Exp memory a, Exp memory b) pure internal returns (Exp memory) {
+400	 return Exp({
+401	 mantissa: div_(mul_(a.mantissa, expScale), b.mantissa)}
+402	 );
+403	 }
+404	 function div_(Exp memory a, uint b) pure internal returns (Exp memory) {
+405	 return Exp({
+406	 mantissa: div_(a.mantissa, b)}
+407	 );
+408	 }
+409	 function div_(uint a, Exp memory b) pure internal returns (uint) {
+410	 return div_(mul_(a, expScale), b.mantissa);
+411	 }
+412	 function div_(Double memory a, Double memory b) pure internal returns (Double memory) {
+413	 return Double({
+414	 mantissa: div_(mul_(a.mantissa, doubleScale), b.mantissa)}
+415	 );
+416	 }
+417	 function div_(Double memory a, uint b) pure internal returns (Double memory) {
+418	 return Double({
+419	 mantissa: div_(a.mantissa, b)}
+420	 );
+421	 }
+422	 function div_(uint a, Double memory b) pure internal returns (uint) {
+423	 return div_(mul_(a, doubleScale), b.mantissa);
+424	 }
+425	 function div_(uint a, uint b) pure internal returns (uint) {
+426	 return div_(a, b, "divide by zero");
+427	 }
+428	 function div_(uint a, uint b, string memory errorMessage) pure internal returns (uint) {
+429	 require(b > 0, errorMessage);
+430	 return a / b;
+431	 }
+432	 function fraction(uint a, uint b) pure internal returns (Double memory) {
+433	 return Double({
+434	 mantissa: div_(mul_(a, doubleScale), b)}
+435	 );
+436	 }
+437	 function sqrt(uint x) pure internal returns (uint) {
+438	 if (x == 0) return 0;
+439	 uint xx = x;
+440	 uint r = 1;
+441	 if (xx >= 0x100000000000000000000000000000000) {
+442	 xx >>= 128;
+443	 r <<= 64;
+444	 }
+445	 if (xx >= 0x10000000000000000) {
+446	 xx >>= 64;
+447	 r <<= 32;
+448	 }
+449	 if (xx >= 0x100000000) {
+450	 xx >>= 32;
+451	 r <<= 16;
+452	 }
+453	 if (xx >= 0x10000) {
+454	 xx >>= 16;
+455	 r <<= 8;
+456	 }
+457	 if (xx >= 0x100) {
+458	 xx >>= 8;
+459	 r <<= 4;
+460	 }
+461	 if (xx >= 0x10) {
+462	 xx >>= 4;
+463	 r <<= 2;
+464	 }
+465	 if (xx >= 0x8) {
+466	 r <<= 1;
+467	 }
+468	 r = (r + x / r) >> 1;
+469	 r = (r + x / r) >> 1;
+470	 r = (r + x / r) >> 1;
+471	 r = (r + x / r) >> 1;
+472	 r = (r + x / r) >> 1;
+473	 r = (r + x / r) >> 1;
+474	 r = (r + x / r) >> 1;
+475	 uint r1 = x / r;
+476	 return (r < r1 ? r : r1);
+477	 }
+478	 }
+479	 pragma solidity ^0.5.16;
+480	 contract CToken is CTokenInterface, Exponential, TokenErrorReporter {
+481	 function initialize(ComptrollerInterface comptroller_, InterestRateModel interestRateModel_, uint initialExchangeRateMantissa_, string memory name_, string memory symbol_, uint8 decimals_) public {
+482	 require(msg.sender == admin, "only admin may initialize the market");
+483	 require(accrualBlockNumber == 0 && borrowIndex == 0, "market may only be initialized once");
+484	 initialExchangeRateMantissa = initialExchangeRateMantissa_;
+485	 require(initialExchangeRateMantissa > 0, "initial exchange rate must be greater than zero.");
+486	 uint err = _setComptroller(comptroller_);
+487	 require(err == uint(Error.NO_ERROR), "setting comptroller failed");
+488	 accrualBlockNumber = getBlockNumber();
+489	 borrowIndex = mantissaOne;
+490	 err = _setInterestRateModelFresh(interestRateModel_);
+491	 require(err == uint(Error.NO_ERROR), "setting interest rate model failed");
+492	 name = name_;
+493	 symbol = symbol_;
+494	 decimals = decimals_;
+495	 _notEntered = true;
+496	 }
+497	 function transfer(address dst, uint256 amount) external nonReentrant returns (bool) {
+498	 return transferTokens(msg.sender, msg.sender, dst, amount) == uint(Error.NO_ERROR);
+499	 }
+500	 function transferFrom(address src, address dst, uint256 amount) external nonReentrant returns (bool) {
+501	 return transferTokens(msg.sender, src, dst, amount) == uint(Error.NO_ERROR);
+502	 }
+503	 function approve(address spender, uint256 amount) external returns (bool) {
+504	 address src = msg.sender;
+505	 transferAllowances[src][spender] = amount;
+506	 emit Approval(src, spender, amount);
+507	 return true;
+508	 }
+509	 function allowance(address owner, address spender) external view returns (uint256) {
+510	 return transferAllowances[owner][spender];
+511	 }
+512	 function balanceOf(address owner) external view returns (uint256) {
+513	 return accountTokens[owner];
+514	 }
+515	 function balanceOfUnderlying(address owner) external returns (uint) {
+516	 Exp memory exchangeRate = Exp({
+517	 mantissa: exchangeRateCurrent()}
+518	 );
+519	 return mul_ScalarTruncate(exchangeRate, accountTokens[owner]);
+520	 }
+521	 function getAccountSnapshot(address account) external view returns (uint, uint, uint, uint) {
+522	 uint cTokenBalance = getCTokenBalanceInternal(account);
+523	 uint borrowBalance = borrowBalanceStoredInternal(account);
+524	 uint exchangeRateMantissa = exchangeRateStoredInternal();
+525	 return (uint(Error.NO_ERROR), cTokenBalance, borrowBalance, exchangeRateMantissa);
+526	 }
+527	 function getBlockNumber() internal view returns (uint) {
+528	 return block.number;
+529	 }
+530	 function borrowRatePerBlock() external view returns (uint) {
+531	 return interestRateModel.getBorrowRate(getCashPrior(), totalBorrows, totalReserves);
+532	 }
+533	 function supplyRatePerBlock() external view returns (uint) {
+534	 return interestRateModel.getSupplyRate(getCashPrior(), totalBorrows, totalReserves, reserveFactorMantissa);
+535	 }
+536	 function estimateBorrowRatePerBlockAfterChange(uint256 change, bool repay) external view returns (uint) {
+537	 uint256 cashPriorNew;
+538	 uint256 totalBorrowsNew;
+539	 if (repay) {
+540	 cashPriorNew = add_(getCashPrior(), change);
+541	 totalBorrowsNew = sub_(totalBorrows, change);
+542	 }
+543	 else {
+544	 cashPriorNew = sub_(getCashPrior(), change);
+545	 totalBorrowsNew = add_(totalBorrows, change);
+546	 }
+547	 return interestRateModel.getBorrowRate(cashPriorNew, totalBorrowsNew, totalReserves);
+548	 }
+549	 function estimateSupplyRatePerBlockAfterChange(uint256 change, bool repay) external view returns (uint) {
+550	 uint256 cashPriorNew;
+551	 uint256 totalBorrowsNew;
+552	 if (repay) {
+553	 cashPriorNew = add_(getCashPrior(), change);
+554	 totalBorrowsNew = sub_(totalBorrows, change);
+555	 }
+556	 else {
+557	 cashPriorNew = sub_(getCashPrior(), change);
+558	 totalBorrowsNew = add_(totalBorrows, change);
+559	 }
+560	 return interestRateModel.getSupplyRate(cashPriorNew, totalBorrowsNew, totalReserves, reserveFactorMantissa);
+561	 }
+562	 function totalBorrowsCurrent() external nonReentrant returns (uint) {
+563	 require(accrueInterest() == uint(Error.NO_ERROR), "accrue interest failed");
+564	 return totalBorrows;
+565	 }
+566	 function borrowBalanceCurrent(address account) external nonReentrant returns (uint) {
+567	 require(accrueInterest() == uint(Error.NO_ERROR), "accrue interest failed");
+568	 return borrowBalanceStored(account);
+569	 }
+570	 function borrowBalanceStored(address account) public view returns (uint) {
+571	 return borrowBalanceStoredInternal(account);
+572	 }
+573	 function borrowBalanceStoredInternal(address account) internal view returns (uint) {
+574	 BorrowSnapshot storage borrowSnapshot = accountBorrows[account];
+575	 if (borrowSnapshot.principal == 0) {
+576	 return 0;
+577	 }
+578	 uint principalTimesIndex = mul_(borrowSnapshot.principal, borrowIndex);
+579	 uint result = div_(principalTimesIndex, borrowSnapshot.interestIndex);
+580	 return result;
+581	 }
+582	 function exchangeRateCurrent() public nonReentrant returns (uint) {
+583	 require(accrueInterest() == uint(Error.NO_ERROR), "accrue interest failed");
+584	 return exchangeRateStored();
+585	 }
+586	 function exchangeRateStored() public view returns (uint) {
+587	 return exchangeRateStoredInternal();
+588	 }
+589	 function exchangeRateStoredInternal() internal view returns (uint) {
+590	 uint _totalSupply = totalSupply;
+591	 if (_totalSupply == 0) {
+592	 return initialExchangeRateMantissa;
+593	 }
+594	 else {
+595	 uint totalCash = getCashPrior();
+596	 uint cashPlusBorrowsMinusReserves = sub_(add_(totalCash, totalBorrows), totalReserves);
+597	 uint exchangeRate = div_(cashPlusBorrowsMinusReserves, Exp({
+598	 mantissa: _totalSupply}
+599	 ));
+600	 return exchangeRate;
+601	 }
+602	 }
+603	 function getCash() external view returns (uint) {
+604	 return getCashPrior();
+605	 }
+606	 function accrueInterest() public returns (uint) {
+607	 uint currentBlockNumber = getBlockNumber();
+608	 uint accrualBlockNumberPrior = accrualBlockNumber;
+609	 if (accrualBlockNumberPrior == currentBlockNumber) {
+610	 return uint(Error.NO_ERROR);
+611	 }
+612	 uint cashPrior = getCashPrior();
+613	 uint borrowsPrior = totalBorrows;
+614	 uint reservesPrior = totalReserves;
+615	 uint borrowIndexPrior = borrowIndex;
+616	 uint borrowRateMantissa = interestRateModel.getBorrowRate(cashPrior, borrowsPrior, reservesPrior);
+617	 require(borrowRateMantissa <= borrowRateMaxMantissa, "borrow rate is absurdly high");
+618	 uint blockDelta = sub_(currentBlockNumber, accrualBlockNumberPrior);
+619	 Exp memory simpleInterestFactor = mul_(Exp({
+620	 mantissa: borrowRateMantissa}
+621	 ), blockDelta);
+622	 uint interestAccumulated = mul_ScalarTruncate(simpleInterestFactor, borrowsPrior);
+623	 uint totalBorrowsNew = add_(interestAccumulated, borrowsPrior);
+624	 uint totalReservesNew = mul_ScalarTruncateAddUInt(Exp({
+625	 mantissa: reserveFactorMantissa}
+626	 ), interestAccumulated, reservesPrior);
+627	 uint borrowIndexNew = mul_ScalarTruncateAddUInt(simpleInterestFactor, borrowIndexPrior, borrowIndexPrior);
+628	 accrualBlockNumber = currentBlockNumber;
+629	 borrowIndex = borrowIndexNew;
+630	 totalBorrows = totalBorrowsNew;
+631	 totalReserves = totalReservesNew;
+632	 emit AccrueInterest(cashPrior, interestAccumulated, borrowIndexNew, totalBorrowsNew);
+633	 return uint(Error.NO_ERROR);
+634	 }
+635	 function mintInternal(uint mintAmount, bool isNative) internal nonReentrant returns (uint, uint) {
+636	 uint error = accrueInterest();
+637	 if (error != uint(Error.NO_ERROR)) {
+638	 return (fail(Error(error), FailureInfo.MINT_ACCRUE_INTEREST_FAILED), 0);
+639	 }
+640	 return mintFresh(msg.sender, mintAmount, isNative);
+641	 }
+642	 function redeemInternal(uint redeemTokens, bool isNative) internal nonReentrant returns (uint) {
+643	 uint error = accrueInterest();
+644	 if (error != uint(Error.NO_ERROR)) {
+645	 return fail(Error(error), FailureInfo.REDEEM_ACCRUE_INTEREST_FAILED);
+646	 }
+647	 return redeemFresh(msg.sender, redeemTokens, 0, isNative);
+648	 }
+649	 function redeemUnderlyingInternal(uint redeemAmount, bool isNative) internal nonReentrant returns (uint) {
+650	 uint error = accrueInterest();
+651	 if (error != uint(Error.NO_ERROR)) {
+652	 return fail(Error(error), FailureInfo.REDEEM_ACCRUE_INTEREST_FAILED);
+653	 }
+654	 return redeemFresh(msg.sender, 0, redeemAmount, isNative);
+655	 }
+656	 function borrowInternal(uint borrowAmount, bool isNative) internal nonReentrant returns (uint) {
+657	 uint error = accrueInterest();
+658	 if (error != uint(Error.NO_ERROR)) {
+659	 return fail(Error(error), FailureInfo.BORROW_ACCRUE_INTEREST_FAILED);
+660	 }
+661	 return borrowFresh(msg.sender, borrowAmount, isNative);
+662	 }
+663	 struct BorrowLocalVars {
+664	 MathError mathErr;
+665	 uint accountBorrows;
+666	 uint accountBorrowsNew;
+667	 uint totalBorrowsNew;
+668	 }
+669	 function borrowFresh(address payable borrower, uint borrowAmount, bool isNative) internal returns (uint) {
+670	 uint allowed = comptroller.borrowAllowed(address(this), borrower, borrowAmount);
+671	 if (allowed != 0) {
+672	 return failOpaque(Error.COMPTROLLER_REJECTION, FailureInfo.BORROW_COMPTROLLER_REJECTION, allowed);
+673	 }
+674	 if (borrowAmount == 0) {
+675	 accountBorrows[borrower].interestIndex = borrowIndex;
+676	 return uint(Error.NO_ERROR);
+677	 }
+678	 if (accrualBlockNumber != getBlockNumber()) {
+679	 return fail(Error.MARKET_NOT_FRESH, FailureInfo.BORROW_FRESHNESS_CHECK);
+680	 }
+681	 if (getCashPrior() < borrowAmount) {
+682	 return fail(Error.TOKEN_INSUFFICIENT_CASH, FailureInfo.BORROW_CASH_NOT_AVAILABLE);
+683	 }
+684	 BorrowLocalVars memory vars;
+685	 vars.accountBorrows = borrowBalanceStoredInternal(borrower);
+686	 vars.accountBorrowsNew = add_(vars.accountBorrows, borrowAmount);
+687	 vars.totalBorrowsNew = add_(totalBorrows, borrowAmount);
+688	 doTransferOut(borrower, borrowAmount, isNative);
+689	 accountBorrows[borrower].principal = vars.accountBorrowsNew;
+690	 accountBorrows[borrower].interestIndex = borrowIndex;
+691	 totalBorrows = vars.totalBorrowsNew;
+692	 emit Borrow(borrower, borrowAmount, vars.accountBorrowsNew, vars.totalBorrowsNew);
+693	 return uint(Error.NO_ERROR);
+694	 }
+695	 function repayBorrowInternal(uint repayAmount, bool isNative) internal nonReentrant returns (uint, uint) {
+696	 uint error = accrueInterest();
+697	 if (error != uint(Error.NO_ERROR)) {
+698	 return (fail(Error(error), FailureInfo.REPAY_BORROW_ACCRUE_INTEREST_FAILED), 0);
+699	 }
+700	 return repayBorrowFresh(msg.sender, msg.sender, repayAmount, isNative);
+701	 }
+702	 struct RepayBorrowLocalVars {
+703	 Error err;
+704	 MathError mathErr;
+705	 uint repayAmount;
+706	 uint borrowerIndex;
+707	 uint accountBorrows;
+708	 uint accountBorrowsNew;
+709	 uint totalBorrowsNew;
+710	 uint actualRepayAmount;
+711	 }
+712	 function repayBorrowFresh(address payer, address borrower, uint repayAmount, bool isNative) internal returns (uint, uint) {
+713	 uint allowed = comptroller.repayBorrowAllowed(address(this), payer, borrower, repayAmount);
+714	 if (allowed != 0) {
+715	 return (failOpaque(Error.COMPTROLLER_REJECTION, FailureInfo.REPAY_BORROW_COMPTROLLER_REJECTION, allowed), 0);
+716	 }
+717	 if (repayAmount == 0) {
+718	 accountBorrows[borrower].interestIndex = borrowIndex;
+719	 return (uint(Error.NO_ERROR), 0);
+720	 }
+721	 if (accrualBlockNumber != getBlockNumber()) {
+722	 return (fail(Error.MARKET_NOT_FRESH, FailureInfo.REPAY_BORROW_FRESHNESS_CHECK), 0);
+723	 }
+724	 RepayBorrowLocalVars memory vars;
+725	 vars.borrowerIndex = accountBorrows[borrower].interestIndex;
+726	 vars.accountBorrows = borrowBalanceStoredInternal(borrower);
+727	 if (repayAmount == uint(-1)) {
+728	 vars.repayAmount = vars.accountBorrows;
+729	 }
+730	 else {
+731	 vars.repayAmount = repayAmount;
+732	 }
+733	 vars.actualRepayAmount = doTransferIn(payer, vars.repayAmount, isNative);
+734	 vars.accountBorrowsNew = sub_(vars.accountBorrows, vars.actualRepayAmount);
+735	 vars.totalBorrowsNew = sub_(totalBorrows, vars.actualRepayAmount);
+736	 accountBorrows[borrower].principal = vars.accountBorrowsNew;
+737	 accountBorrows[borrower].interestIndex = borrowIndex;
+738	 totalBorrows = vars.totalBorrowsNew;
+739	 emit RepayBorrow(payer, borrower, vars.actualRepayAmount, vars.accountBorrowsNew, vars.totalBorrowsNew);
+740	 return (uint(Error.NO_ERROR), vars.actualRepayAmount);
+741	 }
+742	 function liquidateBorrowInternal(address borrower, uint repayAmount, CTokenInterface cTokenCollateral, bool isNative) internal nonReentrant returns (uint, uint) {
+743	 uint error = accrueInterest();
+744	 if (error != uint(Error.NO_ERROR)) {
+745	 return (fail(Error(error), FailureInfo.LIQUIDATE_ACCRUE_BORROW_INTEREST_FAILED), 0);
+746	 }
+747	 error = cTokenCollateral.accrueInterest();
+748	 if (error != uint(Error.NO_ERROR)) {
+749	 return (fail(Error(error), FailureInfo.LIQUIDATE_ACCRUE_COLLATERAL_INTEREST_FAILED), 0);
+750	 }
+751	 return liquidateBorrowFresh(msg.sender, borrower, repayAmount, cTokenCollateral, isNative);
+752	 }
+753	 function liquidateBorrowFresh(address liquidator, address borrower, uint repayAmount, CTokenInterface cTokenCollateral, bool isNative) internal returns (uint, uint) {
+754	 uint allowed = comptroller.liquidateBorrowAllowed(address(this), address(cTokenCollateral), liquidator, borrower, repayAmount);
+755	 if (allowed != 0) {
+756	 return (failOpaque(Error.COMPTROLLER_REJECTION, FailureInfo.LIQUIDATE_COMPTROLLER_REJECTION, allowed), 0);
+757	 }
+758	 if (accrualBlockNumber != getBlockNumber()) {
+759	 return (fail(Error.MARKET_NOT_FRESH, FailureInfo.LIQUIDATE_FRESHNESS_CHECK), 0);
+760	 }
+761	 if (cTokenCollateral.accrualBlockNumber() != getBlockNumber()) {
+762	 return (fail(Error.MARKET_NOT_FRESH, FailureInfo.LIQUIDATE_COLLATERAL_FRESHNESS_CHECK), 0);
+763	 }
+764	 if (borrower == liquidator) {
+765	 return (fail(Error.INVALID_ACCOUNT_PAIR, FailureInfo.LIQUIDATE_LIQUIDATOR_IS_BORROWER), 0);
+766	 }
+767	 if (repayAmount == 0) {
+768	 return (fail(Error.INVALID_CLOSE_AMOUNT_REQUESTED, FailureInfo.LIQUIDATE_CLOSE_AMOUNT_IS_ZERO), 0);
+769	 }
+770	 if (repayAmount == uint(-1)) {
+771	 return (fail(Error.INVALID_CLOSE_AMOUNT_REQUESTED, FailureInfo.LIQUIDATE_CLOSE_AMOUNT_IS_UINT_MAX), 0);
+772	 }
+773	 (uint repayBorrowError, uint actualRepayAmount) = repayBorrowFresh(liquidator, borrower, repayAmount, isNative);
+774	 if (repayBorrowError != uint(Error.NO_ERROR)) {
+775	 return (fail(Error(repayBorrowError), FailureInfo.LIQUIDATE_REPAY_BORROW_FRESH_FAILED), 0);
+776	 }
+777	 (uint amountSeizeError, uint seizeTokens) = comptroller.liquidateCalculateSeizeTokens(address(this), address(cTokenCollateral), actualRepayAmount);
+778	 require(amountSeizeError == uint(Error.NO_ERROR), "LIQUIDATE_COMPTROLLER_CALCULATE_AMOUNT_SEIZE_FAILED");
+779	 require(cTokenCollateral.balanceOf(borrower) >= seizeTokens, "LIQUIDATE_SEIZE_TOO_MUCH");
+780	 uint seizeError;
+781	 if (address(cTokenCollateral) == address(this)) {
+782	 seizeError = seizeInternal(address(this), liquidator, borrower, seizeTokens);
+783	 }
+784	 else {
+785	 seizeError = cTokenCollateral.seize(liquidator, borrower, seizeTokens);
+786	 }
+787	 require(seizeError == uint(Error.NO_ERROR), "token seizure failed");
+788	 emit LiquidateBorrow(liquidator, borrower, actualRepayAmount, address(cTokenCollateral), seizeTokens);
+789	 return (uint(Error.NO_ERROR), actualRepayAmount);
+790	 }
+791	 function seize(address liquidator, address borrower, uint seizeTokens) external nonReentrant returns (uint) {
+792	 return seizeInternal(msg.sender, liquidator, borrower, seizeTokens);
+793	 }
+794	 function _setPendingAdmin(address payable newPendingAdmin) external returns (uint) {
+795	 if (msg.sender != admin) {
+796	 return fail(Error.UNAUTHORIZED, FailureInfo.SET_PENDING_ADMIN_OWNER_CHECK);
+797	 }
+798	 address oldPendingAdmin = pendingAdmin;
+799	 pendingAdmin = newPendingAdmin;
+800	 emit NewPendingAdmin(oldPendingAdmin, newPendingAdmin);
+801	 return uint(Error.NO_ERROR);
+802	 }
+803	 function _acceptAdmin() external returns (uint) {
+804	 if (msg.sender != pendingAdmin || msg.sender == address(0)) {
+805	 return fail(Error.UNAUTHORIZED, FailureInfo.ACCEPT_ADMIN_PENDING_ADMIN_CHECK);
+806	 }
+807	 address oldAdmin = admin;
+808	 address oldPendingAdmin = pendingAdmin;
+809	 admin = pendingAdmin;
+810	 pendingAdmin = address(0);
+811	 emit NewAdmin(oldAdmin, admin);
+812	 emit NewPendingAdmin(oldPendingAdmin, pendingAdmin);
+813	 return uint(Error.NO_ERROR);
+814	 }
+815	 function _setComptroller(ComptrollerInterface newComptroller) public returns (uint) {
+816	 if (msg.sender != admin) {
+817	 return fail(Error.UNAUTHORIZED, FailureInfo.SET_COMPTROLLER_OWNER_CHECK);
+818	 }
+819	 ComptrollerInterface oldComptroller = comptroller;
+820	 require(newComptroller.isComptroller(), "marker method returned false");
+821	 comptroller = newComptroller;
+822	 emit NewComptroller(oldComptroller, newComptroller);
+823	 return uint(Error.NO_ERROR);
+824	 }
+825	 function _setReserveFactor(uint newReserveFactorMantissa) external nonReentrant returns (uint) {
+826	 uint error = accrueInterest();
+827	 if (error != uint(Error.NO_ERROR)) {
+828	 return fail(Error(error), FailureInfo.SET_RESERVE_FACTOR_ACCRUE_INTEREST_FAILED);
+829	 }
+830	 return _setReserveFactorFresh(newReserveFactorMantissa);
+831	 }
+832	 function _setReserveFactorFresh(uint newReserveFactorMantissa) internal returns (uint) {
+833	 if (msg.sender != admin) {
+834	 return fail(Error.UNAUTHORIZED, FailureInfo.SET_RESERVE_FACTOR_ADMIN_CHECK);
+835	 }
+836	 if (accrualBlockNumber != getBlockNumber()) {
+837	 return fail(Error.MARKET_NOT_FRESH, FailureInfo.SET_RESERVE_FACTOR_FRESH_CHECK);
+838	 }
+839	 if (newReserveFactorMantissa > reserveFactorMaxMantissa) {
+840	 return fail(Error.BAD_INPUT, FailureInfo.SET_RESERVE_FACTOR_BOUNDS_CHECK);
+841	 }
+842	 uint oldReserveFactorMantissa = reserveFactorMantissa;
+843	 reserveFactorMantissa = newReserveFactorMantissa;
+844	 emit NewReserveFactor(oldReserveFactorMantissa, newReserveFactorMantissa);
+845	 return uint(Error.NO_ERROR);
+846	 }
+847	 function _addReservesInternal(uint addAmount, bool isNative) internal nonReentrant returns (uint) {
+848	 uint error = accrueInterest();
+849	 if (error != uint(Error.NO_ERROR)) {
+850	 return fail(Error(error), FailureInfo.ADD_RESERVES_ACCRUE_INTEREST_FAILED);
+851	 }
+852	 (error, ) = _addReservesFresh(addAmount, isNative);
+853	 return error;
+854	 }
+855	 function _addReservesFresh(uint addAmount, bool isNative) internal returns (uint, uint) {
+856	 uint totalReservesNew;
+857	 uint actualAddAmount;
+858	 if (accrualBlockNumber != getBlockNumber()) {
+859	 return (fail(Error.MARKET_NOT_FRESH, FailureInfo.ADD_RESERVES_FRESH_CHECK), actualAddAmount);
+860	 }
+861	 actualAddAmount = doTransferIn(msg.sender, addAmount, isNative);
+862	 totalReservesNew = add_(totalReserves, actualAddAmount);
+863	 totalReserves = totalReservesNew;
+864	 emit ReservesAdded(msg.sender, actualAddAmount, totalReservesNew);
+865	 return (uint(Error.NO_ERROR), actualAddAmount);
+866	 }
+867	 function _reduceReserves(uint reduceAmount) external nonReentrant returns (uint) {
+868	 uint error = accrueInterest();
+869	 if (error != uint(Error.NO_ERROR)) {
+870	 return fail(Error(error), FailureInfo.REDUCE_RESERVES_ACCRUE_INTEREST_FAILED);
+871	 }
+872	 return _reduceReservesFresh(reduceAmount);
+873	 }
+874	 function _reduceReservesFresh(uint reduceAmount) internal returns (uint) {
+875	 uint totalReservesNew;
+876	 if (msg.sender != admin) {
+877	 return fail(Error.UNAUTHORIZED, FailureInfo.REDUCE_RESERVES_ADMIN_CHECK);
+878	 }
+879	 if (accrualBlockNumber != getBlockNumber()) {
+880	 return fail(Error.MARKET_NOT_FRESH, FailureInfo.REDUCE_RESERVES_FRESH_CHECK);
+881	 }
+882	 if (getCashPrior() < reduceAmount) {
+883	 return fail(Error.TOKEN_INSUFFICIENT_CASH, FailureInfo.REDUCE_RESERVES_CASH_NOT_AVAILABLE);
+884	 }
+885	 if (reduceAmount > totalReserves) {
+886	 return fail(Error.BAD_INPUT, FailureInfo.REDUCE_RESERVES_VALIDATION);
+887	 }
+888	 totalReservesNew = sub_(totalReserves, reduceAmount);
+889	 totalReserves = totalReservesNew;
+890	 doTransferOut(admin, reduceAmount, true);
+891	 emit ReservesReduced(admin, reduceAmount, totalReservesNew);
+892	 return uint(Error.NO_ERROR);
+893	 }
+894	 function _setInterestRateModel(InterestRateModel newInterestRateModel) public returns (uint) {
+895	 uint error = accrueInterest();
+896	 if (error != uint(Error.NO_ERROR)) {
+897	 return fail(Error(error), FailureInfo.SET_INTEREST_RATE_MODEL_ACCRUE_INTEREST_FAILED);
+898	 }
+899	 return _setInterestRateModelFresh(newInterestRateModel);
+900	 }
+901	 function _setInterestRateModelFresh(InterestRateModel newInterestRateModel) internal returns (uint) {
+902	 InterestRateModel oldInterestRateModel;
+903	 if (msg.sender != admin) {
+904	 return fail(Error.UNAUTHORIZED, FailureInfo.SET_INTEREST_RATE_MODEL_OWNER_CHECK);
+905	 }
+906	 if (accrualBlockNumber != getBlockNumber()) {
+907	 return fail(Error.MARKET_NOT_FRESH, FailureInfo.SET_INTEREST_RATE_MODEL_FRESH_CHECK);
+908	 }
+909	 oldInterestRateModel = interestRateModel;
+910	 require(newInterestRateModel.isInterestRateModel(), "marker method returned false");
+911	 interestRateModel = newInterestRateModel;
+912	 emit NewMarketInterestRateModel(oldInterestRateModel, newInterestRateModel);
+913	 return uint(Error.NO_ERROR);
+914	 }
+915	 function getCashPrior() internal view returns (uint);
+916	 function doTransferIn(address from, uint amount, bool isNative) internal returns (uint);
+917	 function doTransferOut(address payable to, uint amount, bool isNative) internal;
+918	 function transferTokens(address spender, address src, address dst, uint tokens) internal returns (uint);
+919	 function getCTokenBalanceInternal(address account) internal view returns (uint);
+920	 function mintFresh(address minter, uint mintAmount, bool isNative) internal returns (uint, uint);
+921	 function redeemFresh(address payable redeemer, uint redeemTokensIn, uint redeemAmountIn, bool isNative) internal returns (uint);
+922	 function seizeInternal(address seizerToken, address liquidator, address borrower, uint seizeTokens) internal returns (uint);
+923	 modifier nonReentrant() {
+924	 require(_notEntered, "re-entered");
+925	 _notEntered = false;
+926	 _;
+927	 _notEntered = true;
+928	 }
+929	 }
+930	 contract CCollateralCapErc20Interface is CCapableErc20Interface, CCollateralCapStorage {
+931	 event NewCollateralCap(address token, uint newCap);
+932	 event UserCollateralChanged(address account, uint newCollateralTokens);
+933	 function registerCollateral(address account) external returns (uint);
+934	 function unregisterCollateral(address account) external;
+935	 function _setCollateralCap(uint newCollateralCap) external;
+936	 }
+937	 pragma solidity ^0.5.16;
+938	 contract CCollateralCapErc20 is CToken, CCollateralCapErc20Interface {
+939	 function initialize(address underlying_, ComptrollerInterface comptroller_, InterestRateModel interestRateModel_, uint initialExchangeRateMantissa_, string memory name_, string memory symbol_, uint8 decimals_) public {
+940	 super.initialize(comptroller_, interestRateModel_, initialExchangeRateMantissa_, name_, symbol_, decimals_);
+941	 underlying = underlying_;
+942	 }
+943	 function mint(uint mintAmount) external returns (uint) {
+944	 (uint err,) = mintInternal(mintAmount, false);
+945	 return err;
+946	 }
+947	 function redeem(uint redeemTokens) external returns (uint) {
+948	 return redeemInternal(redeemTokens, false);
+949	 }
+950	 function redeemUnderlying(uint redeemAmount) external returns (uint) {
+951	 return redeemUnderlyingInternal(redeemAmount, false);
+952	 }
+953	 function borrow(uint borrowAmount) external returns (uint) {
+954	 return borrowInternal(borrowAmount, false);
+955	 }
+956	 function repayBorrow(uint repayAmount) external returns (uint) {
+957	 (uint err,) = repayBorrowInternal(repayAmount, false);
+958	 return err;
+959	 }
+960	 function liquidateBorrow(address borrower, uint repayAmount, CTokenInterface cTokenCollateral) external returns (uint) {
+961	 (uint err,) = liquidateBorrowInternal(borrower, repayAmount, cTokenCollateral, false);
+962	 return err;
+963	 }
+964	 function _addReserves(uint addAmount) external returns (uint) {
+965	 return _addReservesInternal(addAmount, false);
+966	 }
+967	 function _setCollateralCap(uint newCollateralCap) external {
+968	 require(msg.sender == admin, "only admin can set collateral cap");
+969	 collateralCap = newCollateralCap;
+970	 emit NewCollateralCap(address(this), newCollateralCap);
+971	 }
+972	 function gulp() external nonReentrant {
+973	 uint256 cashOnChain = getCashOnChain();
+974	 uint256 cashPrior = getCashPrior();
+975	 uint excessCash = sub_(cashOnChain, cashPrior);
+976	 totalReserves = add_(totalReserves, excessCash);
+977	 internalCash = cashOnChain;
+978	 }
+979	 function flashLoan(address receiver, uint amount, bytes calldata params) external nonReentrant {
+980	 require(amount > 0, "flashLoan amount should be greater than zero");
+981	 require(accrueInterest() == uint(Error.NO_ERROR), "accrue interest failed");
+982	 ComptrollerInterfaceExtension(address(comptroller)).flashloanAllowed(address(this), receiver, amount, params);
+983	 uint cashOnChainBefore = getCashOnChain();
+984	 uint cashBefore = getCashPrior();
+985	 require(cashBefore >= amount, "INSUFFICIENT_LIQUIDITY");
+986	 uint totalFee = div_(mul_(amount, flashFeeBips), 10000);
+987	 doTransferOut(address(uint160(receiver)), amount, false);
+988	 totalBorrows = add_(totalBorrows, amount);
+989	 IFlashloanReceiver(receiver).executeOperation(msg.sender, underlying, amount, totalFee, params);
+990	 uint cashOnChainAfter = getCashOnChain();
+991	 require(cashOnChainAfter == add_(cashOnChainBefore, totalFee), "BALANCE_INCONSISTENT");
+992	 uint reservesFee = mul_ScalarTruncate(Exp({
+993	 mantissa: reserveFactorMantissa}
+994	 ), totalFee);
+995	 totalReserves = add_(totalReserves, reservesFee);
+996	 internalCash = add_(cashBefore, totalFee);
+997	 totalBorrows = sub_(totalBorrows, amount);
+998	 emit Flashloan(receiver, amount, totalFee, reservesFee);
+999	 }
+1000	 function registerCollateral(address account) external returns (uint) {
+1001	 initializeAccountCollateralTokens(account);
+1002	 require(msg.sender == address(comptroller), "only comptroller may register collateral for user");
+1003	 uint amount = sub_(accountTokens[account], accountCollateralTokens[account]);
+1004	 return increaseUserCollateralInternal(account, amount);
+1005	 }
+1006	 function unregisterCollateral(address account) external {
+1007	 initializeAccountCollateralTokens(account);
+1008	 require(msg.sender == address(comptroller), "only comptroller may unregister collateral for user");
+1009	 decreaseUserCollateralInternal(account, accountCollateralTokens[account]);
+1010	 }
+1011	 function getCashPrior() internal view returns (uint) {
+1012	 return internalCash;
+1013	 }
+1014	 function getCashOnChain() internal view returns (uint) {
+1015	 EIP20Interface token = EIP20Interface(underlying);
+1016	 return token.balanceOf(address(this));
+1017	 }
+1018	 function initializeAccountCollateralTokens(address account) internal {
+1019	 if (!isCollateralTokenInit[account]) {
+1020	 if (ComptrollerInterfaceExtension(address(comptroller)).checkMembership(account, CToken(this))) {
+1021	 accountCollateralTokens[account] = accountTokens[account];
+1022	 totalCollateralTokens = add_(totalCollateralTokens, accountTokens[account]);
+1023	 emit UserCollateralChanged(account, accountCollateralTokens[account]);
+1024	 }
+1025	 isCollateralTokenInit[account] = true;
+1026	 }
+1027	 }
+1028	 function doTransferIn(address from, uint amount, bool isNative) internal returns (uint) {
+1029	 isNative;
+1030	 EIP20NonStandardInterface token = EIP20NonStandardInterface(underlying);
+1031	 uint balanceBefore = EIP20Interface(underlying).balanceOf(address(this));
+1032	 token.transferFrom(from, address(this), amount);
+1033	 bool success;
+1034	 assembly {
+1035	 switch returndatasize() case 0 {
+1036	 success := not(0) }
+1037	 case 32 {
+1038	 returndatacopy(0, 0, 32) success := mload(0) }
+1039	 default {
+1040	 revert(0, 0) }
+1041	 }
+1042	 require(success, "TOKEN_TRANSFER_IN_FAILED");
+1043	 uint balanceAfter = EIP20Interface(underlying).balanceOf(address(this));
+1044	 uint transferredIn = sub_(balanceAfter, balanceBefore);
+1045	 internalCash = add_(internalCash, transferredIn);
+1046	 return transferredIn;
+1047	 }
+1048	 function doTransferOut(address payable to, uint amount, bool isNative) internal {
+1049	 isNative;
+1050	 EIP20NonStandardInterface token = EIP20NonStandardInterface(underlying);
+1051	 token.transfer(to, amount);
+1052	 bool success;
+1053	 assembly {
+1054	 switch returndatasize() case 0 {
+1055	 success := not(0) }
+1056	 case 32 {
+1057	 returndatacopy(0, 0, 32) success := mload(0) }
+1058	 default {
+1059	 revert(0, 0) }
+1060	 }
+1061	 require(success, "TOKEN_TRANSFER_OUT_FAILED");
+1062	 internalCash = sub_(internalCash, amount);
+1063	 }
+1064	 function transferTokens(address spender, address src, address dst, uint tokens) internal returns (uint) {
+1065	 initializeAccountCollateralTokens(src);
+1066	 initializeAccountCollateralTokens(dst);
+1067	 uint bufferTokens = sub_(accountTokens[src], accountCollateralTokens[src]);
+1068	 uint collateralTokens = 0;
+1069	 if (tokens > bufferTokens) {
+1070	 collateralTokens = tokens - bufferTokens;
+1071	 }
+1072	 uint allowed = comptroller.transferAllowed(address(this), src, dst, collateralTokens);
+1073	 if (allowed != 0) {
+1074	 return failOpaque(Error.COMPTROLLER_REJECTION, FailureInfo.TRANSFER_COMPTROLLER_REJECTION, allowed);
+1075	 }
+1076	 if (src == dst) {
+1077	 return fail(Error.BAD_INPUT, FailureInfo.TRANSFER_NOT_ALLOWED);
+1078	 }
+1079	 uint startingAllowance = 0;
+1080	 if (spender == src) {
+1081	 startingAllowance = uint(-1);
+1082	 }
+1083	 else {
+1084	 startingAllowance = transferAllowances[src][spender];
+1085	 }
+1086	 accountTokens[src] = sub_(accountTokens[src], tokens);
+1087	 accountTokens[dst] = add_(accountTokens[dst], tokens);
+1088	 if (collateralTokens > 0) {
+1089	 accountCollateralTokens[src] = sub_(accountCollateralTokens[src], collateralTokens);
+1090	 accountCollateralTokens[dst] = add_(accountCollateralTokens[dst], collateralTokens);
+1091	 emit UserCollateralChanged(src, accountCollateralTokens[src]);
+1092	 emit UserCollateralChanged(dst, accountCollateralTokens[dst]);
+1093	 }
+1094	 if (startingAllowance != uint(-1)) {
+1095	 transferAllowances[src][spender] = sub_(startingAllowance, tokens);
+1096	 }
+1097	 emit Transfer(src, dst, tokens);
+1098	 return uint(Error.NO_ERROR);
+1099	 }
+1100	 function getCTokenBalanceInternal(address account) internal view returns (uint) {
+1101	 if (isCollateralTokenInit[account]) {
+1102	 return accountCollateralTokens[account];
+1103	 }
+1104	 else {
+1105	 return accountTokens[account];
+1106	 }
+1107	 }
+1108	 function increaseUserCollateralInternal(address account, uint amount) internal returns (uint) {
+1109	 uint totalCollateralTokensNew = add_(totalCollateralTokens, amount);
+1110	 if (collateralCap == 0 || (collateralCap != 0 && totalCollateralTokensNew <= collateralCap)) {
+1111	 totalCollateralTokens = totalCollateralTokensNew;
+1112	 accountCollateralTokens[account] = add_(accountCollateralTokens[account], amount);
+1113	 emit UserCollateralChanged(account, accountCollateralTokens[account]);
+1114	 return amount;
+1115	 }
+1116	 else if (collateralCap > totalCollateralTokens) {
+1117	 uint gap = sub_(collateralCap, totalCollateralTokens);
+1118	 totalCollateralTokens = add_(totalCollateralTokens, gap);
+1119	 accountCollateralTokens[account] = add_(accountCollateralTokens[account], gap);
+1120	 emit UserCollateralChanged(account, accountCollateralTokens[account]);
+1121	 return gap;
+1122	 }
+1123	 return 0;
+1124	 }
+1125	 function decreaseUserCollateralInternal(address account, uint amount) internal {
+1126	 require(comptroller.redeemAllowed(address(this), account, amount) == 0, "comptroller rejection");
+1127	 if (amount == 0) {
+1128	 return;
+1129	 }
+1130	 totalCollateralTokens = sub_(totalCollateralTokens, amount);
+1131	 accountCollateralTokens[account] = sub_(accountCollateralTokens[account], amount);
+1132	 emit UserCollateralChanged(account, accountCollateralTokens[account]);
+1133	 }
+1134	 struct MintLocalVars {
+1135	 uint exchangeRateMantissa;
+1136	 uint mintTokens;
+1137	 uint actualMintAmount;
+1138	 }
+1139	 function mintFresh(address minter, uint mintAmount, bool isNative) internal returns (uint, uint) {
+1140	 initializeAccountCollateralTokens(minter);
+1141	 uint allowed = comptroller.mintAllowed(address(this), minter, mintAmount);
+1142	 if (allowed != 0) {
+1143	 return (failOpaque(Error.COMPTROLLER_REJECTION, FailureInfo.MINT_COMPTROLLER_REJECTION, allowed), 0);
+1144	 }
+1145	 if (mintAmount == 0) {
+1146	 return (uint(Error.NO_ERROR), 0);
+1147	 }
+1148	 if (accrualBlockNumber != getBlockNumber()) {
+1149	 return (fail(Error.MARKET_NOT_FRESH, FailureInfo.MINT_FRESHNESS_CHECK), 0);
+1150	 }
+1151	 MintLocalVars memory vars;
+1152	 vars.exchangeRateMantissa = exchangeRateStoredInternal();
+1153	 vars.actualMintAmount = doTransferIn(minter, mintAmount, isNative);
+1154	 vars.mintTokens = div_ScalarByExpTruncate(vars.actualMintAmount, Exp({
+1155	 mantissa: vars.exchangeRateMantissa}
+1156	 ));
+1157	 totalSupply = add_(totalSupply, vars.mintTokens);
+1158	 accountTokens[minter] = add_(accountTokens[minter], vars.mintTokens);
+1159	 if (ComptrollerInterfaceExtension(address(comptroller)).checkMembership(minter, CToken(this))) {
+1160	 increaseUserCollateralInternal(minter, vars.mintTokens);
+1161	 }
+1162	 emit Mint(minter, vars.actualMintAmount, vars.mintTokens);
+1163	 emit Transfer(address(this), minter, vars.mintTokens);
+1164	 return (uint(Error.NO_ERROR), vars.actualMintAmount);
+1165	 }
+1166	 struct RedeemLocalVars {
+1167	 uint exchangeRateMantissa;
+1168	 uint redeemTokens;
+1169	 uint redeemAmount;
+1170	 }
+1171	 function redeemFresh(address payable redeemer, uint redeemTokensIn, uint redeemAmountIn, bool isNative) internal returns (uint) {
+1172	 initializeAccountCollateralTokens(redeemer);
+1173	 require(redeemTokensIn == 0 || redeemAmountIn == 0, "one of redeemTokensIn or redeemAmountIn must be zero");
+1174	 RedeemLocalVars memory vars;
+1175	 vars.exchangeRateMantissa = exchangeRateStoredInternal();
+1176	 if (redeemTokensIn > 0) {
+1177	 vars.redeemTokens = redeemTokensIn;
+1178	 vars.redeemAmount = mul_ScalarTruncate(Exp({
+1179	 mantissa: vars.exchangeRateMantissa}
+1180	 ), redeemTokensIn);
+1181	 }
+1182	 else {
+1183	 vars.redeemTokens = div_ScalarByExpTruncate(redeemAmountIn, Exp({
+1184	 mantissa: vars.exchangeRateMantissa}
+1185	 ));
+1186	 vars.redeemAmount = redeemAmountIn;
+1187	 }
+1188	 uint bufferTokens = sub_(accountTokens[redeemer], accountCollateralTokens[redeemer]);
+1189	 uint collateralTokens = 0;
+1190	 if (vars.redeemTokens > bufferTokens) {
+1191	 collateralTokens = vars.redeemTokens - bufferTokens;
+1192	 }
+1193	 if (accrualBlockNumber != getBlockNumber()) {
+1194	 return fail(Error.MARKET_NOT_FRESH, FailureInfo.REDEEM_FRESHNESS_CHECK);
+1195	 }
+1196	 if (getCashPrior() < vars.redeemAmount) {
+1197	 return fail(Error.TOKEN_INSUFFICIENT_CASH, FailureInfo.REDEEM_TRANSFER_OUT_NOT_POSSIBLE);
+1198	 }
+1199	 doTransferOut(redeemer, vars.redeemAmount, isNative);
+1200	 totalSupply = sub_(totalSupply, vars.redeemTokens);
+1201	 accountTokens[redeemer] = sub_(accountTokens[redeemer], vars.redeemTokens);
+1202	 if (collateralTokens > 0) {
+1203	 decreaseUserCollateralInternal(redeemer, collateralTokens);
+1204	 }
+1205	 emit Transfer(redeemer, address(this), vars.redeemTokens);
+1206	 emit Redeem(redeemer, vars.redeemAmount, vars.redeemTokens);
+1207	 comptroller.redeemVerify(address(this), redeemer, vars.redeemAmount, vars.redeemTokens);
+1208	 return uint(Error.NO_ERROR);
+1209	 }
+1210	 function seizeInternal(address seizerToken, address liquidator, address borrower, uint seizeTokens) internal returns (uint) {
+1211	 initializeAccountCollateralTokens(liquidator);
+1212	 initializeAccountCollateralTokens(borrower);
+1213	 uint allowed = comptroller.seizeAllowed(address(this), seizerToken, liquidator, borrower, seizeTokens);
+1214	 if (allowed != 0) {
+1215	 return failOpaque(Error.COMPTROLLER_REJECTION, FailureInfo.LIQUIDATE_SEIZE_COMPTROLLER_REJECTION, allowed);
+1216	 }
+1217	 if (seizeTokens == 0) {
+1218	 return uint(Error.NO_ERROR);
+1219	 }
+1220	 if (borrower == liquidator) {
+1221	 return fail(Error.INVALID_ACCOUNT_PAIR, FailureInfo.LIQUIDATE_SEIZE_LIQUIDATOR_IS_BORROWER);
+1222	 }
+1223	 accountTokens[borrower] = sub_(accountTokens[borrower], seizeTokens);
+1224	 accountTokens[liquidator] = add_(accountTokens[liquidator], seizeTokens);
+1225	 accountCollateralTokens[borrower] = sub_(accountCollateralTokens[borrower], seizeTokens);
+1226	 accountCollateralTokens[liquidator] = add_(accountCollateralTokens[liquidator], seizeTokens);
+1227	 emit Transfer(borrower, liquidator, seizeTokens);
+1228	 emit UserCollateralChanged(borrower, accountCollateralTokens[borrower]);
+1229	 emit UserCollateralChanged(liquidator, accountCollateralTokens[liquidator]);
+1230	 return uint(Error.NO_ERROR);
+1231	 }
+1232	 }
+1233	 pragma solidity ^0.5.16;
+1234	 contract UnitrollerAdminStorage {
+1235	 address public admin;
+1236	 address public pendingAdmin;
+1237	 address public comptrollerImplementation;
+1238	 address public pendingComptrollerImplementation;
+1239	 }
+1240	 pragma solidity ^0.5.16;
+1241	 contract CCollateralCapErc20Delegate is CCollateralCapErc20 {
+1242	 constructor() public {
+1243	 }
+1244	 function _becomeImplementation(bytes memory data) public {
+1245	 data;
+1246	 if (false) {
+1247	 implementation = address(0);
+1248	 }
+1249	 require(msg.sender == admin, "only the admin may call _becomeImplementation");
+1250	 ComptrollerInterfaceExtension(address(comptroller)).updateCTokenVersion(address(this), ComptrollerV1Storage.Version.COLLATERALCAP);
+1251	 }
+1252	 function _resignImplementation() public {
+1253	 if (false) {
+1254	 implementation = address(0);
+1255	 }
+1256	 require(msg.sender == admin, "only the admin may call _resignImplementation");
+1257	 }
+1258	 }
+1259	 contract CWrappedNativeInterface is CErc20Interface {
+1260	 uint public constant flashFeeBips = 3;
+1261	 event Flashloan(address indexed receiver, uint amount, uint totalFee, uint reservesFee);
+1262	 function mintNative() external payable returns (uint);
+1263	 function redeemNative(uint redeemTokens) external returns (uint);
+1264	 function redeemUnderlyingNative(uint redeemAmount) external returns (uint);
+1265	 function borrowNative(uint borrowAmount) external returns (uint);
+1266	 function repayBorrowNative() external payable returns (uint);
+1267	 function liquidateBorrowNative(address borrower, CTokenInterface cTokenCollateral) external payable returns (uint);
+1268	 function flashLoan(address payable receiver, uint amount, bytes calldata params) external;
+1269	 function _addReservesNative() external payable returns (uint);
+1270	 }
+1271	 contract CDelegatorInterface {
+1272	 event NewImplementation(address oldImplementation, address newImplementation);
+1273	 function _setImplementation(address implementation_, bool allowResign, bytes memory becomeImplementationData) public;
+1274	 }
+1275	 contract CDelegateInterface {
+1276	 function _becomeImplementation(bytes memory data) public;
+1277	 function _resignImplementation() public;
+1278	 }
+1279	 interface IFlashloanReceiver {
+1280	 function executeOperation(address sender, address underlying, uint amount, uint fee, bytes calldata params) external;
+1281	 }
+1282	 pragma solidity ^0.5.16;
+1283	 contract ComptrollerInterface {
+1284	 bool public constant isComptroller = true;
+1285	 function enterMarkets(address[] calldata cTokens) external returns (uint[] memory);
+1286	 function exitMarket(address cToken) external returns (uint);
+1287	 function mintAllowed(address cToken, address minter, uint mintAmount) external returns (uint);
+1288	 function mintVerify(address cToken, address minter, uint mintAmount, uint mintTokens) external;
+1289	 function redeemAllowed(address cToken, address redeemer, uint redeemTokens) external returns (uint);
+1290	 function redeemVerify(address cToken, address redeemer, uint redeemAmount, uint redeemTokens) external;
+1291	 function borrowAllowed(address cToken, address borrower, uint borrowAmount) external returns (uint);
+1292	 function borrowVerify(address cToken, address borrower, uint borrowAmount) external;
+1293	 function repayBorrowAllowed( address cToken, address payer, address borrower, uint repayAmount) external returns (uint);
+1294	 function repayBorrowVerify( address cToken, address payer, address borrower, uint repayAmount, uint borrowerIndex) external;
+1295	 function liquidateBorrowAllowed( address cTokenBorrowed, address cTokenCollateral, address liquidator, address borrower, uint repayAmount) external returns (uint);
+1296	 function liquidateBorrowVerify( address cTokenBorrowed, address cTokenCollateral, address liquidator, address borrower, uint repayAmount, uint seizeTokens) external;
+1297	 function seizeAllowed( address cTokenCollateral, address cTokenBorrowed, address liquidator, address borrower, uint seizeTokens) external returns (uint);
+1298	 function seizeVerify( address cTokenCollateral, address cTokenBorrowed, address liquidator, address borrower, uint seizeTokens) external;
+1299	 function transferAllowed(address cToken, address src, address dst, uint transferTokens) external returns (uint);
+1300	 function transferVerify(address cToken, address src, address dst, uint transferTokens) external;
+1301	 function liquidateCalculateSeizeTokens( address cTokenBorrowed, address cTokenCollateral, uint repayAmount) external view returns (uint, uint);
+1302	 }
+1303	 interface ComptrollerInterfaceExtension {
+1304	 function checkMembership(address account, CToken cToken) external view returns (bool);
+1305	 function updateCTokenVersion(address cToken, ComptrollerV1Storage.Version version) external;
+1306	 function flashloanAllowed(address cToken, address receiver, uint amount, bytes calldata params) external;
+1307	 }
+1308	 contract ComptrollerV1Storage is UnitrollerAdminStorage {
+1309	 PriceOracle public oracle;
+1310	 uint public closeFactorMantissa;
+1311	 uint public liquidationIncentiveMantissa;
+1312	 mapping(address => CToken[]) public accountAssets;
+1313	 enum Version {
+1314	 VANILLA, COLLATERALCAP, WRAPPEDNATIVE }
+1315	 struct Market {
+1316	 bool isListed;
+1317	 uint collateralFactorMantissa;
+1318	 mapping(address => bool) accountMembership;
+1319	 Version version;
+1320	 }
+1321	 mapping(address => Market) public markets;
+1322	 address public pauseGuardian;
+1323	 bool public _mintGuardianPaused;
+1324	 bool public _borrowGuardianPaused;
+1325	 bool public transferGuardianPaused;
+1326	 bool public seizeGuardianPaused;
+1327	 mapping(address => bool) public mintGuardianPaused;
+1328	 mapping(address => bool) public borrowGuardianPaused;
+1329	 struct CompMarketState {
+1330	 uint224 index;
+1331	 uint32 block;
+1332	 }
+1333	 CToken[] public allMarkets;
+1334	 mapping(address => uint) public compSpeeds;
+1335	 mapping(address => CompMarketState) public compSupplyState;
+1336	 mapping(address => CompMarketState) public compBorrowState;
+1337	 mapping(address => mapping(address => uint)) public compSupplierIndex;
+1338	 mapping(address => mapping(address => uint)) public compBorrowerIndex;
+1339	 mapping(address => uint) public compAccrued;
+1340	 address public borrowCapGuardian;
+1341	 mapping(address => uint) public borrowCaps;
+1342	 address public supplyCapGuardian;
+1343	 mapping(address => uint) public supplyCaps;
+1344	 mapping(address => uint) public creditLimits;
+1345	 mapping(address => bool) public flashloanGuardianPaused;
+1346	 address public liquidityMining;
+1347	 }
+1348	 pragma solidity ^0.5.16;
+1349	 interface EIP20Interface {
+1350	 function name() external view returns (string memory);
+1351	 function symbol() external view returns (string memory);
+1352	 function decimals() external view returns (uint8);
+1353	 function totalSupply() external view returns (uint256);
+1354	 function balanceOf(address owner) external view returns (uint256 balance);
+1355	 function transfer(address dst, uint256 amount) external returns (bool success);
+1356	 function transferFrom(address src, address dst, uint256 amount) external returns (bool success);
+1357	 function approve(address spender, uint256 amount) external returns (bool success);
+1358	 function allowance(address owner, address spender) external view returns (uint256 remaining);
+1359	 event Transfer(address indexed from, address indexed to, uint256 amount);
+1360	 event Approval(address indexed owner, address indexed spender, uint256 amount);
+1361	 }
+1362	 pragma solidity ^0.5.16;
+1363	 interface EIP20NonStandardInterface {
+1364	 function totalSupply() external view returns (uint256);
+1365	 function balanceOf(address owner) external view returns (uint256 balance);
+1366	 function transfer(address dst, uint256 amount) external;
+1367	 function transferFrom(address src, address dst, uint256 amount) external;
+1368	 function approve(address spender, uint256 amount) external returns (bool success);
+1369	 function allowance(address owner, address spender) external view returns (uint256 remaining);
+1370	 event Transfer(address indexed from, address indexed to, uint256 amount);
+1371	 event Approval(address indexed owner, address indexed spender, uint256 amount);
+1372	 }
+1373	 pragma solidity ^0.5.16;
+1374	 contract ComptrollerErrorReporter {
+1375	 enum Error {
+1376	 NO_ERROR, UNAUTHORIZED, COMPTROLLER_MISMATCH, INSUFFICIENT_SHORTFALL, INSUFFICIENT_LIQUIDITY, INVALID_CLOSE_FACTOR, INVALID_COLLATERAL_FACTOR, INVALID_LIQUIDATION_INCENTIVE, MARKET_NOT_ENTERED, MARKET_NOT_LISTED, MARKET_ALREADY_LISTED, MATH_ERROR, NONZERO_BORROW_BALANCE, PRICE_ERROR, REJECTION, SNAPSHOT_ERROR, TOO_MANY_ASSETS, TOO_MUCH_REPAY }
+1377	 enum FailureInfo {
+1378	 ACCEPT_ADMIN_PENDING_ADMIN_CHECK, ACCEPT_PENDING_IMPLEMENTATION_ADDRESS_CHECK, EXIT_MARKET_BALANCE_OWED, EXIT_MARKET_REJECTION, SET_CLOSE_FACTOR_OWNER_CHECK, SET_CLOSE_FACTOR_VALIDATION, SET_COLLATERAL_FACTOR_OWNER_CHECK, SET_COLLATERAL_FACTOR_NO_EXISTS, SET_COLLATERAL_FACTOR_VALIDATION, SET_COLLATERAL_FACTOR_WITHOUT_PRICE, SET_IMPLEMENTATION_OWNER_CHECK, SET_LIQUIDATION_INCENTIVE_OWNER_CHECK, SET_LIQUIDATION_INCENTIVE_VALIDATION, SET_MAX_ASSETS_OWNER_CHECK, SET_PENDING_ADMIN_OWNER_CHECK, SET_PENDING_IMPLEMENTATION_OWNER_CHECK, SET_PRICE_ORACLE_OWNER_CHECK, SUPPORT_MARKET_EXISTS, SUPPORT_MARKET_OWNER_CHECK, SET_PAUSE_GUARDIAN_OWNER_CHECK }
+1379	 event Failure(uint error, uint info, uint detail);
+1380	 function fail(Error err, FailureInfo info) internal returns (uint) {
+1381	 emit Failure(uint(err), uint(info), 0);
+1382	 return uint(err);
+1383	 }
+1384	 function failOpaque(Error err, FailureInfo info, uint opaqueError) internal returns (uint) {
+1385	 emit Failure(uint(err), uint(info), opaqueError);
+1386	 return uint(err);
+1387	 }
+1388	 }
+1389	 pragma solidity ^0.5.16;
+1390	 contract InterestRateModel {
+1391	 bool public constant isInterestRateModel = true;
+1392	 function getBorrowRate(uint cash, uint borrows, uint reserves) external view returns (uint);
+1393	 function getSupplyRate(uint cash, uint borrows, uint reserves, uint reserveFactorMantissa) external view returns (uint);
+1394	 }
+1395	 pragma solidity ^0.5.16;
+1396	 contract PriceOracle {
+1397	 function getUnderlyingPrice(CToken cToken) external view returns (uint);
+1398	 }

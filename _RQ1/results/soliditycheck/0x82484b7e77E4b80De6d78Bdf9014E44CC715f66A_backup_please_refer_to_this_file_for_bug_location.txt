@@ -1,0 +1,515 @@
+row number 
+1	 pragma experimental ABIEncoderV2;
+2	 pragma solidity 0.5.17;
+3	 interface IXPool {
+4	 event Approval(address indexed src, address indexed dst, uint256 amt);
+5	 event Transfer(address indexed src, address indexed dst, uint256 amt);
+6	 function totalSupply() external view returns (uint256);
+7	 function balanceOf(address whom) external view returns (uint256);
+8	 function allowance(address src, address dst) external view returns (uint256);
+9	 function approve(address dst, uint256 amt) external returns (bool);
+10	 function transfer(address dst, uint256 amt) external returns (bool);
+11	 function transferFrom( address src, address dst, uint256 amt ) external returns (bool);
+12	 function swapExactAmountIn( address tokenIn, uint256 tokenAmountIn, address tokenOut, uint256 minAmountOut, uint256 maxPrice ) external returns (uint256 tokenAmountOut, uint256 spotPriceAfter);
+13	 function swapExactAmountOut( address tokenIn, uint256 maxAmountIn, address tokenOut, uint256 tokenAmountOut, uint256 maxPrice ) external returns (uint256 tokenAmountIn, uint256 spotPriceAfter);
+14	 function swapExactAmountInRefer( address tokenIn, uint256 tokenAmountIn, address tokenOut, uint256 minAmountOut, uint256 maxPrice, address referrer ) external returns (uint256 tokenAmountOut, uint256 spotPriceAfter);
+15	 function swapExactAmountOutRefer( address tokenIn, uint256 maxAmountIn, address tokenOut, uint256 tokenAmountOut, uint256 maxPrice, address referrer ) external returns (uint256 tokenAmountIn, uint256 spotPriceAfter);
+16	 function isBound(address token) external view returns (bool);
+17	 function getFinalTokens() external view returns (address[] memory tokens);
+18	 function getBalance(address token) external view returns (uint256);
+19	 function swapFee() external view returns (uint256);
+20	 function exitFee() external view returns (uint256);
+21	 function finalized() external view returns (uint256);
+22	 function controller() external view returns (uint256);
+23	 function isFarmPool() external view returns (uint256);
+24	 function xconfig() external view returns (uint256);
+25	 function getDenormalizedWeight(address) external view returns (uint256);
+26	 function getTotalDenormalizedWeight() external view returns (uint256);
+27	 function getVersion() external view returns (bytes32);
+28	 function calcInGivenOut( uint256 tokenBalanceIn, uint256 tokenWeightIn, uint256 tokenBalanceOut, uint256 tokenWeightOut, uint256 tokenAmountOut, uint256 _swapFee ) external pure returns (uint256 tokenAmountIn);
+29	 function calcOutGivenIn( uint256 tokenBalanceIn, uint256 tokenWeightIn, uint256 tokenBalanceOut, uint256 tokenWeightOut, uint256 tokenAmountIn, uint256 _swapFee ) external pure returns (uint256 tokenAmountOut);
+30	 function setController(address _controller) external;
+31	 function setExitFee(uint256 newFee) external;
+32	 function finalize(uint256 _swapFee) external;
+33	 function bind(address token, uint256 denorm) external;
+34	 function joinPool(uint256 poolAmountOut, uint256[] calldata maxAmountsIn) external;
+35	 function exitPool(uint256 poolAmountIn, uint256[] calldata minAmountsOut) external;
+36	 function joinswapExternAmountIn( address tokenIn, uint256 tokenAmountIn, uint256 minPoolAmountOut ) external returns (uint256 poolAmountOut);
+37	 function exitswapPoolAmountIn( address tokenOut, uint256 poolAmountIn, uint256 minAmountOut ) external returns (uint256 tokenAmountOut);
+38	 function updateSafu(address safu, uint256 fee) external;
+39	 function updateFarm(bool isFarm) external;
+40	 }
+41	 pragma solidity 0.5.17;
+42	 interface IXFactory {
+43	 function newXPool() external returns (IXPool);
+44	 }
+45	 pragma solidity 0.5.17;
+46	 interface IXConfig {
+47	 function getCore() external view returns (address);
+48	 function getSAFU() external view returns (address);
+49	 function getMaxExitFee() external view returns (uint256);
+50	 function getSafuFee() external view returns (uint256);
+51	 function getSwapProxy() external view returns (address);
+52	 function dedupPool(address[] calldata tokens, uint256[] calldata denorms) external returns (bool exist, bytes32 sig);
+53	 function addPoolSig(bytes32 sig, address pool) external;
+54	 }
+55	 pragma solidity 0.5.17;
+56	 interface IERC20 {
+57	 function name() external view returns (string memory);
+58	 function symbol() external view returns (string memory);
+59	 function decimals() external view returns (uint8);
+60	 function totalSupply() external view returns (uint256);
+61	 function balanceOf(address _owner) external view returns (uint256 balance);
+62	 function transfer(address _to, uint256 _value) external returns (bool success);
+63	 function transferFrom( address _from, address _to, uint256 _value ) external returns (bool success);
+64	 function approve(address _spender, uint256 _value) external returns (bool success);
+65	 function allowance(address _owner, address _spender) external view returns (uint256 remaining);
+66	 }
+67	 pragma solidity 0.5.17;
+68	 library XNum {
+69	 uint256 public constant BONE = 10**18;
+70	 uint256 public constant MIN_BPOW_BASE = 1 wei;
+71	 uint256 public constant MAX_BPOW_BASE = (2 * BONE) - 1 wei;
+72	 uint256 public constant BPOW_PRECISION = BONE / 10**10;
+73	 function btoi(uint256 a) internal pure returns (uint256) {
+74	 return a / BONE;
+75	 }
+76	 function bfloor(uint256 a) internal pure returns (uint256) {
+77	 return btoi(a) * BONE;
+78	 }
+79	 function badd(uint256 a, uint256 b) internal pure returns (uint256) {
+80	 uint256 c = a + b;
+81	 require(c >= a, "ERR_ADD_OVERFLOW");
+82	 return c;
+83	 }
+84	 function bsub(uint256 a, uint256 b) internal pure returns (uint256) {
+85	 (uint256 c, bool flag) = bsubSign(a, b);
+86	 require(!flag, "ERR_SUB_UNDERFLOW");
+87	 return c;
+88	 }
+89	 function bsubSign(uint256 a, uint256 b) internal pure returns (uint256, bool) {
+90	 if (a >= b) {
+91	 return (a - b, false);
+92	 }
+93	 else {
+94	 return (b - a, true);
+95	 }
+96	 }
+97	 function bmul(uint256 a, uint256 b) internal pure returns (uint256) {
+98	 uint256 c0 = a * b;
+99	 require(a == 0 || c0 / a == b, "ERR_MUL_OVERFLOW");
+100	 uint256 c1 = c0 + (BONE / 2);
+101	 require(c1 >= c0, "ERR_MUL_OVERFLOW");
+102	 uint256 c2 = c1 / BONE;
+103	 return c2;
+104	 }
+105	 function bdiv(uint256 a, uint256 b) internal pure returns (uint256) {
+106	 require(b != 0, "ERR_DIV_ZERO");
+107	 uint256 c0 = a * BONE;
+108	 require(a == 0 || c0 / a == BONE, "ERR_DIV_INTERNAL");
+109	 uint256 c1 = c0 + (b / 2);
+110	 require(c1 >= c0, "ERR_DIV_INTERNAL");
+111	 uint256 c2 = c1 / b;
+112	 return c2;
+113	 }
+114	 function bpowi(uint256 a, uint256 n) internal pure returns (uint256) {
+115	 uint256 z = n % 2 != 0 ? a : BONE;
+116	 for (n /= 2; n != 0; n /= 2) {
+117	 a = bmul(a, a);
+118	 if (n % 2 != 0) {
+119	 z = bmul(z, a);
+120	 }
+121	 }
+122	 return z;
+123	 }
+124	 function bpow(uint256 base, uint256 exp) internal pure returns (uint256) {
+125	 require(base >= MIN_BPOW_BASE, "ERR_BPOW_BASE_TOO_LOW");
+126	 require(base <= MAX_BPOW_BASE, "ERR_BPOW_BASE_TOO_HIGH");
+127	 uint256 whole = bfloor(exp);
+128	 uint256 remain = bsub(exp, whole);
+129	 uint256 wholePow = bpowi(base, btoi(whole));
+130	 if (remain == 0) {
+131	 return wholePow;
+132	 }
+133	 uint256 partialResult = bpowApprox(base, remain, BPOW_PRECISION);
+134	 return bmul(wholePow, partialResult);
+135	 }
+136	 function bpowApprox( uint256 base, uint256 exp, uint256 precision ) internal pure returns (uint256) {
+137	 uint256 a = exp;
+138	 (uint256 x, bool xneg) = bsubSign(base, BONE);
+139	 uint256 term = BONE;
+140	 uint256 sum = term;
+141	 bool negative = false;
+142	 for (uint256 i = 1; term >= precision; i++) {
+143	 uint256 bigK = i * BONE;
+144	 (uint256 c, bool cneg) = bsubSign(a, bsub(bigK, BONE));
+145	 term = bmul(term, bmul(c, x));
+146	 term = bdiv(term, bigK);
+147	 if (term == 0) break;
+148	 if (xneg) negative = !negative;
+149	 if (cneg) negative = !negative;
+150	 if (negative) {
+151	 sum = bsub(sum, term);
+152	 }
+153	 else {
+154	 sum = badd(sum, term);
+155	 }
+156	 }
+157	 return sum;
+158	 }
+159	 }
+160	 pragma solidity 0.5.17;
+161	 library Address {
+162	 function isContract(address account) internal view returns (bool) {
+163	 bytes32 codehash;
+164	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+165	 assembly {
+166	 codehash := extcodehash(account) }
+167	 return (codehash != accountHash && codehash != 0x0);
+168	 }
+169	 function toPayable(address account) internal pure returns (address payable) {
+170	 return address(uint160(account));
+171	 }
+172	 function sendValue(address payable recipient, uint256 amount) internal {
+173	 require( address(this).balance >= amount, "Address: insufficient balance" );
+174	 (bool success, ) = recipient.call.value(amount).gas(9100)("");
+175	 require( success, "Address: unable to send value, recipient may have reverted" );
+176	 }
+177	 }
+178	 pragma solidity 0.5.17;
+179	 library SafeERC20 {
+180	 using Address for address;
+181	 function safeTransfer( IERC20 token, address to, uint256 value ) internal {
+182	 callOptionalReturn( token, abi.encodeWithSelector(token.transfer.selector, to, value) );
+183	 }
+184	 function safeTransferFrom( IERC20 token, address from, address to, uint256 value ) internal {
+185	 callOptionalReturn( token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value) );
+186	 }
+187	 function safeApprove( IERC20 token, address spender, uint256 value ) internal {
+188	 require( (value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+189	 callOptionalReturn( token, abi.encodeWithSelector(token.approve.selector, spender, value) );
+190	 }
+191	 function callOptionalReturn(IERC20 token, bytes memory data) private {
+192	 require(address(token).isContract(), "SafeERC20: call to non-contract");
+193	 (bool success, bytes memory returndata) = address(token).call(data);
+194	 require(success, "SafeERC20: low-level call failed");
+195	 if (returndata.length > 0) {
+196	 require( abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed" );
+197	 }
+198	 }
+199	 }
+200	 pragma solidity 0.5.17;
+201	 contract ReentrancyGuard {
+202	 bool private _notEntered;
+203	 constructor() internal {
+204	 _notEntered = true;
+205	 }
+206	 modifier nonReentrant() {
+207	 require(_notEntered, "ReentrancyGuard: reentrant call");
+208	 _notEntered = false;
+209	 _;
+210	 _notEntered = true;
+211	 }
+212	 }
+213	 pragma solidity 0.5.17;
+214	 interface IWETH {
+215	 function balanceOf(address account) external view returns (uint256);
+216	 function allowance(address owner, address spender) external view returns (uint256);
+217	 function approve(address, uint256) external returns (bool);
+218	 function transfer(address to, uint256 amount) external returns (bool);
+219	 function transferFrom( address from, address to, uint256 amount ) external returns (bool);
+220	 function deposit() external payable;
+221	 function withdraw(uint256 amount) external;
+222	 }
+223	 contract XSwapProxyV1 is ReentrancyGuard {
+224	 using XNum for uint256;
+225	 using SafeERC20 for IERC20;
+226	 uint256 public constant MAX = 2**256 - 1;
+227	 uint256 public constant BONE = 10**18;
+228	 uint256 public constant MIN_BOUND_TOKENS = 2;
+229	 uint256 public constant MAX_BOUND_TOKENS = 8;
+230	 uint256 public constant MIN_BATCH_SWAPS = 1;
+231	 uint256 public constant MAX_BATCH_SWAPS = 4;
+232	 address public constant ETH_ADDR = address(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE);
+233	 IWETH weth;
+234	 IXConfig public xconfig;
+235	 constructor(address _weth, address _xconfig) public {
+236	 weth = IWETH(_weth);
+237	 xconfig = IXConfig(_xconfig);
+238	 }
+239	 function() external payable {
+240	 }
+241	 struct Swap {
+242	 address pool;
+243	 uint256 tokenInParam;
+244	 uint256 tokenOutParam;
+245	 uint256 maxPrice;
+246	 }
+247	 function batchSwapExactIn( Swap[] memory swaps, address tokenIn, address tokenOut, uint256 totalAmountIn, uint256 minTotalAmountOut ) public payable returns (uint256 totalAmountOut) {
+248	 return batchSwapExactInRefer( swaps, tokenIn, tokenOut, totalAmountIn, minTotalAmountOut, address(0x0) );
+249	 }
+250	 function batchSwapExactInRefer( Swap[] memory swaps, address tokenIn, address tokenOut, uint256 totalAmountIn, uint256 minTotalAmountOut, address referrer ) public payable nonReentrant returns (uint256 totalAmountOut) {
+251	 require( swaps.length >= MIN_BATCH_SWAPS && swaps.length <= MAX_BATCH_SWAPS, "ERR_BATCH_COUNT" );
+252	 IERC20 TI = IERC20(tokenIn);
+253	 if (transferFromAllTo(TI, totalAmountIn, address(this))) {
+254	 TI = IERC20(address(weth));
+255	 }
+256	 IERC20 TO = IERC20(tokenOut);
+257	 if (tokenOut == ETH_ADDR) {
+258	 TO = IERC20(address(weth));
+259	 }
+260	 require(TI != TO, "ERR_SAME_TOKEN");
+261	 uint256 actualTotalIn = 0;
+262	 for (uint256 i = 0; i < swaps.length; i++) {
+263	 Swap memory swap = swaps[i];
+264	 IXPool pool = IXPool(swap.pool);
+265	 if (TI.allowance(address(this), swap.pool) < totalAmountIn) {
+266	 TI.safeApprove(swap.pool, 0);
+267	 TI.safeApprove(swap.pool, MAX);
+268	 }
+269	 (uint256 tokenAmountOut, ) = pool.swapExactAmountInRefer( address(TI), swap.tokenInParam, address(TO), swap.tokenOutParam, swap.maxPrice, referrer );
+270	 actualTotalIn = actualTotalIn.badd(swap.tokenInParam);
+271	 totalAmountOut = tokenAmountOut.badd(totalAmountOut);
+272	 }
+273	 require(actualTotalIn <= totalAmountIn, "ERR_ACTUAL_IN");
+274	 require(totalAmountOut >= minTotalAmountOut, "ERR_LIMIT_OUT");
+275	 transferAll(tokenOut, totalAmountOut);
+276	 transferAll(tokenIn, getBalance(address(TI)));
+277	 }
+278	 function batchSwapExactOut( Swap[] memory swaps, address tokenIn, address tokenOut, uint256 maxTotalAmountIn ) public payable returns (uint256 totalAmountIn) {
+279	 return batchSwapExactOutRefer( swaps, tokenIn, tokenOut, maxTotalAmountIn, address(0x0) );
+280	 }
+281	 function batchSwapExactOutRefer( Swap[] memory swaps, address tokenIn, address tokenOut, uint256 maxTotalAmountIn, address referrer ) public payable nonReentrant returns (uint256 totalAmountIn) {
+282	 require( swaps.length >= MIN_BATCH_SWAPS && swaps.length <= MAX_BATCH_SWAPS, "ERR_BATCH_COUNT" );
+283	 IERC20 TI = IERC20(tokenIn);
+284	 if (transferFromAllTo(TI, maxTotalAmountIn, address(this))) {
+285	 TI = IERC20(address(weth));
+286	 }
+287	 IERC20 TO = IERC20(tokenOut);
+288	 if (tokenOut == ETH_ADDR) {
+289	 TO = IERC20(address(weth));
+290	 }
+291	 require(TI != TO, "ERR_SAME_TOKEN");
+292	 for (uint256 i = 0; i < swaps.length; i++) {
+293	 Swap memory swap = swaps[i];
+294	 IXPool pool = IXPool(swap.pool);
+295	 if (TI.allowance(address(this), swap.pool) < maxTotalAmountIn) {
+296	 TI.safeApprove(swap.pool, 0);
+297	 TI.safeApprove(swap.pool, MAX);
+298	 }
+299	 (uint256 tokenAmountIn, ) = pool.swapExactAmountOutRefer( address(TI), swap.tokenInParam, address(TO), swap.tokenOutParam, swap.maxPrice, referrer );
+300	 totalAmountIn = tokenAmountIn.badd(totalAmountIn);
+301	 }
+302	 require(totalAmountIn <= maxTotalAmountIn, "ERR_LIMIT_IN");
+303	 transferAll(tokenOut, getBalance(tokenOut));
+304	 transferAll(tokenIn, getBalance(address(TI)));
+305	 }
+306	 struct MSwap {
+307	 address pool;
+308	 address tokenIn;
+309	 address tokenOut;
+310	 uint256 swapAmount;
+311	 uint256 limitReturnAmount;
+312	 uint256 maxPrice;
+313	 }
+314	 function multihopBatchSwapExactIn( MSwap[][] memory swapSequences, address tokenIn, address tokenOut, uint256 totalAmountIn, uint256 minTotalAmountOut ) public payable returns (uint256 totalAmountOut) {
+315	 return multihopBatchSwapExactInRefer( swapSequences, tokenIn, tokenOut, totalAmountIn, minTotalAmountOut, address(0x0) );
+316	 }
+317	 function multihopBatchSwapExactInRefer( MSwap[][] memory swapSequences, address tokenIn, address tokenOut, uint256 totalAmountIn, uint256 minTotalAmountOut, address referrer ) public payable nonReentrant returns (uint256 totalAmountOut) {
+318	 require( swapSequences.length >= MIN_BATCH_SWAPS && swapSequences.length <= MAX_BATCH_SWAPS, "ERR_BATCH_COUNT" );
+319	 IERC20 TI = IERC20(tokenIn);
+320	 if (transferFromAllTo(TI, totalAmountIn, address(this))) {
+321	 TI = IERC20(address(weth));
+322	 }
+323	 uint256 actualTotalIn = 0;
+324	 for (uint256 i = 0; i < swapSequences.length; i++) {
+325	 require( address(TI) == swapSequences[i][0].tokenIn, "ERR_NOT_MATCH" );
+326	 actualTotalIn = actualTotalIn.badd(swapSequences[i][0].swapAmount);
+327	 uint256 tokenAmountOut = 0;
+328	 for (uint256 k = 0; k < swapSequences[i].length; k++) {
+329	 MSwap memory swap = swapSequences[i][k];
+330	 IERC20 SwapTokenIn = IERC20(swap.tokenIn);
+331	 if (k == 1) {
+332	 swap.swapAmount = tokenAmountOut;
+333	 }
+334	 if ( SwapTokenIn.allowance(address(this), swap.pool) < totalAmountIn ) {
+335	 SwapTokenIn.safeApprove(swap.pool, 0);
+336	 SwapTokenIn.safeApprove(swap.pool, MAX);
+337	 }
+338	 (tokenAmountOut, ) = IXPool(swap.pool).swapExactAmountInRefer( swap.tokenIn, swap.swapAmount, swap.tokenOut, swap.limitReturnAmount, swap.maxPrice, referrer );
+339	 }
+340	 totalAmountOut = tokenAmountOut.badd(totalAmountOut);
+341	 }
+342	 require(actualTotalIn <= totalAmountIn, "ERR_ACTUAL_IN");
+343	 require(totalAmountOut >= minTotalAmountOut, "ERR_LIMIT_OUT");
+344	 transferAll(tokenOut, totalAmountOut);
+345	 transferAll(tokenIn, getBalance(address(TI)));
+346	 }
+347	 function multihopBatchSwapExactOut( MSwap[][] memory swapSequences, address tokenIn, address tokenOut, uint256 maxTotalAmountIn ) public payable returns (uint256 totalAmountIn) {
+348	 return multihopBatchSwapExactOutRefer( swapSequences, tokenIn, tokenOut, maxTotalAmountIn, address(0x0) );
+349	 }
+350	 function multihopBatchSwapExactOutRefer( MSwap[][] memory swapSequences, address tokenIn, address tokenOut, uint256 maxTotalAmountIn, address referrer ) public payable nonReentrant returns (uint256 totalAmountIn) {
+351	 require( swapSequences.length >= MIN_BATCH_SWAPS && swapSequences.length <= MAX_BATCH_SWAPS, "ERR_BATCH_COUNT" );
+352	 IERC20 TI = IERC20(tokenIn);
+353	 if (transferFromAllTo(TI, maxTotalAmountIn, address(this))) {
+354	 TI = IERC20(address(weth));
+355	 }
+356	 for (uint256 i = 0; i < swapSequences.length; i++) {
+357	 require( address(TI) == swapSequences[i][0].tokenIn, "ERR_NOT_MATCH" );
+358	 uint256 tokenAmountInFirstSwap = 0;
+359	 if (swapSequences[i].length == 1) {
+360	 MSwap memory swap = swapSequences[i][0];
+361	 IERC20 SwapTokenIn = IERC20(swap.tokenIn);
+362	 if ( SwapTokenIn.allowance(address(this), swap.pool) < maxTotalAmountIn ) {
+363	 SwapTokenIn.safeApprove(swap.pool, 0);
+364	 SwapTokenIn.safeApprove(swap.pool, MAX);
+365	 }
+366	 (tokenAmountInFirstSwap, ) = IXPool(swap.pool) .swapExactAmountOutRefer( swap.tokenIn, swap.limitReturnAmount, swap.tokenOut, swap.swapAmount, swap.maxPrice, referrer );
+367	 }
+368	 else {
+369	 uint256 intermediateTokenAmount;
+370	 MSwap memory secondSwap = swapSequences[i][1];
+371	 IXPool poolSecondSwap = IXPool(secondSwap.pool);
+372	 intermediateTokenAmount = poolSecondSwap.calcInGivenOut( poolSecondSwap.getBalance(secondSwap.tokenIn), poolSecondSwap.getDenormalizedWeight(secondSwap.tokenIn), poolSecondSwap.getBalance(secondSwap.tokenOut), poolSecondSwap.getDenormalizedWeight(secondSwap.tokenOut), secondSwap.swapAmount, poolSecondSwap.swapFee() );
+373	 MSwap memory firstSwap = swapSequences[i][0];
+374	 IERC20 FirstSwapTokenIn = IERC20(firstSwap.tokenIn);
+375	 IXPool poolFirstSwap = IXPool(firstSwap.pool);
+376	 if ( FirstSwapTokenIn.allowance(address(this), firstSwap.pool) < MAX ) {
+377	 FirstSwapTokenIn.safeApprove(firstSwap.pool, 0);
+378	 FirstSwapTokenIn.safeApprove(firstSwap.pool, MAX);
+379	 }
+380	 (tokenAmountInFirstSwap, ) = poolFirstSwap.swapExactAmountOut( firstSwap.tokenIn, firstSwap.limitReturnAmount, firstSwap.tokenOut, intermediateTokenAmount, firstSwap.maxPrice );
+381	 IERC20 SecondSwapTokenIn = IERC20(secondSwap.tokenIn);
+382	 if ( SecondSwapTokenIn.allowance( address(this), secondSwap.pool ) < MAX ) {
+383	 SecondSwapTokenIn.safeApprove(secondSwap.pool, 0);
+384	 SecondSwapTokenIn.safeApprove(secondSwap.pool, MAX);
+385	 }
+386	 poolSecondSwap.swapExactAmountOut( secondSwap.tokenIn, secondSwap.limitReturnAmount, secondSwap.tokenOut, secondSwap.swapAmount, secondSwap.maxPrice );
+387	 }
+388	 totalAmountIn = tokenAmountInFirstSwap.badd(totalAmountIn);
+389	 }
+390	 require(totalAmountIn <= maxTotalAmountIn, "ERR_LIMIT_IN");
+391	 transferAll(tokenOut, getBalance(tokenOut));
+392	 transferAll(tokenIn, getBalance(address(TI)));
+393	 }
+394	 function create( address factoryAddress, address[] calldata tokens, uint256[] calldata balances, uint256[] calldata denorms, uint256 swapFee, uint256 exitFee ) external payable nonReentrant returns (address) {
+395	 require(tokens.length == balances.length, "ERR_LENGTH_MISMATCH");
+396	 require(tokens.length == denorms.length, "ERR_LENGTH_MISMATCH");
+397	 require(tokens.length >= MIN_BOUND_TOKENS, "ERR_MIN_TOKENS");
+398	 require(tokens.length <= MAX_BOUND_TOKENS, "ERR_MAX_TOKENS");
+399	 (bool exist, bytes32 sig) = xconfig.dedupPool(tokens, denorms);
+400	 require(!exist, "ERR_POOL_EXISTS");
+401	 IXPool pool = IXFactory(factoryAddress).newXPool();
+402	 bool hasETH = false;
+403	 for (uint256 i = 0; i < tokens.length; i++) {
+404	 if ( transferFromAllTo(IERC20(tokens[i]), balances[i], address(pool)) ) {
+405	 hasETH = true;
+406	 pool.bind(address(weth), denorms[i]);
+407	 }
+408	 else {
+409	 pool.bind(tokens[i], denorms[i]);
+410	 }
+411	 }
+412	 require(msg.value == 0 || hasETH, "ERR_INVALID_PAY");
+413	 pool.setExitFee(exitFee);
+414	 pool.finalize(swapFee);
+415	 xconfig.addPoolSig(sig, address(pool));
+416	 pool.transfer(msg.sender, pool.balanceOf(address(this)));
+417	 return address(pool);
+418	 }
+419	 function joinPool( address poolAddress, uint256 poolAmountOut, uint256[] calldata maxAmountsIn ) external payable nonReentrant {
+420	 IXPool pool = IXPool(poolAddress);
+421	 address[] memory tokens = pool.getFinalTokens();
+422	 require(maxAmountsIn.length == tokens.length, "ERR_LENGTH_MISMATCH");
+423	 bool hasEth = false;
+424	 for (uint8 i = 0; i < tokens.length; i++) {
+425	 if (msg.value > 0 && tokens[i] == address(weth)) {
+426	 transferFromAllAndApprove( ETH_ADDR, maxAmountsIn[i], poolAddress );
+427	 hasEth = true;
+428	 }
+429	 else {
+430	 transferFromAllAndApprove( tokens[i], maxAmountsIn[i], poolAddress );
+431	 }
+432	 }
+433	 require(msg.value == 0 || hasEth, "ERR_INVALID_PAY");
+434	 pool.joinPool(poolAmountOut, maxAmountsIn);
+435	 for (uint8 i = 0; i < tokens.length; i++) {
+436	 if (hasEth && tokens[i] == address(weth)) {
+437	 transferAll(ETH_ADDR, getBalance(ETH_ADDR));
+438	 }
+439	 else {
+440	 transferAll(tokens[i], getBalance(tokens[i]));
+441	 }
+442	 }
+443	 pool.transfer(msg.sender, pool.balanceOf(address(this)));
+444	 }
+445	 function joinswapExternAmountIn( address poolAddress, address tokenIn, uint256 tokenAmountIn, uint256 minPoolAmountOut ) external payable nonReentrant {
+446	 IXPool pool = IXPool(poolAddress);
+447	 bool hasEth = false;
+448	 if (transferFromAllAndApprove(tokenIn, tokenAmountIn, poolAddress)) {
+449	 hasEth = true;
+450	 }
+451	 require(msg.value == 0 || hasEth, "ERR_INVALID_PAY");
+452	 if (hasEth) {
+453	 uint256 poolAmountOut = pool.joinswapExternAmountIn( address(weth), tokenAmountIn, minPoolAmountOut );
+454	 pool.transfer(msg.sender, poolAmountOut);
+455	 }
+456	 else {
+457	 uint256 poolAmountOut = pool.joinswapExternAmountIn( tokenIn, tokenAmountIn, minPoolAmountOut );
+458	 pool.transfer(msg.sender, poolAmountOut);
+459	 }
+460	 }
+461	 function getBalance(address token) internal view returns (uint256) {
+462	 if (token == ETH_ADDR) {
+463	 return weth.balanceOf(address(this));
+464	 }
+465	 return IERC20(token).balanceOf(address(this));
+466	 }
+467	 function transferAll(address token, uint256 amount) internal returns (bool) {
+468	 if (amount == 0) {
+469	 return true;
+470	 }
+471	 if (token == ETH_ADDR) {
+472	 weth.withdraw(amount);
+473	 (bool xfer, ) = msg.sender.call.value(amount).gas(9100)("");
+474	 require(xfer, "ERR_ETH_FAILED");
+475	 }
+476	 else {
+477	 IERC20(token).safeTransfer(msg.sender, amount);
+478	 }
+479	 return true;
+480	 }
+481	 function transferFromAllTo( IERC20 token, uint256 amount, address to ) internal returns (bool hasETH) {
+482	 hasETH = false;
+483	 if (address(token) == ETH_ADDR) {
+484	 require(amount == msg.value, "ERR_TOKEN_AMOUNT");
+485	 weth.deposit.value(amount)();
+486	 if (to != address(this)) {
+487	 weth.transfer(to, amount);
+488	 }
+489	 hasETH = true;
+490	 }
+491	 else {
+492	 token.safeTransferFrom(msg.sender, to, amount);
+493	 }
+494	 }
+495	 function transferFromAllAndApprove( address token, uint256 amount, address spender ) internal returns (bool hasETH) {
+496	 hasETH = false;
+497	 if (token == ETH_ADDR) {
+498	 require(amount == msg.value, "ERR_TOKEN_AMOUNT");
+499	 weth.deposit.value(amount)();
+500	 if (weth.allowance(address(this), spender) < amount) {
+501	 IERC20(address(weth)).safeApprove(spender, 0);
+502	 IERC20(address(weth)).safeApprove(spender, amount);
+503	 }
+504	 hasETH = true;
+505	 }
+506	 else {
+507	 IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+508	 if (IERC20(token).allowance(address(this), spender) < amount) {
+509	 IERC20(token).safeApprove(spender, 0);
+510	 IERC20(token).safeApprove(spender, amount);
+511	 }
+512	 }
+513	 }
+514	 }

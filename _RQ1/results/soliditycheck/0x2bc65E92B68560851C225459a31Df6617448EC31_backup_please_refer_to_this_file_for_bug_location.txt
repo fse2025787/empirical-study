@@ -1,0 +1,739 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity ^0.7.6;
+3	 interface IManaged {
+4	 function setController(address _controller) external;
+5	 }
+6	 pragma solidity ^0.7.6;
+7	 interface ITokenGateway {
+8	 function outboundTransfer( address _token, address _to, uint256 _amount, uint256 _maxGas, uint256 _gasPriceBid, bytes calldata _data ) external payable returns (bytes memory);
+9	 function finalizeInboundTransfer( address _token, address _from, address _to, uint256 _amount, bytes calldata _data ) external payable;
+10	 function calculateL2TokenAddress(address l1ERC20) external view returns (address);
+11	 }
+12	 pragma solidity ^0.7.6;
+13	 abstract contract Managed is IManaged {
+14	 IController public controller;
+15	 mapping(bytes32 => address) private _addressCache;
+16	 uint256[10] private __gap;
+17	 bytes32 private immutable CURATION = keccak256("Curation");
+18	 bytes32 private immutable EPOCH_MANAGER = keccak256("EpochManager");
+19	 bytes32 private immutable REWARDS_MANAGER = keccak256("RewardsManager");
+20	 bytes32 private immutable STAKING = keccak256("Staking");
+21	 bytes32 private immutable GRAPH_TOKEN = keccak256("GraphToken");
+22	 bytes32 private immutable GRAPH_TOKEN_GATEWAY = keccak256("GraphTokenGateway");
+23	 event ParameterUpdated(string param);
+24	 event SetController(address controller);
+25	 event ContractSynced(bytes32 indexed nameHash, address contractAddress);
+26	 function _notPartialPaused() internal view {
+27	 require(!controller.paused(), "Paused");
+28	 require(!controller.partialPaused(), "Partial-paused");
+29	 }
+30	 function _notPaused() internal view virtual {
+31	 require(!controller.paused(), "Paused");
+32	 }
+33	 function _onlyGovernor() internal view {
+34	 require(msg.sender == controller.getGovernor(), "Only Controller governor");
+35	 }
+36	 function _onlyController() internal view {
+37	 require(msg.sender == address(controller), "Caller must be Controller");
+38	 }
+39	 modifier notPartialPaused() {
+40	 _notPartialPaused();
+41	 _;
+42	 }
+43	 modifier notPaused() {
+44	 _notPaused();
+45	 _;
+46	 }
+47	 modifier onlyController() {
+48	 _onlyController();
+49	 _;
+50	 }
+51	 modifier onlyGovernor() {
+52	 _onlyGovernor();
+53	 _;
+54	 }
+55	 function _initialize(address _controller) internal {
+56	 _setController(_controller);
+57	 }
+58	 function setController(address _controller) external override onlyController {
+59	 _setController(_controller);
+60	 }
+61	 function _setController(address _controller) internal {
+62	 require(_controller != address(0), "Controller must be set");
+63	 controller = IController(_controller);
+64	 emit SetController(_controller);
+65	 }
+66	 function curation() internal view returns (ICuration) {
+67	 return ICuration(_resolveContract(CURATION));
+68	 }
+69	 function epochManager() internal view returns (IEpochManager) {
+70	 return IEpochManager(_resolveContract(EPOCH_MANAGER));
+71	 }
+72	 function rewardsManager() internal view returns (IRewardsManager) {
+73	 return IRewardsManager(_resolveContract(REWARDS_MANAGER));
+74	 }
+75	 function staking() internal view returns (IStaking) {
+76	 return IStaking(_resolveContract(STAKING));
+77	 }
+78	 function graphToken() internal view returns (IGraphToken) {
+79	 return IGraphToken(_resolveContract(GRAPH_TOKEN));
+80	 }
+81	 function graphTokenGateway() internal view returns (ITokenGateway) {
+82	 return ITokenGateway(_resolveContract(GRAPH_TOKEN_GATEWAY));
+83	 }
+84	 function _resolveContract(bytes32 _nameHash) internal view returns (address) {
+85	 address contractAddress = _addressCache[_nameHash];
+86	 if (contractAddress == address(0)) {
+87	 contractAddress = controller.getContractProxy(_nameHash);
+88	 }
+89	 return contractAddress;
+90	 }
+91	 function _syncContract(string memory _name) internal {
+92	 bytes32 nameHash = keccak256(abi.encodePacked(_name));
+93	 address contractAddress = controller.getContractProxy(nameHash);
+94	 if (_addressCache[nameHash] != contractAddress) {
+95	 _addressCache[nameHash] = contractAddress;
+96	 emit ContractSynced(nameHash, contractAddress);
+97	 }
+98	 }
+99	 function syncAllContracts() external {
+100	 _syncContract("Curation");
+101	 _syncContract("EpochManager");
+102	 _syncContract("RewardsManager");
+103	 _syncContract("Staking");
+104	 _syncContract("GraphToken");
+105	 _syncContract("GraphTokenGateway");
+106	 }
+107	 }
+108	 pragma solidity ^0.7.6;
+109	 abstract contract GraphUpgradeable {
+110	 bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+111	 modifier onlyProxyAdmin(IGraphProxy _proxy) {
+112	 require(msg.sender == _proxy.admin(), "Caller must be the proxy admin");
+113	 _;
+114	 }
+115	 modifier onlyImpl() {
+116	 require(msg.sender == _implementation(), "Only implementation");
+117	 _;
+118	 }
+119	 function _implementation() internal view returns (address impl) {
+120	 bytes32 slot = IMPLEMENTATION_SLOT;
+121	 assembly {
+122	 impl := sload(slot) }
+123	 }
+124	 function acceptProxy(IGraphProxy _proxy) external onlyProxyAdmin(_proxy) {
+125	 _proxy.acceptUpgrade();
+126	 }
+127	 function acceptProxyAndCall(IGraphProxy _proxy, bytes calldata _data) external onlyProxyAdmin(_proxy) {
+128	 _proxy.acceptUpgradeAndCall(_data);
+129	 }
+130	 }
+131	 pragma solidity ^0.7.6;
+132	 abstract contract Pausable {
+133	 bool internal _partialPaused;
+134	 bool internal _paused;
+135	 uint256 public lastPausePartialTime;
+136	 uint256 public lastPauseTime;
+137	 address public pauseGuardian;
+138	 event PartialPauseChanged(bool isPaused);
+139	 event PauseChanged(bool isPaused);
+140	 event NewPauseGuardian(address indexed oldPauseGuardian, address indexed pauseGuardian);
+141	 function _setPartialPaused(bool _toPause) internal {
+142	 if (_toPause == _partialPaused) {
+143	 return;
+144	 }
+145	 _partialPaused = _toPause;
+146	 if (_partialPaused) {
+147	 lastPausePartialTime = block.timestamp;
+148	 }
+149	 emit PartialPauseChanged(_partialPaused);
+150	 }
+151	 function _setPaused(bool _toPause) internal {
+152	 if (_toPause == _paused) {
+153	 return;
+154	 }
+155	 _paused = _toPause;
+156	 if (_paused) {
+157	 lastPauseTime = block.timestamp;
+158	 }
+159	 emit PauseChanged(_paused);
+160	 }
+161	 function _setPauseGuardian(address newPauseGuardian) internal {
+162	 address oldPauseGuardian = pauseGuardian;
+163	 pauseGuardian = newPauseGuardian;
+164	 emit NewPauseGuardian(oldPauseGuardian, pauseGuardian);
+165	 }
+166	 }
+167	 pragma solidity >=0.4.24 <0.8.0;
+168	 abstract contract Initializable {
+169	 bool private _initialized;
+170	 bool private _initializing;
+171	 modifier initializer() {
+172	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+173	 bool isTopLevelCall = !_initializing;
+174	 if (isTopLevelCall) {
+175	 _initializing = true;
+176	 _initialized = true;
+177	 }
+178	 _;
+179	 if (isTopLevelCall) {
+180	 _initializing = false;
+181	 }
+182	 }
+183	 function _isConstructor() private view returns (bool) {
+184	 return !AddressUpgradeable.isContract(address(this));
+185	 }
+186	 }
+187	 pragma solidity ^0.7.6;
+188	 abstract contract L1ArbitrumMessenger {
+189	 event TxToL2(address indexed _from, address indexed _to, uint256 indexed _seqNum, bytes _data);
+190	 struct L2GasParams {
+191	 uint256 _maxSubmissionCost;
+192	 uint256 _maxGas;
+193	 uint256 _gasPriceBid;
+194	 }
+195	 function sendTxToL2( address _inbox, address _to, address _user, uint256 _l1CallValue, uint256 _l2CallValue, L2GasParams memory _l2GasParams, bytes memory _data ) internal virtual returns (uint256) {
+196	 return sendTxToL2( _inbox, _to, _user, _l1CallValue, _l2CallValue, _l2GasParams._maxSubmissionCost, _l2GasParams._maxGas, _l2GasParams._gasPriceBid, _data );
+197	 }
+198	 function sendTxToL2( address _inbox, address _to, address _user, uint256 _l1CallValue, uint256 _l2CallValue, uint256 _maxSubmissionCost, uint256 _maxGas, uint256 _gasPriceBid, bytes memory _data ) internal virtual returns (uint256) {
+199	 uint256 seqNum = IInbox(_inbox).createRetryableTicket{
+200	 value: _l1CallValue }
+201	 ( _to, _l2CallValue, _maxSubmissionCost, _user, _user, _maxGas, _gasPriceBid, _data );
+202	 emit TxToL2(_user, _to, seqNum, _data);
+203	 return seqNum;
+204	 }
+205	 function getBridge(address _inbox) internal view virtual returns (IBridge) {
+206	 return IInbox(_inbox).bridge();
+207	 }
+208	 function getL2ToL1Sender(address _inbox) internal view virtual returns (address) {
+209	 IOutbox outbox = IOutbox(getBridge(_inbox).activeOutbox());
+210	 address l2ToL1Sender = outbox.l2ToL1Sender();
+211	 require(l2ToL1Sender != address(0), "NO_SENDER");
+212	 return l2ToL1Sender;
+213	 }
+214	 }
+215	 pragma solidity ^0.7.6;
+216	 abstract contract GraphTokenGateway is GraphUpgradeable, Pausable, Managed, ITokenGateway {
+217	 uint256[50] private __gap;
+218	 modifier onlyGovernorOrGuardian() {
+219	 require( msg.sender == controller.getGovernor() || msg.sender == pauseGuardian, "Only Governor or Guardian" );
+220	 _;
+221	 }
+222	 function setPauseGuardian(address _newPauseGuardian) external onlyGovernor {
+223	 require(_newPauseGuardian != address(0), "PauseGuardian must be set");
+224	 _setPauseGuardian(_newPauseGuardian);
+225	 }
+226	 function setPaused(bool _newPaused) external onlyGovernorOrGuardian {
+227	 if (!_newPaused) {
+228	 _checksBeforeUnpause();
+229	 }
+230	 _setPaused(_newPaused);
+231	 }
+232	 function paused() external view returns (bool) {
+233	 return _paused;
+234	 }
+235	 function _notPaused() internal view override {
+236	 require(!_paused, "Paused (contract)");
+237	 }
+238	 function _checksBeforeUnpause() internal view virtual;
+239	 }
+240	 pragma solidity ^0.7.6;
+241	 interface IMessageProvider {
+242	 event InboxMessageDelivered(uint256 indexed messageNum, bytes data);
+243	 event InboxMessageDeliveredFromOrigin(uint256 indexed messageNum);
+244	 }
+245	 pragma solidity >=0.6.0 <0.8.0;
+246	 interface IERC20Upgradeable {
+247	 function totalSupply() external view returns (uint256);
+248	 function balanceOf(address account) external view returns (uint256);
+249	 function transfer(address recipient, uint256 amount) external returns (bool);
+250	 function allowance(address owner, address spender) external view returns (uint256);
+251	 function approve(address spender, uint256 amount) external returns (bool);
+252	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+253	 event Transfer(address indexed from, address indexed to, uint256 value);
+254	 event Approval(address indexed owner, address indexed spender, uint256 value);
+255	 }
+256	 pragma solidity >=0.6.12 <0.8.0;
+257	 interface IStakingData {
+258	 struct Allocation {
+259	 address indexer;
+260	 bytes32 subgraphDeploymentID;
+261	 uint256 tokens;
+262	 uint256 createdAtEpoch;
+263	 uint256 closedAtEpoch;
+264	 uint256 collectedFees;
+265	 uint256 effectiveAllocation;
+266	 uint256 accRewardsPerAllocatedToken;
+267	 }
+268	 struct CloseAllocationRequest {
+269	 address allocationID;
+270	 bytes32 poi;
+271	 }
+272	 struct DelegationPool {
+273	 uint32 cooldownBlocks;
+274	 uint32 indexingRewardCut;
+275	 uint32 queryFeeCut;
+276	 uint256 updatedAtBlock;
+277	 uint256 tokens;
+278	 uint256 shares;
+279	 mapping(address => Delegation) delegators;
+280	 }
+281	 struct Delegation {
+282	 uint256 shares;
+283	 uint256 tokensLocked;
+284	 uint256 tokensLockedUntil;
+285	 }
+286	 }
+287	 pragma solidity >=0.6.0 <0.8.0;
+288	 interface IERC20 {
+289	 function totalSupply() external view returns (uint256);
+290	 function balanceOf(address account) external view returns (uint256);
+291	 function transfer(address recipient, uint256 amount) external returns (bool);
+292	 function allowance(address owner, address spender) external view returns (uint256);
+293	 function approve(address spender, uint256 amount) external returns (bool);
+294	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+295	 event Transfer(address indexed from, address indexed to, uint256 value);
+296	 event Approval(address indexed owner, address indexed spender, uint256 value);
+297	 }
+298	 pragma solidity ^0.7.6;
+299	 contract L1GraphTokenGateway is Initializable, GraphTokenGateway, L1ArbitrumMessenger {
+300	 using SafeMathUpgradeable for uint256;
+301	 address public l2GRT;
+302	 address public inbox;
+303	 address public l1Router;
+304	 address public l2Counterpart;
+305	 address public escrow;
+306	 mapping(address => bool) public callhookAllowlist;
+307	 event DepositInitiated( address l1Token, address indexed from, address indexed to, uint256 indexed sequenceNumber, uint256 amount );
+308	 event WithdrawalFinalized( address l1Token, address indexed from, address indexed to, uint256 indexed exitNum, uint256 amount );
+309	 event ArbitrumAddressesSet(address inbox, address l1Router);
+310	 event L2TokenAddressSet(address l2GRT);
+311	 event L2CounterpartAddressSet(address l2Counterpart);
+312	 event EscrowAddressSet(address escrow);
+313	 event AddedToCallhookAllowlist(address newAllowlisted);
+314	 event RemovedFromCallhookAllowlist(address notAllowlisted);
+315	 modifier onlyL2Counterpart() {
+316	 require(inbox != address(0), "INBOX_NOT_SET");
+317	 require(l2Counterpart != address(0), "L2_COUNTERPART_NOT_SET");
+318	 IBridge bridge = IInbox(inbox).bridge();
+319	 require(msg.sender == address(bridge), "NOT_FROM_BRIDGE");
+320	 address l2ToL1Sender = IOutbox(bridge.activeOutbox()).l2ToL1Sender();
+321	 require(l2ToL1Sender == l2Counterpart, "ONLY_COUNTERPART_GATEWAY");
+322	 _;
+323	 }
+324	 function initialize(address _controller) external onlyImpl initializer {
+325	 Managed._initialize(_controller);
+326	 _paused = true;
+327	 }
+328	 function setArbitrumAddresses(address _inbox, address _l1Router) external onlyGovernor {
+329	 require(_inbox != address(0), "INVALID_INBOX");
+330	 require(_l1Router != address(0), "INVALID_L1_ROUTER");
+331	 require(!callhookAllowlist[_l1Router], "ROUTER_CANT_BE_ALLOWLISTED");
+332	 require(AddressUpgradeable.isContract(_inbox), "INBOX_MUST_BE_CONTRACT");
+333	 require(AddressUpgradeable.isContract(_l1Router), "ROUTER_MUST_BE_CONTRACT");
+334	 inbox = _inbox;
+335	 l1Router = _l1Router;
+336	 emit ArbitrumAddressesSet(_inbox, _l1Router);
+337	 }
+338	 function setL2TokenAddress(address _l2GRT) external onlyGovernor {
+339	 require(_l2GRT != address(0), "INVALID_L2_GRT");
+340	 l2GRT = _l2GRT;
+341	 emit L2TokenAddressSet(_l2GRT);
+342	 }
+343	 function setL2CounterpartAddress(address _l2Counterpart) external onlyGovernor {
+344	 require(_l2Counterpart != address(0), "INVALID_L2_COUNTERPART");
+345	 l2Counterpart = _l2Counterpart;
+346	 emit L2CounterpartAddressSet(_l2Counterpart);
+347	 }
+348	 function setEscrowAddress(address _escrow) external onlyGovernor {
+349	 require(_escrow != address(0), "INVALID_ESCROW");
+350	 require(AddressUpgradeable.isContract(_escrow), "MUST_BE_CONTRACT");
+351	 escrow = _escrow;
+352	 emit EscrowAddressSet(_escrow);
+353	 }
+354	 function addToCallhookAllowlist(address _newAllowlisted) external onlyGovernor {
+355	 require(_newAllowlisted != address(0), "INVALID_ADDRESS");
+356	 require(_newAllowlisted != l1Router, "CANT_ALLOW_ROUTER");
+357	 require(AddressUpgradeable.isContract(_newAllowlisted), "MUST_BE_CONTRACT");
+358	 require(!callhookAllowlist[_newAllowlisted], "ALREADY_ALLOWLISTED");
+359	 callhookAllowlist[_newAllowlisted] = true;
+360	 emit AddedToCallhookAllowlist(_newAllowlisted);
+361	 }
+362	 function removeFromCallhookAllowlist(address _notAllowlisted) external onlyGovernor {
+363	 require(_notAllowlisted != address(0), "INVALID_ADDRESS");
+364	 require(callhookAllowlist[_notAllowlisted], "NOT_ALLOWLISTED");
+365	 callhookAllowlist[_notAllowlisted] = false;
+366	 emit RemovedFromCallhookAllowlist(_notAllowlisted);
+367	 }
+368	 function outboundTransfer( address _l1Token, address _to, uint256 _amount, uint256 _maxGas, uint256 _gasPriceBid, bytes calldata _data ) external payable override notPaused returns (bytes memory) {
+369	 IGraphToken token = graphToken();
+370	 require(_amount != 0, "INVALID_ZERO_AMOUNT");
+371	 require(_l1Token == address(token), "TOKEN_NOT_GRT");
+372	 require(_to != address(0), "INVALID_DESTINATION");
+373	 address from;
+374	 uint256 seqNum;
+375	 {
+376	 uint256 maxSubmissionCost;
+377	 bytes memory outboundCalldata;
+378	 {
+379	 bytes memory extraData;
+380	 (from, maxSubmissionCost, extraData) = _parseOutboundData(_data);
+381	 require( extraData.length == 0 || callhookAllowlist[msg.sender] == true, "CALL_HOOK_DATA_NOT_ALLOWED" );
+382	 require(maxSubmissionCost != 0, "NO_SUBMISSION_COST");
+383	 outboundCalldata = getOutboundCalldata(_l1Token, from, _to, _amount, extraData);
+384	 }
+385	 {
+386	 L2GasParams memory gasParams = L2GasParams( maxSubmissionCost, _maxGas, _gasPriceBid );
+387	 token.transferFrom(from, escrow, _amount);
+388	 seqNum = sendTxToL2( inbox, l2Counterpart, from, msg.value, 0, gasParams, outboundCalldata );
+389	 }
+390	 }
+391	 emit DepositInitiated(_l1Token, from, _to, seqNum, _amount);
+392	 return abi.encode(seqNum);
+393	 }
+394	 function finalizeInboundTransfer( address _l1Token, address _from, address _to, uint256 _amount, bytes calldata ) external payable override notPaused onlyL2Counterpart {
+395	 IGraphToken token = graphToken();
+396	 require(_l1Token == address(token), "TOKEN_NOT_GRT");
+397	 uint256 escrowBalance = token.balanceOf(escrow);
+398	 require(_amount <= escrowBalance, "BRIDGE_OUT_OF_FUNDS");
+399	 token.transferFrom(escrow, _to, _amount);
+400	 emit WithdrawalFinalized(_l1Token, _from, _to, 0, _amount);
+401	 }
+402	 function calculateL2TokenAddress(address _l1ERC20) external view override returns (address) {
+403	 IGraphToken token = graphToken();
+404	 if (_l1ERC20 != address(token)) {
+405	 return address(0);
+406	 }
+407	 return l2GRT;
+408	 }
+409	 function counterpartGateway() external view returns (address) {
+410	 return l2Counterpart;
+411	 }
+412	 function getOutboundCalldata( address _l1Token, address _from, address _to, uint256 _amount, bytes memory _data ) public pure returns (bytes memory) {
+413	 return abi.encodeWithSelector( ITokenGateway.finalizeInboundTransfer.selector, _l1Token, _from, _to, _amount, _data );
+414	 }
+415	 function _checksBeforeUnpause() internal view override {
+416	 require(inbox != address(0), "INBOX_NOT_SET");
+417	 require(l1Router != address(0), "ROUTER_NOT_SET");
+418	 require(l2Counterpart != address(0), "L2_COUNTERPART_NOT_SET");
+419	 require(escrow != address(0), "ESCROW_NOT_SET");
+420	 }
+421	 function _parseOutboundData(bytes calldata _data) private view returns ( address, uint256, bytes memory ) {
+422	 address from;
+423	 uint256 maxSubmissionCost;
+424	 bytes memory extraData;
+425	 if (msg.sender == l1Router) {
+426	 (from, extraData) = abi.decode(_data, (address, bytes));
+427	 }
+428	 else {
+429	 from = msg.sender;
+430	 extraData = _data;
+431	 }
+432	 (maxSubmissionCost, extraData) = abi.decode(extraData, (uint256, bytes));
+433	 return (from, maxSubmissionCost, extraData);
+434	 }
+435	 }
+436	 pragma solidity >=0.6.2 <0.8.0;
+437	 library AddressUpgradeable {
+438	 function isContract(address account) internal view returns (bool) {
+439	 uint256 size;
+440	 assembly {
+441	 size := extcodesize(account) }
+442	 return size > 0;
+443	 }
+444	 function sendValue(address payable recipient, uint256 amount) internal {
+445	 require(address(this).balance >= amount, "Address: insufficient balance");
+446	 (bool success, ) = recipient.call{
+447	 value: amount }
+448	 ("");
+449	 require(success, "Address: unable to send value, recipient may have reverted");
+450	 }
+451	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+452	 return functionCall(target, data, "Address: low-level call failed");
+453	 }
+454	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+455	 return functionCallWithValue(target, data, 0, errorMessage);
+456	 }
+457	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+458	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+459	 }
+460	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+461	 require(address(this).balance >= value, "Address: insufficient balance for call");
+462	 require(isContract(target), "Address: call to non-contract");
+463	 (bool success, bytes memory returndata) = target.call{
+464	 value: value }
+465	 (data);
+466	 return _verifyCallResult(success, returndata, errorMessage);
+467	 }
+468	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+469	 return functionStaticCall(target, data, "Address: low-level static call failed");
+470	 }
+471	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+472	 require(isContract(target), "Address: static call to non-contract");
+473	 (bool success, bytes memory returndata) = target.staticcall(data);
+474	 return _verifyCallResult(success, returndata, errorMessage);
+475	 }
+476	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+477	 if (success) {
+478	 return returndata;
+479	 }
+480	 else {
+481	 if (returndata.length > 0) {
+482	 assembly {
+483	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+484	 }
+485	 else {
+486	 revert(errorMessage);
+487	 }
+488	 }
+489	 }
+490	 }
+491	 pragma solidity >=0.6.0 <0.8.0;
+492	 library SafeMathUpgradeable {
+493	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+494	 uint256 c = a + b;
+495	 if (c < a) return (false, 0);
+496	 return (true, c);
+497	 }
+498	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+499	 if (b > a) return (false, 0);
+500	 return (true, a - b);
+501	 }
+502	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+503	 if (a == 0) return (true, 0);
+504	 uint256 c = a * b;
+505	 if (c / a != b) return (false, 0);
+506	 return (true, c);
+507	 }
+508	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+509	 if (b == 0) return (false, 0);
+510	 return (true, a / b);
+511	 }
+512	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+513	 if (b == 0) return (false, 0);
+514	 return (true, a % b);
+515	 }
+516	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+517	 uint256 c = a + b;
+518	 require(c >= a, "SafeMath: addition overflow");
+519	 return c;
+520	 }
+521	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+522	 require(b <= a, "SafeMath: subtraction overflow");
+523	 return a - b;
+524	 }
+525	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+526	 if (a == 0) return 0;
+527	 uint256 c = a * b;
+528	 require(c / a == b, "SafeMath: multiplication overflow");
+529	 return c;
+530	 }
+531	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+532	 require(b > 0, "SafeMath: division by zero");
+533	 return a / b;
+534	 }
+535	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+536	 require(b > 0, "SafeMath: modulo by zero");
+537	 return a % b;
+538	 }
+539	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+540	 require(b <= a, errorMessage);
+541	 return a - b;
+542	 }
+543	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+544	 require(b > 0, errorMessage);
+545	 return a / b;
+546	 }
+547	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+548	 require(b > 0, errorMessage);
+549	 return a % b;
+550	 }
+551	 }
+552	 pragma solidity ^0.7.6;
+553	 interface IBridge {
+554	 event MessageDelivered( uint256 indexed messageIndex, bytes32 indexed beforeInboxAcc, address inbox, uint8 kind, address sender, bytes32 messageDataHash );
+555	 event BridgeCallTriggered( address indexed outbox, address indexed destAddr, uint256 amount, bytes data );
+556	 event InboxToggle(address indexed inbox, bool enabled);
+557	 event OutboxToggle(address indexed outbox, bool enabled);
+558	 function deliverMessageToInbox( uint8 kind, address sender, bytes32 messageDataHash ) external payable returns (uint256);
+559	 function executeCall( address destAddr, uint256 amount, bytes calldata data ) external returns (bool success, bytes memory returnData);
+560	 function setInbox(address inbox, bool enabled) external;
+561	 function setOutbox(address inbox, bool enabled) external;
+562	 function activeOutbox() external view returns (address);
+563	 function allowedInboxes(address inbox) external view returns (bool);
+564	 function allowedOutboxes(address outbox) external view returns (bool);
+565	 function inboxAccs(uint256 index) external view returns (bytes32);
+566	 function messageCount() external view returns (uint256);
+567	 }
+568	 pragma solidity ^0.7.6;
+569	 interface IInbox is IMessageProvider {
+570	 function sendL2Message(bytes calldata messageData) external returns (uint256);
+571	 function sendUnsignedTransaction( uint256 maxGas, uint256 gasPriceBid, uint256 nonce, address destAddr, uint256 amount, bytes calldata data ) external returns (uint256);
+572	 function sendContractTransaction( uint256 maxGas, uint256 gasPriceBid, address destAddr, uint256 amount, bytes calldata data ) external returns (uint256);
+573	 function sendL1FundedUnsignedTransaction( uint256 maxGas, uint256 gasPriceBid, uint256 nonce, address destAddr, bytes calldata data ) external payable returns (uint256);
+574	 function sendL1FundedContractTransaction( uint256 maxGas, uint256 gasPriceBid, address destAddr, bytes calldata data ) external payable returns (uint256);
+575	 function createRetryableTicket( address destAddr, uint256 arbTxCallValue, uint256 maxSubmissionCost, address submissionRefundAddress, address valueRefundAddress, uint256 maxGas, uint256 gasPriceBid, bytes calldata data ) external payable returns (uint256);
+576	 function depositEth(uint256 maxSubmissionCost) external payable returns (uint256);
+577	 function bridge() external view returns (IBridge);
+578	 function pauseCreateRetryables() external;
+579	 function unpauseCreateRetryables() external;
+580	 function startRewriteAddress() external;
+581	 function stopRewriteAddress() external;
+582	 }
+583	 pragma solidity ^0.7.6;
+584	 interface IOutbox {
+585	 event OutboxEntryCreated( uint256 indexed batchNum, uint256 outboxEntryIndex, bytes32 outputRoot, uint256 numInBatch );
+586	 event OutBoxTransactionExecuted( address indexed destAddr, address indexed l2Sender, uint256 indexed outboxEntryIndex, uint256 transactionIndex );
+587	 function l2ToL1Sender() external view returns (address);
+588	 function l2ToL1Block() external view returns (uint256);
+589	 function l2ToL1EthBlock() external view returns (uint256);
+590	 function l2ToL1Timestamp() external view returns (uint256);
+591	 function l2ToL1BatchNum() external view returns (uint256);
+592	 function l2ToL1OutputId() external view returns (bytes32);
+593	 function processOutgoingMessages(bytes calldata sendsData, uint256[] calldata sendLengths) external;
+594	 function outboxEntryExists(uint256 batchNum) external view returns (bool);
+595	 }
+596	 pragma solidity ^0.7.6;
+597	 interface IGraphToken is IERC20 {
+598	 function burn(uint256 amount) external;
+599	 function burnFrom(address _from, uint256 amount) external;
+600	 function mint(address _to, uint256 _amount) external;
+601	 function addMinter(address _account) external;
+602	 function removeMinter(address _account) external;
+603	 function renounceMinter() external;
+604	 function isMinter(address _account) external view returns (bool);
+605	 function permit( address _owner, address _spender, uint256 _value, uint256 _deadline, uint8 _v, bytes32 _r, bytes32 _s ) external;
+606	 function increaseAllowance(address spender, uint256 addedValue) external returns (bool);
+607	 function decreaseAllowance(address spender, uint256 subtractedValue) external returns (bool);
+608	 }
+609	 pragma solidity >=0.6.12 <0.8.0;
+610	 interface IController {
+611	 function getGovernor() external view returns (address);
+612	 function setContractProxy(bytes32 _id, address _contractAddress) external;
+613	 function unsetContractProxy(bytes32 _id) external;
+614	 function updateController(bytes32 _id, address _controller) external;
+615	 function getContractProxy(bytes32 _id) external view returns (address);
+616	 function setPartialPaused(bool _partialPaused) external;
+617	 function setPaused(bool _paused) external;
+618	 function setPauseGuardian(address _newPauseGuardian) external;
+619	 function paused() external view returns (bool);
+620	 function partialPaused() external view returns (bool);
+621	 }
+622	 pragma solidity ^0.7.6;
+623	 interface ICuration {
+624	 function setDefaultReserveRatio(uint32 _defaultReserveRatio) external;
+625	 function setMinimumCurationDeposit(uint256 _minimumCurationDeposit) external;
+626	 function setCurationTaxPercentage(uint32 _percentage) external;
+627	 function setCurationTokenMaster(address _curationTokenMaster) external;
+628	 function mint( bytes32 _subgraphDeploymentID, uint256 _tokensIn, uint256 _signalOutMin ) external returns (uint256, uint256);
+629	 function burn( bytes32 _subgraphDeploymentID, uint256 _signalIn, uint256 _tokensOutMin ) external returns (uint256);
+630	 function collect(bytes32 _subgraphDeploymentID, uint256 _tokens) external;
+631	 function isCurated(bytes32 _subgraphDeploymentID) external view returns (bool);
+632	 function getCuratorSignal(address _curator, bytes32 _subgraphDeploymentID) external view returns (uint256);
+633	 function getCurationPoolSignal(bytes32 _subgraphDeploymentID) external view returns (uint256);
+634	 function getCurationPoolTokens(bytes32 _subgraphDeploymentID) external view returns (uint256);
+635	 function tokensToSignal(bytes32 _subgraphDeploymentID, uint256 _tokensIn) external view returns (uint256, uint256);
+636	 function signalToTokens(bytes32 _subgraphDeploymentID, uint256 _signalIn) external view returns (uint256);
+637	 function curationTaxPercentage() external view returns (uint32);
+638	 }
+639	 pragma solidity ^0.7.6;
+640	 interface IEpochManager {
+641	 function setEpochLength(uint256 _epochLength) external;
+642	 function runEpoch() external;
+643	 function isCurrentEpochRun() external view returns (bool);
+644	 function blockNum() external view returns (uint256);
+645	 function blockHash(uint256 _block) external view returns (bytes32);
+646	 function currentEpoch() external view returns (uint256);
+647	 function currentEpochBlock() external view returns (uint256);
+648	 function currentEpochBlockSinceStart() external view returns (uint256);
+649	 function epochsSince(uint256 _epoch) external view returns (uint256);
+650	 function epochsSinceUpdate() external view returns (uint256);
+651	 }
+652	 pragma solidity ^0.7.6;
+653	 interface IRewardsManager {
+654	 struct Subgraph {
+655	 uint256 accRewardsForSubgraph;
+656	 uint256 accRewardsForSubgraphSnapshot;
+657	 uint256 accRewardsPerSignalSnapshot;
+658	 uint256 accRewardsPerAllocatedToken;
+659	 }
+660	 function setIssuanceRate(uint256 _issuanceRate) external;
+661	 function setMinimumSubgraphSignal(uint256 _minimumSubgraphSignal) external;
+662	 function setSubgraphAvailabilityOracle(address _subgraphAvailabilityOracle) external;
+663	 function setDenied(bytes32 _subgraphDeploymentID, bool _deny) external;
+664	 function setDeniedMany(bytes32[] calldata _subgraphDeploymentID, bool[] calldata _deny) external;
+665	 function isDenied(bytes32 _subgraphDeploymentID) external view returns (bool);
+666	 function getNewRewardsPerSignal() external view returns (uint256);
+667	 function getAccRewardsPerSignal() external view returns (uint256);
+668	 function getAccRewardsForSubgraph(bytes32 _subgraphDeploymentID) external view returns (uint256);
+669	 function getAccRewardsPerAllocatedToken(bytes32 _subgraphDeploymentID) external view returns (uint256, uint256);
+670	 function getRewards(address _allocationID) external view returns (uint256);
+671	 function updateAccRewardsPerSignal() external returns (uint256);
+672	 function takeRewards(address _allocationID) external returns (uint256);
+673	 function onSubgraphSignalUpdate(bytes32 _subgraphDeploymentID) external returns (uint256);
+674	 function onSubgraphAllocationUpdate(bytes32 _subgraphDeploymentID) external returns (uint256);
+675	 }
+676	 pragma solidity >=0.6.12 <0.8.0;
+677	 interface IStaking is IStakingData {
+678	 enum AllocationState {
+679	 Null, Active, Closed, Finalized, Claimed }
+680	 function setMinimumIndexerStake(uint256 _minimumIndexerStake) external;
+681	 function setThawingPeriod(uint32 _thawingPeriod) external;
+682	 function setCurationPercentage(uint32 _percentage) external;
+683	 function setProtocolPercentage(uint32 _percentage) external;
+684	 function setChannelDisputeEpochs(uint32 _channelDisputeEpochs) external;
+685	 function setMaxAllocationEpochs(uint32 _maxAllocationEpochs) external;
+686	 function setRebateRatio(uint32 _alphaNumerator, uint32 _alphaDenominator) external;
+687	 function setDelegationRatio(uint32 _delegationRatio) external;
+688	 function setDelegationParameters( uint32 _indexingRewardCut, uint32 _queryFeeCut, uint32 _cooldownBlocks ) external;
+689	 function setDelegationParametersCooldown(uint32 _blocks) external;
+690	 function setDelegationUnbondingPeriod(uint32 _delegationUnbondingPeriod) external;
+691	 function setDelegationTaxPercentage(uint32 _percentage) external;
+692	 function setSlasher(address _slasher, bool _allowed) external;
+693	 function setAssetHolder(address _assetHolder, bool _allowed) external;
+694	 function setOperator(address _operator, bool _allowed) external;
+695	 function isOperator(address _operator, address _indexer) external view returns (bool);
+696	 function stake(uint256 _tokens) external;
+697	 function stakeTo(address _indexer, uint256 _tokens) external;
+698	 function unstake(uint256 _tokens) external;
+699	 function slash( address _indexer, uint256 _tokens, uint256 _reward, address _beneficiary ) external;
+700	 function withdraw() external;
+701	 function setRewardsDestination(address _destination) external;
+702	 function delegate(address _indexer, uint256 _tokens) external returns (uint256);
+703	 function undelegate(address _indexer, uint256 _shares) external returns (uint256);
+704	 function withdrawDelegated(address _indexer, address _newIndexer) external returns (uint256);
+705	 function allocate( bytes32 _subgraphDeploymentID, uint256 _tokens, address _allocationID, bytes32 _metadata, bytes calldata _proof ) external;
+706	 function allocateFrom( address _indexer, bytes32 _subgraphDeploymentID, uint256 _tokens, address _allocationID, bytes32 _metadata, bytes calldata _proof ) external;
+707	 function closeAllocation(address _allocationID, bytes32 _poi) external;
+708	 function closeAllocationMany(CloseAllocationRequest[] calldata _requests) external;
+709	 function closeAndAllocate( address _oldAllocationID, bytes32 _poi, address _indexer, bytes32 _subgraphDeploymentID, uint256 _tokens, address _allocationID, bytes32 _metadata, bytes calldata _proof ) external;
+710	 function collect(uint256 _tokens, address _allocationID) external;
+711	 function claim(address _allocationID, bool _restake) external;
+712	 function claimMany(address[] calldata _allocationID, bool _restake) external;
+713	 function hasStake(address _indexer) external view returns (bool);
+714	 function getIndexerStakedTokens(address _indexer) external view returns (uint256);
+715	 function getIndexerCapacity(address _indexer) external view returns (uint256);
+716	 function getAllocation(address _allocationID) external view returns (Allocation memory);
+717	 function getAllocationState(address _allocationID) external view returns (AllocationState);
+718	 function isAllocation(address _allocationID) external view returns (bool);
+719	 function getSubgraphAllocatedTokens(bytes32 _subgraphDeploymentID) external view returns (uint256);
+720	 function getDelegation(address _indexer, address _delegator) external view returns (Delegation memory);
+721	 function isDelegator(address _indexer, address _delegator) external view returns (bool);
+722	 }
+723	 pragma solidity ^0.7.6;
+724	 interface IGraphCurationToken is IERC20Upgradeable {
+725	 function initialize(address _owner) external;
+726	 function burnFrom(address _account, uint256 _amount) external;
+727	 function mint(address _to, uint256 _amount) external;
+728	 }
+729	 pragma solidity ^0.7.6;
+730	 interface IGraphProxy {
+731	 function admin() external returns (address);
+732	 function setAdmin(address _newAdmin) external;
+733	 function implementation() external returns (address);
+734	 function pendingImplementation() external returns (address);
+735	 function upgradeTo(address _newImplementation) external;
+736	 function acceptUpgrade() external;
+737	 function acceptUpgradeAndCall(bytes calldata data) external;
+738	 }

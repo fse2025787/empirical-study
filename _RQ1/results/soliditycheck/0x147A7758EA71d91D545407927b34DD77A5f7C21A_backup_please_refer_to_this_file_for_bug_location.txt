@@ -1,0 +1,1328 @@
+row number 
+1	  pragma abicoder v2;
+2	 pragma solidity >=0.4.24 <0.8.0;
+3	 abstract contract Initializable {
+4	 bool private _initialized;
+5	 bool private _initializing;
+6	 modifier initializer() {
+7	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+8	 bool isTopLevelCall = !_initializing;
+9	 if (isTopLevelCall) {
+10	 _initializing = true;
+11	 _initialized = true;
+12	 }
+13	 _;
+14	 if (isTopLevelCall) {
+15	 _initializing = false;
+16	 }
+17	 }
+18	 function _isConstructor() private view returns (bool) {
+19	 return !AddressUpgradeable.isContract(address(this));
+20	 }
+21	 }
+22	 pragma solidity >=0.6.0 <0.8.0;
+23	 interface IERC20Upgradeable {
+24	 function totalSupply() external view returns (uint256);
+25	 function balanceOf(address account) external view returns (uint256);
+26	 function transfer(address recipient, uint256 amount) external returns (bool);
+27	 function allowance(address owner, address spender) external view returns (uint256);
+28	 function approve(address spender, uint256 amount) external returns (bool);
+29	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+30	 event Transfer(address indexed from, address indexed to, uint256 value);
+31	 event Approval(address indexed owner, address indexed spender, uint256 value);
+32	 }
+33	 pragma solidity ^0.7.6;
+34	 interface ICuration {
+35	 function setDefaultReserveRatio(uint32 _defaultReserveRatio) external;
+36	 function setMinimumCurationDeposit(uint256 _minimumCurationDeposit) external;
+37	 function setCurationTaxPercentage(uint32 _percentage) external;
+38	 function setCurationTokenMaster(address _curationTokenMaster) external;
+39	 function mint( bytes32 _subgraphDeploymentID, uint256 _tokensIn, uint256 _signalOutMin ) external returns (uint256, uint256);
+40	 function burn( bytes32 _subgraphDeploymentID, uint256 _signalIn, uint256 _tokensOutMin ) external returns (uint256);
+41	 function collect(bytes32 _subgraphDeploymentID, uint256 _tokens) external;
+42	 function isCurated(bytes32 _subgraphDeploymentID) external view returns (bool);
+43	 function getCuratorSignal(address _curator, bytes32 _subgraphDeploymentID) external view returns (uint256);
+44	 function getCurationPoolSignal(bytes32 _subgraphDeploymentID) external view returns (uint256);
+45	 function getCurationPoolTokens(bytes32 _subgraphDeploymentID) external view returns (uint256);
+46	 function tokensToSignal(bytes32 _subgraphDeploymentID, uint256 _tokensIn) external view returns (uint256, uint256);
+47	 function signalToTokens(bytes32 _subgraphDeploymentID, uint256 _signalIn) external view returns (uint256);
+48	 function curationTaxPercentage() external view returns (uint32);
+49	 }
+50	 pragma solidity ^0.7.6;
+51	 contract Managed {
+52	 IController public controller;
+53	 mapping(bytes32 => address) private addressCache;
+54	 uint256[10] private __gap;
+55	 event ParameterUpdated(string param);
+56	 event SetController(address controller);
+57	 event ContractSynced(bytes32 indexed nameHash, address contractAddress);
+58	 function _notPartialPaused() internal view {
+59	 require(!controller.paused(), "Paused");
+60	 require(!controller.partialPaused(), "Partial-paused");
+61	 }
+62	 function _notPaused() internal view {
+63	 require(!controller.paused(), "Paused");
+64	 }
+65	 function _onlyGovernor() internal view {
+66	 require(msg.sender == controller.getGovernor(), "Caller must be Controller governor");
+67	 }
+68	 function _onlyController() internal view {
+69	 require(msg.sender == address(controller), "Caller must be Controller");
+70	 }
+71	 modifier notPartialPaused() {
+72	 _notPartialPaused();
+73	 _;
+74	 }
+75	 modifier notPaused() {
+76	 _notPaused();
+77	 _;
+78	 }
+79	 modifier onlyController() {
+80	 _onlyController();
+81	 _;
+82	 }
+83	 modifier onlyGovernor() {
+84	 _onlyGovernor();
+85	 _;
+86	 }
+87	 function _initialize(address _controller) internal {
+88	 _setController(_controller);
+89	 }
+90	 function setController(address _controller) external onlyController {
+91	 _setController(_controller);
+92	 }
+93	 function _setController(address _controller) internal {
+94	 require(_controller != address(0), "Controller must be set");
+95	 controller = IController(_controller);
+96	 emit SetController(_controller);
+97	 }
+98	 function curation() internal view returns (ICuration) {
+99	 return ICuration(_resolveContract(keccak256("Curation")));
+100	 }
+101	 function epochManager() internal view returns (IEpochManager) {
+102	 return IEpochManager(_resolveContract(keccak256("EpochManager")));
+103	 }
+104	 function rewardsManager() internal view returns (IRewardsManager) {
+105	 return IRewardsManager(_resolveContract(keccak256("RewardsManager")));
+106	 }
+107	 function staking() internal view returns (IStaking) {
+108	 return IStaking(_resolveContract(keccak256("Staking")));
+109	 }
+110	 function graphToken() internal view returns (IGraphToken) {
+111	 return IGraphToken(_resolveContract(keccak256("GraphToken")));
+112	 }
+113	 function _resolveContract(bytes32 _nameHash) internal view returns (address) {
+114	 address contractAddress = addressCache[_nameHash];
+115	 if (contractAddress == address(0)) {
+116	 contractAddress = controller.getContractProxy(_nameHash);
+117	 }
+118	 return contractAddress;
+119	 }
+120	 function _syncContract(string memory _name) internal {
+121	 bytes32 nameHash = keccak256(abi.encodePacked(_name));
+122	 address contractAddress = controller.getContractProxy(nameHash);
+123	 if (addressCache[nameHash] != contractAddress) {
+124	 addressCache[nameHash] = contractAddress;
+125	 emit ContractSynced(nameHash, contractAddress);
+126	 }
+127	 }
+128	 function syncAllContracts() external {
+129	 _syncContract("Curation");
+130	 _syncContract("EpochManager");
+131	 _syncContract("RewardsManager");
+132	 _syncContract("Staking");
+133	 _syncContract("GraphToken");
+134	 }
+135	 }
+136	 pragma solidity >=0.6.0 <0.8.0;
+137	 abstract contract ContextUpgradeable is Initializable {
+138	 function __Context_init() internal initializer {
+139	 __Context_init_unchained();
+140	 }
+141	 function __Context_init_unchained() internal initializer {
+142	 }
+143	 function _msgSender() internal view virtual returns (address payable) {
+144	 return msg.sender;
+145	 }
+146	 function _msgData() internal view virtual returns (bytes memory) {
+147	 this;
+148	 return msg.data;
+149	 }
+150	 uint256[50] private __gap;
+151	 }
+152	 pragma solidity ^0.7.6;
+153	 contract GraphUpgradeable {
+154	 bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+155	 modifier onlyProxyAdmin(IGraphProxy _proxy) {
+156	 require(msg.sender == _proxy.admin(), "Caller must be the proxy admin");
+157	 _;
+158	 }
+159	 modifier onlyImpl() {
+160	 require(msg.sender == _implementation(), "Caller must be the implementation");
+161	 _;
+162	 }
+163	 function _implementation() internal view returns (address impl) {
+164	 bytes32 slot = IMPLEMENTATION_SLOT;
+165	 assembly {
+166	 impl := sload(slot) }
+167	 }
+168	 function acceptProxy(IGraphProxy _proxy) external onlyProxyAdmin(_proxy) {
+169	 _proxy.acceptUpgrade();
+170	 }
+171	 function acceptProxyAndCall(IGraphProxy _proxy, bytes calldata _data) external onlyProxyAdmin(_proxy) {
+172	 _proxy.acceptUpgradeAndCall(_data);
+173	 }
+174	 }
+175	 pragma solidity ^0.7.6;
+176	 abstract contract CurationV1Storage is Managed, ICuration {
+177	 struct CurationPool {
+178	 uint256 tokens;
+179	 uint32 reserveRatio;
+180	 IGraphCurationToken gcs;
+181	 }
+182	 uint32 public override curationTaxPercentage;
+183	 uint32 public defaultReserveRatio;
+184	 address public curationTokenMaster;
+185	 uint256 public minimumCurationDeposit;
+186	 address public bondingCurve;
+187	 mapping(bytes32 => CurationPool) public pools;
+188	 }
+189	 pragma solidity >=0.6.0 <0.8.0;
+190	 interface IERC20 {
+191	 function totalSupply() external view returns (uint256);
+192	 function balanceOf(address account) external view returns (uint256);
+193	 function transfer(address recipient, uint256 amount) external returns (bool);
+194	 function allowance(address owner, address spender) external view returns (uint256);
+195	 function approve(address spender, uint256 amount) external returns (bool);
+196	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+197	 event Transfer(address indexed from, address indexed to, uint256 value);
+198	 event Approval(address indexed owner, address indexed spender, uint256 value);
+199	 }
+200	 pragma solidity >=0.6.12 <0.8.0;
+201	 interface IStakingData {
+202	 struct Allocation {
+203	 address indexer;
+204	 bytes32 subgraphDeploymentID;
+205	 uint256 tokens;
+206	 uint256 createdAtEpoch;
+207	 uint256 closedAtEpoch;
+208	 uint256 collectedFees;
+209	 uint256 effectiveAllocation;
+210	 uint256 accRewardsPerAllocatedToken;
+211	 }
+212	 struct CloseAllocationRequest {
+213	 address allocationID;
+214	 bytes32 poi;
+215	 }
+216	 struct DelegationPool {
+217	 uint32 cooldownBlocks;
+218	 uint32 indexingRewardCut;
+219	 uint32 queryFeeCut;
+220	 uint256 updatedAtBlock;
+221	 uint256 tokens;
+222	 uint256 shares;
+223	 mapping(address => Delegation) delegators;
+224	 }
+225	 struct Delegation {
+226	 uint256 shares;
+227	 uint256 tokensLocked;
+228	 uint256 tokensLockedUntil;
+229	 }
+230	 }
+231	 pragma solidity >=0.6.0 <0.8.0;
+232	 contract ERC20Upgradeable is Initializable, ContextUpgradeable, IERC20Upgradeable {
+233	 using SafeMathUpgradeable for uint256;
+234	 mapping (address => uint256) private _balances;
+235	 mapping (address => mapping (address => uint256)) private _allowances;
+236	 uint256 private _totalSupply;
+237	 string private _name;
+238	 string private _symbol;
+239	 uint8 private _decimals;
+240	 function __ERC20_init(string memory name_, string memory symbol_) internal initializer {
+241	 __Context_init_unchained();
+242	 __ERC20_init_unchained(name_, symbol_);
+243	 }
+244	 function __ERC20_init_unchained(string memory name_, string memory symbol_) internal initializer {
+245	 _name = name_;
+246	 _symbol = symbol_;
+247	 _decimals = 18;
+248	 }
+249	 function name() public view virtual returns (string memory) {
+250	 return _name;
+251	 }
+252	 function symbol() public view virtual returns (string memory) {
+253	 return _symbol;
+254	 }
+255	 function decimals() public view virtual returns (uint8) {
+256	 return _decimals;
+257	 }
+258	 function totalSupply() public view virtual override returns (uint256) {
+259	 return _totalSupply;
+260	 }
+261	 function balanceOf(address account) public view virtual override returns (uint256) {
+262	 return _balances[account];
+263	 }
+264	 function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+265	 _transfer(_msgSender(), recipient, amount);
+266	 return true;
+267	 }
+268	 function allowance(address owner, address spender) public view virtual override returns (uint256) {
+269	 return _allowances[owner][spender];
+270	 }
+271	 function approve(address spender, uint256 amount) public virtual override returns (bool) {
+272	 _approve(_msgSender(), spender, amount);
+273	 return true;
+274	 }
+275	 function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+276	 _transfer(sender, recipient, amount);
+277	 _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+278	 return true;
+279	 }
+280	 function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+281	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+282	 return true;
+283	 }
+284	 function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+285	 _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+286	 return true;
+287	 }
+288	 function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+289	 require(sender != address(0), "ERC20: transfer from the zero address");
+290	 require(recipient != address(0), "ERC20: transfer to the zero address");
+291	 _beforeTokenTransfer(sender, recipient, amount);
+292	 _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+293	 _balances[recipient] = _balances[recipient].add(amount);
+294	 emit Transfer(sender, recipient, amount);
+295	 }
+296	 function _mint(address account, uint256 amount) internal virtual {
+297	 require(account != address(0), "ERC20: mint to the zero address");
+298	 _beforeTokenTransfer(address(0), account, amount);
+299	 _totalSupply = _totalSupply.add(amount);
+300	 _balances[account] = _balances[account].add(amount);
+301	 emit Transfer(address(0), account, amount);
+302	 }
+303	 function _burn(address account, uint256 amount) internal virtual {
+304	 require(account != address(0), "ERC20: burn from the zero address");
+305	 _beforeTokenTransfer(account, address(0), amount);
+306	 _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+307	 _totalSupply = _totalSupply.sub(amount);
+308	 emit Transfer(account, address(0), amount);
+309	 }
+310	 function _approve(address owner, address spender, uint256 amount) internal virtual {
+311	 require(owner != address(0), "ERC20: approve from the zero address");
+312	 require(spender != address(0), "ERC20: approve to the zero address");
+313	 _allowances[owner][spender] = amount;
+314	 emit Approval(owner, spender, amount);
+315	 }
+316	 function _setupDecimals(uint8 decimals_) internal virtual {
+317	 _decimals = decimals_;
+318	 }
+319	 function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual {
+320	 }
+321	 uint256[44] private __gap;
+322	 }
+323	 pragma solidity ^0.7.6;
+324	 contract Governed {
+325	 address public governor;
+326	 address public pendingGovernor;
+327	 event NewPendingOwnership(address indexed from, address indexed to);
+328	 event NewOwnership(address indexed from, address indexed to);
+329	 modifier onlyGovernor() {
+330	 require(msg.sender == governor, "Only Governor can call");
+331	 _;
+332	 }
+333	 function _initialize(address _initGovernor) internal {
+334	 governor = _initGovernor;
+335	 }
+336	 function transferOwnership(address _newGovernor) external onlyGovernor {
+337	 require(_newGovernor != address(0), "Governor must be set");
+338	 address oldPendingGovernor = pendingGovernor;
+339	 pendingGovernor = _newGovernor;
+340	 emit NewPendingOwnership(oldPendingGovernor, pendingGovernor);
+341	 }
+342	 function acceptOwnership() external {
+343	 require( pendingGovernor != address(0) && msg.sender == pendingGovernor, "Caller must be pending governor" );
+344	 address oldGovernor = governor;
+345	 address oldPendingGovernor = pendingGovernor;
+346	 governor = pendingGovernor;
+347	 pendingGovernor = address(0);
+348	 emit NewOwnership(oldGovernor, governor);
+349	 emit NewPendingOwnership(oldPendingGovernor, pendingGovernor);
+350	 }
+351	 }
+352	 pragma solidity ^0.7.6;
+353	 contract Curation is CurationV1Storage, GraphUpgradeable {
+354	 using SafeMath for uint256;
+355	 uint32 private constant MAX_PPM = 1000000;
+356	 uint256 private constant SIGNAL_PER_MINIMUM_DEPOSIT = 1e18;
+357	 event Signalled( address indexed curator, bytes32 indexed subgraphDeploymentID, uint256 tokens, uint256 signal, uint256 curationTax );
+358	 event Burned( address indexed curator, bytes32 indexed subgraphDeploymentID, uint256 tokens, uint256 signal );
+359	 event Collected(bytes32 indexed subgraphDeploymentID, uint256 tokens);
+360	 function initialize( address _controller, address _bondingCurve, address _curationTokenMaster, uint32 _defaultReserveRatio, uint32 _curationTaxPercentage, uint256 _minimumCurationDeposit ) external onlyImpl {
+361	 Managed._initialize(_controller);
+362	 require(_bondingCurve != address(0), "Bonding curve must be set");
+363	 bondingCurve = _bondingCurve;
+364	 _setDefaultReserveRatio(_defaultReserveRatio);
+365	 _setCurationTaxPercentage(_curationTaxPercentage);
+366	 _setMinimumCurationDeposit(_minimumCurationDeposit);
+367	 _setCurationTokenMaster(_curationTokenMaster);
+368	 }
+369	 function setDefaultReserveRatio(uint32 _defaultReserveRatio) external override onlyGovernor {
+370	 _setDefaultReserveRatio(_defaultReserveRatio);
+371	 }
+372	 function _setDefaultReserveRatio(uint32 _defaultReserveRatio) private {
+373	 require(_defaultReserveRatio > 0, "Default reserve ratio must be > 0");
+374	 require( _defaultReserveRatio <= MAX_PPM, "Default reserve ratio cannot be higher than MAX_PPM" );
+375	 defaultReserveRatio = _defaultReserveRatio;
+376	 emit ParameterUpdated("defaultReserveRatio");
+377	 }
+378	 function setMinimumCurationDeposit(uint256 _minimumCurationDeposit) external override onlyGovernor {
+379	 _setMinimumCurationDeposit(_minimumCurationDeposit);
+380	 }
+381	 function _setMinimumCurationDeposit(uint256 _minimumCurationDeposit) private {
+382	 require(_minimumCurationDeposit > 0, "Minimum curation deposit cannot be 0");
+383	 minimumCurationDeposit = _minimumCurationDeposit;
+384	 emit ParameterUpdated("minimumCurationDeposit");
+385	 }
+386	 function setCurationTaxPercentage(uint32 _percentage) external override onlyGovernor {
+387	 _setCurationTaxPercentage(_percentage);
+388	 }
+389	 function _setCurationTaxPercentage(uint32 _percentage) private {
+390	 require( _percentage <= MAX_PPM, "Curation tax percentage must be below or equal to MAX_PPM" );
+391	 curationTaxPercentage = _percentage;
+392	 emit ParameterUpdated("curationTaxPercentage");
+393	 }
+394	 function setCurationTokenMaster(address _curationTokenMaster) external override onlyGovernor {
+395	 _setCurationTokenMaster(_curationTokenMaster);
+396	 }
+397	 function _setCurationTokenMaster(address _curationTokenMaster) private {
+398	 require(_curationTokenMaster != address(0), "Token master must be non-empty");
+399	 require(Address.isContract(_curationTokenMaster), "Token master must be a contract");
+400	 curationTokenMaster = _curationTokenMaster;
+401	 emit ParameterUpdated("curationTokenMaster");
+402	 }
+403	 function collect(bytes32 _subgraphDeploymentID, uint256 _tokens) external override {
+404	 require(msg.sender == address(staking()), "Caller must be the staking contract");
+405	 require( isCurated(_subgraphDeploymentID), "Subgraph deployment must be curated to collect fees" );
+406	 CurationPool storage curationPool = pools[_subgraphDeploymentID];
+407	 curationPool.tokens = curationPool.tokens.add(_tokens);
+408	 emit Collected(_subgraphDeploymentID, _tokens);
+409	 }
+410	 function mint( bytes32 _subgraphDeploymentID, uint256 _tokensIn, uint256 _signalOutMin ) external override notPartialPaused returns (uint256, uint256) {
+411	 require(_tokensIn > 0, "Cannot deposit zero tokens");
+412	 (uint256 signalOut, uint256 curationTax) = tokensToSignal(_subgraphDeploymentID, _tokensIn);
+413	 require(signalOut >= _signalOutMin, "Slippage protection");
+414	 address curator = msg.sender;
+415	 CurationPool storage curationPool = pools[_subgraphDeploymentID];
+416	 if (!isCurated(_subgraphDeploymentID)) {
+417	 curationPool.reserveRatio = defaultReserveRatio;
+418	 if (address(curationPool.gcs) == address(0)) {
+419	 IGraphCurationToken gcs = IGraphCurationToken(Clones.clone(curationTokenMaster));
+420	 gcs.initialize(address(this));
+421	 curationPool.gcs = gcs;
+422	 }
+423	 }
+424	 _updateRewards(_subgraphDeploymentID);
+425	 IGraphToken _graphToken = graphToken();
+426	 TokenUtils.pullTokens(_graphToken, curator, _tokensIn);
+427	 TokenUtils.burnTokens(_graphToken, curationTax);
+428	 curationPool.tokens = curationPool.tokens.add(_tokensIn.sub(curationTax));
+429	 curationPool.gcs.mint(curator, signalOut);
+430	 emit Signalled(curator, _subgraphDeploymentID, _tokensIn, signalOut, curationTax);
+431	 return (signalOut, curationTax);
+432	 }
+433	 function burn( bytes32 _subgraphDeploymentID, uint256 _signalIn, uint256 _tokensOutMin ) external override notPartialPaused returns (uint256) {
+434	 address curator = msg.sender;
+435	 require(_signalIn > 0, "Cannot burn zero signal");
+436	 require( getCuratorSignal(curator, _subgraphDeploymentID) >= _signalIn, "Cannot burn more signal than you own" );
+437	 uint256 tokensOut = signalToTokens(_subgraphDeploymentID, _signalIn);
+438	 require(tokensOut >= _tokensOutMin, "Slippage protection");
+439	 _updateRewards(_subgraphDeploymentID);
+440	 CurationPool storage curationPool = pools[_subgraphDeploymentID];
+441	 curationPool.tokens = curationPool.tokens.sub(tokensOut);
+442	 curationPool.gcs.burnFrom(curator, _signalIn);
+443	 if (getCurationPoolSignal(_subgraphDeploymentID) == 0) {
+444	 curationPool.tokens = 0;
+445	 curationPool.reserveRatio = 0;
+446	 }
+447	 TokenUtils.pushTokens(graphToken(), curator, tokensOut);
+448	 emit Burned(curator, _subgraphDeploymentID, tokensOut, _signalIn);
+449	 return tokensOut;
+450	 }
+451	 function isCurated(bytes32 _subgraphDeploymentID) public view override returns (bool) {
+452	 return pools[_subgraphDeploymentID].tokens > 0;
+453	 }
+454	 function getCuratorSignal(address _curator, bytes32 _subgraphDeploymentID) public view override returns (uint256) {
+455	 IGraphCurationToken gcs = pools[_subgraphDeploymentID].gcs;
+456	 return (address(gcs) == address(0)) ? 0 : gcs.balanceOf(_curator);
+457	 }
+458	 function getCurationPoolSignal(bytes32 _subgraphDeploymentID) public view override returns (uint256) {
+459	 IGraphCurationToken gcs = pools[_subgraphDeploymentID].gcs;
+460	 return (address(gcs) == address(0)) ? 0 : gcs.totalSupply();
+461	 }
+462	 function getCurationPoolTokens(bytes32 _subgraphDeploymentID) external view override returns (uint256) {
+463	 return pools[_subgraphDeploymentID].tokens;
+464	 }
+465	 function tokensToSignal(bytes32 _subgraphDeploymentID, uint256 _tokensIn) public view override returns (uint256, uint256) {
+466	 uint256 curationTax = _tokensIn.mul(uint256(curationTaxPercentage)).div(MAX_PPM);
+467	 uint256 signalOut = _tokensToSignal(_subgraphDeploymentID, _tokensIn.sub(curationTax));
+468	 return (signalOut, curationTax);
+469	 }
+470	 function _tokensToSignal(bytes32 _subgraphDeploymentID, uint256 _tokensIn) private view returns (uint256) {
+471	 CurationPool memory curationPool = pools[_subgraphDeploymentID];
+472	 if (curationPool.tokens == 0) {
+473	 require( _tokensIn >= minimumCurationDeposit, "Curation deposit is below minimum required" );
+474	 return BancorFormula(bondingCurve) .calculatePurchaseReturn( SIGNAL_PER_MINIMUM_DEPOSIT, minimumCurationDeposit, defaultReserveRatio, _tokensIn.sub(minimumCurationDeposit) ) .add(SIGNAL_PER_MINIMUM_DEPOSIT);
+475	 }
+476	 return BancorFormula(bondingCurve).calculatePurchaseReturn( getCurationPoolSignal(_subgraphDeploymentID), curationPool.tokens, curationPool.reserveRatio, _tokensIn );
+477	 }
+478	 function signalToTokens(bytes32 _subgraphDeploymentID, uint256 _signalIn) public view override returns (uint256) {
+479	 CurationPool memory curationPool = pools[_subgraphDeploymentID];
+480	 uint256 curationPoolSignal = getCurationPoolSignal(_subgraphDeploymentID);
+481	 require( curationPool.tokens > 0, "Subgraph deployment must be curated to perform calculations" );
+482	 require( curationPoolSignal >= _signalIn, "Signal must be above or equal to signal issued in the curation pool" );
+483	 return BancorFormula(bondingCurve).calculateSaleReturn( curationPoolSignal, curationPool.tokens, curationPool.reserveRatio, _signalIn );
+484	 }
+485	 function _updateRewards(bytes32 _subgraphDeploymentID) private {
+486	 IRewardsManager rewardsManager = rewardsManager();
+487	 if (address(rewardsManager) != address(0)) {
+488	 rewardsManager.onSubgraphSignalUpdate(_subgraphDeploymentID);
+489	 }
+490	 }
+491	 }
+492	 pragma solidity >=0.6.2 <0.8.0;
+493	 library Address {
+494	 function isContract(address account) internal view returns (bool) {
+495	 uint256 size;
+496	 assembly {
+497	 size := extcodesize(account) }
+498	 return size > 0;
+499	 }
+500	 function sendValue(address payable recipient, uint256 amount) internal {
+501	 require(address(this).balance >= amount, "Address: insufficient balance");
+502	 (bool success, ) = recipient.call{
+503	 value: amount }
+504	 ("");
+505	 require(success, "Address: unable to send value, recipient may have reverted");
+506	 }
+507	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+508	 return functionCall(target, data, "Address: low-level call failed");
+509	 }
+510	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+511	 return functionCallWithValue(target, data, 0, errorMessage);
+512	 }
+513	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+514	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+515	 }
+516	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+517	 require(address(this).balance >= value, "Address: insufficient balance for call");
+518	 require(isContract(target), "Address: call to non-contract");
+519	 (bool success, bytes memory returndata) = target.call{
+520	 value: value }
+521	 (data);
+522	 return _verifyCallResult(success, returndata, errorMessage);
+523	 }
+524	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+525	 return functionStaticCall(target, data, "Address: low-level static call failed");
+526	 }
+527	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+528	 require(isContract(target), "Address: static call to non-contract");
+529	 (bool success, bytes memory returndata) = target.staticcall(data);
+530	 return _verifyCallResult(success, returndata, errorMessage);
+531	 }
+532	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+533	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+534	 }
+535	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+536	 require(isContract(target), "Address: delegate call to non-contract");
+537	 (bool success, bytes memory returndata) = target.delegatecall(data);
+538	 return _verifyCallResult(success, returndata, errorMessage);
+539	 }
+540	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+541	 if (success) {
+542	 return returndata;
+543	 }
+544	 else {
+545	 if (returndata.length > 0) {
+546	 assembly {
+547	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+548	 }
+549	 else {
+550	 revert(errorMessage);
+551	 }
+552	 }
+553	 }
+554	 }
+555	 pragma solidity >=0.6.0 <0.8.0;
+556	 library SafeMath {
+557	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+558	 uint256 c = a + b;
+559	 if (c < a) return (false, 0);
+560	 return (true, c);
+561	 }
+562	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+563	 if (b > a) return (false, 0);
+564	 return (true, a - b);
+565	 }
+566	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+567	 if (a == 0) return (true, 0);
+568	 uint256 c = a * b;
+569	 if (c / a != b) return (false, 0);
+570	 return (true, c);
+571	 }
+572	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+573	 if (b == 0) return (false, 0);
+574	 return (true, a / b);
+575	 }
+576	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+577	 if (b == 0) return (false, 0);
+578	 return (true, a % b);
+579	 }
+580	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+581	 uint256 c = a + b;
+582	 require(c >= a, "SafeMath: addition overflow");
+583	 return c;
+584	 }
+585	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+586	 require(b <= a, "SafeMath: subtraction overflow");
+587	 return a - b;
+588	 }
+589	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+590	 if (a == 0) return 0;
+591	 uint256 c = a * b;
+592	 require(c / a == b, "SafeMath: multiplication overflow");
+593	 return c;
+594	 }
+595	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+596	 require(b > 0, "SafeMath: division by zero");
+597	 return a / b;
+598	 }
+599	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+600	 require(b > 0, "SafeMath: modulo by zero");
+601	 return a % b;
+602	 }
+603	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+604	 require(b <= a, errorMessage);
+605	 return a - b;
+606	 }
+607	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+608	 require(b > 0, errorMessage);
+609	 return a / b;
+610	 }
+611	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+612	 require(b > 0, errorMessage);
+613	 return a % b;
+614	 }
+615	 }
+616	 pragma solidity >=0.6.0 <0.8.0;
+617	 library Clones {
+618	 function clone(address master) internal returns (address instance) {
+619	 assembly {
+620	 let ptr := mload(0x40) mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(ptr, 0x14), shl(0x60, master)) mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000) instance := create(0, ptr, 0x37) }
+621	 require(instance != address(0), "ERC1167: create failed");
+622	 }
+623	 function cloneDeterministic(address master, bytes32 salt) internal returns (address instance) {
+624	 assembly {
+625	 let ptr := mload(0x40) mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(ptr, 0x14), shl(0x60, master)) mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000) instance := create2(0, ptr, 0x37, salt) }
+626	 require(instance != address(0), "ERC1167: create2 failed");
+627	 }
+628	 function predictDeterministicAddress(address master, bytes32 salt, address deployer) internal pure returns (address predicted) {
+629	 assembly {
+630	 let ptr := mload(0x40) mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000) mstore(add(ptr, 0x14), shl(0x60, master)) mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf3ff00000000000000000000000000000000) mstore(add(ptr, 0x38), shl(0x60, deployer)) mstore(add(ptr, 0x4c), salt) mstore(add(ptr, 0x6c), keccak256(ptr, 0x37)) predicted := keccak256(add(ptr, 0x37), 0x55) }
+631	 }
+632	 function predictDeterministicAddress(address master, bytes32 salt) internal view returns (address predicted) {
+633	 return predictDeterministicAddress(master, salt, address(this));
+634	 }
+635	 }
+636	 pragma solidity ^0.7.6;
+637	 contract BancorFormula {
+638	 using SafeMath for uint256;
+639	 uint16 public constant version = 6;
+640	 uint256 private constant ONE = 1;
+641	 uint32 private constant MAX_RATIO = 1000000;
+642	 uint8 private constant MIN_PRECISION = 32;
+643	 uint8 private constant MAX_PRECISION = 127;
+644	 uint256 private constant FIXED_1 = 0x080000000000000000000000000000000;
+645	 uint256 private constant FIXED_2 = 0x100000000000000000000000000000000;
+646	 uint256 private constant MAX_NUM = 0x200000000000000000000000000000000;
+647	 uint256 private constant LN2_NUMERATOR = 0x3f80fe03f80fe03f80fe03f80fe03f8;
+648	 uint256 private constant LN2_DENOMINATOR = 0x5b9de1d10bf4103d647b0955897ba80;
+649	 uint256 private constant OPT_LOG_MAX_VAL = 0x15bf0a8b1457695355fb8ac404e7a79e3;
+650	 uint256 private constant OPT_EXP_MAX_VAL = 0x800000000000000000000000000000000;
+651	 uint256[128] private maxExpArray;
+652	 constructor() {
+653	 maxExpArray[32] = 0x1c35fedd14ffffffffffffffffffffffff;
+654	 maxExpArray[33] = 0x1b0ce43b323fffffffffffffffffffffff;
+655	 maxExpArray[34] = 0x19f0028ec1ffffffffffffffffffffffff;
+656	 maxExpArray[35] = 0x18ded91f0e7fffffffffffffffffffffff;
+657	 maxExpArray[36] = 0x17d8ec7f0417ffffffffffffffffffffff;
+658	 maxExpArray[37] = 0x16ddc6556cdbffffffffffffffffffffff;
+659	 maxExpArray[38] = 0x15ecf52776a1ffffffffffffffffffffff;
+660	 maxExpArray[39] = 0x15060c256cb2ffffffffffffffffffffff;
+661	 maxExpArray[40] = 0x1428a2f98d72ffffffffffffffffffffff;
+662	 maxExpArray[41] = 0x13545598e5c23fffffffffffffffffffff;
+663	 maxExpArray[42] = 0x1288c4161ce1dfffffffffffffffffffff;
+664	 maxExpArray[43] = 0x11c592761c666fffffffffffffffffffff;
+665	 maxExpArray[44] = 0x110a688680a757ffffffffffffffffffff;
+666	 maxExpArray[45] = 0x1056f1b5bedf77ffffffffffffffffffff;
+667	 maxExpArray[46] = 0x0faadceceeff8bffffffffffffffffffff;
+668	 maxExpArray[47] = 0x0f05dc6b27edadffffffffffffffffffff;
+669	 maxExpArray[48] = 0x0e67a5a25da4107fffffffffffffffffff;
+670	 maxExpArray[49] = 0x0dcff115b14eedffffffffffffffffffff;
+671	 maxExpArray[50] = 0x0d3e7a392431239fffffffffffffffffff;
+672	 maxExpArray[51] = 0x0cb2ff529eb71e4fffffffffffffffffff;
+673	 maxExpArray[52] = 0x0c2d415c3db974afffffffffffffffffff;
+674	 maxExpArray[53] = 0x0bad03e7d883f69bffffffffffffffffff;
+675	 maxExpArray[54] = 0x0b320d03b2c343d5ffffffffffffffffff;
+676	 maxExpArray[55] = 0x0abc25204e02828dffffffffffffffffff;
+677	 maxExpArray[56] = 0x0a4b16f74ee4bb207fffffffffffffffff;
+678	 maxExpArray[57] = 0x09deaf736ac1f569ffffffffffffffffff;
+679	 maxExpArray[58] = 0x0976bd9952c7aa957fffffffffffffffff;
+680	 maxExpArray[59] = 0x09131271922eaa606fffffffffffffffff;
+681	 maxExpArray[60] = 0x08b380f3558668c46fffffffffffffffff;
+682	 maxExpArray[61] = 0x0857ddf0117efa215bffffffffffffffff;
+683	 maxExpArray[62] = 0x07ffffffffffffffffffffffffffffffff;
+684	 maxExpArray[63] = 0x07abbf6f6abb9d087fffffffffffffffff;
+685	 maxExpArray[64] = 0x075af62cbac95f7dfa7fffffffffffffff;
+686	 maxExpArray[65] = 0x070d7fb7452e187ac13fffffffffffffff;
+687	 maxExpArray[66] = 0x06c3390ecc8af379295fffffffffffffff;
+688	 maxExpArray[67] = 0x067c00a3b07ffc01fd6fffffffffffffff;
+689	 maxExpArray[68] = 0x0637b647c39cbb9d3d27ffffffffffffff;
+690	 maxExpArray[69] = 0x05f63b1fc104dbd39587ffffffffffffff;
+691	 maxExpArray[70] = 0x05b771955b36e12f7235ffffffffffffff;
+692	 maxExpArray[71] = 0x057b3d49dda84556d6f6ffffffffffffff;
+693	 maxExpArray[72] = 0x054183095b2c8ececf30ffffffffffffff;
+694	 maxExpArray[73] = 0x050a28be635ca2b888f77fffffffffffff;
+695	 maxExpArray[74] = 0x04d5156639708c9db33c3fffffffffffff;
+696	 maxExpArray[75] = 0x04a23105873875bd52dfdfffffffffffff;
+697	 maxExpArray[76] = 0x0471649d87199aa990756fffffffffffff;
+698	 maxExpArray[77] = 0x04429a21a029d4c1457cfbffffffffffff;
+699	 maxExpArray[78] = 0x0415bc6d6fb7dd71af2cb3ffffffffffff;
+700	 maxExpArray[79] = 0x03eab73b3bbfe282243ce1ffffffffffff;
+701	 maxExpArray[80] = 0x03c1771ac9fb6b4c18e229ffffffffffff;
+702	 maxExpArray[81] = 0x0399e96897690418f785257fffffffffff;
+703	 maxExpArray[82] = 0x0373fc456c53bb779bf0ea9fffffffffff;
+704	 maxExpArray[83] = 0x034f9e8e490c48e67e6ab8bfffffffffff;
+705	 maxExpArray[84] = 0x032cbfd4a7adc790560b3337ffffffffff;
+706	 maxExpArray[85] = 0x030b50570f6e5d2acca94613ffffffffff;
+707	 maxExpArray[86] = 0x02eb40f9f620fda6b56c2861ffffffffff;
+708	 maxExpArray[87] = 0x02cc8340ecb0d0f520a6af58ffffffffff;
+709	 maxExpArray[88] = 0x02af09481380a0a35cf1ba02ffffffffff;
+710	 maxExpArray[89] = 0x0292c5bdd3b92ec810287b1b3fffffffff;
+711	 maxExpArray[90] = 0x0277abdcdab07d5a77ac6d6b9fffffffff;
+712	 maxExpArray[91] = 0x025daf6654b1eaa55fd64df5efffffffff;
+713	 maxExpArray[92] = 0x0244c49c648baa98192dce88b7ffffffff;
+714	 maxExpArray[93] = 0x022ce03cd5619a311b2471268bffffffff;
+715	 maxExpArray[94] = 0x0215f77c045fbe885654a44a0fffffffff;
+716	 maxExpArray[95] = 0x01ffffffffffffffffffffffffffffffff;
+717	 maxExpArray[96] = 0x01eaefdbdaaee7421fc4d3ede5ffffffff;
+718	 maxExpArray[97] = 0x01d6bd8b2eb257df7e8ca57b09bfffffff;
+719	 maxExpArray[98] = 0x01c35fedd14b861eb0443f7f133fffffff;
+720	 maxExpArray[99] = 0x01b0ce43b322bcde4a56e8ada5afffffff;
+721	 maxExpArray[100] = 0x019f0028ec1fff007f5a195a39dfffffff;
+722	 maxExpArray[101] = 0x018ded91f0e72ee74f49b15ba527ffffff;
+723	 maxExpArray[102] = 0x017d8ec7f04136f4e5615fd41a63ffffff;
+724	 maxExpArray[103] = 0x016ddc6556cdb84bdc8d12d22e6fffffff;
+725	 maxExpArray[104] = 0x015ecf52776a1155b5bd8395814f7fffff;
+726	 maxExpArray[105] = 0x015060c256cb23b3b3cc3754cf40ffffff;
+727	 maxExpArray[106] = 0x01428a2f98d728ae223ddab715be3fffff;
+728	 maxExpArray[107] = 0x013545598e5c23276ccf0ede68034fffff;
+729	 maxExpArray[108] = 0x01288c4161ce1d6f54b7f61081194fffff;
+730	 maxExpArray[109] = 0x011c592761c666aa641d5a01a40f17ffff;
+731	 maxExpArray[110] = 0x0110a688680a7530515f3e6e6cfdcdffff;
+732	 maxExpArray[111] = 0x01056f1b5bedf75c6bcb2ce8aed428ffff;
+733	 maxExpArray[112] = 0x00faadceceeff8a0890f3875f008277fff;
+734	 maxExpArray[113] = 0x00f05dc6b27edad306388a600f6ba0bfff;
+735	 maxExpArray[114] = 0x00e67a5a25da41063de1495d5b18cdbfff;
+736	 maxExpArray[115] = 0x00dcff115b14eedde6fc3aa5353f2e4fff;
+737	 maxExpArray[116] = 0x00d3e7a3924312399f9aae2e0f868f8fff;
+738	 maxExpArray[117] = 0x00cb2ff529eb71e41582cccd5a1ee26fff;
+739	 maxExpArray[118] = 0x00c2d415c3db974ab32a51840c0b67edff;
+740	 maxExpArray[119] = 0x00bad03e7d883f69ad5b0a186184e06bff;
+741	 maxExpArray[120] = 0x00b320d03b2c343d4829abd6075f0cc5ff;
+742	 maxExpArray[121] = 0x00abc25204e02828d73c6e80bcdb1a95bf;
+743	 maxExpArray[122] = 0x00a4b16f74ee4bb2040a1ec6c15fbbf2df;
+744	 maxExpArray[123] = 0x009deaf736ac1f569deb1b5ae3f36c130f;
+745	 maxExpArray[124] = 0x00976bd9952c7aa957f5937d790ef65037;
+746	 maxExpArray[125] = 0x009131271922eaa6064b73a22d0bd4f2bf;
+747	 maxExpArray[126] = 0x008b380f3558668c46c91c49a2f8e967b9;
+748	 maxExpArray[127] = 0x00857ddf0117efa215952912839f6473e6;
+749	 }
+750	 function calculatePurchaseReturn( uint256 _supply, uint256 _reserveBalance, uint32 _reserveRatio, uint256 _depositAmount ) public view returns (uint256) {
+751	 require( _supply > 0 && _reserveBalance > 0 && _reserveRatio > 0 && _reserveRatio <= MAX_RATIO, "invalid parameters" );
+752	 if (_depositAmount == 0) return 0;
+753	 if (_reserveRatio == MAX_RATIO) return _supply.mul(_depositAmount) / _reserveBalance;
+754	 uint256 result;
+755	 uint8 precision;
+756	 uint256 baseN = _depositAmount.add(_reserveBalance);
+757	 (result, precision) = power(baseN, _reserveBalance, _reserveRatio, MAX_RATIO);
+758	 uint256 temp = _supply.mul(result) >> precision;
+759	 return temp - _supply;
+760	 }
+761	 function calculateSaleReturn( uint256 _supply, uint256 _reserveBalance, uint32 _reserveRatio, uint256 _sellAmount ) public view returns (uint256) {
+762	 require( _supply > 0 && _reserveBalance > 0 && _reserveRatio > 0 && _reserveRatio <= MAX_RATIO && _sellAmount <= _supply, "invalid parameters" );
+763	 if (_sellAmount == 0) return 0;
+764	 if (_sellAmount == _supply) return _reserveBalance;
+765	 if (_reserveRatio == MAX_RATIO) return _reserveBalance.mul(_sellAmount) / _supply;
+766	 uint256 result;
+767	 uint8 precision;
+768	 uint256 baseD = _supply - _sellAmount;
+769	 (result, precision) = power(_supply, baseD, MAX_RATIO, _reserveRatio);
+770	 uint256 temp1 = _reserveBalance.mul(result);
+771	 uint256 temp2 = _reserveBalance << precision;
+772	 return (temp1 - temp2) / result;
+773	 }
+774	 function calculateCrossReserveReturn( uint256 _fromReserveBalance, uint32 _fromReserveRatio, uint256 _toReserveBalance, uint32 _toReserveRatio, uint256 _amount ) public view returns (uint256) {
+775	 require( _fromReserveBalance > 0 && _fromReserveRatio > 0 && _fromReserveRatio <= MAX_RATIO && _toReserveBalance > 0 && _toReserveRatio > 0 && _toReserveRatio <= MAX_RATIO );
+776	 if (_fromReserveRatio == _toReserveRatio) return _toReserveBalance.mul(_amount) / _fromReserveBalance.add(_amount);
+777	 uint256 result;
+778	 uint8 precision;
+779	 uint256 baseN = _fromReserveBalance.add(_amount);
+780	 (result, precision) = power(baseN, _fromReserveBalance, _fromReserveRatio, _toReserveRatio);
+781	 uint256 temp1 = _toReserveBalance.mul(result);
+782	 uint256 temp2 = _toReserveBalance << precision;
+783	 return (temp1 - temp2) / result;
+784	 }
+785	 function calculateFundCost( uint256 _supply, uint256 _reserveBalance, uint32 _totalRatio, uint256 _amount ) public view returns (uint256) {
+786	 require( _supply > 0 && _reserveBalance > 0 && _totalRatio > 1 && _totalRatio <= MAX_RATIO * 2 );
+787	 if (_amount == 0) return 0;
+788	 if (_totalRatio == MAX_RATIO) return (_amount.mul(_reserveBalance) - 1) / _supply + 1;
+789	 uint256 result;
+790	 uint8 precision;
+791	 uint256 baseN = _supply.add(_amount);
+792	 (result, precision) = power(baseN, _supply, MAX_RATIO, _totalRatio);
+793	 uint256 temp = ((_reserveBalance.mul(result) - 1) >> precision) + 1;
+794	 return temp - _reserveBalance;
+795	 }
+796	 function calculateLiquidateReturn( uint256 _supply, uint256 _reserveBalance, uint32 _totalRatio, uint256 _amount ) public view returns (uint256) {
+797	 require( _supply > 0 && _reserveBalance > 0 && _totalRatio > 1 && _totalRatio <= MAX_RATIO * 2 && _amount <= _supply );
+798	 if (_amount == 0) return 0;
+799	 if (_amount == _supply) return _reserveBalance;
+800	 if (_totalRatio == MAX_RATIO) return _amount.mul(_reserveBalance) / _supply;
+801	 uint256 result;
+802	 uint8 precision;
+803	 uint256 baseD = _supply - _amount;
+804	 (result, precision) = power(_supply, baseD, MAX_RATIO, _totalRatio);
+805	 uint256 temp1 = _reserveBalance.mul(result);
+806	 uint256 temp2 = _reserveBalance << precision;
+807	 return (temp1 - temp2) / result;
+808	 }
+809	 function power( uint256 _baseN, uint256 _baseD, uint32 _expN, uint32 _expD ) internal view returns (uint256, uint8) {
+810	 require(_baseN < MAX_NUM);
+811	 uint256 baseLog;
+812	 uint256 base = (_baseN * FIXED_1) / _baseD;
+813	 if (base < OPT_LOG_MAX_VAL) {
+814	 baseLog = optimalLog(base);
+815	 }
+816	 else {
+817	 baseLog = generalLog(base);
+818	 }
+819	 uint256 baseLogTimesExp = (baseLog * _expN) / _expD;
+820	 if (baseLogTimesExp < OPT_EXP_MAX_VAL) {
+821	 return (optimalExp(baseLogTimesExp), MAX_PRECISION);
+822	 }
+823	 else {
+824	 uint8 precision = findPositionInMaxExpArray(baseLogTimesExp);
+825	 return ( generalExp(baseLogTimesExp >> (MAX_PRECISION - precision), precision), precision );
+826	 }
+827	 }
+828	 function generalLog(uint256 x) internal pure returns (uint256) {
+829	 uint256 res = 0;
+830	 if (x >= FIXED_2) {
+831	 uint8 count = floorLog2(x / FIXED_1);
+832	 x >>= count;
+833	 res = count * FIXED_1;
+834	 }
+835	 if (x > FIXED_1) {
+836	 for (uint8 i = MAX_PRECISION; i > 0; --i) {
+837	 x = (x * x) / FIXED_1;
+838	 if (x >= FIXED_2) {
+839	 x >>= 1;
+840	 res += ONE << (i - 1);
+841	 }
+842	 }
+843	 }
+844	 return (res * LN2_NUMERATOR) / LN2_DENOMINATOR;
+845	 }
+846	 function floorLog2(uint256 _n) internal pure returns (uint8) {
+847	 uint8 res = 0;
+848	 if (_n < 256) {
+849	 while (_n > 1) {
+850	 _n >>= 1;
+851	 res += 1;
+852	 }
+853	 }
+854	 else {
+855	 for (uint8 s = 128; s > 0; s >>= 1) {
+856	 if (_n >= (ONE << s)) {
+857	 _n >>= s;
+858	 res |= s;
+859	 }
+860	 }
+861	 }
+862	 return res;
+863	 }
+864	 function findPositionInMaxExpArray(uint256 _x) internal view returns (uint8) {
+865	 uint8 lo = MIN_PRECISION;
+866	 uint8 hi = MAX_PRECISION;
+867	 while (lo + 1 < hi) {
+868	 uint8 mid = (lo + hi) / 2;
+869	 if (maxExpArray[mid] >= _x) lo = mid;
+870	 else hi = mid;
+871	 }
+872	 if (maxExpArray[hi] >= _x) return hi;
+873	 if (maxExpArray[lo] >= _x) return lo;
+874	 require(false);
+875	 return 0;
+876	 }
+877	 function generalExp(uint256 _x, uint8 _precision) internal pure returns (uint256) {
+878	 uint256 xi = _x;
+879	 uint256 res = 0;
+880	 xi = (xi * _x) >> _precision;
+881	 res += xi * 0x3442c4e6074a82f1797f72ac0000000;
+882	 xi = (xi * _x) >> _precision;
+883	 res += xi * 0x116b96f757c380fb287fd0e40000000;
+884	 xi = (xi * _x) >> _precision;
+885	 res += xi * 0x045ae5bdd5f0e03eca1ff4390000000;
+886	 xi = (xi * _x) >> _precision;
+887	 res += xi * 0x00defabf91302cd95b9ffda50000000;
+888	 xi = (xi * _x) >> _precision;
+889	 res += xi * 0x002529ca9832b22439efff9b8000000;
+890	 xi = (xi * _x) >> _precision;
+891	 res += xi * 0x00054f1cf12bd04e516b6da88000000;
+892	 xi = (xi * _x) >> _precision;
+893	 res += xi * 0x0000a9e39e257a09ca2d6db51000000;
+894	 xi = (xi * _x) >> _precision;
+895	 res += xi * 0x000012e066e7b839fa050c309000000;
+896	 xi = (xi * _x) >> _precision;
+897	 res += xi * 0x000001e33d7d926c329a1ad1a800000;
+898	 xi = (xi * _x) >> _precision;
+899	 res += xi * 0x0000002bee513bdb4a6b19b5f800000;
+900	 xi = (xi * _x) >> _precision;
+901	 res += xi * 0x00000003a9316fa79b88eccf2a00000;
+902	 xi = (xi * _x) >> _precision;
+903	 res += xi * 0x0000000048177ebe1fa812375200000;
+904	 xi = (xi * _x) >> _precision;
+905	 res += xi * 0x0000000005263fe90242dcbacf00000;
+906	 xi = (xi * _x) >> _precision;
+907	 res += xi * 0x000000000057e22099c030d94100000;
+908	 xi = (xi * _x) >> _precision;
+909	 res += xi * 0x0000000000057e22099c030d9410000;
+910	 xi = (xi * _x) >> _precision;
+911	 res += xi * 0x00000000000052b6b54569976310000;
+912	 xi = (xi * _x) >> _precision;
+913	 res += xi * 0x00000000000004985f67696bf748000;
+914	 xi = (xi * _x) >> _precision;
+915	 res += xi * 0x000000000000003dea12ea99e498000;
+916	 xi = (xi * _x) >> _precision;
+917	 res += xi * 0x00000000000000031880f2214b6e000;
+918	 xi = (xi * _x) >> _precision;
+919	 res += xi * 0x000000000000000025bcff56eb36000;
+920	 xi = (xi * _x) >> _precision;
+921	 res += xi * 0x000000000000000001b722e10ab1000;
+922	 xi = (xi * _x) >> _precision;
+923	 res += xi * 0x0000000000000000001317c70077000;
+924	 xi = (xi * _x) >> _precision;
+925	 res += xi * 0x00000000000000000000cba84aafa00;
+926	 xi = (xi * _x) >> _precision;
+927	 res += xi * 0x00000000000000000000082573a0a00;
+928	 xi = (xi * _x) >> _precision;
+929	 res += xi * 0x00000000000000000000005035ad900;
+930	 xi = (xi * _x) >> _precision;
+931	 res += xi * 0x000000000000000000000002f881b00;
+932	 xi = (xi * _x) >> _precision;
+933	 res += xi * 0x0000000000000000000000001b29340;
+934	 xi = (xi * _x) >> _precision;
+935	 res += xi * 0x00000000000000000000000000efc40;
+936	 xi = (xi * _x) >> _precision;
+937	 res += xi * 0x0000000000000000000000000007fe0;
+938	 xi = (xi * _x) >> _precision;
+939	 res += xi * 0x0000000000000000000000000000420;
+940	 xi = (xi * _x) >> _precision;
+941	 res += xi * 0x0000000000000000000000000000021;
+942	 xi = (xi * _x) >> _precision;
+943	 res += xi * 0x0000000000000000000000000000001;
+944	 return res / 0x688589cc0e9505e2f2fee5580000000 + _x + (ONE << _precision);
+945	 }
+946	 function optimalLog(uint256 x) internal pure returns (uint256) {
+947	 uint256 res = 0;
+948	 uint256 y;
+949	 uint256 z;
+950	 uint256 w;
+951	 if (x >= 0xd3094c70f034de4b96ff7d5b6f99fcd8) {
+952	 res += 0x40000000000000000000000000000000;
+953	 x = (x * FIXED_1) / 0xd3094c70f034de4b96ff7d5b6f99fcd8;
+954	 }
+955	 if (x >= 0xa45af1e1f40c333b3de1db4dd55f29a7) {
+956	 res += 0x20000000000000000000000000000000;
+957	 x = (x * FIXED_1) / 0xa45af1e1f40c333b3de1db4dd55f29a7;
+958	 }
+959	 if (x >= 0x910b022db7ae67ce76b441c27035c6a1) {
+960	 res += 0x10000000000000000000000000000000;
+961	 x = (x * FIXED_1) / 0x910b022db7ae67ce76b441c27035c6a1;
+962	 }
+963	 if (x >= 0x88415abbe9a76bead8d00cf112e4d4a8) {
+964	 res += 0x08000000000000000000000000000000;
+965	 x = (x * FIXED_1) / 0x88415abbe9a76bead8d00cf112e4d4a8;
+966	 }
+967	 if (x >= 0x84102b00893f64c705e841d5d4064bd3) {
+968	 res += 0x04000000000000000000000000000000;
+969	 x = (x * FIXED_1) / 0x84102b00893f64c705e841d5d4064bd3;
+970	 }
+971	 if (x >= 0x8204055aaef1c8bd5c3259f4822735a2) {
+972	 res += 0x02000000000000000000000000000000;
+973	 x = (x * FIXED_1) / 0x8204055aaef1c8bd5c3259f4822735a2;
+974	 }
+975	 if (x >= 0x810100ab00222d861931c15e39b44e99) {
+976	 res += 0x01000000000000000000000000000000;
+977	 x = (x * FIXED_1) / 0x810100ab00222d861931c15e39b44e99;
+978	 }
+979	 if (x >= 0x808040155aabbbe9451521693554f733) {
+980	 res += 0x00800000000000000000000000000000;
+981	 x = (x * FIXED_1) / 0x808040155aabbbe9451521693554f733;
+982	 }
+983	 z = y = x - FIXED_1;
+984	 w = (y * y) / FIXED_1;
+985	 res += (z * (0x100000000000000000000000000000000 - y)) / 0x100000000000000000000000000000000;
+986	 z = (z * w) / FIXED_1;
+987	 res += (z * (0x0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa - y)) / 0x200000000000000000000000000000000;
+988	 z = (z * w) / FIXED_1;
+989	 res += (z * (0x099999999999999999999999999999999 - y)) / 0x300000000000000000000000000000000;
+990	 z = (z * w) / FIXED_1;
+991	 res += (z * (0x092492492492492492492492492492492 - y)) / 0x400000000000000000000000000000000;
+992	 z = (z * w) / FIXED_1;
+993	 res += (z * (0x08e38e38e38e38e38e38e38e38e38e38e - y)) / 0x500000000000000000000000000000000;
+994	 z = (z * w) / FIXED_1;
+995	 res += (z * (0x08ba2e8ba2e8ba2e8ba2e8ba2e8ba2e8b - y)) / 0x600000000000000000000000000000000;
+996	 z = (z * w) / FIXED_1;
+997	 res += (z * (0x089d89d89d89d89d89d89d89d89d89d89 - y)) / 0x700000000000000000000000000000000;
+998	 z = (z * w) / FIXED_1;
+999	 res += (z * (0x088888888888888888888888888888888 - y)) / 0x800000000000000000000000000000000;
+1000	 return res;
+1001	 }
+1002	 function optimalExp(uint256 x) internal pure returns (uint256) {
+1003	 uint256 res = 0;
+1004	 uint256 y;
+1005	 uint256 z;
+1006	 z = y = x % 0x10000000000000000000000000000000;
+1007	 z = (z * y) / FIXED_1;
+1008	 res += z * 0x10e1b3be415a0000;
+1009	 z = (z * y) / FIXED_1;
+1010	 res += z * 0x05a0913f6b1e0000;
+1011	 z = (z * y) / FIXED_1;
+1012	 res += z * 0x0168244fdac78000;
+1013	 z = (z * y) / FIXED_1;
+1014	 res += z * 0x004807432bc18000;
+1015	 z = (z * y) / FIXED_1;
+1016	 res += z * 0x000c0135dca04000;
+1017	 z = (z * y) / FIXED_1;
+1018	 res += z * 0x0001b707b1cdc000;
+1019	 z = (z * y) / FIXED_1;
+1020	 res += z * 0x000036e0f639b800;
+1021	 z = (z * y) / FIXED_1;
+1022	 res += z * 0x00000618fee9f800;
+1023	 z = (z * y) / FIXED_1;
+1024	 res += z * 0x0000009c197dcc00;
+1025	 z = (z * y) / FIXED_1;
+1026	 res += z * 0x0000000e30dce400;
+1027	 z = (z * y) / FIXED_1;
+1028	 res += z * 0x000000012ebd1300;
+1029	 z = (z * y) / FIXED_1;
+1030	 res += z * 0x0000000017499f00;
+1031	 z = (z * y) / FIXED_1;
+1032	 res += z * 0x0000000001a9d480;
+1033	 z = (z * y) / FIXED_1;
+1034	 res += z * 0x00000000001c6380;
+1035	 z = (z * y) / FIXED_1;
+1036	 res += z * 0x000000000001c638;
+1037	 z = (z * y) / FIXED_1;
+1038	 res += z * 0x0000000000001ab8;
+1039	 z = (z * y) / FIXED_1;
+1040	 res += z * 0x000000000000017c;
+1041	 z = (z * y) / FIXED_1;
+1042	 res += z * 0x0000000000000014;
+1043	 z = (z * y) / FIXED_1;
+1044	 res += z * 0x0000000000000001;
+1045	 res = res / 0x21c3677c82b40000 + y + FIXED_1;
+1046	 if ((x & 0x010000000000000000000000000000000) != 0) res = (res * 0x1c3d6a24ed82218787d624d3e5eba95f9) / 0x18ebef9eac820ae8682b9793ac6d1e776;
+1047	 if ((x & 0x020000000000000000000000000000000) != 0) res = (res * 0x18ebef9eac820ae8682b9793ac6d1e778) / 0x1368b2fc6f9609fe7aceb46aa619baed4;
+1048	 if ((x & 0x040000000000000000000000000000000) != 0) res = (res * 0x1368b2fc6f9609fe7aceb46aa619baed5) / 0x0bc5ab1b16779be3575bd8f0520a9f21f;
+1049	 if ((x & 0x080000000000000000000000000000000) != 0) res = (res * 0x0bc5ab1b16779be3575bd8f0520a9f21e) / 0x0454aaa8efe072e7f6ddbab84b40a55c9;
+1050	 if ((x & 0x100000000000000000000000000000000) != 0) res = (res * 0x0454aaa8efe072e7f6ddbab84b40a55c5) / 0x00960aadc109e7a3bf4578099615711ea;
+1051	 if ((x & 0x200000000000000000000000000000000) != 0) res = (res * 0x00960aadc109e7a3bf4578099615711d7) / 0x0002bf84208204f5977f9a8cf01fdce3d;
+1052	 if ((x & 0x400000000000000000000000000000000) != 0) res = (res * 0x0002bf84208204f5977f9a8cf01fdc307) / 0x0000003c6ab775dd0b95b4cbee7e65d11;
+1053	 return res;
+1054	 }
+1055	 function calculateCrossConnectorReturn( uint256 _fromConnectorBalance, uint32 _fromConnectorWeight, uint256 _toConnectorBalance, uint32 _toConnectorWeight, uint256 _amount ) public view returns (uint256) {
+1056	 return calculateCrossReserveReturn( _fromConnectorBalance, _fromConnectorWeight, _toConnectorBalance, _toConnectorWeight, _amount );
+1057	 }
+1058	 }
+1059	 pragma solidity ^0.7.6;
+1060	 library TokenUtils {
+1061	 function pullTokens( IGraphToken _graphToken, address _from, uint256 _amount ) internal {
+1062	 if (_amount > 0) {
+1063	 require(_graphToken.transferFrom(_from, address(this), _amount), "!transfer");
+1064	 }
+1065	 }
+1066	 function pushTokens( IGraphToken _graphToken, address _to, uint256 _amount ) internal {
+1067	 if (_amount > 0) {
+1068	 require(_graphToken.transfer(_to, _amount), "!transfer");
+1069	 }
+1070	 }
+1071	 function burnTokens(IGraphToken _graphToken, uint256 _amount) internal {
+1072	 if (_amount > 0) {
+1073	 _graphToken.burn(_amount);
+1074	 }
+1075	 }
+1076	 }
+1077	 pragma solidity ^0.7.6;
+1078	 contract GraphCurationToken is ERC20Upgradeable, Governed {
+1079	 function initialize(address _owner) external initializer {
+1080	 Governed._initialize(_owner);
+1081	 ERC20Upgradeable.__ERC20_init("Graph Curation Share", "GCS");
+1082	 }
+1083	 function mint(address _to, uint256 _amount) public onlyGovernor {
+1084	 _mint(_to, _amount);
+1085	 }
+1086	 function burnFrom(address _account, uint256 _amount) public onlyGovernor {
+1087	 _burn(_account, _amount);
+1088	 }
+1089	 }
+1090	 pragma solidity ^0.7.6;
+1091	 interface IGraphProxy {
+1092	 function admin() external returns (address);
+1093	 function setAdmin(address _newAdmin) external;
+1094	 function implementation() external returns (address);
+1095	 function pendingImplementation() external returns (address);
+1096	 function upgradeTo(address _newImplementation) external;
+1097	 function acceptUpgrade() external;
+1098	 function acceptUpgradeAndCall(bytes calldata data) external;
+1099	 }
+1100	 pragma solidity ^0.7.6;
+1101	 interface IGraphToken is IERC20 {
+1102	 function burn(uint256 amount) external;
+1103	 function mint(address _to, uint256 _amount) external;
+1104	 function addMinter(address _account) external;
+1105	 function removeMinter(address _account) external;
+1106	 function renounceMinter() external;
+1107	 function isMinter(address _account) external view returns (bool);
+1108	 function permit( address _owner, address _spender, uint256 _value, uint256 _deadline, uint8 _v, bytes32 _r, bytes32 _s ) external;
+1109	 }
+1110	 pragma solidity >=0.6.12 <0.8.0;
+1111	 interface IController {
+1112	 function getGovernor() external view returns (address);
+1113	 function setContractProxy(bytes32 _id, address _contractAddress) external;
+1114	 function unsetContractProxy(bytes32 _id) external;
+1115	 function updateController(bytes32 _id, address _controller) external;
+1116	 function getContractProxy(bytes32 _id) external view returns (address);
+1117	 function setPartialPaused(bool _partialPaused) external;
+1118	 function setPaused(bool _paused) external;
+1119	 function setPauseGuardian(address _newPauseGuardian) external;
+1120	 function paused() external view returns (bool);
+1121	 function partialPaused() external view returns (bool);
+1122	 }
+1123	 pragma solidity ^0.7.6;
+1124	 interface IEpochManager {
+1125	 function setEpochLength(uint256 _epochLength) external;
+1126	 function runEpoch() external;
+1127	 function isCurrentEpochRun() external view returns (bool);
+1128	 function blockNum() external view returns (uint256);
+1129	 function blockHash(uint256 _block) external view returns (bytes32);
+1130	 function currentEpoch() external view returns (uint256);
+1131	 function currentEpochBlock() external view returns (uint256);
+1132	 function currentEpochBlockSinceStart() external view returns (uint256);
+1133	 function epochsSince(uint256 _epoch) external view returns (uint256);
+1134	 function epochsSinceUpdate() external view returns (uint256);
+1135	 }
+1136	 pragma solidity ^0.7.6;
+1137	 interface IRewardsManager {
+1138	 struct Subgraph {
+1139	 uint256 accRewardsForSubgraph;
+1140	 uint256 accRewardsForSubgraphSnapshot;
+1141	 uint256 accRewardsPerSignalSnapshot;
+1142	 uint256 accRewardsPerAllocatedToken;
+1143	 }
+1144	 function setIssuanceRate(uint256 _issuanceRate) external;
+1145	 function setSubgraphAvailabilityOracle(address _subgraphAvailabilityOracle) external;
+1146	 function setDenied(bytes32 _subgraphDeploymentID, bool _deny) external;
+1147	 function setDeniedMany(bytes32[] calldata _subgraphDeploymentID, bool[] calldata _deny) external;
+1148	 function isDenied(bytes32 _subgraphDeploymentID) external view returns (bool);
+1149	 function getNewRewardsPerSignal() external view returns (uint256);
+1150	 function getAccRewardsPerSignal() external view returns (uint256);
+1151	 function getAccRewardsForSubgraph(bytes32 _subgraphDeploymentID) external view returns (uint256);
+1152	 function getAccRewardsPerAllocatedToken(bytes32 _subgraphDeploymentID) external view returns (uint256, uint256);
+1153	 function getRewards(address _allocationID) external view returns (uint256);
+1154	 function updateAccRewardsPerSignal() external returns (uint256);
+1155	 function takeRewards(address _allocationID) external returns (uint256);
+1156	 function onSubgraphSignalUpdate(bytes32 _subgraphDeploymentID) external returns (uint256);
+1157	 function onSubgraphAllocationUpdate(bytes32 _subgraphDeploymentID) external returns (uint256);
+1158	 }
+1159	 pragma solidity >=0.6.12 <0.8.0;
+1160	 interface IStaking is IStakingData {
+1161	 enum AllocationState {
+1162	 Null, Active, Closed, Finalized, Claimed }
+1163	 function setMinimumIndexerStake(uint256 _minimumIndexerStake) external;
+1164	 function setThawingPeriod(uint32 _thawingPeriod) external;
+1165	 function setCurationPercentage(uint32 _percentage) external;
+1166	 function setProtocolPercentage(uint32 _percentage) external;
+1167	 function setChannelDisputeEpochs(uint32 _channelDisputeEpochs) external;
+1168	 function setMaxAllocationEpochs(uint32 _maxAllocationEpochs) external;
+1169	 function setRebateRatio(uint32 _alphaNumerator, uint32 _alphaDenominator) external;
+1170	 function setDelegationRatio(uint32 _delegationRatio) external;
+1171	 function setDelegationParameters( uint32 _indexingRewardCut, uint32 _queryFeeCut, uint32 _cooldownBlocks ) external;
+1172	 function setDelegationParametersCooldown(uint32 _blocks) external;
+1173	 function setDelegationUnbondingPeriod(uint32 _delegationUnbondingPeriod) external;
+1174	 function setDelegationTaxPercentage(uint32 _percentage) external;
+1175	 function setSlasher(address _slasher, bool _allowed) external;
+1176	 function setAssetHolder(address _assetHolder, bool _allowed) external;
+1177	 function setOperator(address _operator, bool _allowed) external;
+1178	 function isOperator(address _operator, address _indexer) external view returns (bool);
+1179	 function stake(uint256 _tokens) external;
+1180	 function stakeTo(address _indexer, uint256 _tokens) external;
+1181	 function unstake(uint256 _tokens) external;
+1182	 function slash( address _indexer, uint256 _tokens, uint256 _reward, address _beneficiary ) external;
+1183	 function withdraw() external;
+1184	 function setRewardsDestination(address _destination) external;
+1185	 function delegate(address _indexer, uint256 _tokens) external returns (uint256);
+1186	 function undelegate(address _indexer, uint256 _shares) external returns (uint256);
+1187	 function withdrawDelegated(address _indexer, address _newIndexer) external returns (uint256);
+1188	 function allocate( bytes32 _subgraphDeploymentID, uint256 _tokens, address _allocationID, bytes32 _metadata, bytes calldata _proof ) external;
+1189	 function allocateFrom( address _indexer, bytes32 _subgraphDeploymentID, uint256 _tokens, address _allocationID, bytes32 _metadata, bytes calldata _proof ) external;
+1190	 function closeAllocation(address _allocationID, bytes32 _poi) external;
+1191	 function closeAllocationMany(CloseAllocationRequest[] calldata _requests) external;
+1192	 function closeAndAllocate( address _oldAllocationID, bytes32 _poi, address _indexer, bytes32 _subgraphDeploymentID, uint256 _tokens, address _allocationID, bytes32 _metadata, bytes calldata _proof ) external;
+1193	 function collect(uint256 _tokens, address _allocationID) external;
+1194	 function claim(address _allocationID, bool _restake) external;
+1195	 function claimMany(address[] calldata _allocationID, bool _restake) external;
+1196	 function hasStake(address _indexer) external view returns (bool);
+1197	 function getIndexerStakedTokens(address _indexer) external view returns (uint256);
+1198	 function getIndexerCapacity(address _indexer) external view returns (uint256);
+1199	 function getAllocation(address _allocationID) external view returns (Allocation memory);
+1200	 function getAllocationState(address _allocationID) external view returns (AllocationState);
+1201	 function isAllocation(address _allocationID) external view returns (bool);
+1202	 function getSubgraphAllocatedTokens(bytes32 _subgraphDeploymentID) external view returns (uint256);
+1203	 function getDelegation(address _indexer, address _delegator) external view returns (Delegation memory);
+1204	 function isDelegator(address _indexer, address _delegator) external view returns (bool);
+1205	 }
+1206	 pragma solidity ^0.7.6;
+1207	 interface IGraphCurationToken is IERC20Upgradeable {
+1208	 function initialize(address _owner) external;
+1209	 function burnFrom(address _account, uint256 _amount) external;
+1210	 function mint(address _to, uint256 _amount) external;
+1211	 }
+1212	 pragma solidity >=0.6.0 <0.8.0;
+1213	 library SafeMathUpgradeable {
+1214	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+1215	 uint256 c = a + b;
+1216	 if (c < a) return (false, 0);
+1217	 return (true, c);
+1218	 }
+1219	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+1220	 if (b > a) return (false, 0);
+1221	 return (true, a - b);
+1222	 }
+1223	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+1224	 if (a == 0) return (true, 0);
+1225	 uint256 c = a * b;
+1226	 if (c / a != b) return (false, 0);
+1227	 return (true, c);
+1228	 }
+1229	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+1230	 if (b == 0) return (false, 0);
+1231	 return (true, a / b);
+1232	 }
+1233	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+1234	 if (b == 0) return (false, 0);
+1235	 return (true, a % b);
+1236	 }
+1237	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+1238	 uint256 c = a + b;
+1239	 require(c >= a, "SafeMath: addition overflow");
+1240	 return c;
+1241	 }
+1242	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+1243	 require(b <= a, "SafeMath: subtraction overflow");
+1244	 return a - b;
+1245	 }
+1246	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+1247	 if (a == 0) return 0;
+1248	 uint256 c = a * b;
+1249	 require(c / a == b, "SafeMath: multiplication overflow");
+1250	 return c;
+1251	 }
+1252	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+1253	 require(b > 0, "SafeMath: division by zero");
+1254	 return a / b;
+1255	 }
+1256	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+1257	 require(b > 0, "SafeMath: modulo by zero");
+1258	 return a % b;
+1259	 }
+1260	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+1261	 require(b <= a, errorMessage);
+1262	 return a - b;
+1263	 }
+1264	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+1265	 require(b > 0, errorMessage);
+1266	 return a / b;
+1267	 }
+1268	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+1269	 require(b > 0, errorMessage);
+1270	 return a % b;
+1271	 }
+1272	 }
+1273	 pragma solidity >=0.6.2 <0.8.0;
+1274	 library AddressUpgradeable {
+1275	 function isContract(address account) internal view returns (bool) {
+1276	 uint256 size;
+1277	 assembly {
+1278	 size := extcodesize(account) }
+1279	 return size > 0;
+1280	 }
+1281	 function sendValue(address payable recipient, uint256 amount) internal {
+1282	 require(address(this).balance >= amount, "Address: insufficient balance");
+1283	 (bool success, ) = recipient.call{
+1284	 value: amount }
+1285	 ("");
+1286	 require(success, "Address: unable to send value, recipient may have reverted");
+1287	 }
+1288	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+1289	 return functionCall(target, data, "Address: low-level call failed");
+1290	 }
+1291	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+1292	 return functionCallWithValue(target, data, 0, errorMessage);
+1293	 }
+1294	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+1295	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+1296	 }
+1297	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+1298	 require(address(this).balance >= value, "Address: insufficient balance for call");
+1299	 require(isContract(target), "Address: call to non-contract");
+1300	 (bool success, bytes memory returndata) = target.call{
+1301	 value: value }
+1302	 (data);
+1303	 return _verifyCallResult(success, returndata, errorMessage);
+1304	 }
+1305	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+1306	 return functionStaticCall(target, data, "Address: low-level static call failed");
+1307	 }
+1308	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+1309	 require(isContract(target), "Address: static call to non-contract");
+1310	 (bool success, bytes memory returndata) = target.staticcall(data);
+1311	 return _verifyCallResult(success, returndata, errorMessage);
+1312	 }
+1313	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+1314	 if (success) {
+1315	 return returndata;
+1316	 }
+1317	 else {
+1318	 if (returndata.length > 0) {
+1319	 assembly {
+1320	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+1321	 }
+1322	 else {
+1323	 revert(errorMessage);
+1324	 }
+1325	 }
+1326	 }
+1327	 }

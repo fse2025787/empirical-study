@@ -1,0 +1,1571 @@
+row number 
+1	       pragma solidity 0.7.6;
+2	 abstract contract BalancerOwnable {
+3	 function setController(address controller) external virtual;
+4	 }
+5	 abstract contract AbstractPool is BalancerOwnable {
+6	 function setSwapFee(uint256 swapFee) external virtual;
+7	 function setPublicSwap(bool public_) external virtual;
+8	 function joinPool(uint256 poolAmountOut, uint256[] calldata maxAmountsIn) external virtual;
+9	 function totalSupply() external virtual returns (uint256);
+10	 }
+11	 pragma solidity >=0.6.0 <0.8.0;
+12	 interface IERC20 {
+13	 function totalSupply() external view returns (uint256);
+14	 function balanceOf(address account) external view returns (uint256);
+15	 function transfer(address recipient, uint256 amount) external returns (bool);
+16	 function allowance(address owner, address spender) external view returns (uint256);
+17	 function approve(address spender, uint256 amount) external returns (bool);
+18	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+19	 event Transfer(address indexed from, address indexed to, uint256 value);
+20	 event Approval(address indexed owner, address indexed spender, uint256 value);
+21	 }
+22	 pragma solidity ^0.7.6;
+23	 contract PoolRouter {
+24	 using SafeMath for uint256;
+25	 uint256 public constant LIQ_FEE_DECIMALS = 1000000;
+26	 uint256 public constant PROTOCOL_FEE_DECIMALS = 100000;
+27	 uint256 public constant MAX_OUT_RATIO = (uint256(10**18) / 3) + 1;
+28	 uint256 public protocolFee = 99950;
+29	 ISmartPool public smartPool;
+30	 ISovWrapper public wrappingContract;
+31	 IMintableERC20 public sovToken;
+32	 address public treasury;
+33	 constructor( address _smartPool, address _wrappingContract, address _treasury, address _sovToken, uint256 _protocolFee ) {
+34	 smartPool = ISmartPool(_smartPool);
+35	 wrappingContract = ISovWrapper(_wrappingContract);
+36	 sovToken = IMintableERC20(_sovToken);
+37	 treasury = _treasury;
+38	 protocolFee = _protocolFee;
+39	 }
+40	 function deposit( address tokenIn, uint256 tokenAmountIn, uint256 minPoolAmountOut, uint256 liquidationFee ) public {
+41	 IERC20(tokenIn).transferFrom(msg.sender, address(this), tokenAmountIn);
+42	 uint256 amountMinusFee = tokenAmountIn.mul(protocolFee).div( PROTOCOL_FEE_DECIMALS );
+43	 uint256 poolAmountMinusFee = minPoolAmountOut.mul(protocolFee).div( PROTOCOL_FEE_DECIMALS );
+44	 IERC20(tokenIn).approve(address(smartPool), amountMinusFee);
+45	 smartPool.joinswapExternAmountIn( tokenIn, amountMinusFee, poolAmountMinusFee );
+46	 uint256 balance = smartPool.balanceOf(address(this));
+47	 smartPool.approve(address(wrappingContract), balance);
+48	 wrappingContract.deposit(msg.sender, balance, liquidationFee);
+49	 sovToken.mint(msg.sender, balance);
+50	 }
+51	 function depositAll( uint256 poolAmountOut, uint256[] calldata maxTokensAmountIn, uint256 liquidationFee ) public {
+52	 address[] memory tokens = getPoolTokens();
+53	 uint256[] memory amountsIn = _getTokensAmountIn( poolAmountOut, maxTokensAmountIn );
+54	 uint256[] memory amountsInMinusFee = new uint256[](tokens.length);
+55	 for (uint256 i = 0; i < tokens.length; i++) {
+56	 address tokenIn = tokens[i];
+57	 uint256 tokenAmountIn = amountsIn[i];
+58	 IERC20(tokenIn).transferFrom( msg.sender, address(this), tokenAmountIn );
+59	 uint256 amountMinusFee = tokenAmountIn.mul(protocolFee).div( PROTOCOL_FEE_DECIMALS );
+60	 amountsInMinusFee[i] = amountMinusFee;
+61	 IERC20(tokenIn).approve(address(smartPool), amountMinusFee);
+62	 }
+63	 uint256 poolAmountMinusFee = poolAmountOut.mul(protocolFee).div( PROTOCOL_FEE_DECIMALS );
+64	 smartPool.joinPool(poolAmountMinusFee, amountsInMinusFee);
+65	 uint256 balance = smartPool.balanceOf(address(this));
+66	 smartPool.approve(address(wrappingContract), balance);
+67	 wrappingContract.deposit(msg.sender, balance, liquidationFee);
+68	 sovToken.mint(msg.sender, balance);
+69	 }
+70	 function withdraw( address tokenOut, uint256 poolAmountIn, uint256 minAmountOut ) public {
+71	 require( sovToken.balanceOf(msg.sender) >= poolAmountIn, "Not enought SOV tokens" );
+72	 sovToken.burn(msg.sender, poolAmountIn);
+73	 wrappingContract.withdraw(msg.sender, poolAmountIn);
+74	 uint256 balanceBefore = IERC20(tokenOut).balanceOf(address(this));
+75	 smartPool.exitswapPoolAmountIn(tokenOut, poolAmountIn, minAmountOut);
+76	 uint256 balanceAfter = IERC20(tokenOut).balanceOf(address(this));
+77	 uint256 amountMinusFee = (balanceAfter.sub(balanceBefore)) .mul(protocolFee) .div(PROTOCOL_FEE_DECIMALS);
+78	 IERC20(tokenOut).transfer(msg.sender, amountMinusFee);
+79	 }
+80	 function withdrawAll(uint256 poolAmountIn, uint256[] memory minAmountsOut) public {
+81	 address[] memory tokens = getPoolTokens();
+82	 uint256[] memory balancesBefore = new uint256[](tokens.length);
+83	 require( sovToken.balanceOf(msg.sender) >= poolAmountIn, "Not enought SOV tokens" );
+84	 sovToken.burn(msg.sender, poolAmountIn);
+85	 wrappingContract.withdraw(msg.sender, poolAmountIn);
+86	 for (uint256 i = 0; i < tokens.length; i++) {
+87	 address tokenOut = tokens[i];
+88	 balancesBefore[i] = IERC20(tokenOut).balanceOf(address(this));
+89	 }
+90	 smartPool.exitPool(poolAmountIn, minAmountsOut);
+91	 for (uint256 i = 0; i < tokens.length; i++) {
+92	 address tokenOut = tokens[i];
+93	 uint256 balanceAfter = IERC20(tokenOut).balanceOf(address(this));
+94	 uint256 amountMinusFee = (balanceAfter.sub(balancesBefore[i])) .mul(protocolFee) .div(PROTOCOL_FEE_DECIMALS);
+95	 IERC20(tokenOut).transfer(msg.sender, amountMinusFee);
+96	 }
+97	 }
+98	 function liquidate( address liquidatedUser, address tokenOut, uint256 poolAmountIn, uint256 minAmountOut ) public {
+99	 require( sovToken.balanceOf(msg.sender) >= poolAmountIn, "Not enought SOV tokens" );
+100	 sovToken.burn(msg.sender, poolAmountIn);
+101	 wrappingContract.liquidate(msg.sender, liquidatedUser, poolAmountIn);
+102	 uint256 balanceBefore = IERC20(tokenOut).balanceOf(address(this));
+103	 smartPool.exitswapPoolAmountIn(tokenOut, poolAmountIn, minAmountOut);
+104	 uint256 balanceAfter = IERC20(tokenOut).balanceOf(address(this));
+105	 uint256 amountMinusFee = (balanceAfter.sub(balanceBefore)) .mul(protocolFee) .div(100000);
+106	 IERC20(tokenOut).transfer(msg.sender, amountMinusFee);
+107	 uint256 liquidationFeeAmount = (balanceAfter.sub(balanceBefore)) .mul(wrappingContract.liquidationFee(liquidatedUser)) .div(LIQ_FEE_DECIMALS);
+108	 require( IERC20(tokenOut).allowance(msg.sender, address(this)) >= liquidationFeeAmount, "Insuffiecient allowance for liquidation Fee" );
+109	 IERC20(tokenOut).transferFrom( msg.sender, liquidatedUser, liquidationFeeAmount );
+110	 }
+111	 function collectFeesToDAO(address token) public {
+112	 uint256 balance = IERC20(token).balanceOf(address(this));
+113	 IERC20(token).transfer(treasury, balance);
+114	 }
+115	 function getPoolTokens() public view returns (address[] memory) {
+116	 BPool bPool = smartPool.bPool();
+117	 return bPool.getCurrentTokens();
+118	 }
+119	 function getTokenWeights() public view returns (uint256[] memory) {
+120	 address[] memory tokens = getPoolTokens();
+121	 uint256[] memory weights = new uint256[](tokens.length);
+122	 for (uint256 i = 0; i < tokens.length; i++) {
+123	 weights[i] = smartPool.getDenormalizedWeight(tokens[i]);
+124	 }
+125	 return weights;
+126	 }
+127	 function getSovAmountOutSingle( address tokenIn, uint256 tokenAmountIn, uint256 minPoolAmountOut ) public view returns (uint256 poolAmountOut) {
+128	 BPool bPool = smartPool.bPool();
+129	 require(bPool.isBound(tokenIn), "ERR_NOT_BOUND");
+130	 uint256 tokenAmountInAdj = tokenAmountIn.mul(protocolFee).div( PROTOCOL_FEE_DECIMALS );
+131	 poolAmountOut = bPool.calcPoolOutGivenSingleIn( bPool.getBalance(tokenIn), bPool.getDenormalizedWeight(tokenIn), smartPool.totalSupply(), bPool.getTotalDenormalizedWeight(), tokenAmountInAdj, bPool.getSwapFee() );
+132	 require(poolAmountOut >= minPoolAmountOut, "ERR_LIMIT_IN");
+133	 }
+134	 function getTokensAmountIn( uint256 poolAmountOut, uint256[] calldata maxAmountsIn ) public view returns (uint256[] memory actualAmountsIn) {
+135	 BPool bPool = smartPool.bPool();
+136	 uint256 poolAmountOutAdj = poolAmountOut.mul(protocolFee).div( PROTOCOL_FEE_DECIMALS );
+137	 address[] memory tokens = bPool.getCurrentTokens();
+138	 require(maxAmountsIn.length == tokens.length, "ERR_AMOUNTS_MISMATCH");
+139	 uint256 poolTotal = smartPool.totalSupply();
+140	 uint256 ratio = SafeMath.div( poolAmountOutAdj.mul(10**18), SafeMath.sub(poolTotal, 1) );
+141	 require(ratio != 0, "ERR_MATH_APPROX");
+142	 actualAmountsIn = new uint256[](tokens.length);
+143	 for (uint256 i = 0; i < tokens.length; i++) {
+144	 address t = tokens[i];
+145	 uint256 bal = bPool.getBalance(t);
+146	 uint256 tokenAmountIn = SafeMath .mul(ratio, SafeMath.add(bal, 1)) .div(10**18);
+147	 require(tokenAmountIn != 0, "ERR_MATH_APPROX");
+148	 require(tokenAmountIn <= maxAmountsIn[i], "ERR_LIMIT_IN");
+149	 actualAmountsIn[i] = tokenAmountIn;
+150	 }
+151	 }
+152	 function getSovAmountInSingle( address tokenOut, uint256 tokenAmountOut, uint256 maxPoolAmountIn ) public view returns (uint256 poolAmountIn) {
+153	 BPool bPool = smartPool.bPool();
+154	 require(bPool.isBound(tokenOut), "ERR_NOT_BOUND");
+155	 uint256 tokenAmountOutAdj = tokenAmountOut.mul(protocolFee).div( PROTOCOL_FEE_DECIMALS );
+156	 require( tokenAmountOutAdj <= SafeMath.mul(bPool.getBalance(tokenOut), MAX_OUT_RATIO), "ERR_MAX_OUT_RATIO" );
+157	 poolAmountIn = bPool.calcPoolInGivenSingleOut( bPool.getBalance(tokenOut), bPool.getDenormalizedWeight(tokenOut), smartPool.totalSupply(), bPool.getTotalDenormalizedWeight(), tokenAmountOutAdj, bPool.getSwapFee() );
+158	 require(poolAmountIn != 0, "ERR_MATH_APPROX");
+159	 require(poolAmountIn <= maxPoolAmountIn, "ERR_LIMIT_IN");
+160	 }
+161	 function getTokenAmountOutSingle( address tokenOut, uint256 poolAmountIn, uint256 minTokenAmountOut ) public view returns (uint256 tokenAmountOut) {
+162	 BPool bPool = smartPool.bPool();
+163	 require(bPool.isBound(tokenOut), "ERR_NOT_BOUND");
+164	 uint256 poolAmountInAdj = poolAmountIn.mul(protocolFee).div( PROTOCOL_FEE_DECIMALS );
+165	 tokenAmountOut = bPool.calcSingleOutGivenPoolIn( bPool.getBalance(tokenOut), bPool.getDenormalizedWeight(tokenOut), smartPool.totalSupply(), bPool.getTotalDenormalizedWeight(), poolAmountInAdj, bPool.getSwapFee() );
+166	 require(tokenAmountOut >= minTokenAmountOut, "ERR_LIMIT_OUT");
+167	 require( tokenAmountOut <= bPool.getBalance(tokenOut).mul(MAX_OUT_RATIO), "ERR_MAX_OUT_RATIO" );
+168	 }
+169	 function getTokensAmountOut( uint256 poolAmountIn, uint256[] calldata minAmountsOut ) public view returns (uint256[] memory actualAmountsOut) {
+170	 BPool bPool = smartPool.bPool();
+171	 address[] memory tokens = bPool.getCurrentTokens();
+172	 require(minAmountsOut.length == tokens.length, "ERR_AMOUNTS_MISMATCH");
+173	 uint256 poolTotal = smartPool.totalSupply();
+174	 uint256 ratio = SafeMath.div( poolAmountIn.mul(10**18), SafeMath.add(poolTotal, 1) );
+175	 require(ratio != 0, "ERR_MATH_APPROX");
+176	 actualAmountsOut = new uint256[](tokens.length);
+177	 for (uint256 i = 0; i < tokens.length; i++) {
+178	 address t = tokens[i];
+179	 uint256 bal = bPool.getBalance(t);
+180	 uint256 tokenAmountOut = SafeMath .mul(ratio, SafeMath.sub(bal, 1)) .div(10**18);
+181	 tokenAmountOut = tokenAmountOut.mul(protocolFee).div( PROTOCOL_FEE_DECIMALS );
+182	 require(tokenAmountOut != 0, "ERR_MATH_APPROX");
+183	 require(tokenAmountOut >= minAmountsOut[i], "ERR_LIMIT_OUT");
+184	 actualAmountsOut[i] = tokenAmountOut;
+185	 }
+186	 }
+187	 function _getTokensAmountIn( uint256 poolAmountOut, uint256[] calldata maxAmountsIn ) internal view returns (uint256[] memory actualAmountsIn) {
+188	 address manager = smartPool.getSmartPoolManagerVersion();
+189	 return SmartPoolManager(manager).joinPool( ConfigurableRightsPool(address(smartPool)), smartPool.bPool(), poolAmountOut, maxAmountsIn );
+190	 }
+191	 }
+192	 pragma solidity >=0.6.0 <0.8.0;
+193	 library SafeMath {
+194	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+195	 uint256 c = a + b;
+196	 if (c < a) return (false, 0);
+197	 return (true, c);
+198	 }
+199	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+200	 if (b > a) return (false, 0);
+201	 return (true, a - b);
+202	 }
+203	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+204	 if (a == 0) return (true, 0);
+205	 uint256 c = a * b;
+206	 if (c / a != b) return (false, 0);
+207	 return (true, c);
+208	 }
+209	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+210	 if (b == 0) return (false, 0);
+211	 return (true, a / b);
+212	 }
+213	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+214	 if (b == 0) return (false, 0);
+215	 return (true, a % b);
+216	 }
+217	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+218	 uint256 c = a + b;
+219	 require(c >= a, "SafeMath: addition overflow");
+220	 return c;
+221	 }
+222	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+223	 require(b <= a, "SafeMath: subtraction overflow");
+224	 return a - b;
+225	 }
+226	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+227	 if (a == 0) return 0;
+228	 uint256 c = a * b;
+229	 require(c / a == b, "SafeMath: multiplication overflow");
+230	 return c;
+231	 }
+232	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+233	 require(b > 0, "SafeMath: division by zero");
+234	 return a / b;
+235	 }
+236	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+237	 require(b > 0, "SafeMath: modulo by zero");
+238	 return a % b;
+239	 }
+240	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+241	 require(b <= a, errorMessage);
+242	 return a - b;
+243	 }
+244	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+245	 require(b > 0, errorMessage);
+246	 return a / b;
+247	 }
+248	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+249	 require(b > 0, errorMessage);
+250	 return a % b;
+251	 }
+252	 }
+253	 pragma solidity >=0.6.0 <0.8.0;
+254	 library SafeERC20 {
+255	 using SafeMath for uint256;
+256	 using Address for address;
+257	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+258	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+259	 }
+260	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+261	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+262	 }
+263	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+264	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+265	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+266	 }
+267	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+268	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+269	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+270	 }
+271	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+272	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+273	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+274	 }
+275	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+276	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+277	 if (returndata.length > 0) {
+278	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+279	 }
+280	 }
+281	 }
+282	 pragma solidity ^0.7.6;
+283	 interface ISovWrapper {
+284	 function deposit( address user, uint256 amount, uint256 liquidationPrice ) external;
+285	 function withdraw(address lpOwner, uint256 amount) external;
+286	 function liquidate( address liquidator, address from, uint256 amount ) external;
+287	 function liquidationFee(address) external view returns (uint256);
+288	 function epochDuration() external view returns (uint256);
+289	 function epoch1Start() external view returns (uint256);
+290	 function getEpochUserBalance(address user, uint128 epoch) external view returns (uint256);
+291	 function getEpochPoolSize(uint128 epoch) external view returns (uint256);
+292	 }
+293	 abstract contract ConfigurableRightsPool is AbstractPool {
+294	 struct PoolParams {
+295	 string poolTokenSymbol;
+296	 string poolTokenName;
+297	 address[] constituentTokens;
+298	 uint256[] tokenBalances;
+299	 uint256[] tokenWeights;
+300	 uint256 swapFee;
+301	 }
+302	 struct CrpParams {
+303	 uint256 initialSupply;
+304	 uint256 minimumWeightChangeBlockPeriod;
+305	 uint256 addTokenTimeLockInBlocks;
+306	 }
+307	 function createPool( uint256 initialSupply, uint256 minimumWeightChangeBlockPeriod, uint256 addTokenTimeLockInBlocks ) external virtual;
+308	 function createPool(uint256 initialSupply) external virtual;
+309	 function setCap(uint256 newCap) external virtual;
+310	 function updateWeight(address token, uint256 newWeight) external virtual;
+311	 function updateWeightsGradually( uint256[] calldata newWeights, uint256 startBlock, uint256 endBlock ) external virtual;
+312	 function commitAddToken( address token, uint256 balance, uint256 denormalizedWeight ) external virtual;
+313	 function applyAddToken() external virtual;
+314	 function removeToken(address token) external virtual;
+315	 function whitelistLiquidityProvider(address provider) external virtual;
+316	 function removeWhitelistedLiquidityProvider(address provider) external virtual;
+317	 function bPool() external view virtual returns (BPool);
+318	 }
+319	 abstract contract BPool is AbstractPool {
+320	 function finalize() external virtual;
+321	 function bind( address token, uint256 balance, uint256 denorm ) external virtual;
+322	 function rebind( address token, uint256 balance, uint256 denorm ) external virtual;
+323	 function unbind(address token) external virtual;
+324	 function isBound(address t) external view virtual returns (bool);
+325	 function getCurrentTokens() external view virtual returns (address[] memory);
+326	 function getFinalTokens() external view virtual returns (address[] memory);
+327	 function getBalance(address token) external view virtual returns (uint256);
+328	 function calcPoolOutGivenSingleIn( uint256 tokenBalanceIn, uint256 tokenWeightIn, uint256 poolSupply, uint256 totalWeight, uint256 tokenAmountIn, uint256 swapFee ) external pure virtual returns (uint256 poolAmountOut);
+329	 function calcPoolInGivenSingleOut( uint256, uint256, uint256, uint256, uint256, uint256 ) external pure virtual returns (uint256 poolAmountIn);
+330	 function calcSingleOutGivenPoolIn( uint256, uint256, uint256, uint256, uint256, uint256 ) external pure virtual returns (uint256 poolAmountIn);
+331	 function getDenormalizedWeight(address token) external view virtual returns (uint256);
+332	 function getTotalDenormalizedWeight() external view virtual returns (uint256);
+333	 function getSwapFee() external view virtual returns (uint256);
+334	 }
+335	 abstract contract ISmartPool is BalancerOwnable {
+336	 function updateWeightsGradually( uint256[] memory, uint256, uint256 ) external virtual;
+337	 function joinswapExternAmountIn( address tokenIn, uint256 tokenAmountIn, uint256 minPoolAmountOut ) external virtual returns (uint256);
+338	 function exitswapPoolAmountIn( address tokenOut, uint256 poolAmountIn, uint256 minAmountOut ) external virtual returns (uint256);
+339	 function approve(address spender, uint256 value) external virtual returns (bool);
+340	 function balanceOf(address owner) external view virtual returns (uint256);
+341	 function totalSupply() external view virtual returns (uint256);
+342	 function setSwapFee(uint256 swapFee) external virtual;
+343	 function setPublicSwap(bool public_) external virtual;
+344	 function getDenormalizedWeight(address token) external view virtual returns (uint256);
+345	 function joinPool(uint256 poolAmountOut, uint256[] calldata maxAmountsIn) external virtual;
+346	 function exitPool(uint256 poolAmountIn, uint256[] calldata minAmountsOut) external virtual;
+347	 function bPool() external view virtual returns (BPool);
+348	 function applyAddToken() external virtual;
+349	 function getSmartPoolManagerVersion() external view virtual returns (address);
+350	 }
+351	 abstract contract SmartPoolManager {
+352	 function joinPool( ConfigurableRightsPool, BPool, uint256 poolAmountOut, uint256[] calldata maxAmountsIn ) external view virtual returns (uint256[] memory actualAmountsIn);
+353	 function exitPool( ConfigurableRightsPool self, BPool bPool, uint256 poolAmountIn, uint256[] calldata minAmountsOut ) external view virtual returns ( uint256 exitFee, uint256 pAiAfterExitFee, uint256[] memory actualAmountsOut );
+354	 function joinswapExternAmountIn( ConfigurableRightsPool self, BPool bPool, address tokenIn, uint256 tokenAmountIn, uint256 minPoolAmountOut ) external view virtual returns (uint256 poolAmountOut);
+355	 }
+356	 pragma solidity 0.7.6;
+357	 interface IMintableERC20 is IERC20 {
+358	 function mint(address to, uint256 value) external returns (bool);
+359	 function burn(address from, uint256 value) external returns (bool);
+360	 }
+361	 pragma solidity >= 0.4.22 <0.9.0;
+362	 library console {
+363	 address constant CONSOLE_ADDRESS = address(0x000000000000000000636F6e736F6c652e6c6f67);
+364	 function _sendLogPayload(bytes memory payload) private view {
+365	 uint256 payloadLength = payload.length;
+366	 address consoleAddress = CONSOLE_ADDRESS;
+367	 assembly {
+368	 let payloadStart := add(payload, 32) let r := staticcall(gas(), consoleAddress, payloadStart, payloadLength, 0, 0) }
+369	 }
+370	 function log() internal view {
+371	 _sendLogPayload(abi.encodeWithSignature("log()"));
+372	 }
+373	 function logInt(int p0) internal view {
+374	 _sendLogPayload(abi.encodeWithSignature("log(int)", p0));
+375	 }
+376	 function logUint(uint p0) internal view {
+377	 _sendLogPayload(abi.encodeWithSignature("log(uint)", p0));
+378	 }
+379	 function logString(string memory p0) internal view {
+380	 _sendLogPayload(abi.encodeWithSignature("log(string)", p0));
+381	 }
+382	 function logBool(bool p0) internal view {
+383	 _sendLogPayload(abi.encodeWithSignature("log(bool)", p0));
+384	 }
+385	 function logAddress(address p0) internal view {
+386	 _sendLogPayload(abi.encodeWithSignature("log(address)", p0));
+387	 }
+388	 function logBytes(bytes memory p0) internal view {
+389	 _sendLogPayload(abi.encodeWithSignature("log(bytes)", p0));
+390	 }
+391	 function logBytes1(bytes1 p0) internal view {
+392	 _sendLogPayload(abi.encodeWithSignature("log(bytes1)", p0));
+393	 }
+394	 function logBytes2(bytes2 p0) internal view {
+395	 _sendLogPayload(abi.encodeWithSignature("log(bytes2)", p0));
+396	 }
+397	 function logBytes3(bytes3 p0) internal view {
+398	 _sendLogPayload(abi.encodeWithSignature("log(bytes3)", p0));
+399	 }
+400	 function logBytes4(bytes4 p0) internal view {
+401	 _sendLogPayload(abi.encodeWithSignature("log(bytes4)", p0));
+402	 }
+403	 function logBytes5(bytes5 p0) internal view {
+404	 _sendLogPayload(abi.encodeWithSignature("log(bytes5)", p0));
+405	 }
+406	 function logBytes6(bytes6 p0) internal view {
+407	 _sendLogPayload(abi.encodeWithSignature("log(bytes6)", p0));
+408	 }
+409	 function logBytes7(bytes7 p0) internal view {
+410	 _sendLogPayload(abi.encodeWithSignature("log(bytes7)", p0));
+411	 }
+412	 function logBytes8(bytes8 p0) internal view {
+413	 _sendLogPayload(abi.encodeWithSignature("log(bytes8)", p0));
+414	 }
+415	 function logBytes9(bytes9 p0) internal view {
+416	 _sendLogPayload(abi.encodeWithSignature("log(bytes9)", p0));
+417	 }
+418	 function logBytes10(bytes10 p0) internal view {
+419	 _sendLogPayload(abi.encodeWithSignature("log(bytes10)", p0));
+420	 }
+421	 function logBytes11(bytes11 p0) internal view {
+422	 _sendLogPayload(abi.encodeWithSignature("log(bytes11)", p0));
+423	 }
+424	 function logBytes12(bytes12 p0) internal view {
+425	 _sendLogPayload(abi.encodeWithSignature("log(bytes12)", p0));
+426	 }
+427	 function logBytes13(bytes13 p0) internal view {
+428	 _sendLogPayload(abi.encodeWithSignature("log(bytes13)", p0));
+429	 }
+430	 function logBytes14(bytes14 p0) internal view {
+431	 _sendLogPayload(abi.encodeWithSignature("log(bytes14)", p0));
+432	 }
+433	 function logBytes15(bytes15 p0) internal view {
+434	 _sendLogPayload(abi.encodeWithSignature("log(bytes15)", p0));
+435	 }
+436	 function logBytes16(bytes16 p0) internal view {
+437	 _sendLogPayload(abi.encodeWithSignature("log(bytes16)", p0));
+438	 }
+439	 function logBytes17(bytes17 p0) internal view {
+440	 _sendLogPayload(abi.encodeWithSignature("log(bytes17)", p0));
+441	 }
+442	 function logBytes18(bytes18 p0) internal view {
+443	 _sendLogPayload(abi.encodeWithSignature("log(bytes18)", p0));
+444	 }
+445	 function logBytes19(bytes19 p0) internal view {
+446	 _sendLogPayload(abi.encodeWithSignature("log(bytes19)", p0));
+447	 }
+448	 function logBytes20(bytes20 p0) internal view {
+449	 _sendLogPayload(abi.encodeWithSignature("log(bytes20)", p0));
+450	 }
+451	 function logBytes21(bytes21 p0) internal view {
+452	 _sendLogPayload(abi.encodeWithSignature("log(bytes21)", p0));
+453	 }
+454	 function logBytes22(bytes22 p0) internal view {
+455	 _sendLogPayload(abi.encodeWithSignature("log(bytes22)", p0));
+456	 }
+457	 function logBytes23(bytes23 p0) internal view {
+458	 _sendLogPayload(abi.encodeWithSignature("log(bytes23)", p0));
+459	 }
+460	 function logBytes24(bytes24 p0) internal view {
+461	 _sendLogPayload(abi.encodeWithSignature("log(bytes24)", p0));
+462	 }
+463	 function logBytes25(bytes25 p0) internal view {
+464	 _sendLogPayload(abi.encodeWithSignature("log(bytes25)", p0));
+465	 }
+466	 function logBytes26(bytes26 p0) internal view {
+467	 _sendLogPayload(abi.encodeWithSignature("log(bytes26)", p0));
+468	 }
+469	 function logBytes27(bytes27 p0) internal view {
+470	 _sendLogPayload(abi.encodeWithSignature("log(bytes27)", p0));
+471	 }
+472	 function logBytes28(bytes28 p0) internal view {
+473	 _sendLogPayload(abi.encodeWithSignature("log(bytes28)", p0));
+474	 }
+475	 function logBytes29(bytes29 p0) internal view {
+476	 _sendLogPayload(abi.encodeWithSignature("log(bytes29)", p0));
+477	 }
+478	 function logBytes30(bytes30 p0) internal view {
+479	 _sendLogPayload(abi.encodeWithSignature("log(bytes30)", p0));
+480	 }
+481	 function logBytes31(bytes31 p0) internal view {
+482	 _sendLogPayload(abi.encodeWithSignature("log(bytes31)", p0));
+483	 }
+484	 function logBytes32(bytes32 p0) internal view {
+485	 _sendLogPayload(abi.encodeWithSignature("log(bytes32)", p0));
+486	 }
+487	 function log(uint p0) internal view {
+488	 _sendLogPayload(abi.encodeWithSignature("log(uint)", p0));
+489	 }
+490	 function log(string memory p0) internal view {
+491	 _sendLogPayload(abi.encodeWithSignature("log(string)", p0));
+492	 }
+493	 function log(bool p0) internal view {
+494	 _sendLogPayload(abi.encodeWithSignature("log(bool)", p0));
+495	 }
+496	 function log(address p0) internal view {
+497	 _sendLogPayload(abi.encodeWithSignature("log(address)", p0));
+498	 }
+499	 function log(uint p0, uint p1) internal view {
+500	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint)", p0, p1));
+501	 }
+502	 function log(uint p0, string memory p1) internal view {
+503	 _sendLogPayload(abi.encodeWithSignature("log(uint,string)", p0, p1));
+504	 }
+505	 function log(uint p0, bool p1) internal view {
+506	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool)", p0, p1));
+507	 }
+508	 function log(uint p0, address p1) internal view {
+509	 _sendLogPayload(abi.encodeWithSignature("log(uint,address)", p0, p1));
+510	 }
+511	 function log(string memory p0, uint p1) internal view {
+512	 _sendLogPayload(abi.encodeWithSignature("log(string,uint)", p0, p1));
+513	 }
+514	 function log(string memory p0, string memory p1) internal view {
+515	 _sendLogPayload(abi.encodeWithSignature("log(string,string)", p0, p1));
+516	 }
+517	 function log(string memory p0, bool p1) internal view {
+518	 _sendLogPayload(abi.encodeWithSignature("log(string,bool)", p0, p1));
+519	 }
+520	 function log(string memory p0, address p1) internal view {
+521	 _sendLogPayload(abi.encodeWithSignature("log(string,address)", p0, p1));
+522	 }
+523	 function log(bool p0, uint p1) internal view {
+524	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint)", p0, p1));
+525	 }
+526	 function log(bool p0, string memory p1) internal view {
+527	 _sendLogPayload(abi.encodeWithSignature("log(bool,string)", p0, p1));
+528	 }
+529	 function log(bool p0, bool p1) internal view {
+530	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool)", p0, p1));
+531	 }
+532	 function log(bool p0, address p1) internal view {
+533	 _sendLogPayload(abi.encodeWithSignature("log(bool,address)", p0, p1));
+534	 }
+535	 function log(address p0, uint p1) internal view {
+536	 _sendLogPayload(abi.encodeWithSignature("log(address,uint)", p0, p1));
+537	 }
+538	 function log(address p0, string memory p1) internal view {
+539	 _sendLogPayload(abi.encodeWithSignature("log(address,string)", p0, p1));
+540	 }
+541	 function log(address p0, bool p1) internal view {
+542	 _sendLogPayload(abi.encodeWithSignature("log(address,bool)", p0, p1));
+543	 }
+544	 function log(address p0, address p1) internal view {
+545	 _sendLogPayload(abi.encodeWithSignature("log(address,address)", p0, p1));
+546	 }
+547	 function log(uint p0, uint p1, uint p2) internal view {
+548	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,uint)", p0, p1, p2));
+549	 }
+550	 function log(uint p0, uint p1, string memory p2) internal view {
+551	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,string)", p0, p1, p2));
+552	 }
+553	 function log(uint p0, uint p1, bool p2) internal view {
+554	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,bool)", p0, p1, p2));
+555	 }
+556	 function log(uint p0, uint p1, address p2) internal view {
+557	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,address)", p0, p1, p2));
+558	 }
+559	 function log(uint p0, string memory p1, uint p2) internal view {
+560	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,uint)", p0, p1, p2));
+561	 }
+562	 function log(uint p0, string memory p1, string memory p2) internal view {
+563	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,string)", p0, p1, p2));
+564	 }
+565	 function log(uint p0, string memory p1, bool p2) internal view {
+566	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,bool)", p0, p1, p2));
+567	 }
+568	 function log(uint p0, string memory p1, address p2) internal view {
+569	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,address)", p0, p1, p2));
+570	 }
+571	 function log(uint p0, bool p1, uint p2) internal view {
+572	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,uint)", p0, p1, p2));
+573	 }
+574	 function log(uint p0, bool p1, string memory p2) internal view {
+575	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,string)", p0, p1, p2));
+576	 }
+577	 function log(uint p0, bool p1, bool p2) internal view {
+578	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,bool)", p0, p1, p2));
+579	 }
+580	 function log(uint p0, bool p1, address p2) internal view {
+581	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,address)", p0, p1, p2));
+582	 }
+583	 function log(uint p0, address p1, uint p2) internal view {
+584	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,uint)", p0, p1, p2));
+585	 }
+586	 function log(uint p0, address p1, string memory p2) internal view {
+587	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,string)", p0, p1, p2));
+588	 }
+589	 function log(uint p0, address p1, bool p2) internal view {
+590	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,bool)", p0, p1, p2));
+591	 }
+592	 function log(uint p0, address p1, address p2) internal view {
+593	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,address)", p0, p1, p2));
+594	 }
+595	 function log(string memory p0, uint p1, uint p2) internal view {
+596	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,uint)", p0, p1, p2));
+597	 }
+598	 function log(string memory p0, uint p1, string memory p2) internal view {
+599	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,string)", p0, p1, p2));
+600	 }
+601	 function log(string memory p0, uint p1, bool p2) internal view {
+602	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,bool)", p0, p1, p2));
+603	 }
+604	 function log(string memory p0, uint p1, address p2) internal view {
+605	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,address)", p0, p1, p2));
+606	 }
+607	 function log(string memory p0, string memory p1, uint p2) internal view {
+608	 _sendLogPayload(abi.encodeWithSignature("log(string,string,uint)", p0, p1, p2));
+609	 }
+610	 function log(string memory p0, string memory p1, string memory p2) internal view {
+611	 _sendLogPayload(abi.encodeWithSignature("log(string,string,string)", p0, p1, p2));
+612	 }
+613	 function log(string memory p0, string memory p1, bool p2) internal view {
+614	 _sendLogPayload(abi.encodeWithSignature("log(string,string,bool)", p0, p1, p2));
+615	 }
+616	 function log(string memory p0, string memory p1, address p2) internal view {
+617	 _sendLogPayload(abi.encodeWithSignature("log(string,string,address)", p0, p1, p2));
+618	 }
+619	 function log(string memory p0, bool p1, uint p2) internal view {
+620	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,uint)", p0, p1, p2));
+621	 }
+622	 function log(string memory p0, bool p1, string memory p2) internal view {
+623	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,string)", p0, p1, p2));
+624	 }
+625	 function log(string memory p0, bool p1, bool p2) internal view {
+626	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,bool)", p0, p1, p2));
+627	 }
+628	 function log(string memory p0, bool p1, address p2) internal view {
+629	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,address)", p0, p1, p2));
+630	 }
+631	 function log(string memory p0, address p1, uint p2) internal view {
+632	 _sendLogPayload(abi.encodeWithSignature("log(string,address,uint)", p0, p1, p2));
+633	 }
+634	 function log(string memory p0, address p1, string memory p2) internal view {
+635	 _sendLogPayload(abi.encodeWithSignature("log(string,address,string)", p0, p1, p2));
+636	 }
+637	 function log(string memory p0, address p1, bool p2) internal view {
+638	 _sendLogPayload(abi.encodeWithSignature("log(string,address,bool)", p0, p1, p2));
+639	 }
+640	 function log(string memory p0, address p1, address p2) internal view {
+641	 _sendLogPayload(abi.encodeWithSignature("log(string,address,address)", p0, p1, p2));
+642	 }
+643	 function log(bool p0, uint p1, uint p2) internal view {
+644	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,uint)", p0, p1, p2));
+645	 }
+646	 function log(bool p0, uint p1, string memory p2) internal view {
+647	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,string)", p0, p1, p2));
+648	 }
+649	 function log(bool p0, uint p1, bool p2) internal view {
+650	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,bool)", p0, p1, p2));
+651	 }
+652	 function log(bool p0, uint p1, address p2) internal view {
+653	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,address)", p0, p1, p2));
+654	 }
+655	 function log(bool p0, string memory p1, uint p2) internal view {
+656	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,uint)", p0, p1, p2));
+657	 }
+658	 function log(bool p0, string memory p1, string memory p2) internal view {
+659	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,string)", p0, p1, p2));
+660	 }
+661	 function log(bool p0, string memory p1, bool p2) internal view {
+662	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,bool)", p0, p1, p2));
+663	 }
+664	 function log(bool p0, string memory p1, address p2) internal view {
+665	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,address)", p0, p1, p2));
+666	 }
+667	 function log(bool p0, bool p1, uint p2) internal view {
+668	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,uint)", p0, p1, p2));
+669	 }
+670	 function log(bool p0, bool p1, string memory p2) internal view {
+671	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,string)", p0, p1, p2));
+672	 }
+673	 function log(bool p0, bool p1, bool p2) internal view {
+674	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,bool)", p0, p1, p2));
+675	 }
+676	 function log(bool p0, bool p1, address p2) internal view {
+677	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,address)", p0, p1, p2));
+678	 }
+679	 function log(bool p0, address p1, uint p2) internal view {
+680	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,uint)", p0, p1, p2));
+681	 }
+682	 function log(bool p0, address p1, string memory p2) internal view {
+683	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,string)", p0, p1, p2));
+684	 }
+685	 function log(bool p0, address p1, bool p2) internal view {
+686	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,bool)", p0, p1, p2));
+687	 }
+688	 function log(bool p0, address p1, address p2) internal view {
+689	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,address)", p0, p1, p2));
+690	 }
+691	 function log(address p0, uint p1, uint p2) internal view {
+692	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,uint)", p0, p1, p2));
+693	 }
+694	 function log(address p0, uint p1, string memory p2) internal view {
+695	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,string)", p0, p1, p2));
+696	 }
+697	 function log(address p0, uint p1, bool p2) internal view {
+698	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,bool)", p0, p1, p2));
+699	 }
+700	 function log(address p0, uint p1, address p2) internal view {
+701	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,address)", p0, p1, p2));
+702	 }
+703	 function log(address p0, string memory p1, uint p2) internal view {
+704	 _sendLogPayload(abi.encodeWithSignature("log(address,string,uint)", p0, p1, p2));
+705	 }
+706	 function log(address p0, string memory p1, string memory p2) internal view {
+707	 _sendLogPayload(abi.encodeWithSignature("log(address,string,string)", p0, p1, p2));
+708	 }
+709	 function log(address p0, string memory p1, bool p2) internal view {
+710	 _sendLogPayload(abi.encodeWithSignature("log(address,string,bool)", p0, p1, p2));
+711	 }
+712	 function log(address p0, string memory p1, address p2) internal view {
+713	 _sendLogPayload(abi.encodeWithSignature("log(address,string,address)", p0, p1, p2));
+714	 }
+715	 function log(address p0, bool p1, uint p2) internal view {
+716	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,uint)", p0, p1, p2));
+717	 }
+718	 function log(address p0, bool p1, string memory p2) internal view {
+719	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,string)", p0, p1, p2));
+720	 }
+721	 function log(address p0, bool p1, bool p2) internal view {
+722	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,bool)", p0, p1, p2));
+723	 }
+724	 function log(address p0, bool p1, address p2) internal view {
+725	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,address)", p0, p1, p2));
+726	 }
+727	 function log(address p0, address p1, uint p2) internal view {
+728	 _sendLogPayload(abi.encodeWithSignature("log(address,address,uint)", p0, p1, p2));
+729	 }
+730	 function log(address p0, address p1, string memory p2) internal view {
+731	 _sendLogPayload(abi.encodeWithSignature("log(address,address,string)", p0, p1, p2));
+732	 }
+733	 function log(address p0, address p1, bool p2) internal view {
+734	 _sendLogPayload(abi.encodeWithSignature("log(address,address,bool)", p0, p1, p2));
+735	 }
+736	 function log(address p0, address p1, address p2) internal view {
+737	 _sendLogPayload(abi.encodeWithSignature("log(address,address,address)", p0, p1, p2));
+738	 }
+739	 function log(uint p0, uint p1, uint p2, uint p3) internal view {
+740	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,uint,uint)", p0, p1, p2, p3));
+741	 }
+742	 function log(uint p0, uint p1, uint p2, string memory p3) internal view {
+743	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,uint,string)", p0, p1, p2, p3));
+744	 }
+745	 function log(uint p0, uint p1, uint p2, bool p3) internal view {
+746	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,uint,bool)", p0, p1, p2, p3));
+747	 }
+748	 function log(uint p0, uint p1, uint p2, address p3) internal view {
+749	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,uint,address)", p0, p1, p2, p3));
+750	 }
+751	 function log(uint p0, uint p1, string memory p2, uint p3) internal view {
+752	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,string,uint)", p0, p1, p2, p3));
+753	 }
+754	 function log(uint p0, uint p1, string memory p2, string memory p3) internal view {
+755	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,string,string)", p0, p1, p2, p3));
+756	 }
+757	 function log(uint p0, uint p1, string memory p2, bool p3) internal view {
+758	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,string,bool)", p0, p1, p2, p3));
+759	 }
+760	 function log(uint p0, uint p1, string memory p2, address p3) internal view {
+761	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,string,address)", p0, p1, p2, p3));
+762	 }
+763	 function log(uint p0, uint p1, bool p2, uint p3) internal view {
+764	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,bool,uint)", p0, p1, p2, p3));
+765	 }
+766	 function log(uint p0, uint p1, bool p2, string memory p3) internal view {
+767	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,bool,string)", p0, p1, p2, p3));
+768	 }
+769	 function log(uint p0, uint p1, bool p2, bool p3) internal view {
+770	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,bool,bool)", p0, p1, p2, p3));
+771	 }
+772	 function log(uint p0, uint p1, bool p2, address p3) internal view {
+773	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,bool,address)", p0, p1, p2, p3));
+774	 }
+775	 function log(uint p0, uint p1, address p2, uint p3) internal view {
+776	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,address,uint)", p0, p1, p2, p3));
+777	 }
+778	 function log(uint p0, uint p1, address p2, string memory p3) internal view {
+779	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,address,string)", p0, p1, p2, p3));
+780	 }
+781	 function log(uint p0, uint p1, address p2, bool p3) internal view {
+782	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,address,bool)", p0, p1, p2, p3));
+783	 }
+784	 function log(uint p0, uint p1, address p2, address p3) internal view {
+785	 _sendLogPayload(abi.encodeWithSignature("log(uint,uint,address,address)", p0, p1, p2, p3));
+786	 }
+787	 function log(uint p0, string memory p1, uint p2, uint p3) internal view {
+788	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,uint,uint)", p0, p1, p2, p3));
+789	 }
+790	 function log(uint p0, string memory p1, uint p2, string memory p3) internal view {
+791	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,uint,string)", p0, p1, p2, p3));
+792	 }
+793	 function log(uint p0, string memory p1, uint p2, bool p3) internal view {
+794	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,uint,bool)", p0, p1, p2, p3));
+795	 }
+796	 function log(uint p0, string memory p1, uint p2, address p3) internal view {
+797	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,uint,address)", p0, p1, p2, p3));
+798	 }
+799	 function log(uint p0, string memory p1, string memory p2, uint p3) internal view {
+800	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,string,uint)", p0, p1, p2, p3));
+801	 }
+802	 function log(uint p0, string memory p1, string memory p2, string memory p3) internal view {
+803	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,string,string)", p0, p1, p2, p3));
+804	 }
+805	 function log(uint p0, string memory p1, string memory p2, bool p3) internal view {
+806	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,string,bool)", p0, p1, p2, p3));
+807	 }
+808	 function log(uint p0, string memory p1, string memory p2, address p3) internal view {
+809	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,string,address)", p0, p1, p2, p3));
+810	 }
+811	 function log(uint p0, string memory p1, bool p2, uint p3) internal view {
+812	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,bool,uint)", p0, p1, p2, p3));
+813	 }
+814	 function log(uint p0, string memory p1, bool p2, string memory p3) internal view {
+815	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,bool,string)", p0, p1, p2, p3));
+816	 }
+817	 function log(uint p0, string memory p1, bool p2, bool p3) internal view {
+818	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,bool,bool)", p0, p1, p2, p3));
+819	 }
+820	 function log(uint p0, string memory p1, bool p2, address p3) internal view {
+821	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,bool,address)", p0, p1, p2, p3));
+822	 }
+823	 function log(uint p0, string memory p1, address p2, uint p3) internal view {
+824	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,address,uint)", p0, p1, p2, p3));
+825	 }
+826	 function log(uint p0, string memory p1, address p2, string memory p3) internal view {
+827	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,address,string)", p0, p1, p2, p3));
+828	 }
+829	 function log(uint p0, string memory p1, address p2, bool p3) internal view {
+830	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,address,bool)", p0, p1, p2, p3));
+831	 }
+832	 function log(uint p0, string memory p1, address p2, address p3) internal view {
+833	 _sendLogPayload(abi.encodeWithSignature("log(uint,string,address,address)", p0, p1, p2, p3));
+834	 }
+835	 function log(uint p0, bool p1, uint p2, uint p3) internal view {
+836	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,uint,uint)", p0, p1, p2, p3));
+837	 }
+838	 function log(uint p0, bool p1, uint p2, string memory p3) internal view {
+839	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,uint,string)", p0, p1, p2, p3));
+840	 }
+841	 function log(uint p0, bool p1, uint p2, bool p3) internal view {
+842	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,uint,bool)", p0, p1, p2, p3));
+843	 }
+844	 function log(uint p0, bool p1, uint p2, address p3) internal view {
+845	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,uint,address)", p0, p1, p2, p3));
+846	 }
+847	 function log(uint p0, bool p1, string memory p2, uint p3) internal view {
+848	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,string,uint)", p0, p1, p2, p3));
+849	 }
+850	 function log(uint p0, bool p1, string memory p2, string memory p3) internal view {
+851	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,string,string)", p0, p1, p2, p3));
+852	 }
+853	 function log(uint p0, bool p1, string memory p2, bool p3) internal view {
+854	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,string,bool)", p0, p1, p2, p3));
+855	 }
+856	 function log(uint p0, bool p1, string memory p2, address p3) internal view {
+857	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,string,address)", p0, p1, p2, p3));
+858	 }
+859	 function log(uint p0, bool p1, bool p2, uint p3) internal view {
+860	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,bool,uint)", p0, p1, p2, p3));
+861	 }
+862	 function log(uint p0, bool p1, bool p2, string memory p3) internal view {
+863	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,bool,string)", p0, p1, p2, p3));
+864	 }
+865	 function log(uint p0, bool p1, bool p2, bool p3) internal view {
+866	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,bool,bool)", p0, p1, p2, p3));
+867	 }
+868	 function log(uint p0, bool p1, bool p2, address p3) internal view {
+869	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,bool,address)", p0, p1, p2, p3));
+870	 }
+871	 function log(uint p0, bool p1, address p2, uint p3) internal view {
+872	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,address,uint)", p0, p1, p2, p3));
+873	 }
+874	 function log(uint p0, bool p1, address p2, string memory p3) internal view {
+875	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,address,string)", p0, p1, p2, p3));
+876	 }
+877	 function log(uint p0, bool p1, address p2, bool p3) internal view {
+878	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,address,bool)", p0, p1, p2, p3));
+879	 }
+880	 function log(uint p0, bool p1, address p2, address p3) internal view {
+881	 _sendLogPayload(abi.encodeWithSignature("log(uint,bool,address,address)", p0, p1, p2, p3));
+882	 }
+883	 function log(uint p0, address p1, uint p2, uint p3) internal view {
+884	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,uint,uint)", p0, p1, p2, p3));
+885	 }
+886	 function log(uint p0, address p1, uint p2, string memory p3) internal view {
+887	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,uint,string)", p0, p1, p2, p3));
+888	 }
+889	 function log(uint p0, address p1, uint p2, bool p3) internal view {
+890	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,uint,bool)", p0, p1, p2, p3));
+891	 }
+892	 function log(uint p0, address p1, uint p2, address p3) internal view {
+893	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,uint,address)", p0, p1, p2, p3));
+894	 }
+895	 function log(uint p0, address p1, string memory p2, uint p3) internal view {
+896	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,string,uint)", p0, p1, p2, p3));
+897	 }
+898	 function log(uint p0, address p1, string memory p2, string memory p3) internal view {
+899	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,string,string)", p0, p1, p2, p3));
+900	 }
+901	 function log(uint p0, address p1, string memory p2, bool p3) internal view {
+902	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,string,bool)", p0, p1, p2, p3));
+903	 }
+904	 function log(uint p0, address p1, string memory p2, address p3) internal view {
+905	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,string,address)", p0, p1, p2, p3));
+906	 }
+907	 function log(uint p0, address p1, bool p2, uint p3) internal view {
+908	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,bool,uint)", p0, p1, p2, p3));
+909	 }
+910	 function log(uint p0, address p1, bool p2, string memory p3) internal view {
+911	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,bool,string)", p0, p1, p2, p3));
+912	 }
+913	 function log(uint p0, address p1, bool p2, bool p3) internal view {
+914	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,bool,bool)", p0, p1, p2, p3));
+915	 }
+916	 function log(uint p0, address p1, bool p2, address p3) internal view {
+917	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,bool,address)", p0, p1, p2, p3));
+918	 }
+919	 function log(uint p0, address p1, address p2, uint p3) internal view {
+920	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,address,uint)", p0, p1, p2, p3));
+921	 }
+922	 function log(uint p0, address p1, address p2, string memory p3) internal view {
+923	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,address,string)", p0, p1, p2, p3));
+924	 }
+925	 function log(uint p0, address p1, address p2, bool p3) internal view {
+926	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,address,bool)", p0, p1, p2, p3));
+927	 }
+928	 function log(uint p0, address p1, address p2, address p3) internal view {
+929	 _sendLogPayload(abi.encodeWithSignature("log(uint,address,address,address)", p0, p1, p2, p3));
+930	 }
+931	 function log(string memory p0, uint p1, uint p2, uint p3) internal view {
+932	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,uint,uint)", p0, p1, p2, p3));
+933	 }
+934	 function log(string memory p0, uint p1, uint p2, string memory p3) internal view {
+935	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,uint,string)", p0, p1, p2, p3));
+936	 }
+937	 function log(string memory p0, uint p1, uint p2, bool p3) internal view {
+938	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,uint,bool)", p0, p1, p2, p3));
+939	 }
+940	 function log(string memory p0, uint p1, uint p2, address p3) internal view {
+941	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,uint,address)", p0, p1, p2, p3));
+942	 }
+943	 function log(string memory p0, uint p1, string memory p2, uint p3) internal view {
+944	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,string,uint)", p0, p1, p2, p3));
+945	 }
+946	 function log(string memory p0, uint p1, string memory p2, string memory p3) internal view {
+947	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,string,string)", p0, p1, p2, p3));
+948	 }
+949	 function log(string memory p0, uint p1, string memory p2, bool p3) internal view {
+950	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,string,bool)", p0, p1, p2, p3));
+951	 }
+952	 function log(string memory p0, uint p1, string memory p2, address p3) internal view {
+953	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,string,address)", p0, p1, p2, p3));
+954	 }
+955	 function log(string memory p0, uint p1, bool p2, uint p3) internal view {
+956	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,bool,uint)", p0, p1, p2, p3));
+957	 }
+958	 function log(string memory p0, uint p1, bool p2, string memory p3) internal view {
+959	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,bool,string)", p0, p1, p2, p3));
+960	 }
+961	 function log(string memory p0, uint p1, bool p2, bool p3) internal view {
+962	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,bool,bool)", p0, p1, p2, p3));
+963	 }
+964	 function log(string memory p0, uint p1, bool p2, address p3) internal view {
+965	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,bool,address)", p0, p1, p2, p3));
+966	 }
+967	 function log(string memory p0, uint p1, address p2, uint p3) internal view {
+968	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,address,uint)", p0, p1, p2, p3));
+969	 }
+970	 function log(string memory p0, uint p1, address p2, string memory p3) internal view {
+971	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,address,string)", p0, p1, p2, p3));
+972	 }
+973	 function log(string memory p0, uint p1, address p2, bool p3) internal view {
+974	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,address,bool)", p0, p1, p2, p3));
+975	 }
+976	 function log(string memory p0, uint p1, address p2, address p3) internal view {
+977	 _sendLogPayload(abi.encodeWithSignature("log(string,uint,address,address)", p0, p1, p2, p3));
+978	 }
+979	 function log(string memory p0, string memory p1, uint p2, uint p3) internal view {
+980	 _sendLogPayload(abi.encodeWithSignature("log(string,string,uint,uint)", p0, p1, p2, p3));
+981	 }
+982	 function log(string memory p0, string memory p1, uint p2, string memory p3) internal view {
+983	 _sendLogPayload(abi.encodeWithSignature("log(string,string,uint,string)", p0, p1, p2, p3));
+984	 }
+985	 function log(string memory p0, string memory p1, uint p2, bool p3) internal view {
+986	 _sendLogPayload(abi.encodeWithSignature("log(string,string,uint,bool)", p0, p1, p2, p3));
+987	 }
+988	 function log(string memory p0, string memory p1, uint p2, address p3) internal view {
+989	 _sendLogPayload(abi.encodeWithSignature("log(string,string,uint,address)", p0, p1, p2, p3));
+990	 }
+991	 function log(string memory p0, string memory p1, string memory p2, uint p3) internal view {
+992	 _sendLogPayload(abi.encodeWithSignature("log(string,string,string,uint)", p0, p1, p2, p3));
+993	 }
+994	 function log(string memory p0, string memory p1, string memory p2, string memory p3) internal view {
+995	 _sendLogPayload(abi.encodeWithSignature("log(string,string,string,string)", p0, p1, p2, p3));
+996	 }
+997	 function log(string memory p0, string memory p1, string memory p2, bool p3) internal view {
+998	 _sendLogPayload(abi.encodeWithSignature("log(string,string,string,bool)", p0, p1, p2, p3));
+999	 }
+1000	 function log(string memory p0, string memory p1, string memory p2, address p3) internal view {
+1001	 _sendLogPayload(abi.encodeWithSignature("log(string,string,string,address)", p0, p1, p2, p3));
+1002	 }
+1003	 function log(string memory p0, string memory p1, bool p2, uint p3) internal view {
+1004	 _sendLogPayload(abi.encodeWithSignature("log(string,string,bool,uint)", p0, p1, p2, p3));
+1005	 }
+1006	 function log(string memory p0, string memory p1, bool p2, string memory p3) internal view {
+1007	 _sendLogPayload(abi.encodeWithSignature("log(string,string,bool,string)", p0, p1, p2, p3));
+1008	 }
+1009	 function log(string memory p0, string memory p1, bool p2, bool p3) internal view {
+1010	 _sendLogPayload(abi.encodeWithSignature("log(string,string,bool,bool)", p0, p1, p2, p3));
+1011	 }
+1012	 function log(string memory p0, string memory p1, bool p2, address p3) internal view {
+1013	 _sendLogPayload(abi.encodeWithSignature("log(string,string,bool,address)", p0, p1, p2, p3));
+1014	 }
+1015	 function log(string memory p0, string memory p1, address p2, uint p3) internal view {
+1016	 _sendLogPayload(abi.encodeWithSignature("log(string,string,address,uint)", p0, p1, p2, p3));
+1017	 }
+1018	 function log(string memory p0, string memory p1, address p2, string memory p3) internal view {
+1019	 _sendLogPayload(abi.encodeWithSignature("log(string,string,address,string)", p0, p1, p2, p3));
+1020	 }
+1021	 function log(string memory p0, string memory p1, address p2, bool p3) internal view {
+1022	 _sendLogPayload(abi.encodeWithSignature("log(string,string,address,bool)", p0, p1, p2, p3));
+1023	 }
+1024	 function log(string memory p0, string memory p1, address p2, address p3) internal view {
+1025	 _sendLogPayload(abi.encodeWithSignature("log(string,string,address,address)", p0, p1, p2, p3));
+1026	 }
+1027	 function log(string memory p0, bool p1, uint p2, uint p3) internal view {
+1028	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,uint,uint)", p0, p1, p2, p3));
+1029	 }
+1030	 function log(string memory p0, bool p1, uint p2, string memory p3) internal view {
+1031	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,uint,string)", p0, p1, p2, p3));
+1032	 }
+1033	 function log(string memory p0, bool p1, uint p2, bool p3) internal view {
+1034	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,uint,bool)", p0, p1, p2, p3));
+1035	 }
+1036	 function log(string memory p0, bool p1, uint p2, address p3) internal view {
+1037	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,uint,address)", p0, p1, p2, p3));
+1038	 }
+1039	 function log(string memory p0, bool p1, string memory p2, uint p3) internal view {
+1040	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,string,uint)", p0, p1, p2, p3));
+1041	 }
+1042	 function log(string memory p0, bool p1, string memory p2, string memory p3) internal view {
+1043	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,string,string)", p0, p1, p2, p3));
+1044	 }
+1045	 function log(string memory p0, bool p1, string memory p2, bool p3) internal view {
+1046	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,string,bool)", p0, p1, p2, p3));
+1047	 }
+1048	 function log(string memory p0, bool p1, string memory p2, address p3) internal view {
+1049	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,string,address)", p0, p1, p2, p3));
+1050	 }
+1051	 function log(string memory p0, bool p1, bool p2, uint p3) internal view {
+1052	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,bool,uint)", p0, p1, p2, p3));
+1053	 }
+1054	 function log(string memory p0, bool p1, bool p2, string memory p3) internal view {
+1055	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,bool,string)", p0, p1, p2, p3));
+1056	 }
+1057	 function log(string memory p0, bool p1, bool p2, bool p3) internal view {
+1058	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,bool,bool)", p0, p1, p2, p3));
+1059	 }
+1060	 function log(string memory p0, bool p1, bool p2, address p3) internal view {
+1061	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,bool,address)", p0, p1, p2, p3));
+1062	 }
+1063	 function log(string memory p0, bool p1, address p2, uint p3) internal view {
+1064	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,address,uint)", p0, p1, p2, p3));
+1065	 }
+1066	 function log(string memory p0, bool p1, address p2, string memory p3) internal view {
+1067	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,address,string)", p0, p1, p2, p3));
+1068	 }
+1069	 function log(string memory p0, bool p1, address p2, bool p3) internal view {
+1070	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,address,bool)", p0, p1, p2, p3));
+1071	 }
+1072	 function log(string memory p0, bool p1, address p2, address p3) internal view {
+1073	 _sendLogPayload(abi.encodeWithSignature("log(string,bool,address,address)", p0, p1, p2, p3));
+1074	 }
+1075	 function log(string memory p0, address p1, uint p2, uint p3) internal view {
+1076	 _sendLogPayload(abi.encodeWithSignature("log(string,address,uint,uint)", p0, p1, p2, p3));
+1077	 }
+1078	 function log(string memory p0, address p1, uint p2, string memory p3) internal view {
+1079	 _sendLogPayload(abi.encodeWithSignature("log(string,address,uint,string)", p0, p1, p2, p3));
+1080	 }
+1081	 function log(string memory p0, address p1, uint p2, bool p3) internal view {
+1082	 _sendLogPayload(abi.encodeWithSignature("log(string,address,uint,bool)", p0, p1, p2, p3));
+1083	 }
+1084	 function log(string memory p0, address p1, uint p2, address p3) internal view {
+1085	 _sendLogPayload(abi.encodeWithSignature("log(string,address,uint,address)", p0, p1, p2, p3));
+1086	 }
+1087	 function log(string memory p0, address p1, string memory p2, uint p3) internal view {
+1088	 _sendLogPayload(abi.encodeWithSignature("log(string,address,string,uint)", p0, p1, p2, p3));
+1089	 }
+1090	 function log(string memory p0, address p1, string memory p2, string memory p3) internal view {
+1091	 _sendLogPayload(abi.encodeWithSignature("log(string,address,string,string)", p0, p1, p2, p3));
+1092	 }
+1093	 function log(string memory p0, address p1, string memory p2, bool p3) internal view {
+1094	 _sendLogPayload(abi.encodeWithSignature("log(string,address,string,bool)", p0, p1, p2, p3));
+1095	 }
+1096	 function log(string memory p0, address p1, string memory p2, address p3) internal view {
+1097	 _sendLogPayload(abi.encodeWithSignature("log(string,address,string,address)", p0, p1, p2, p3));
+1098	 }
+1099	 function log(string memory p0, address p1, bool p2, uint p3) internal view {
+1100	 _sendLogPayload(abi.encodeWithSignature("log(string,address,bool,uint)", p0, p1, p2, p3));
+1101	 }
+1102	 function log(string memory p0, address p1, bool p2, string memory p3) internal view {
+1103	 _sendLogPayload(abi.encodeWithSignature("log(string,address,bool,string)", p0, p1, p2, p3));
+1104	 }
+1105	 function log(string memory p0, address p1, bool p2, bool p3) internal view {
+1106	 _sendLogPayload(abi.encodeWithSignature("log(string,address,bool,bool)", p0, p1, p2, p3));
+1107	 }
+1108	 function log(string memory p0, address p1, bool p2, address p3) internal view {
+1109	 _sendLogPayload(abi.encodeWithSignature("log(string,address,bool,address)", p0, p1, p2, p3));
+1110	 }
+1111	 function log(string memory p0, address p1, address p2, uint p3) internal view {
+1112	 _sendLogPayload(abi.encodeWithSignature("log(string,address,address,uint)", p0, p1, p2, p3));
+1113	 }
+1114	 function log(string memory p0, address p1, address p2, string memory p3) internal view {
+1115	 _sendLogPayload(abi.encodeWithSignature("log(string,address,address,string)", p0, p1, p2, p3));
+1116	 }
+1117	 function log(string memory p0, address p1, address p2, bool p3) internal view {
+1118	 _sendLogPayload(abi.encodeWithSignature("log(string,address,address,bool)", p0, p1, p2, p3));
+1119	 }
+1120	 function log(string memory p0, address p1, address p2, address p3) internal view {
+1121	 _sendLogPayload(abi.encodeWithSignature("log(string,address,address,address)", p0, p1, p2, p3));
+1122	 }
+1123	 function log(bool p0, uint p1, uint p2, uint p3) internal view {
+1124	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,uint,uint)", p0, p1, p2, p3));
+1125	 }
+1126	 function log(bool p0, uint p1, uint p2, string memory p3) internal view {
+1127	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,uint,string)", p0, p1, p2, p3));
+1128	 }
+1129	 function log(bool p0, uint p1, uint p2, bool p3) internal view {
+1130	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,uint,bool)", p0, p1, p2, p3));
+1131	 }
+1132	 function log(bool p0, uint p1, uint p2, address p3) internal view {
+1133	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,uint,address)", p0, p1, p2, p3));
+1134	 }
+1135	 function log(bool p0, uint p1, string memory p2, uint p3) internal view {
+1136	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,string,uint)", p0, p1, p2, p3));
+1137	 }
+1138	 function log(bool p0, uint p1, string memory p2, string memory p3) internal view {
+1139	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,string,string)", p0, p1, p2, p3));
+1140	 }
+1141	 function log(bool p0, uint p1, string memory p2, bool p3) internal view {
+1142	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,string,bool)", p0, p1, p2, p3));
+1143	 }
+1144	 function log(bool p0, uint p1, string memory p2, address p3) internal view {
+1145	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,string,address)", p0, p1, p2, p3));
+1146	 }
+1147	 function log(bool p0, uint p1, bool p2, uint p3) internal view {
+1148	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,bool,uint)", p0, p1, p2, p3));
+1149	 }
+1150	 function log(bool p0, uint p1, bool p2, string memory p3) internal view {
+1151	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,bool,string)", p0, p1, p2, p3));
+1152	 }
+1153	 function log(bool p0, uint p1, bool p2, bool p3) internal view {
+1154	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,bool,bool)", p0, p1, p2, p3));
+1155	 }
+1156	 function log(bool p0, uint p1, bool p2, address p3) internal view {
+1157	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,bool,address)", p0, p1, p2, p3));
+1158	 }
+1159	 function log(bool p0, uint p1, address p2, uint p3) internal view {
+1160	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,address,uint)", p0, p1, p2, p3));
+1161	 }
+1162	 function log(bool p0, uint p1, address p2, string memory p3) internal view {
+1163	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,address,string)", p0, p1, p2, p3));
+1164	 }
+1165	 function log(bool p0, uint p1, address p2, bool p3) internal view {
+1166	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,address,bool)", p0, p1, p2, p3));
+1167	 }
+1168	 function log(bool p0, uint p1, address p2, address p3) internal view {
+1169	 _sendLogPayload(abi.encodeWithSignature("log(bool,uint,address,address)", p0, p1, p2, p3));
+1170	 }
+1171	 function log(bool p0, string memory p1, uint p2, uint p3) internal view {
+1172	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,uint,uint)", p0, p1, p2, p3));
+1173	 }
+1174	 function log(bool p0, string memory p1, uint p2, string memory p3) internal view {
+1175	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,uint,string)", p0, p1, p2, p3));
+1176	 }
+1177	 function log(bool p0, string memory p1, uint p2, bool p3) internal view {
+1178	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,uint,bool)", p0, p1, p2, p3));
+1179	 }
+1180	 function log(bool p0, string memory p1, uint p2, address p3) internal view {
+1181	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,uint,address)", p0, p1, p2, p3));
+1182	 }
+1183	 function log(bool p0, string memory p1, string memory p2, uint p3) internal view {
+1184	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,string,uint)", p0, p1, p2, p3));
+1185	 }
+1186	 function log(bool p0, string memory p1, string memory p2, string memory p3) internal view {
+1187	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,string,string)", p0, p1, p2, p3));
+1188	 }
+1189	 function log(bool p0, string memory p1, string memory p2, bool p3) internal view {
+1190	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,string,bool)", p0, p1, p2, p3));
+1191	 }
+1192	 function log(bool p0, string memory p1, string memory p2, address p3) internal view {
+1193	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,string,address)", p0, p1, p2, p3));
+1194	 }
+1195	 function log(bool p0, string memory p1, bool p2, uint p3) internal view {
+1196	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,bool,uint)", p0, p1, p2, p3));
+1197	 }
+1198	 function log(bool p0, string memory p1, bool p2, string memory p3) internal view {
+1199	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,bool,string)", p0, p1, p2, p3));
+1200	 }
+1201	 function log(bool p0, string memory p1, bool p2, bool p3) internal view {
+1202	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,bool,bool)", p0, p1, p2, p3));
+1203	 }
+1204	 function log(bool p0, string memory p1, bool p2, address p3) internal view {
+1205	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,bool,address)", p0, p1, p2, p3));
+1206	 }
+1207	 function log(bool p0, string memory p1, address p2, uint p3) internal view {
+1208	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,address,uint)", p0, p1, p2, p3));
+1209	 }
+1210	 function log(bool p0, string memory p1, address p2, string memory p3) internal view {
+1211	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,address,string)", p0, p1, p2, p3));
+1212	 }
+1213	 function log(bool p0, string memory p1, address p2, bool p3) internal view {
+1214	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,address,bool)", p0, p1, p2, p3));
+1215	 }
+1216	 function log(bool p0, string memory p1, address p2, address p3) internal view {
+1217	 _sendLogPayload(abi.encodeWithSignature("log(bool,string,address,address)", p0, p1, p2, p3));
+1218	 }
+1219	 function log(bool p0, bool p1, uint p2, uint p3) internal view {
+1220	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,uint,uint)", p0, p1, p2, p3));
+1221	 }
+1222	 function log(bool p0, bool p1, uint p2, string memory p3) internal view {
+1223	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,uint,string)", p0, p1, p2, p3));
+1224	 }
+1225	 function log(bool p0, bool p1, uint p2, bool p3) internal view {
+1226	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,uint,bool)", p0, p1, p2, p3));
+1227	 }
+1228	 function log(bool p0, bool p1, uint p2, address p3) internal view {
+1229	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,uint,address)", p0, p1, p2, p3));
+1230	 }
+1231	 function log(bool p0, bool p1, string memory p2, uint p3) internal view {
+1232	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,string,uint)", p0, p1, p2, p3));
+1233	 }
+1234	 function log(bool p0, bool p1, string memory p2, string memory p3) internal view {
+1235	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,string,string)", p0, p1, p2, p3));
+1236	 }
+1237	 function log(bool p0, bool p1, string memory p2, bool p3) internal view {
+1238	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,string,bool)", p0, p1, p2, p3));
+1239	 }
+1240	 function log(bool p0, bool p1, string memory p2, address p3) internal view {
+1241	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,string,address)", p0, p1, p2, p3));
+1242	 }
+1243	 function log(bool p0, bool p1, bool p2, uint p3) internal view {
+1244	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,bool,uint)", p0, p1, p2, p3));
+1245	 }
+1246	 function log(bool p0, bool p1, bool p2, string memory p3) internal view {
+1247	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,bool,string)", p0, p1, p2, p3));
+1248	 }
+1249	 function log(bool p0, bool p1, bool p2, bool p3) internal view {
+1250	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,bool,bool)", p0, p1, p2, p3));
+1251	 }
+1252	 function log(bool p0, bool p1, bool p2, address p3) internal view {
+1253	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,bool,address)", p0, p1, p2, p3));
+1254	 }
+1255	 function log(bool p0, bool p1, address p2, uint p3) internal view {
+1256	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,address,uint)", p0, p1, p2, p3));
+1257	 }
+1258	 function log(bool p0, bool p1, address p2, string memory p3) internal view {
+1259	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,address,string)", p0, p1, p2, p3));
+1260	 }
+1261	 function log(bool p0, bool p1, address p2, bool p3) internal view {
+1262	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,address,bool)", p0, p1, p2, p3));
+1263	 }
+1264	 function log(bool p0, bool p1, address p2, address p3) internal view {
+1265	 _sendLogPayload(abi.encodeWithSignature("log(bool,bool,address,address)", p0, p1, p2, p3));
+1266	 }
+1267	 function log(bool p0, address p1, uint p2, uint p3) internal view {
+1268	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,uint,uint)", p0, p1, p2, p3));
+1269	 }
+1270	 function log(bool p0, address p1, uint p2, string memory p3) internal view {
+1271	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,uint,string)", p0, p1, p2, p3));
+1272	 }
+1273	 function log(bool p0, address p1, uint p2, bool p3) internal view {
+1274	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,uint,bool)", p0, p1, p2, p3));
+1275	 }
+1276	 function log(bool p0, address p1, uint p2, address p3) internal view {
+1277	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,uint,address)", p0, p1, p2, p3));
+1278	 }
+1279	 function log(bool p0, address p1, string memory p2, uint p3) internal view {
+1280	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,string,uint)", p0, p1, p2, p3));
+1281	 }
+1282	 function log(bool p0, address p1, string memory p2, string memory p3) internal view {
+1283	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,string,string)", p0, p1, p2, p3));
+1284	 }
+1285	 function log(bool p0, address p1, string memory p2, bool p3) internal view {
+1286	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,string,bool)", p0, p1, p2, p3));
+1287	 }
+1288	 function log(bool p0, address p1, string memory p2, address p3) internal view {
+1289	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,string,address)", p0, p1, p2, p3));
+1290	 }
+1291	 function log(bool p0, address p1, bool p2, uint p3) internal view {
+1292	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,bool,uint)", p0, p1, p2, p3));
+1293	 }
+1294	 function log(bool p0, address p1, bool p2, string memory p3) internal view {
+1295	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,bool,string)", p0, p1, p2, p3));
+1296	 }
+1297	 function log(bool p0, address p1, bool p2, bool p3) internal view {
+1298	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,bool,bool)", p0, p1, p2, p3));
+1299	 }
+1300	 function log(bool p0, address p1, bool p2, address p3) internal view {
+1301	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,bool,address)", p0, p1, p2, p3));
+1302	 }
+1303	 function log(bool p0, address p1, address p2, uint p3) internal view {
+1304	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,address,uint)", p0, p1, p2, p3));
+1305	 }
+1306	 function log(bool p0, address p1, address p2, string memory p3) internal view {
+1307	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,address,string)", p0, p1, p2, p3));
+1308	 }
+1309	 function log(bool p0, address p1, address p2, bool p3) internal view {
+1310	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,address,bool)", p0, p1, p2, p3));
+1311	 }
+1312	 function log(bool p0, address p1, address p2, address p3) internal view {
+1313	 _sendLogPayload(abi.encodeWithSignature("log(bool,address,address,address)", p0, p1, p2, p3));
+1314	 }
+1315	 function log(address p0, uint p1, uint p2, uint p3) internal view {
+1316	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,uint,uint)", p0, p1, p2, p3));
+1317	 }
+1318	 function log(address p0, uint p1, uint p2, string memory p3) internal view {
+1319	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,uint,string)", p0, p1, p2, p3));
+1320	 }
+1321	 function log(address p0, uint p1, uint p2, bool p3) internal view {
+1322	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,uint,bool)", p0, p1, p2, p3));
+1323	 }
+1324	 function log(address p0, uint p1, uint p2, address p3) internal view {
+1325	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,uint,address)", p0, p1, p2, p3));
+1326	 }
+1327	 function log(address p0, uint p1, string memory p2, uint p3) internal view {
+1328	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,string,uint)", p0, p1, p2, p3));
+1329	 }
+1330	 function log(address p0, uint p1, string memory p2, string memory p3) internal view {
+1331	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,string,string)", p0, p1, p2, p3));
+1332	 }
+1333	 function log(address p0, uint p1, string memory p2, bool p3) internal view {
+1334	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,string,bool)", p0, p1, p2, p3));
+1335	 }
+1336	 function log(address p0, uint p1, string memory p2, address p3) internal view {
+1337	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,string,address)", p0, p1, p2, p3));
+1338	 }
+1339	 function log(address p0, uint p1, bool p2, uint p3) internal view {
+1340	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,bool,uint)", p0, p1, p2, p3));
+1341	 }
+1342	 function log(address p0, uint p1, bool p2, string memory p3) internal view {
+1343	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,bool,string)", p0, p1, p2, p3));
+1344	 }
+1345	 function log(address p0, uint p1, bool p2, bool p3) internal view {
+1346	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,bool,bool)", p0, p1, p2, p3));
+1347	 }
+1348	 function log(address p0, uint p1, bool p2, address p3) internal view {
+1349	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,bool,address)", p0, p1, p2, p3));
+1350	 }
+1351	 function log(address p0, uint p1, address p2, uint p3) internal view {
+1352	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,address,uint)", p0, p1, p2, p3));
+1353	 }
+1354	 function log(address p0, uint p1, address p2, string memory p3) internal view {
+1355	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,address,string)", p0, p1, p2, p3));
+1356	 }
+1357	 function log(address p0, uint p1, address p2, bool p3) internal view {
+1358	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,address,bool)", p0, p1, p2, p3));
+1359	 }
+1360	 function log(address p0, uint p1, address p2, address p3) internal view {
+1361	 _sendLogPayload(abi.encodeWithSignature("log(address,uint,address,address)", p0, p1, p2, p3));
+1362	 }
+1363	 function log(address p0, string memory p1, uint p2, uint p3) internal view {
+1364	 _sendLogPayload(abi.encodeWithSignature("log(address,string,uint,uint)", p0, p1, p2, p3));
+1365	 }
+1366	 function log(address p0, string memory p1, uint p2, string memory p3) internal view {
+1367	 _sendLogPayload(abi.encodeWithSignature("log(address,string,uint,string)", p0, p1, p2, p3));
+1368	 }
+1369	 function log(address p0, string memory p1, uint p2, bool p3) internal view {
+1370	 _sendLogPayload(abi.encodeWithSignature("log(address,string,uint,bool)", p0, p1, p2, p3));
+1371	 }
+1372	 function log(address p0, string memory p1, uint p2, address p3) internal view {
+1373	 _sendLogPayload(abi.encodeWithSignature("log(address,string,uint,address)", p0, p1, p2, p3));
+1374	 }
+1375	 function log(address p0, string memory p1, string memory p2, uint p3) internal view {
+1376	 _sendLogPayload(abi.encodeWithSignature("log(address,string,string,uint)", p0, p1, p2, p3));
+1377	 }
+1378	 function log(address p0, string memory p1, string memory p2, string memory p3) internal view {
+1379	 _sendLogPayload(abi.encodeWithSignature("log(address,string,string,string)", p0, p1, p2, p3));
+1380	 }
+1381	 function log(address p0, string memory p1, string memory p2, bool p3) internal view {
+1382	 _sendLogPayload(abi.encodeWithSignature("log(address,string,string,bool)", p0, p1, p2, p3));
+1383	 }
+1384	 function log(address p0, string memory p1, string memory p2, address p3) internal view {
+1385	 _sendLogPayload(abi.encodeWithSignature("log(address,string,string,address)", p0, p1, p2, p3));
+1386	 }
+1387	 function log(address p0, string memory p1, bool p2, uint p3) internal view {
+1388	 _sendLogPayload(abi.encodeWithSignature("log(address,string,bool,uint)", p0, p1, p2, p3));
+1389	 }
+1390	 function log(address p0, string memory p1, bool p2, string memory p3) internal view {
+1391	 _sendLogPayload(abi.encodeWithSignature("log(address,string,bool,string)", p0, p1, p2, p3));
+1392	 }
+1393	 function log(address p0, string memory p1, bool p2, bool p3) internal view {
+1394	 _sendLogPayload(abi.encodeWithSignature("log(address,string,bool,bool)", p0, p1, p2, p3));
+1395	 }
+1396	 function log(address p0, string memory p1, bool p2, address p3) internal view {
+1397	 _sendLogPayload(abi.encodeWithSignature("log(address,string,bool,address)", p0, p1, p2, p3));
+1398	 }
+1399	 function log(address p0, string memory p1, address p2, uint p3) internal view {
+1400	 _sendLogPayload(abi.encodeWithSignature("log(address,string,address,uint)", p0, p1, p2, p3));
+1401	 }
+1402	 function log(address p0, string memory p1, address p2, string memory p3) internal view {
+1403	 _sendLogPayload(abi.encodeWithSignature("log(address,string,address,string)", p0, p1, p2, p3));
+1404	 }
+1405	 function log(address p0, string memory p1, address p2, bool p3) internal view {
+1406	 _sendLogPayload(abi.encodeWithSignature("log(address,string,address,bool)", p0, p1, p2, p3));
+1407	 }
+1408	 function log(address p0, string memory p1, address p2, address p3) internal view {
+1409	 _sendLogPayload(abi.encodeWithSignature("log(address,string,address,address)", p0, p1, p2, p3));
+1410	 }
+1411	 function log(address p0, bool p1, uint p2, uint p3) internal view {
+1412	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,uint,uint)", p0, p1, p2, p3));
+1413	 }
+1414	 function log(address p0, bool p1, uint p2, string memory p3) internal view {
+1415	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,uint,string)", p0, p1, p2, p3));
+1416	 }
+1417	 function log(address p0, bool p1, uint p2, bool p3) internal view {
+1418	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,uint,bool)", p0, p1, p2, p3));
+1419	 }
+1420	 function log(address p0, bool p1, uint p2, address p3) internal view {
+1421	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,uint,address)", p0, p1, p2, p3));
+1422	 }
+1423	 function log(address p0, bool p1, string memory p2, uint p3) internal view {
+1424	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,string,uint)", p0, p1, p2, p3));
+1425	 }
+1426	 function log(address p0, bool p1, string memory p2, string memory p3) internal view {
+1427	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,string,string)", p0, p1, p2, p3));
+1428	 }
+1429	 function log(address p0, bool p1, string memory p2, bool p3) internal view {
+1430	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,string,bool)", p0, p1, p2, p3));
+1431	 }
+1432	 function log(address p0, bool p1, string memory p2, address p3) internal view {
+1433	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,string,address)", p0, p1, p2, p3));
+1434	 }
+1435	 function log(address p0, bool p1, bool p2, uint p3) internal view {
+1436	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,bool,uint)", p0, p1, p2, p3));
+1437	 }
+1438	 function log(address p0, bool p1, bool p2, string memory p3) internal view {
+1439	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,bool,string)", p0, p1, p2, p3));
+1440	 }
+1441	 function log(address p0, bool p1, bool p2, bool p3) internal view {
+1442	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,bool,bool)", p0, p1, p2, p3));
+1443	 }
+1444	 function log(address p0, bool p1, bool p2, address p3) internal view {
+1445	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,bool,address)", p0, p1, p2, p3));
+1446	 }
+1447	 function log(address p0, bool p1, address p2, uint p3) internal view {
+1448	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,address,uint)", p0, p1, p2, p3));
+1449	 }
+1450	 function log(address p0, bool p1, address p2, string memory p3) internal view {
+1451	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,address,string)", p0, p1, p2, p3));
+1452	 }
+1453	 function log(address p0, bool p1, address p2, bool p3) internal view {
+1454	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,address,bool)", p0, p1, p2, p3));
+1455	 }
+1456	 function log(address p0, bool p1, address p2, address p3) internal view {
+1457	 _sendLogPayload(abi.encodeWithSignature("log(address,bool,address,address)", p0, p1, p2, p3));
+1458	 }
+1459	 function log(address p0, address p1, uint p2, uint p3) internal view {
+1460	 _sendLogPayload(abi.encodeWithSignature("log(address,address,uint,uint)", p0, p1, p2, p3));
+1461	 }
+1462	 function log(address p0, address p1, uint p2, string memory p3) internal view {
+1463	 _sendLogPayload(abi.encodeWithSignature("log(address,address,uint,string)", p0, p1, p2, p3));
+1464	 }
+1465	 function log(address p0, address p1, uint p2, bool p3) internal view {
+1466	 _sendLogPayload(abi.encodeWithSignature("log(address,address,uint,bool)", p0, p1, p2, p3));
+1467	 }
+1468	 function log(address p0, address p1, uint p2, address p3) internal view {
+1469	 _sendLogPayload(abi.encodeWithSignature("log(address,address,uint,address)", p0, p1, p2, p3));
+1470	 }
+1471	 function log(address p0, address p1, string memory p2, uint p3) internal view {
+1472	 _sendLogPayload(abi.encodeWithSignature("log(address,address,string,uint)", p0, p1, p2, p3));
+1473	 }
+1474	 function log(address p0, address p1, string memory p2, string memory p3) internal view {
+1475	 _sendLogPayload(abi.encodeWithSignature("log(address,address,string,string)", p0, p1, p2, p3));
+1476	 }
+1477	 function log(address p0, address p1, string memory p2, bool p3) internal view {
+1478	 _sendLogPayload(abi.encodeWithSignature("log(address,address,string,bool)", p0, p1, p2, p3));
+1479	 }
+1480	 function log(address p0, address p1, string memory p2, address p3) internal view {
+1481	 _sendLogPayload(abi.encodeWithSignature("log(address,address,string,address)", p0, p1, p2, p3));
+1482	 }
+1483	 function log(address p0, address p1, bool p2, uint p3) internal view {
+1484	 _sendLogPayload(abi.encodeWithSignature("log(address,address,bool,uint)", p0, p1, p2, p3));
+1485	 }
+1486	 function log(address p0, address p1, bool p2, string memory p3) internal view {
+1487	 _sendLogPayload(abi.encodeWithSignature("log(address,address,bool,string)", p0, p1, p2, p3));
+1488	 }
+1489	 function log(address p0, address p1, bool p2, bool p3) internal view {
+1490	 _sendLogPayload(abi.encodeWithSignature("log(address,address,bool,bool)", p0, p1, p2, p3));
+1491	 }
+1492	 function log(address p0, address p1, bool p2, address p3) internal view {
+1493	 _sendLogPayload(abi.encodeWithSignature("log(address,address,bool,address)", p0, p1, p2, p3));
+1494	 }
+1495	 function log(address p0, address p1, address p2, uint p3) internal view {
+1496	 _sendLogPayload(abi.encodeWithSignature("log(address,address,address,uint)", p0, p1, p2, p3));
+1497	 }
+1498	 function log(address p0, address p1, address p2, string memory p3) internal view {
+1499	 _sendLogPayload(abi.encodeWithSignature("log(address,address,address,string)", p0, p1, p2, p3));
+1500	 }
+1501	 function log(address p0, address p1, address p2, bool p3) internal view {
+1502	 _sendLogPayload(abi.encodeWithSignature("log(address,address,address,bool)", p0, p1, p2, p3));
+1503	 }
+1504	 function log(address p0, address p1, address p2, address p3) internal view {
+1505	 _sendLogPayload(abi.encodeWithSignature("log(address,address,address,address)", p0, p1, p2, p3));
+1506	 }
+1507	 }
+1508	 pragma solidity >=0.6.2 <0.8.0;
+1509	 library Address {
+1510	 function isContract(address account) internal view returns (bool) {
+1511	 uint256 size;
+1512	 assembly {
+1513	 size := extcodesize(account) }
+1514	 return size > 0;
+1515	 }
+1516	 function sendValue(address payable recipient, uint256 amount) internal {
+1517	 require(address(this).balance >= amount, "Address: insufficient balance");
+1518	 (bool success, ) = recipient.call{
+1519	 value: amount }
+1520	 ("");
+1521	 require(success, "Address: unable to send value, recipient may have reverted");
+1522	 }
+1523	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+1524	 return functionCall(target, data, "Address: low-level call failed");
+1525	 }
+1526	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+1527	 return functionCallWithValue(target, data, 0, errorMessage);
+1528	 }
+1529	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+1530	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+1531	 }
+1532	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+1533	 require(address(this).balance >= value, "Address: insufficient balance for call");
+1534	 require(isContract(target), "Address: call to non-contract");
+1535	 (bool success, bytes memory returndata) = target.call{
+1536	 value: value }
+1537	 (data);
+1538	 return _verifyCallResult(success, returndata, errorMessage);
+1539	 }
+1540	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+1541	 return functionStaticCall(target, data, "Address: low-level static call failed");
+1542	 }
+1543	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+1544	 require(isContract(target), "Address: static call to non-contract");
+1545	 (bool success, bytes memory returndata) = target.staticcall(data);
+1546	 return _verifyCallResult(success, returndata, errorMessage);
+1547	 }
+1548	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+1549	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+1550	 }
+1551	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+1552	 require(isContract(target), "Address: delegate call to non-contract");
+1553	 (bool success, bytes memory returndata) = target.delegatecall(data);
+1554	 return _verifyCallResult(success, returndata, errorMessage);
+1555	 }
+1556	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+1557	 if (success) {
+1558	 return returndata;
+1559	 }
+1560	 else {
+1561	 if (returndata.length > 0) {
+1562	 assembly {
+1563	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+1564	 }
+1565	 else {
+1566	 revert(errorMessage);
+1567	 }
+1568	 }
+1569	 }
+1570	 }

@@ -1,0 +1,97 @@
+row number 
+1	     pragma solidity ^0.7.4;
+2	 abstract contract ResolverBase {
+3	 bytes4 private constant INTERFACE_META_ID = 0x01ffc9a7;
+4	 function supportsInterface(bytes4 interfaceID) virtual public pure returns(bool) {
+5	 return interfaceID == INTERFACE_META_ID;
+6	 }
+7	 function isAuthorised(bytes32 node) internal virtual view returns(bool);
+8	 modifier authorised(bytes32 node) {
+9	 require(isAuthorised(node));
+10	 _;
+11	 }
+12	 function bytesToAddress(bytes memory b) internal pure returns(address payable a) {
+13	 require(b.length == 20);
+14	 assembly {
+15	 a := div(mload(add(b, 32)), exp(256, 12)) }
+16	 }
+17	 function addressToBytes(address a) internal pure returns(bytes memory b) {
+18	 b = new bytes(20);
+19	 assembly {
+20	 mstore(add(b, 32), mul(a, exp(256, 12))) }
+21	 }
+22	 }
+23	 pragma solidity ^0.7.6;
+24	 contract StealthKeyFIFSRegistrar {
+25	 ENS public ens;
+26	 bytes32 public rootNode;
+27	 constructor(ENS _ens, bytes32 _rootNode) {
+28	 ens = _ens;
+29	 rootNode = _rootNode;
+30	 }
+31	 function register( bytes32 _label, address _owner, StealthKeyResolver _resolver, uint256 _spendingPubKeyPrefix, uint256 _spendingPubKey, uint256 _viewingPubKeyPrefix, uint256 _viewingPubKey ) public {
+32	 bytes32 _node = keccak256(abi.encodePacked(rootNode, _label));
+33	 address _currentOwner = ens.owner(_node);
+34	 require(_currentOwner == address(0x0), 'StealthKeyFIFSRegistrar: Already claimed');
+35	 ens.setSubnodeOwner(rootNode, _label, address(this));
+36	 _resolver.setStealthKeys(_node, _spendingPubKeyPrefix, _spendingPubKey, _viewingPubKeyPrefix, _viewingPubKey);
+37	 ens.setSubnodeRecord(rootNode, _label, _owner, address(_resolver), 0);
+38	 }
+39	 }
+40	 pragma solidity ^0.7.0;
+41	 interface ENS {
+42	 event NewOwner(bytes32 indexed node, bytes32 indexed label, address owner);
+43	 event Transfer(bytes32 indexed node, address owner);
+44	 event NewResolver(bytes32 indexed node, address resolver);
+45	 event NewTTL(bytes32 indexed node, uint64 ttl);
+46	 event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+47	 function setRecord(bytes32 node, address owner, address resolver, uint64 ttl) external virtual;
+48	 function setSubnodeRecord(bytes32 node, bytes32 label, address owner, address resolver, uint64 ttl) external virtual;
+49	 function setSubnodeOwner(bytes32 node, bytes32 label, address owner) external virtual returns(bytes32);
+50	 function setResolver(bytes32 node, address resolver) external virtual;
+51	 function setOwner(bytes32 node, address owner) external virtual;
+52	 function setTTL(bytes32 node, uint64 ttl) external virtual;
+53	 function setApprovalForAll(address operator, bool approved) external virtual;
+54	 function owner(bytes32 node) external virtual view returns (address);
+55	 function resolver(bytes32 node) external virtual view returns (address);
+56	 function ttl(bytes32 node) external virtual view returns (uint64);
+57	 function recordExists(bytes32 node) external virtual view returns (bool);
+58	 function isApprovedForAll(address owner, address operator) external virtual view returns (bool);
+59	 }
+60	 pragma solidity ^0.7.4;
+61	 abstract contract StealthKeyResolver is ResolverBase {
+62	 bytes4 constant private STEALTH_KEY_INTERFACE_ID = 0x69a76591;
+63	 event StealthKeyChanged(bytes32 indexed node, uint256 spendingPubKeyPrefix, uint256 spendingPubKey, uint256 viewingPubKeyPrefix, uint256 viewingPubKey);
+64	 mapping(bytes32 => mapping(uint256 => uint256)) _stealthKeys;
+65	 function setStealthKeys(bytes32 node, uint256 spendingPubKeyPrefix, uint256 spendingPubKey, uint256 viewingPubKeyPrefix, uint256 viewingPubKey) external authorised(node) {
+66	 require( (spendingPubKeyPrefix == 2 || spendingPubKeyPrefix == 3) && (viewingPubKeyPrefix == 2 || viewingPubKeyPrefix == 3), "StealthKeyResolver: Invalid Prefix" );
+67	 emit StealthKeyChanged(node, spendingPubKeyPrefix, spendingPubKey, viewingPubKeyPrefix, viewingPubKey);
+68	 spendingPubKeyPrefix -= 2;
+69	 delete _stealthKeys[node][1 - spendingPubKeyPrefix];
+70	 delete _stealthKeys[node][5 - viewingPubKeyPrefix];
+71	 _stealthKeys[node][spendingPubKeyPrefix] = spendingPubKey;
+72	 _stealthKeys[node][viewingPubKeyPrefix] = viewingPubKey;
+73	 }
+74	 function stealthKeys(bytes32 node) external view returns (uint256 spendingPubKeyPrefix, uint256 spendingPubKey, uint256 viewingPubKeyPrefix, uint256 viewingPubKey) {
+75	 if (_stealthKeys[node][0] != 0) {
+76	 spendingPubKeyPrefix = 2;
+77	 spendingPubKey = _stealthKeys[node][0];
+78	 }
+79	 else {
+80	 spendingPubKeyPrefix = 3;
+81	 spendingPubKey = _stealthKeys[node][1];
+82	 }
+83	 if (_stealthKeys[node][2] != 0) {
+84	 viewingPubKeyPrefix = 2;
+85	 viewingPubKey = _stealthKeys[node][2];
+86	 }
+87	 else {
+88	 viewingPubKeyPrefix = 3;
+89	 viewingPubKey = _stealthKeys[node][3];
+90	 }
+91	 return (spendingPubKeyPrefix, spendingPubKey, viewingPubKeyPrefix, viewingPubKey);
+92	 }
+93	 function supportsInterface(bytes4 interfaceID) public virtual override pure returns(bool) {
+94	 return interfaceID == STEALTH_KEY_INTERFACE_ID || super.supportsInterface(interfaceID);
+95	 }
+96	 }

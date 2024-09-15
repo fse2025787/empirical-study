@@ -1,0 +1,565 @@
+row number 
+1	          pragma solidity >=0.4.24 <0.8.0;
+2	 abstract contract Initializable {
+3	 bool private _initialized;
+4	 bool private _initializing;
+5	 modifier initializer() {
+6	 require(_initializing || _isConstructor() || !_initialized, "Initializable: contract is already initialized");
+7	 bool isTopLevelCall = !_initializing;
+8	 if (isTopLevelCall) {
+9	 _initializing = true;
+10	 _initialized = true;
+11	 }
+12	 _;
+13	 if (isTopLevelCall) {
+14	 _initializing = false;
+15	 }
+16	 }
+17	 function _isConstructor() private view returns (bool) {
+18	 return !Address.isContract(address(this));
+19	 }
+20	 }
+21	 pragma solidity 0.7.6;
+22	 interface INutDistributor {
+23	 function updateVtb(address token, address lender, uint incAmount, uint decAmount) external;
+24	 function inNutDistribution() external view returns(bool);
+25	 }
+26	 pragma solidity 0.7.6;
+27	 contract Governable is Initializable {
+28	 address public governor;
+29	 address public pendingGovernor;
+30	 modifier onlyGov() {
+31	 require(msg.sender == governor, 'bad gov');
+32	 _;
+33	 }
+34	 function __Governable__init(address _governor) internal initializer {
+35	 require( _governor != address(0), 'zero gov');
+36	 governor = _governor;
+37	 }
+38	 function setPendingGovernor(address addr) external onlyGov {
+39	 pendingGovernor = addr;
+40	 }
+41	 function acceptGovernor() external {
+42	 require(msg.sender == pendingGovernor, 'no pend');
+43	 pendingGovernor = address(0);
+44	 governor = msg.sender;
+45	 }
+46	 }
+47	 pragma solidity 0.7.6;
+48	 contract NutDistributor is Governable, INutDistributor {
+49	 using SafeMath for uint;
+50	 using Math for uint;
+51	 using SafeERC20Upgradeable for IERC20Upgradeable;
+52	 struct Echo {
+53	 uint id;
+54	 uint endBlock;
+55	 uint amount;
+56	 }
+57	 address public nutmeg;
+58	 address public nut;
+59	 address public oracle;
+60	 uint public constant MAX_NUM_POOLS = 256;
+61	 uint public DIST_START_BLOCK;
+62	 uint public constant NUM_EPOCH = 15;
+63	 uint public BLOCKS_PER_EPOCH;
+64	 uint public constant DIST_START_AMOUNT = 250000 ether;
+65	 uint public constant DIST_MIN_AMOUNT = 18750 ether;
+66	 uint public CURRENT_EPOCH;
+67	 mapping(address => bool) addedPoolMap;
+68	 address[] public pools;
+69	 mapping(uint => Echo) public echoMap;
+70	 mapping(uint => bool) public distCompletionMap;
+71	 mapping(address => uint[15]) public totalVtbMap;
+72	 mapping(address => uint[15]) public totalNutMap;
+73	 mapping(address => mapping( address => uint[15] ) ) public vtbMap;
+74	 mapping(address => uint) public futureTotalVtbMap;
+75	 mapping(address => mapping( address => uint) ) public futureVtbMap;
+76	 mapping(address => uint) public futureTotalVtbEpoch;
+77	 mapping(address => mapping( address => uint) ) public futureVtbEpoch;
+78	 uint public constant SINK_PERCENTAGE = 20;
+79	 bool public distStarted;
+80	 modifier onlyNutmeg() {
+81	 require(msg.sender == nutmeg, 'only nutmeg can call');
+82	 _;
+83	 }
+84	 function setNutmegAddress(address addr) external onlyGov {
+85	 nutmeg = addr;
+86	 }
+87	 function setPriceOracle(address addr) external onlyGov {
+88	 oracle = addr;
+89	 }
+90	 function initialize( address nutAddr, address _governor, address oracleAddr, uint blocksPerEpoch ) external initializer {
+91	 BLOCKS_PER_EPOCH = blocksPerEpoch;
+92	 nut = nutAddr;
+93	 oracle = oracleAddr;
+94	 __Governable__init(_governor);
+95	 for (uint i = 0; i < NUM_EPOCH; i++) {
+96	 Echo storage echo = echoMap[i];
+97	 echo.id = i;
+98	 echo.endBlock = BLOCKS_PER_EPOCH.mul(i.add(1));
+99	 uint amount = DIST_START_AMOUNT.div(i.add(1));
+100	 if (amount < DIST_MIN_AMOUNT) {
+101	 amount = DIST_MIN_AMOUNT;
+102	 }
+103	 echo.amount = amount;
+104	 }
+105	 }
+106	 function startDistribution() external onlyGov {
+107	 DIST_START_BLOCK = block.number;
+108	 distStarted = true;
+109	 }
+110	 function inNutDistribution() external override view returns(bool) {
+111	 return (distStarted && block.number >= DIST_START_BLOCK && block.number < DIST_START_BLOCK.add(BLOCKS_PER_EPOCH.mul(NUM_EPOCH)));
+112	 }
+113	 function updateVtb(address token, address lender, uint incAmount, uint decAmount) external override onlyNutmeg {
+114	 require(incAmount == 0 || decAmount == 0, 'updateVtb: update amount is invalid');
+115	 uint amount = incAmount.add(decAmount);
+116	 require(amount > 0, 'updateVtb: update amount should be positive');
+117	 CURRENT_EPOCH = (block.number.sub(DIST_START_BLOCK)).div(BLOCKS_PER_EPOCH);
+118	 if (CURRENT_EPOCH >= NUM_EPOCH) return;
+119	 _fillVtbGap(token, lender);
+120	 _fillTotalVtbGap(token);
+121	 uint dv = echoMap[CURRENT_EPOCH].endBlock.add(DIST_START_BLOCK).sub( block.number ).mul(amount);
+122	 uint epochDv = BLOCKS_PER_EPOCH.mul(amount);
+123	 if (incAmount > 0) {
+124	 vtbMap[token][lender][CURRENT_EPOCH] = vtbMap[token][lender][CURRENT_EPOCH].add(dv);
+125	 totalVtbMap[token][CURRENT_EPOCH] = totalVtbMap[token][CURRENT_EPOCH].add(dv);
+126	 futureVtbMap[token][lender] = futureVtbMap[token][lender].add(epochDv);
+127	 futureTotalVtbMap[token] = futureTotalVtbMap[token].add(epochDv);
+128	 }
+129	 else {
+130	 if (dv > vtbMap[token][lender][CURRENT_EPOCH]) {
+131	 dv = vtbMap[token][lender][CURRENT_EPOCH];
+132	 }
+133	 if (epochDv > futureVtbMap[token][lender]) {
+134	 epochDv = futureVtbMap[token][lender];
+135	 }
+136	 vtbMap[token][lender][CURRENT_EPOCH] = vtbMap[token][lender][CURRENT_EPOCH].sub(dv);
+137	 totalVtbMap[token][CURRENT_EPOCH] = totalVtbMap[token][CURRENT_EPOCH].sub(dv);
+138	 futureVtbMap[token][lender] = futureVtbMap[token][lender].sub(epochDv);
+139	 futureTotalVtbMap[token] = futureTotalVtbMap[token].sub(epochDv);
+140	 }
+141	 if (!addedPoolMap[token]) {
+142	 pools.push(token);
+143	 require(pools.length <= MAX_NUM_POOLS, 'too many pools');
+144	 addedPoolMap[token] = true;
+145	 }
+146	 }
+147	 function _fillVtbGap(address token, address lender) internal {
+148	 uint current_epoch = block.number.sub(DIST_START_BLOCK).div(BLOCKS_PER_EPOCH).min(NUM_EPOCH - 1);
+149	 if (futureVtbEpoch[token][lender] > current_epoch) return;
+150	 uint futureVtb = futureVtbMap[token][lender];
+151	 for (uint i = futureVtbEpoch[token][lender]; i <= current_epoch; i++) {
+152	 vtbMap[token][lender][i] = futureVtb;
+153	 }
+154	 futureVtbEpoch[token][lender] = current_epoch.add(1);
+155	 }
+156	 function _fillTotalVtbGap(address token) internal {
+157	 uint current_epoch = block.number.sub(DIST_START_BLOCK).div(BLOCKS_PER_EPOCH).min(NUM_EPOCH - 1);
+158	 if (futureTotalVtbEpoch[token] > current_epoch) return;
+159	 uint futureTotalVtb = futureTotalVtbMap[token];
+160	 for (uint i = futureTotalVtbEpoch[token]; i <= current_epoch; i++) {
+161	 totalVtbMap[token][i] = futureTotalVtb;
+162	 }
+163	 futureTotalVtbEpoch[token] = current_epoch.add(1);
+164	 }
+165	 function distribute() external onlyGov {
+166	 require(oracle != address(0), 'distribute: no oracle available');
+167	 require(distStarted, 'dist not started');
+168	 uint currEpochId = (block.number.sub(DIST_START_BLOCK)).div(BLOCKS_PER_EPOCH);
+169	 currEpochId = currEpochId > NUM_EPOCH ? NUM_EPOCH : currEpochId;
+170	 require(currEpochId > 0, 'distribute: nut token distribution not ready');
+171	 require(distCompletionMap[NUM_EPOCH.sub(1)] == false, 'distribute: nut token distribution is over');
+172	 bool tokensDistributed = false;
+173	 for (uint i1 = 1; i1 <= currEpochId; i1++) {
+174	 uint prevEpochId = currEpochId.sub(i1);
+175	 if (distCompletionMap[prevEpochId]) {
+176	 break;
+177	 }
+178	 uint totalAmount = echoMap[prevEpochId].amount;
+179	 uint sinkAmount = totalAmount.mul(SINK_PERCENTAGE).div(100);
+180	 uint amount = totalAmount.sub(sinkAmount);
+181	 INut(nut).mintSink(sinkAmount);
+182	 INut(nut).mint(address(this), amount);
+183	 uint numOfPools = pools.length < MAX_NUM_POOLS ? pools.length : MAX_NUM_POOLS;
+184	 uint sumOfDv;
+185	 uint actualSumOfNut;
+186	 for (uint i = 0; i < numOfPools; i++) {
+187	 uint price = IPriceOracle(oracle).getPrice(pools[i]);
+188	 uint dv = price.mul(getTotalVtb(pools[i],prevEpochId));
+189	 sumOfDv = sumOfDv.add(dv);
+190	 }
+191	 if (sumOfDv > 0) {
+192	 for (uint i = 0; i < numOfPools; i++) {
+193	 uint price = IPriceOracle(oracle).getPrice(pools[i]);
+194	 uint dv = price.mul(getTotalVtb(pools[i], prevEpochId));
+195	 uint nutAmount = dv.mul(amount).div(sumOfDv);
+196	 actualSumOfNut = actualSumOfNut.add(nutAmount);
+197	 totalNutMap[pools[i]][prevEpochId] = nutAmount;
+198	 }
+199	 }
+200	 require(actualSumOfNut <= amount, "distribute: overflow");
+201	 tokensDistributed = true;
+202	 distCompletionMap[prevEpochId] = true;
+203	 }
+204	 require(tokensDistributed, 'no tokens distributed');
+205	 }
+206	 function collect() external {
+207	 require(distStarted, 'dist not started');
+208	 uint epochId = (block.number.sub(DIST_START_BLOCK)).div(BLOCKS_PER_EPOCH);
+209	 require(epochId > 0, 'collect: not ready');
+210	 address lender = msg.sender;
+211	 uint numOfPools = pools.length < MAX_NUM_POOLS ? pools.length : MAX_NUM_POOLS;
+212	 uint totalAmount;
+213	 for (uint i = 0; i < numOfPools; i++) {
+214	 address pool = pools[i];
+215	 _fillVtbGap(pool, lender);
+216	 for (uint j = 0; j < epochId && j < NUM_EPOCH; j++) {
+217	 if (!distCompletionMap[j]) {
+218	 continue;
+219	 }
+220	 uint vtb = getVtb(pool, lender, j);
+221	 if (vtb > 0 && getTotalVtb(pool, j) > 0) {
+222	 uint amount = vtb.mul(totalNutMap[pool][j]).div(getTotalVtb(pool, j));
+223	 totalAmount = totalAmount.add(amount);
+224	 vtbMap[pool][lender][j] = 0;
+225	 }
+226	 }
+227	 }
+228	 IERC20Upgradeable(nut).safeTransfer(lender, totalAmount);
+229	 }
+230	 function getCollectionAmount() external view returns(uint) {
+231	 require(distStarted, 'dist not started');
+232	 uint epochId = (block.number.sub(DIST_START_BLOCK)).div(BLOCKS_PER_EPOCH);
+233	 require(epochId > 0, 'getCollectionAmount: distribution is completed');
+234	 address lender = msg.sender;
+235	 uint numOfPools = pools.length < MAX_NUM_POOLS ? pools.length : MAX_NUM_POOLS;
+236	 uint totalAmount;
+237	 for (uint i = 0; i < numOfPools; i++) {
+238	 address pool = pools[i];
+239	 for (uint j = 0; j < epochId && j < NUM_EPOCH; j++) {
+240	 if (!distCompletionMap[j]) {
+241	 continue;
+242	 }
+243	 uint vtb = getVtb(pool, lender, j);
+244	 if (vtb > 0 && getTotalVtb(pool, j) > 0) {
+245	 uint amount = vtb.mul(totalNutMap[pool][j]).div(getTotalVtb(pool, j));
+246	 totalAmount = totalAmount.add(amount);
+247	 }
+248	 }
+249	 }
+250	 return totalAmount;
+251	 }
+252	 function getVtb(address pool, address lender, uint i) public view returns(uint) {
+253	 require(i < NUM_EPOCH, 'vtb idx err');
+254	 return i < futureVtbEpoch[pool][lender] ? vtbMap[pool][lender][i] : futureVtbMap[pool][lender];
+255	 }
+256	 function getTotalVtb(address pool, uint i) public view returns (uint) {
+257	 require(i < NUM_EPOCH, 'totalVtb idx err');
+258	 return i < futureTotalVtbEpoch[pool] ? totalVtbMap[pool][i] : futureTotalVtbMap[pool];
+259	 }
+260	 function version() public virtual pure returns (string memory) {
+261	 return "1.0.4.2";
+262	 }
+263	 }
+264	 pragma solidity 0.7.6;
+265	 interface INut {
+266	 function mint(address receipt, uint amount) external;
+267	 function mintSink(uint amount) external;
+268	 }
+269	 pragma solidity 0.7.6;
+270	 interface IPriceOracle {
+271	 function getPrice(address token) external view returns (uint);
+272	 }
+273	 pragma solidity >=0.6.0 <0.8.0;
+274	 interface IERC20Upgradeable {
+275	 function totalSupply() external view returns (uint256);
+276	 function balanceOf(address account) external view returns (uint256);
+277	 function transfer(address recipient, uint256 amount) external returns (bool);
+278	 function allowance(address owner, address spender) external view returns (uint256);
+279	 function approve(address spender, uint256 amount) external returns (bool);
+280	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+281	 event Transfer(address indexed from, address indexed to, uint256 value);
+282	 event Approval(address indexed owner, address indexed spender, uint256 value);
+283	 }
+284	 pragma solidity >=0.6.0 <0.8.0;
+285	 library SafeERC20Upgradeable {
+286	 using SafeMathUpgradeable for uint256;
+287	 using AddressUpgradeable for address;
+288	 function safeTransfer(IERC20Upgradeable token, address to, uint256 value) internal {
+289	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+290	 }
+291	 function safeTransferFrom(IERC20Upgradeable token, address from, address to, uint256 value) internal {
+292	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+293	 }
+294	 function safeApprove(IERC20Upgradeable token, address spender, uint256 value) internal {
+295	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+296	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+297	 }
+298	 function safeIncreaseAllowance(IERC20Upgradeable token, address spender, uint256 value) internal {
+299	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+300	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+301	 }
+302	 function safeDecreaseAllowance(IERC20Upgradeable token, address spender, uint256 value) internal {
+303	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+304	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+305	 }
+306	 function _callOptionalReturn(IERC20Upgradeable token, bytes memory data) private {
+307	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+308	 if (returndata.length > 0) {
+309	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+310	 }
+311	 }
+312	 }
+313	 pragma solidity >=0.6.0 <0.8.0;
+314	 library SafeMathUpgradeable {
+315	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+316	 uint256 c = a + b;
+317	 if (c < a) return (false, 0);
+318	 return (true, c);
+319	 }
+320	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+321	 if (b > a) return (false, 0);
+322	 return (true, a - b);
+323	 }
+324	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+325	 if (a == 0) return (true, 0);
+326	 uint256 c = a * b;
+327	 if (c / a != b) return (false, 0);
+328	 return (true, c);
+329	 }
+330	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+331	 if (b == 0) return (false, 0);
+332	 return (true, a / b);
+333	 }
+334	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+335	 if (b == 0) return (false, 0);
+336	 return (true, a % b);
+337	 }
+338	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+339	 uint256 c = a + b;
+340	 require(c >= a, "SafeMath: addition overflow");
+341	 return c;
+342	 }
+343	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+344	 require(b <= a, "SafeMath: subtraction overflow");
+345	 return a - b;
+346	 }
+347	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+348	 if (a == 0) return 0;
+349	 uint256 c = a * b;
+350	 require(c / a == b, "SafeMath: multiplication overflow");
+351	 return c;
+352	 }
+353	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+354	 require(b > 0, "SafeMath: division by zero");
+355	 return a / b;
+356	 }
+357	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+358	 require(b > 0, "SafeMath: modulo by zero");
+359	 return a % b;
+360	 }
+361	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+362	 require(b <= a, errorMessage);
+363	 return a - b;
+364	 }
+365	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+366	 require(b > 0, errorMessage);
+367	 return a / b;
+368	 }
+369	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+370	 require(b > 0, errorMessage);
+371	 return a % b;
+372	 }
+373	 }
+374	 pragma solidity >=0.6.2 <0.8.0;
+375	 library AddressUpgradeable {
+376	 function isContract(address account) internal view returns (bool) {
+377	 uint256 size;
+378	 assembly {
+379	 size := extcodesize(account) }
+380	 return size > 0;
+381	 }
+382	 function sendValue(address payable recipient, uint256 amount) internal {
+383	 require(address(this).balance >= amount, "Address: insufficient balance");
+384	 (bool success, ) = recipient.call{
+385	 value: amount }
+386	 ("");
+387	 require(success, "Address: unable to send value, recipient may have reverted");
+388	 }
+389	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+390	 return functionCall(target, data, "Address: low-level call failed");
+391	 }
+392	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+393	 return functionCallWithValue(target, data, 0, errorMessage);
+394	 }
+395	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+396	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+397	 }
+398	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+399	 require(address(this).balance >= value, "Address: insufficient balance for call");
+400	 require(isContract(target), "Address: call to non-contract");
+401	 (bool success, bytes memory returndata) = target.call{
+402	 value: value }
+403	 (data);
+404	 return _verifyCallResult(success, returndata, errorMessage);
+405	 }
+406	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+407	 return functionStaticCall(target, data, "Address: low-level static call failed");
+408	 }
+409	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+410	 require(isContract(target), "Address: static call to non-contract");
+411	 (bool success, bytes memory returndata) = target.staticcall(data);
+412	 return _verifyCallResult(success, returndata, errorMessage);
+413	 }
+414	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+415	 if (success) {
+416	 return returndata;
+417	 }
+418	 else {
+419	 if (returndata.length > 0) {
+420	 assembly {
+421	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+422	 }
+423	 else {
+424	 revert(errorMessage);
+425	 }
+426	 }
+427	 }
+428	 }
+429	 pragma solidity >=0.6.0 <0.8.0;
+430	 library SafeMath {
+431	 function tryAdd(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+432	 uint256 c = a + b;
+433	 if (c < a) return (false, 0);
+434	 return (true, c);
+435	 }
+436	 function trySub(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+437	 if (b > a) return (false, 0);
+438	 return (true, a - b);
+439	 }
+440	 function tryMul(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+441	 if (a == 0) return (true, 0);
+442	 uint256 c = a * b;
+443	 if (c / a != b) return (false, 0);
+444	 return (true, c);
+445	 }
+446	 function tryDiv(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+447	 if (b == 0) return (false, 0);
+448	 return (true, a / b);
+449	 }
+450	 function tryMod(uint256 a, uint256 b) internal pure returns (bool, uint256) {
+451	 if (b == 0) return (false, 0);
+452	 return (true, a % b);
+453	 }
+454	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+455	 uint256 c = a + b;
+456	 require(c >= a, "SafeMath: addition overflow");
+457	 return c;
+458	 }
+459	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+460	 require(b <= a, "SafeMath: subtraction overflow");
+461	 return a - b;
+462	 }
+463	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+464	 if (a == 0) return 0;
+465	 uint256 c = a * b;
+466	 require(c / a == b, "SafeMath: multiplication overflow");
+467	 return c;
+468	 }
+469	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+470	 require(b > 0, "SafeMath: division by zero");
+471	 return a / b;
+472	 }
+473	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+474	 require(b > 0, "SafeMath: modulo by zero");
+475	 return a % b;
+476	 }
+477	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+478	 require(b <= a, errorMessage);
+479	 return a - b;
+480	 }
+481	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+482	 require(b > 0, errorMessage);
+483	 return a / b;
+484	 }
+485	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+486	 require(b > 0, errorMessage);
+487	 return a % b;
+488	 }
+489	 }
+490	 pragma solidity >=0.6.0 <0.8.0;
+491	 library Math {
+492	 function max(uint256 a, uint256 b) internal pure returns (uint256) {
+493	 return a >= b ? a : b;
+494	 }
+495	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+496	 return a < b ? a : b;
+497	 }
+498	 function average(uint256 a, uint256 b) internal pure returns (uint256) {
+499	 return (a / 2) + (b / 2) + ((a % 2 + b % 2) / 2);
+500	 }
+501	 }
+502	 pragma solidity >=0.6.2 <0.8.0;
+503	 library Address {
+504	 function isContract(address account) internal view returns (bool) {
+505	 uint256 size;
+506	 assembly {
+507	 size := extcodesize(account) }
+508	 return size > 0;
+509	 }
+510	 function sendValue(address payable recipient, uint256 amount) internal {
+511	 require(address(this).balance >= amount, "Address: insufficient balance");
+512	 (bool success, ) = recipient.call{
+513	 value: amount }
+514	 ("");
+515	 require(success, "Address: unable to send value, recipient may have reverted");
+516	 }
+517	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+518	 return functionCall(target, data, "Address: low-level call failed");
+519	 }
+520	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+521	 return functionCallWithValue(target, data, 0, errorMessage);
+522	 }
+523	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+524	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+525	 }
+526	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+527	 require(address(this).balance >= value, "Address: insufficient balance for call");
+528	 require(isContract(target), "Address: call to non-contract");
+529	 (bool success, bytes memory returndata) = target.call{
+530	 value: value }
+531	 (data);
+532	 return _verifyCallResult(success, returndata, errorMessage);
+533	 }
+534	 function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+535	 return functionStaticCall(target, data, "Address: low-level static call failed");
+536	 }
+537	 function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+538	 require(isContract(target), "Address: static call to non-contract");
+539	 (bool success, bytes memory returndata) = target.staticcall(data);
+540	 return _verifyCallResult(success, returndata, errorMessage);
+541	 }
+542	 function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+543	 return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+544	 }
+545	 function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+546	 require(isContract(target), "Address: delegate call to non-contract");
+547	 (bool success, bytes memory returndata) = target.delegatecall(data);
+548	 return _verifyCallResult(success, returndata, errorMessage);
+549	 }
+550	 function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+551	 if (success) {
+552	 return returndata;
+553	 }
+554	 else {
+555	 if (returndata.length > 0) {
+556	 assembly {
+557	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+558	 }
+559	 else {
+560	 revert(errorMessage);
+561	 }
+562	 }
+563	 }
+564	 }

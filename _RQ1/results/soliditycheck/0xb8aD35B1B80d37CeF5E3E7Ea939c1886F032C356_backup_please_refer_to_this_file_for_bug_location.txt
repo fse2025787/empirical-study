@@ -1,0 +1,613 @@
+row number 
+1	       pragma solidity ^0.6.0;
+2	 abstract contract Context {
+3	 function _msgSender() internal view virtual returns (address payable) {
+4	 return msg.sender;
+5	 }
+6	 function _msgData() internal view virtual returns (bytes memory) {
+7	 this;
+8	 return msg.data;
+9	 }
+10	 }
+11	 pragma solidity ^0.6.0;
+12	 contract ReentrancyGuard {
+13	 uint256 private constant _NOT_ENTERED = 1;
+14	 uint256 private constant _ENTERED = 2;
+15	 uint256 private _status;
+16	 constructor () internal {
+17	 _status = _NOT_ENTERED;
+18	 }
+19	 modifier nonReentrant() {
+20	 require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+21	 _status = _ENTERED;
+22	 _;
+23	 _status = _NOT_ENTERED;
+24	 }
+25	 }
+26	 pragma solidity ^0.6.12;
+27	 interface IStakingRewards {
+28	 function lastTimeRewardApplicable() external view returns (uint256);
+29	 function rewardPerToken() external view returns (uint256);
+30	 function earned(address account) external view returns (uint256, uint256);
+31	 function getRewardForDuration() external view returns (uint256);
+32	 function totalSupply() external view returns (uint256);
+33	 function balanceOf(address account) external view returns (uint256);
+34	 function stake(uint256 amount) external;
+35	 function withdraw(uint256 amount) external;
+36	 function getReward() external;
+37	 function exit() external;
+38	 }
+39	 pragma solidity ^0.6.12;
+40	 abstract contract RewardsDistributionRecipient {
+41	 address public rewardsDistribution;
+42	 function notifyRewardAmount(uint256 reward, uint duration) external virtual;
+43	 modifier onlyRewardsDistribution() {
+44	 require(msg.sender == rewardsDistribution, "Caller is not RewardsDistribution contract");
+45	 _;
+46	 }
+47	 }
+48	 pragma solidity ^0.6.0;
+49	 contract Ownable is Context {
+50	 address private _owner;
+51	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+52	 constructor () internal {
+53	 address msgSender = _msgSender();
+54	 _owner = msgSender;
+55	 emit OwnershipTransferred(address(0), msgSender);
+56	 }
+57	 function owner() public view returns (address) {
+58	 return _owner;
+59	 }
+60	 modifier onlyOwner() {
+61	 require(_owner == _msgSender(), "Ownable: caller is not the owner");
+62	 _;
+63	 }
+64	 function renounceOwnership() public virtual onlyOwner {
+65	 emit OwnershipTransferred(_owner, address(0));
+66	 _owner = address(0);
+67	 }
+68	 function transferOwnership(address newOwner) public virtual onlyOwner {
+69	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+70	 emit OwnershipTransferred(_owner, newOwner);
+71	 _owner = newOwner;
+72	 }
+73	 }
+74	 pragma solidity ^0.6.0;
+75	 contract Pausable is Context {
+76	 event Paused(address account);
+77	 event Unpaused(address account);
+78	 bool private _paused;
+79	 constructor () internal {
+80	 _paused = false;
+81	 }
+82	 function paused() public view returns (bool) {
+83	 return _paused;
+84	 }
+85	 modifier whenNotPaused() {
+86	 require(!_paused, "Pausable: paused");
+87	 _;
+88	 }
+89	 modifier whenPaused() {
+90	 require(_paused, "Pausable: not paused");
+91	 _;
+92	 }
+93	 function _pause() internal virtual whenNotPaused {
+94	 _paused = true;
+95	 emit Paused(_msgSender());
+96	 }
+97	 function _unpause() internal virtual whenPaused {
+98	 _paused = false;
+99	 emit Unpaused(_msgSender());
+100	 }
+101	 }
+102	 pragma solidity ^0.6.12;
+103	 interface ILiquidate {
+104	 function liquidate(address account) external;
+105	 }
+106	 pragma solidity ^0.6.12;
+107	 interface IPause {
+108	 function pause() external;
+109	 function unpause() external;
+110	 }
+111	 pragma solidity ^0.6.12;
+112	 contract StakingRewardsLock is IStakingRewards, RewardsDistributionRecipient, ReentrancyGuard {
+113	 using SafeMath for uint;
+114	 using Math for uint;
+115	 using SafeERC20 for IERC20;
+116	 IERC20 public rewardsToken;
+117	 IERC20 public stakingToken;
+118	 uint256 public periodFinish = 0;
+119	 uint256 public rewardRate = 0;
+120	 uint256 public rewardsDuration;
+121	 uint256 public lastUpdateTime;
+122	 uint256 public rewardPerTokenStored;
+123	 uint256 public lockDuration;
+124	 mapping(address => uint256) public userRewardPerTokenPaid;
+125	 mapping(address => uint256) public unlockRewards;
+126	 mapping(address => uint256) public lockRewards;
+127	 mapping(address => uint256) public userLockTime;
+128	 uint256 private _totalSupply;
+129	 mapping(address => uint256) private _balances;
+130	 uint public unlockPercent;
+131	 uint public lockPercent;
+132	 constructor( address _rewardsDistribution, address _rewardsToken, address _stakingToken, uint256 _lockDuration, uint256 _unlockPercent, uint256 _lockPercent ) public {
+133	 rewardsToken = IERC20(_rewardsToken);
+134	 stakingToken = IERC20(_stakingToken);
+135	 rewardsDistribution = _rewardsDistribution;
+136	 lockDuration = _lockDuration;
+137	 unlockPercent = _unlockPercent;
+138	 lockPercent = _lockPercent;
+139	 }
+140	 function totalSupply() external override view returns (uint256) {
+141	 return _totalSupply;
+142	 }
+143	 function balanceOf(address account) external override view returns (uint256) {
+144	 return _balances[account];
+145	 }
+146	 function lastTimeRewardApplicable() public override view returns (uint256) {
+147	 return Math.min(block.timestamp, periodFinish);
+148	 }
+149	 function rewardPerToken() public override view returns (uint256) {
+150	 if (_totalSupply == 0) {
+151	 return rewardPerTokenStored;
+152	 }
+153	 return rewardPerTokenStored.add( lastTimeRewardApplicable().sub(lastUpdateTime).mul(rewardRate).mul(1e18).div(_totalSupply) );
+154	 }
+155	 function earned(address account) public override view returns (uint256, uint256) {
+156	 uint earnedToken = earnedDuration(account);
+157	 if(block.timestamp >= userLockTime[account]) {
+158	 uint unlockAmount = unlockRewards[account].add(lockRewards[account]).add(earnedToken);
+159	 return (unlockAmount, 0);
+160	 }
+161	 else {
+162	 uint unlockAmount = unlockRewards[account].add(earnedToken.mul(unlockPercent).div(100));
+163	 uint lockAmount = lockRewards[account].add(earnedToken.mul(lockPercent).div(100));
+164	 return (unlockAmount, lockAmount);
+165	 }
+166	 }
+167	 function earnedDuration(address account) internal view returns (uint256) {
+168	 return _balances[account].mul(rewardPerToken().sub(userRewardPerTokenPaid[account])).div(1e18);
+169	 }
+170	 function getRewardForDuration() external override view returns (uint256) {
+171	 return rewardRate.mul(rewardsDuration);
+172	 }
+173	 function stakeWithPermit(uint256 amount, uint deadline, uint8 v, bytes32 r, bytes32 s) external nonReentrant updateReward(msg.sender) {
+174	 require(amount > 0, "Cannot stake 0");
+175	 if (userLockTime[msg.sender] == 0) {
+176	 userLockTime[msg.sender] = block.timestamp.add(lockDuration);
+177	 }
+178	 _totalSupply = _totalSupply.add(amount);
+179	 _balances[msg.sender] = _balances[msg.sender].add(amount);
+180	 IBORERC20(address(stakingToken)).permit(msg.sender, address(this), amount, deadline, v, r, s);
+181	 stakingToken.safeTransferFrom(msg.sender, address(this), amount);
+182	 emit Staked(msg.sender, amount);
+183	 }
+184	 function stake(uint256 amount) external override nonReentrant updateReward(msg.sender) {
+185	 require(amount > 0, "Cannot stake 0");
+186	 if (userLockTime[msg.sender] == 0) {
+187	 userLockTime[msg.sender] = block.timestamp.add(lockDuration);
+188	 }
+189	 _totalSupply = _totalSupply.add(amount);
+190	 _balances[msg.sender] = _balances[msg.sender].add(amount);
+191	 stakingToken.safeTransferFrom(msg.sender, address(this), amount);
+192	 emit Staked(msg.sender, amount);
+193	 }
+194	 function withdraw(uint256 amount) public override virtual nonReentrant updateReward(msg.sender) {
+195	 require(amount > 0, "Cannot withdraw 0");
+196	 _totalSupply = _totalSupply.sub(amount);
+197	 _balances[msg.sender] = _balances[msg.sender].sub(amount);
+198	 stakingToken.safeTransfer(msg.sender, amount);
+199	 emit Withdrawn(msg.sender, amount);
+200	 }
+201	 function getReward() public override nonReentrant updateReward(msg.sender) {
+202	 uint256 reward = unlockRewards[msg.sender];
+203	 if (reward > 0) {
+204	 unlockRewards[msg.sender] = 0;
+205	 rewardsToken.safeTransfer(msg.sender, reward);
+206	 emit RewardPaid(msg.sender, reward);
+207	 }
+208	 }
+209	 function exit() external override {
+210	 withdraw(_balances[msg.sender]);
+211	 getReward();
+212	 }
+213	 function notifyRewardAmount(uint256 reward, uint duration) external override onlyRewardsDistribution updateReward(address(0)) {
+214	 rewardsDuration = duration;
+215	 if (block.timestamp >= periodFinish) {
+216	 rewardRate = reward.div(rewardsDuration);
+217	 }
+218	 else {
+219	 uint256 remaining = periodFinish.sub(block.timestamp);
+220	 uint256 leftover = remaining.mul(rewardRate);
+221	 rewardRate = reward.add(leftover).div(rewardsDuration);
+222	 }
+223	 uint balance = rewardsToken.balanceOf(address(this));
+224	 require(rewardRate <= balance.div(rewardsDuration), "Provided reward too high");
+225	 lastUpdateTime = block.timestamp;
+226	 periodFinish = block.timestamp.add(rewardsDuration);
+227	 emit RewardAdded(reward);
+228	 }
+229	 modifier updateReward(address account) {
+230	 rewardPerTokenStored = rewardPerToken();
+231	 lastUpdateTime = lastTimeRewardApplicable();
+232	 if (account != address(0)) {
+233	 (uint unlock, uint lock) = earned(account);
+234	 unlockRewards[account] = unlock;
+235	 lockRewards[account] = lock;
+236	 userRewardPerTokenPaid[account] = rewardPerTokenStored;
+237	 }
+238	 _;
+239	 }
+240	 event RewardAdded(uint256 reward);
+241	 event Staked(address indexed user, uint256 amount);
+242	 event Withdrawn(address indexed user, uint256 amount);
+243	 event RewardPaid(address indexed user, uint256 reward);
+244	 }
+245	 pragma solidity ^0.6.0;
+246	 library Math {
+247	 function max(uint256 a, uint256 b) internal pure returns (uint256) {
+248	 return a >= b ? a : b;
+249	 }
+250	 function min(uint256 a, uint256 b) internal pure returns (uint256) {
+251	 return a < b ? a : b;
+252	 }
+253	 function average(uint256 a, uint256 b) internal pure returns (uint256) {
+254	 return (a / 2) + (b / 2) + ((a % 2 + b % 2) / 2);
+255	 }
+256	 }
+257	 pragma solidity ^0.6.0;
+258	 library SafeMath {
+259	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+260	 uint256 c = a + b;
+261	 require(c >= a, "SafeMath: addition overflow");
+262	 return c;
+263	 }
+264	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+265	 return sub(a, b, "SafeMath: subtraction overflow");
+266	 }
+267	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+268	 require(b <= a, errorMessage);
+269	 uint256 c = a - b;
+270	 return c;
+271	 }
+272	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+273	 if (a == 0) {
+274	 return 0;
+275	 }
+276	 uint256 c = a * b;
+277	 require(c / a == b, "SafeMath: multiplication overflow");
+278	 return c;
+279	 }
+280	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+281	 return div(a, b, "SafeMath: division by zero");
+282	 }
+283	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+284	 require(b > 0, errorMessage);
+285	 uint256 c = a / b;
+286	 return c;
+287	 }
+288	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+289	 return mod(a, b, "SafeMath: modulo by zero");
+290	 }
+291	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+292	 require(b != 0, errorMessage);
+293	 return a % b;
+294	 }
+295	 }
+296	 pragma solidity ^0.6.0;
+297	 interface IERC20 {
+298	 function totalSupply() external view returns (uint256);
+299	 function balanceOf(address account) external view returns (uint256);
+300	 function transfer(address recipient, uint256 amount) external returns (bool);
+301	 function allowance(address owner, address spender) external view returns (uint256);
+302	 function approve(address spender, uint256 amount) external returns (bool);
+303	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+304	 event Transfer(address indexed from, address indexed to, uint256 value);
+305	 event Approval(address indexed owner, address indexed spender, uint256 value);
+306	 }
+307	 pragma solidity ^0.6.0;
+308	 library SafeERC20 {
+309	 using SafeMath for uint256;
+310	 using Address for address;
+311	 function safeTransfer(IERC20 token, address to, uint256 value) internal {
+312	 _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+313	 }
+314	 function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+315	 _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+316	 }
+317	 function safeApprove(IERC20 token, address spender, uint256 value) internal {
+318	 require((value == 0) || (token.allowance(address(this), spender) == 0), "SafeERC20: approve from non-zero to non-zero allowance" );
+319	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+320	 }
+321	 function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+322	 uint256 newAllowance = token.allowance(address(this), spender).add(value);
+323	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+324	 }
+325	 function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {
+326	 uint256 newAllowance = token.allowance(address(this), spender).sub(value, "SafeERC20: decreased allowance below zero");
+327	 _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));
+328	 }
+329	 function _callOptionalReturn(IERC20 token, bytes memory data) private {
+330	 bytes memory returndata = address(token).functionCall(data, "SafeERC20: low-level call failed");
+331	 if (returndata.length > 0) {
+332	 require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+333	 }
+334	 }
+335	 }
+336	 pragma solidity ^0.6.2;
+337	 library Address {
+338	 function isContract(address account) internal view returns (bool) {
+339	 bytes32 codehash;
+340	 bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+341	 assembly {
+342	 codehash := extcodehash(account) }
+343	 return (codehash != accountHash && codehash != 0x0);
+344	 }
+345	 function sendValue(address payable recipient, uint256 amount) internal {
+346	 require(address(this).balance >= amount, "Address: insufficient balance");
+347	 (bool success, ) = recipient.call{
+348	 value: amount }
+349	 ("");
+350	 require(success, "Address: unable to send value, recipient may have reverted");
+351	 }
+352	 function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+353	 return functionCall(target, data, "Address: low-level call failed");
+354	 }
+355	 function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+356	 return _functionCallWithValue(target, data, 0, errorMessage);
+357	 }
+358	 function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+359	 return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+360	 }
+361	 function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+362	 require(address(this).balance >= value, "Address: insufficient balance for call");
+363	 return _functionCallWithValue(target, data, value, errorMessage);
+364	 }
+365	 function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+366	 require(isContract(target), "Address: call to non-contract");
+367	 (bool success, bytes memory returndata) = target.call{
+368	 value: weiValue }
+369	 (data);
+370	 if (success) {
+371	 return returndata;
+372	 }
+373	 else {
+374	 if (returndata.length > 0) {
+375	 assembly {
+376	 let returndata_size := mload(returndata) revert(add(32, returndata), returndata_size) }
+377	 }
+378	 else {
+379	 revert(errorMessage);
+380	 }
+381	 }
+382	 }
+383	 }
+384	 pragma solidity ^0.6.0;
+385	 library EnumerableSet {
+386	 struct Set {
+387	 bytes32[] _values;
+388	 mapping (bytes32 => uint256) _indexes;
+389	 }
+390	 function _add(Set storage set, bytes32 value) private returns (bool) {
+391	 if (!_contains(set, value)) {
+392	 set._values.push(value);
+393	 set._indexes[value] = set._values.length;
+394	 return true;
+395	 }
+396	 else {
+397	 return false;
+398	 }
+399	 }
+400	 function _remove(Set storage set, bytes32 value) private returns (bool) {
+401	 uint256 valueIndex = set._indexes[value];
+402	 if (valueIndex != 0) {
+403	 uint256 toDeleteIndex = valueIndex - 1;
+404	 uint256 lastIndex = set._values.length - 1;
+405	 bytes32 lastvalue = set._values[lastIndex];
+406	 set._values[toDeleteIndex] = lastvalue;
+407	 set._indexes[lastvalue] = toDeleteIndex + 1;
+408	 set._values.pop();
+409	 delete set._indexes[value];
+410	 return true;
+411	 }
+412	 else {
+413	 return false;
+414	 }
+415	 }
+416	 function _contains(Set storage set, bytes32 value) private view returns (bool) {
+417	 return set._indexes[value] != 0;
+418	 }
+419	 function _length(Set storage set) private view returns (uint256) {
+420	 return set._values.length;
+421	 }
+422	 function _at(Set storage set, uint256 index) private view returns (bytes32) {
+423	 require(set._values.length > index, "EnumerableSet: index out of bounds");
+424	 return set._values[index];
+425	 }
+426	 struct AddressSet {
+427	 Set _inner;
+428	 }
+429	 function add(AddressSet storage set, address value) internal returns (bool) {
+430	 return _add(set._inner, bytes32(uint256(value)));
+431	 }
+432	 function remove(AddressSet storage set, address value) internal returns (bool) {
+433	 return _remove(set._inner, bytes32(uint256(value)));
+434	 }
+435	 function contains(AddressSet storage set, address value) internal view returns (bool) {
+436	 return _contains(set._inner, bytes32(uint256(value)));
+437	 }
+438	 function length(AddressSet storage set) internal view returns (uint256) {
+439	 return _length(set._inner);
+440	 }
+441	 function at(AddressSet storage set, uint256 index) internal view returns (address) {
+442	 return address(uint256(_at(set._inner, index)));
+443	 }
+444	 struct UintSet {
+445	 Set _inner;
+446	 }
+447	 function add(UintSet storage set, uint256 value) internal returns (bool) {
+448	 return _add(set._inner, bytes32(value));
+449	 }
+450	 function remove(UintSet storage set, uint256 value) internal returns (bool) {
+451	 return _remove(set._inner, bytes32(value));
+452	 }
+453	 function contains(UintSet storage set, uint256 value) internal view returns (bool) {
+454	 return _contains(set._inner, bytes32(value));
+455	 }
+456	 function length(UintSet storage set) internal view returns (uint256) {
+457	 return _length(set._inner);
+458	 }
+459	 function at(UintSet storage set, uint256 index) internal view returns (uint256) {
+460	 return uint256(_at(set._inner, index));
+461	 }
+462	 }
+463	 interface ILiquidateArray {
+464	 function liquidateArray(address account, uint256[] memory pids) external;
+465	 }
+466	 pragma solidity ^0.6.12;
+467	 interface IOracle {
+468	 function setPrice(bytes32 _symbol, uint _price) external;
+469	 function getPrice(bytes32 _symbol) external view returns (uint);
+470	 }
+471	 pragma solidity ^0.6.12;
+472	 interface ISatellitePool {
+473	 function liquidate() external;
+474	 function tvl() external view returns(uint);
+475	 }
+476	 pragma solidity ^0.6.8;
+477	 library SafeDecimalMath {
+478	 using SafeMath for uint;
+479	 uint8 public constant decimals = 18;
+480	 uint8 public constant highPrecisionDecimals = 27;
+481	 uint public constant UNIT = 10**uint(decimals);
+482	 uint public constant PRECISE_UNIT = 10**uint(highPrecisionDecimals);
+483	 uint private constant UNIT_TO_HIGH_PRECISION_CONVERSION_FACTOR = 10**uint(highPrecisionDecimals - decimals);
+484	 function unit() external pure returns (uint) {
+485	 return UNIT;
+486	 }
+487	 function preciseUnit() external pure returns (uint) {
+488	 return PRECISE_UNIT;
+489	 }
+490	 function multiplyDecimal(uint x, uint y) internal pure returns (uint) {
+491	 return x.mul(y) / UNIT;
+492	 }
+493	 function _multiplyDecimalRound( uint x, uint y, uint precisionUnit ) private pure returns (uint) {
+494	 uint quotientTimesTen = x.mul(y) / (precisionUnit / 10);
+495	 if (quotientTimesTen % 10 >= 5) {
+496	 quotientTimesTen += 10;
+497	 }
+498	 return quotientTimesTen / 10;
+499	 }
+500	 function multiplyDecimalRoundPrecise(uint x, uint y) internal pure returns (uint) {
+501	 return _multiplyDecimalRound(x, y, PRECISE_UNIT);
+502	 }
+503	 function multiplyDecimalRound(uint x, uint y) internal pure returns (uint) {
+504	 return _multiplyDecimalRound(x, y, UNIT);
+505	 }
+506	 function divideDecimal(uint x, uint y) internal pure returns (uint) {
+507	 return x.mul(UNIT).div(y);
+508	 }
+509	 function _divideDecimalRound( uint x, uint y, uint precisionUnit ) private pure returns (uint) {
+510	 uint resultTimesTen = x.mul(precisionUnit * 10).div(y);
+511	 if (resultTimesTen % 10 >= 5) {
+512	 resultTimesTen += 10;
+513	 }
+514	 return resultTimesTen / 10;
+515	 }
+516	 function divideDecimalRound(uint x, uint y) internal pure returns (uint) {
+517	 return _divideDecimalRound(x, y, UNIT);
+518	 }
+519	 function divideDecimalRoundPrecise(uint x, uint y) internal pure returns (uint) {
+520	 return _divideDecimalRound(x, y, PRECISE_UNIT);
+521	 }
+522	 function decimalToPreciseDecimal(uint i) internal pure returns (uint) {
+523	 return i.mul(UNIT_TO_HIGH_PRECISION_CONVERSION_FACTOR);
+524	 }
+525	 function preciseDecimalToDecimal(uint i) internal pure returns (uint) {
+526	 uint quotientTimesTen = i / (UNIT_TO_HIGH_PRECISION_CONVERSION_FACTOR / 10);
+527	 if (quotientTimesTen % 10 >= 5) {
+528	 quotientTimesTen += 10;
+529	 }
+530	 return quotientTimesTen / 10;
+531	 }
+532	 }
+533	 pragma solidity ^0.6.12;
+534	 contract SatellitePool is StakingRewardsLock, ILiquidate, Pausable, IPause{
+535	 using SafeDecimalMath for uint;
+536	 address public liquidation;
+537	 IOracle public oracle;
+538	 bytes32 public stakingTokenSymbol;
+539	 address public owner;
+540	 address public pendingOwner;
+541	 uint256 public diffDecimal;
+542	 constructor( address _liquidation, address _rewardsDistribution, address _rewardsToken, address _stakingToken, address _oracle, bytes32 _sts, uint256 _lockDuration, uint256 _unlockPercent, uint256 _lockPercent, address _owner, uint256 _diffDecimal ) public StakingRewardsLock(_rewardsDistribution, _rewardsToken, _stakingToken, _lockDuration, _unlockPercent, _lockPercent) {
+543	 liquidation = _liquidation;
+544	 oracle = IOracle(_oracle);
+545	 stakingTokenSymbol = _sts;
+546	 owner = _owner;
+547	 diffDecimal = _diffDecimal;
+548	 }
+549	 function liquidate(address account) public override onlyLiquidation {
+550	 stakingToken.safeTransfer(account, stakingToken.balanceOf(address(this)));
+551	 }
+552	 function tvl() public view returns(uint){
+553	 uint tokenAmount = stakingToken.balanceOf(address(this));
+554	 uint price = oracle.getPrice(stakingTokenSymbol);
+555	 return tokenAmount.mul(10**(diffDecimal)).multiplyDecimal(price);
+556	 }
+557	 function withdraw(uint amount) public override whenNotPaused{
+558	 super.withdraw(amount);
+559	 }
+560	 function pause() public override onlyLiquidation {
+561	 _pause();
+562	 }
+563	 function unpause() public override onlyLiquidation {
+564	 _unpause();
+565	 }
+566	 function setLiquidation(address liqui) public onlyOwner {
+567	 liquidation = liqui;
+568	 }
+569	 modifier onlyLiquidation {
+570	 require(msg.sender == liquidation, "caller is not liquidator");
+571	 _;
+572	 }
+573	 modifier onlyOwner() {
+574	 require(owner == msg.sender, "SatellitePool: caller is not the owner");
+575	 _;
+576	 }
+577	 function transferOwnership(address newOwner) public onlyOwner {
+578	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+579	 pendingOwner = newOwner;
+580	 }
+581	 function acceptOwner() public {
+582	 require(msg.sender == pendingOwner, "caller is not the pending owner");
+583	 owner = msg.sender;
+584	 }
+585	 }
+586	 pragma solidity ^0.6.12;
+587	 contract SatellitePoolFactoryV2 is Ownable{
+588	 using SafeMath for uint256;
+589	 using EnumerableSet for EnumerableSet.AddressSet;
+590	 EnumerableSet.AddressSet private poolSet;
+591	 function satelliteTVL() public view returns (uint256) {
+592	 uint256 tvl = 0;
+593	 for (uint256 i; i < poolSet.length(); i++) {
+594	 address pool = poolSet.at(i);
+595	 tvl = tvl.add(ISatellitePool(pool).tvl());
+596	 }
+597	 return tvl;
+598	 }
+599	 function addPools(address[] calldata addrs) public onlyOwner{
+600	 for(uint i; i < addrs.length; i++) {
+601	 poolSet.add(addrs[i]);
+602	 }
+603	 }
+604	 function removePools(address[] calldata addrs) public onlyOwner{
+605	 for(uint i; i < addrs.length; i++) {
+606	 poolSet.remove(addrs[i]);
+607	 }
+608	 }
+609	 }
+610	 interface IBORERC20 {
+611	 function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+612	 }

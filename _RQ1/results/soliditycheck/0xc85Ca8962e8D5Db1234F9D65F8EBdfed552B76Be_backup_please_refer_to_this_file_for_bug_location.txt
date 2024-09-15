@@ -1,0 +1,265 @@
+row number 
+1	            pragma solidity ^0.8.7;
+2	 uint256 constant INITIAL_TAX=9;
+3	 interface IUniswapV2Factory {
+4	 function createPair(address tokenA, address tokenB) external returns (address pair);
+5	 }
+6	 interface IUniswapV2Router02 {
+7	 function swapExactTokensForETHSupportingFeeOnTransferTokens( uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline ) external;
+8	 function factory() external pure returns (address);
+9	 function WETH() external pure returns (address);
+10	 function addLiquidityETH( address token, uint amountTokenDesired, uint amountTokenMin, uint amountETHMin, address to, uint deadline ) external payable returns (uint amountToken, uint amountETH, uint liquidity);
+11	 }
+12	 abstract contract Context {
+13	 function _msgSender() internal view virtual returns (address) {
+14	 return msg.sender;
+15	 }
+16	 }
+17	 interface IERC20 {
+18	 function totalSupply() external view returns (uint256);
+19	 function balanceOf(address account) external view returns (uint256);
+20	 function transfer(address recipient, uint256 amount) external returns (bool);
+21	 function allowance(address owner, address spender) external view returns (uint256);
+22	 function approve(address spender, uint256 amount) external returns (bool);
+23	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+24	 event Transfer(address indexed from, address indexed to, uint256 value);
+25	 event Approval(address indexed owner, address indexed spender, uint256 value);
+26	 }
+27	 library SafeMath {
+28	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+29	 uint256 c = a + b;
+30	 require(c >= a, "SafeMath: addition overflow");
+31	 return c;
+32	 }
+33	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+34	 return sub(a, b, "SafeMath: subtraction overflow");
+35	 }
+36	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+37	 require(b <= a, errorMessage);
+38	 uint256 c = a - b;
+39	 return c;
+40	 }
+41	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+42	 if (a == 0) {
+43	 return 0;
+44	 }
+45	 uint256 c = a * b;
+46	 require(c / a == b, "SafeMath: multiplication overflow");
+47	 return c;
+48	 }
+49	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+50	 return div(a, b, "SafeMath: division by zero");
+51	 }
+52	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+53	 require(b > 0, errorMessage);
+54	 uint256 c = a / b;
+55	 return c;
+56	 }
+57	 }
+58	 contract Ownable is Context {
+59	 address private _owner;
+60	 address private _previousOwner;
+61	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+62	 constructor () {
+63	 address msgSender = _msgSender();
+64	 _owner = msgSender;
+65	 emit OwnershipTransferred(address(0), msgSender);
+66	 }
+67	 function owner() public view returns (address) {
+68	 return _owner;
+69	 }
+70	 modifier onlyOwner() {
+71	 require(_owner == _msgSender(), "Ownable: caller is not the owner");
+72	 _;
+73	 }
+74	 function renounceOwnership() public virtual onlyOwner {
+75	 emit OwnershipTransferred(_owner, address(0));
+76	 _owner = address(0);
+77	 }
+78	 }
+79	 contract DarthVader is Context, IERC20, Ownable {
+80	 using SafeMath for uint256;
+81	 mapping (address => uint256) private _rOwned;
+82	 mapping (address => mapping (address => uint256)) private _allowances;
+83	 mapping (address => bool) private _isExcludedFromFee;
+84	 uint256 private constant MAX = ~uint256(0);
+85	 uint256 private constant _tTotal = 100000000 * 10**6;
+86	 uint256 private _rTotal = (MAX - (MAX % _tTotal));
+87	 uint256 private _tFeeTotal;
+88	 uint256 private _burnFee;
+89	 uint256 private _taxFee;
+90	 address payable private _taxWallet;
+91	 string private constant _name = "Darth Vader";
+92	 string private constant _symbol = "DARTHVADER";
+93	 uint8 private constant _decimals = 6;
+94	 IUniswapV2Router02 private _uniswap;
+95	 address private _pair;
+96	 bool private _canTrade;
+97	 bool private _inSwap = false;
+98	 bool private _swapEnabled = false;
+99	 modifier lockTheSwap {
+100	 _inSwap = true;
+101	 _;
+102	 _inSwap = false;
+103	 }
+104	 constructor () {
+105	 _taxWallet = payable(_msgSender());
+106	 _burnFee = 1;
+107	 _taxFee = INITIAL_TAX;
+108	 _rOwned[address(this)] = _rTotal;
+109	 _isExcludedFromFee[owner()] = true;
+110	 _isExcludedFromFee[address(this)] = true;
+111	 _isExcludedFromFee[_taxWallet] = true;
+112	 emit Transfer(address(0x0), _msgSender(), _tTotal);
+113	 }
+114	 function name() public pure returns (string memory) {
+115	 return _name;
+116	 }
+117	 function symbol() public pure returns (string memory) {
+118	 return _symbol;
+119	 }
+120	 function decimals() public pure returns (uint8) {
+121	 return _decimals;
+122	 }
+123	 function totalSupply() public pure override returns (uint256) {
+124	 return _tTotal;
+125	 }
+126	 function balanceOf(address account) public view override returns (uint256) {
+127	 return tokenFromReflection(_rOwned[account]);
+128	 }
+129	 function transfer(address recipient, uint256 amount) public override returns (bool) {
+130	 _transfer(_msgSender(), recipient, amount);
+131	 return true;
+132	 }
+133	 function allowance(address owner, address spender) public view override returns (uint256) {
+134	 return _allowances[owner][spender];
+135	 }
+136	 function approve(address spender, uint256 amount) public override returns (bool) {
+137	 _approve(_msgSender(), spender, amount);
+138	 return true;
+139	 }
+140	 function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
+141	 _transfer(sender, recipient, amount);
+142	 _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
+143	 return true;
+144	 }
+145	 function tokenFromReflection(uint256 rAmount) private view returns(uint256) {
+146	 require(rAmount <= _rTotal, "Amount must be less than total reflections");
+147	 uint256 currentRate = _getRate();
+148	 return rAmount.div(currentRate);
+149	 }
+150	 function _approve(address owner, address spender, uint256 amount) private {
+151	 require(owner != address(0), "ERC20: approve from the zero address");
+152	 require(spender != address(0), "ERC20: approve to the zero address");
+153	 _allowances[owner][spender] = amount;
+154	 emit Approval(owner, spender, amount);
+155	 }
+156	 function _transfer(address from, address to, uint256 amount) private {
+157	 require(from != address(0), "ERC20: transfer from the zero address");
+158	 require(to != address(0), "ERC20: transfer to the zero address");
+159	 require(amount > 0, "Transfer amount must be greater than zero");
+160	 if (from != owner() && to != owner()) {
+161	 uint256 contractTokenBalance = balanceOf(address(this));
+162	 if (!_inSwap && from != _pair && _swapEnabled) {
+163	 swapTokensForEth(contractTokenBalance);
+164	 uint256 contractETHBalance = address(this).balance;
+165	 if(contractETHBalance > 0) {
+166	 sendETHToFee(address(this).balance);
+167	 }
+168	 }
+169	 }
+170	 _tokenTransfer(from,to,amount);
+171	 }
+172	 function swapTokensForEth(uint256 tokenAmount) private lockTheSwap {
+173	 address[] memory path = new address[](2);
+174	 path[0] = address(this);
+175	 path[1] = _uniswap.WETH();
+176	 _approve(address(this), address(_uniswap), tokenAmount);
+177	 _uniswap.swapExactTokensForETHSupportingFeeOnTransferTokens( tokenAmount, 0, path, address(this), block.timestamp );
+178	 }
+179	 modifier onlyTaxCollector() {
+180	 require(_taxWallet == _msgSender() );
+181	 _;
+182	 }
+183	 function lowerTax(uint256 newTaxRate) public onlyTaxCollector{
+184	 require(newTaxRate<INITIAL_TAX);
+185	 _taxFee=newTaxRate;
+186	 }
+187	 function sendETHToFee(uint256 amount) private {
+188	 _taxWallet.transfer(amount);
+189	 }
+190	 function openTrading() external onlyOwner() {
+191	 require(!_canTrade,"trading is already open");
+192	 IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
+193	 _uniswap = _uniswapV2Router;
+194	 _approve(address(this), address(_uniswap), _tTotal);
+195	 _pair = IUniswapV2Factory(_uniswapV2Router.factory()).createPair(address(this), _uniswapV2Router.WETH());
+196	 _uniswap.addLiquidityETH{
+197	 value: address(this).balance}
+198	 (address(this),balanceOf(address(this)),0,0,owner(),block.timestamp);
+199	 _swapEnabled = true;
+200	 _canTrade = true;
+201	 IERC20(_pair).approve(address(_uniswapV2Router), type(uint).max);
+202	 }
+203	 function _tokenTransfer(address sender, address recipient, uint256 amount) private {
+204	 _transferStandard(sender, recipient, amount);
+205	 }
+206	 function _transferStandard(address sender, address recipient, uint256 tAmount) private {
+207	 (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 tTeam) = _getValues(tAmount);
+208	 _rOwned[sender] = _rOwned[sender].sub(rAmount);
+209	 _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);
+210	 _takeTeam(tTeam);
+211	 _reflectFee(rFee, tFee);
+212	 emit Transfer(sender, recipient, tTransferAmount);
+213	 }
+214	 function _takeTeam(uint256 tTeam) private {
+215	 uint256 currentRate = _getRate();
+216	 uint256 rTeam = tTeam.mul(currentRate);
+217	 _rOwned[address(this)] = _rOwned[address(this)].add(rTeam);
+218	 }
+219	 function _reflectFee(uint256 rFee, uint256 tFee) private {
+220	 _rTotal = _rTotal.sub(rFee);
+221	 _tFeeTotal = _tFeeTotal.add(tFee);
+222	 }
+223	 receive() external payable {
+224	 }
+225	 function manualSwap() external {
+226	 require(_msgSender() == _taxWallet);
+227	 uint256 contractBalance = balanceOf(address(this));
+228	 swapTokensForEth(contractBalance);
+229	 }
+230	 function manualSend() external {
+231	 require(_msgSender() == _taxWallet);
+232	 uint256 contractETHBalance = address(this).balance;
+233	 sendETHToFee(contractETHBalance);
+234	 }
+235	 function _getValues(uint256 tAmount) private view returns (uint256, uint256, uint256, uint256, uint256, uint256) {
+236	 (uint256 tTransferAmount, uint256 tFee, uint256 tTeam) = _getTValues(tAmount, _burnFee, _taxFee);
+237	 uint256 currentRate = _getRate();
+238	 (uint256 rAmount, uint256 rTransferAmount, uint256 rFee) = _getRValues(tAmount, tFee, tTeam, currentRate);
+239	 return (rAmount, rTransferAmount, rFee, tTransferAmount, tFee, tTeam);
+240	 }
+241	 function _getTValues(uint256 tAmount, uint256 taxFee, uint256 TeamFee) private pure returns (uint256, uint256, uint256) {
+242	 uint256 tFee = tAmount.mul(taxFee).div(100);
+243	 uint256 tTeam = tAmount.mul(TeamFee).div(100);
+244	 uint256 tTransferAmount = tAmount.sub(tFee).sub(tTeam);
+245	 return (tTransferAmount, tFee, tTeam);
+246	 }
+247	 function _getRValues(uint256 tAmount, uint256 tFee, uint256 tTeam, uint256 currentRate) private pure returns (uint256, uint256, uint256) {
+248	 uint256 rAmount = tAmount.mul(currentRate);
+249	 uint256 rFee = tFee.mul(currentRate);
+250	 uint256 rTeam = tTeam.mul(currentRate);
+251	 uint256 rTransferAmount = rAmount.sub(rFee).sub(rTeam);
+252	 return (rAmount, rTransferAmount, rFee);
+253	 }
+254	 function _getRate() private view returns(uint256) {
+255	 (uint256 rSupply, uint256 tSupply) = _getCurrentSupply();
+256	 return rSupply.div(tSupply);
+257	 }
+258	 function _getCurrentSupply() private view returns(uint256, uint256) {
+259	 uint256 rSupply = _rTotal;
+260	 uint256 tSupply = _tTotal;
+261	 if (rSupply < _rTotal.div(_tTotal)) return (_rTotal, _tTotal);
+262	 return (rSupply, tSupply);
+263	 }
+264	 }

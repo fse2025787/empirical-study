@@ -1,0 +1,341 @@
+row number 
+1	           pragma solidity 0.5.17;
+2	 contract IStaking {
+3	 event Staked(address indexed user, uint256 amount, uint256 total, bytes data);
+4	 event Unstaked(address indexed user, uint256 amount, uint256 total, bytes data);
+5	 function stake(uint256 amount, bytes calldata data) external;
+6	 function stakeFor(address user, uint256 amount, bytes calldata data) external;
+7	 function unstake(uint256 amount, bytes calldata data) external;
+8	 function totalStakedFor(address addr) public view returns (uint256);
+9	 function totalStaked() public view returns (uint256);
+10	 function token() external view returns (address);
+11	 function supportsHistory() external pure returns (bool) {
+12	 return false;
+13	 }
+14	 }
+15	 contract Context {
+16	 constructor () internal {
+17	 }
+18	 function _msgSender() internal view returns (address payable) {
+19	 return msg.sender;
+20	 }
+21	 function _msgData() internal view returns (bytes memory) {
+22	 this;
+23	 return msg.data;
+24	 }
+25	 }
+26	 interface IERC20 {
+27	 function totalSupply() external view returns (uint256);
+28	 function balanceOf(address account) external view returns (uint256);
+29	 function transfer(address recipient, uint256 amount) external returns (bool);
+30	 function allowance(address owner, address spender) external view returns (uint256);
+31	 function approve(address spender, uint256 amount) external returns (bool);
+32	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+33	 event Transfer(address indexed from, address indexed to, uint256 value);
+34	 event Approval(address indexed owner, address indexed spender, uint256 value);
+35	 }
+36	 library SafeMath {
+37	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+38	 uint256 c = a + b;
+39	 require(c >= a, "SafeMath: addition overflow");
+40	 return c;
+41	 }
+42	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+43	 return sub(a, b, "SafeMath: subtraction overflow");
+44	 }
+45	 function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+46	 require(b <= a, errorMessage);
+47	 uint256 c = a - b;
+48	 return c;
+49	 }
+50	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+51	 if (a == 0) {
+52	 return 0;
+53	 }
+54	 uint256 c = a * b;
+55	 require(c / a == b, "SafeMath: multiplication overflow");
+56	 return c;
+57	 }
+58	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+59	 return div(a, b, "SafeMath: division by zero");
+60	 }
+61	 function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+62	 require(b > 0, errorMessage);
+63	 uint256 c = a / b;
+64	 return c;
+65	 }
+66	 function mod(uint256 a, uint256 b) internal pure returns (uint256) {
+67	 return mod(a, b, "SafeMath: modulo by zero");
+68	 }
+69	 function mod(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+70	 require(b != 0, errorMessage);
+71	 return a % b;
+72	 }
+73	 }
+74	 contract Ownable is Context {
+75	 address private _owner;
+76	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+77	 constructor () internal {
+78	 _owner = _msgSender();
+79	 emit OwnershipTransferred(address(0), _owner);
+80	 }
+81	 function owner() public view returns (address) {
+82	 return _owner;
+83	 }
+84	 modifier onlyOwner() {
+85	 require(isOwner(), "Ownable: caller is not the owner");
+86	 _;
+87	 }
+88	 function isOwner() public view returns (bool) {
+89	 return _msgSender() == _owner;
+90	 }
+91	 function renounceOwnership() public onlyOwner {
+92	 emit OwnershipTransferred(_owner, address(0));
+93	 _owner = address(0);
+94	 }
+95	 function transferOwnership(address newOwner) public onlyOwner {
+96	 _transferOwnership(newOwner);
+97	 }
+98	 function _transferOwnership(address newOwner) internal {
+99	 require(newOwner != address(0), "Ownable: new owner is the zero address");
+100	 emit OwnershipTransferred(_owner, newOwner);
+101	 _owner = newOwner;
+102	 }
+103	 }
+104	 contract TokenPool is Ownable {
+105	 IERC20 public token;
+106	 constructor(IERC20 _token) public {
+107	 token = _token;
+108	 }
+109	 function balance() public view returns (uint256) {
+110	 return token.balanceOf(address(this));
+111	 }
+112	 function transfer(address to, uint256 value) external onlyOwner returns (bool) {
+113	 return token.transfer(to, value);
+114	 }
+115	 function rescueFunds(address tokenToRescue, address to, uint256 amount) external onlyOwner returns (bool) {
+116	 require(address(token) != tokenToRescue, 'TokenPool: Cannot claim token held by the contract');
+117	 return IERC20(tokenToRescue).transfer(to, amount);
+118	 }
+119	 }
+120	 contract TokenGeyser is IStaking, Ownable {
+121	 using SafeMath for uint256;
+122	 event Staked(address indexed user, uint256 amount, uint256 total, bytes data);
+123	 event Unstaked(address indexed user, uint256 amount, uint256 total, bytes data);
+124	 event TokensClaimed(address indexed user, uint256 amount);
+125	 event TokensLocked(uint256 amount, uint256 durationSec, uint256 total);
+126	 event TokensUnlocked(uint256 amount, uint256 total);
+127	 TokenPool private _stakingPool;
+128	 TokenPool private _unlockedPool;
+129	 TokenPool private _lockedPool;
+130	 uint256 public constant BONUS_DECIMALS = 2;
+131	 uint256 public startBonus = 0;
+132	 uint256 public bonusPeriodSec = 0;
+133	 uint256 public totalLockedShares = 0;
+134	 uint256 public totalStakingShares = 0;
+135	 uint256 private _totalStakingShareSeconds = 0;
+136	 uint256 private _lastAccountingTimestampSec = now;
+137	 uint256 private _maxUnlockSchedules = 0;
+138	 uint256 private _initialSharesPerToken = 0;
+139	 struct Stake {
+140	 uint256 stakingShares;
+141	 uint256 timestampSec;
+142	 }
+143	 struct UserTotals {
+144	 uint256 stakingShares;
+145	 uint256 stakingShareSeconds;
+146	 uint256 lastAccountingTimestampSec;
+147	 }
+148	 mapping(address => UserTotals) private _userTotals;
+149	 mapping(address => Stake[]) private _userStakes;
+150	 struct UnlockSchedule {
+151	 uint256 initialLockedShares;
+152	 uint256 unlockedShares;
+153	 uint256 lastUnlockTimestampSec;
+154	 uint256 endAtSec;
+155	 uint256 durationSec;
+156	 }
+157	 UnlockSchedule[] public unlockSchedules;
+158	 constructor(IERC20 stakingToken, IERC20 distributionToken, uint256 maxUnlockSchedules, uint256 startBonus_, uint256 bonusPeriodSec_, uint256 initialSharesPerToken) public {
+159	 require(startBonus_ <= 10**BONUS_DECIMALS, 'TokenGeyser: start bonus too high');
+160	 require(bonusPeriodSec_ != 0, 'TokenGeyser: bonus period is zero');
+161	 require(initialSharesPerToken > 0, 'TokenGeyser: initialSharesPerToken is zero');
+162	 _stakingPool = new TokenPool(stakingToken);
+163	 _unlockedPool = new TokenPool(distributionToken);
+164	 _lockedPool = new TokenPool(distributionToken);
+165	 startBonus = startBonus_;
+166	 bonusPeriodSec = bonusPeriodSec_;
+167	 _maxUnlockSchedules = maxUnlockSchedules;
+168	 _initialSharesPerToken = initialSharesPerToken;
+169	 }
+170	 function getStakingToken() public view returns (IERC20) {
+171	 return _stakingPool.token();
+172	 }
+173	 function getDistributionToken() public view returns (IERC20) {
+174	 assert(_unlockedPool.token() == _lockedPool.token());
+175	 return _unlockedPool.token();
+176	 }
+177	 function stake(uint256 amount, bytes calldata data) external {
+178	 _stakeFor(msg.sender, msg.sender, amount);
+179	 }
+180	 function stakeFor(address user, uint256 amount, bytes calldata data) external onlyOwner {
+181	 _stakeFor(msg.sender, user, amount);
+182	 }
+183	 function _stakeFor(address staker, address beneficiary, uint256 amount) private {
+184	 require(amount > 0, 'TokenGeyser: stake amount is zero');
+185	 require(beneficiary != address(0), 'TokenGeyser: beneficiary is zero address');
+186	 require(totalStakingShares == 0 || totalStaked() > 0, 'TokenGeyser: Invalid state. Staking shares exist, but no staking tokens do');
+187	 uint256 mintedStakingShares = (totalStakingShares > 0) ? totalStakingShares.mul(amount).div(totalStaked()) : amount.mul(_initialSharesPerToken);
+188	 require(mintedStakingShares > 0, 'TokenGeyser: Stake amount is too small');
+189	 updateAccounting();
+190	 UserTotals storage totals = _userTotals[beneficiary];
+191	 totals.stakingShares = totals.stakingShares.add(mintedStakingShares);
+192	 totals.lastAccountingTimestampSec = now;
+193	 Stake memory newStake = Stake(mintedStakingShares, now);
+194	 _userStakes[beneficiary].push(newStake);
+195	 totalStakingShares = totalStakingShares.add(mintedStakingShares);
+196	 require(_stakingPool.token().transferFrom(staker, address(_stakingPool), amount), 'TokenGeyser: transfer into staking pool failed');
+197	 emit Staked(beneficiary, amount, totalStakedFor(beneficiary), '');
+198	 }
+199	 function unstake(uint256 amount, bytes calldata data) external {
+200	 _unstake(amount);
+201	 }
+202	 function unstakeQuery(uint256 amount) public returns (uint256) {
+203	 return _unstake(amount);
+204	 }
+205	 function _unstake(uint256 amount) private returns (uint256) {
+206	 updateAccounting();
+207	 require(amount > 0, 'TokenGeyser: unstake amount is zero');
+208	 require(totalStakedFor(msg.sender) >= amount, 'TokenGeyser: unstake amount is greater than total user stakes');
+209	 uint256 stakingSharesToBurn = totalStakingShares.mul(amount).div(totalStaked());
+210	 require(stakingSharesToBurn > 0, 'TokenGeyser: Unable to unstake amount this small');
+211	 UserTotals storage totals = _userTotals[msg.sender];
+212	 Stake[] storage accountStakes = _userStakes[msg.sender];
+213	 uint256 stakingShareSecondsToBurn = 0;
+214	 uint256 sharesLeftToBurn = stakingSharesToBurn;
+215	 uint256 rewardAmount = 0;
+216	 while (sharesLeftToBurn > 0) {
+217	 Stake storage lastStake = accountStakes[accountStakes.length - 1];
+218	 uint256 stakeTimeSec = now.sub(lastStake.timestampSec);
+219	 uint256 newStakingShareSecondsToBurn = 0;
+220	 if (lastStake.stakingShares <= sharesLeftToBurn) {
+221	 newStakingShareSecondsToBurn = lastStake.stakingShares.mul(stakeTimeSec);
+222	 rewardAmount = computeNewReward(rewardAmount, newStakingShareSecondsToBurn, stakeTimeSec);
+223	 stakingShareSecondsToBurn = stakingShareSecondsToBurn.add(newStakingShareSecondsToBurn);
+224	 sharesLeftToBurn = sharesLeftToBurn.sub(lastStake.stakingShares);
+225	 accountStakes.length--;
+226	 }
+227	 else {
+228	 newStakingShareSecondsToBurn = sharesLeftToBurn.mul(stakeTimeSec);
+229	 rewardAmount = computeNewReward(rewardAmount, newStakingShareSecondsToBurn, stakeTimeSec);
+230	 stakingShareSecondsToBurn = stakingShareSecondsToBurn.add(newStakingShareSecondsToBurn);
+231	 lastStake.stakingShares = lastStake.stakingShares.sub(sharesLeftToBurn);
+232	 sharesLeftToBurn = 0;
+233	 }
+234	 }
+235	 totals.stakingShareSeconds = totals.stakingShareSeconds.sub(stakingShareSecondsToBurn);
+236	 totals.stakingShares = totals.stakingShares.sub(stakingSharesToBurn);
+237	 _totalStakingShareSeconds = _totalStakingShareSeconds.sub(stakingShareSecondsToBurn);
+238	 totalStakingShares = totalStakingShares.sub(stakingSharesToBurn);
+239	 require(_stakingPool.transfer(msg.sender, amount), 'TokenGeyser: transfer out of staking pool failed');
+240	 require(_unlockedPool.transfer(msg.sender, rewardAmount), 'TokenGeyser: transfer out of unlocked pool failed');
+241	 emit Unstaked(msg.sender, amount, totalStakedFor(msg.sender), '');
+242	 emit TokensClaimed(msg.sender, rewardAmount);
+243	 require(totalStakingShares == 0 || totalStaked() > 0, 'TokenGeyser: Error unstaking. Staking shares exist, but no staking tokens do');
+244	 return rewardAmount;
+245	 }
+246	 function computeNewReward(uint256 currentRewardTokens, uint256 stakingShareSeconds, uint256 stakeTimeSec) private view returns (uint256) {
+247	 uint256 newRewardTokens = totalUnlocked() .mul(stakingShareSeconds) .div(_totalStakingShareSeconds);
+248	 if (stakeTimeSec >= bonusPeriodSec) {
+249	 return currentRewardTokens.add(newRewardTokens);
+250	 }
+251	 uint256 oneHundredPct = 10**BONUS_DECIMALS;
+252	 uint256 bonusedReward = startBonus .add(oneHundredPct.sub(startBonus).mul(stakeTimeSec).div(bonusPeriodSec)) .mul(newRewardTokens) .div(oneHundredPct);
+253	 return currentRewardTokens.add(bonusedReward);
+254	 }
+255	 function totalStakedFor(address addr) public view returns (uint256) {
+256	 return totalStakingShares > 0 ? totalStaked().mul(_userTotals[addr].stakingShares).div(totalStakingShares) : 0;
+257	 }
+258	 function totalStaked() public view returns (uint256) {
+259	 return _stakingPool.balance();
+260	 }
+261	 function token() external view returns (address) {
+262	 return address(getStakingToken());
+263	 }
+264	 function updateAccounting() public returns ( uint256, uint256, uint256, uint256, uint256, uint256) {
+265	 unlockTokens();
+266	 uint256 newStakingShareSeconds = now .sub(_lastAccountingTimestampSec) .mul(totalStakingShares);
+267	 _totalStakingShareSeconds = _totalStakingShareSeconds.add(newStakingShareSeconds);
+268	 _lastAccountingTimestampSec = now;
+269	 UserTotals storage totals = _userTotals[msg.sender];
+270	 uint256 newUserStakingShareSeconds = now .sub(totals.lastAccountingTimestampSec) .mul(totals.stakingShares);
+271	 totals.stakingShareSeconds = totals.stakingShareSeconds .add(newUserStakingShareSeconds);
+272	 totals.lastAccountingTimestampSec = now;
+273	 uint256 totalUserRewards = (_totalStakingShareSeconds > 0) ? totalUnlocked().mul(totals.stakingShareSeconds).div(_totalStakingShareSeconds) : 0;
+274	 return ( totalLocked(), totalUnlocked(), totals.stakingShareSeconds, _totalStakingShareSeconds, totalUserRewards, now );
+275	 }
+276	 function totalLocked() public view returns (uint256) {
+277	 return _lockedPool.balance();
+278	 }
+279	 function totalUnlocked() public view returns (uint256) {
+280	 return _unlockedPool.balance();
+281	 }
+282	 function unlockScheduleCount() public view returns (uint256) {
+283	 return unlockSchedules.length;
+284	 }
+285	 function lockTokens(uint256 amount, uint256 durationSec) external onlyOwner {
+286	 require(unlockSchedules.length < _maxUnlockSchedules, 'TokenGeyser: reached maximum unlock schedules');
+287	 updateAccounting();
+288	 uint256 lockedTokens = totalLocked();
+289	 uint256 mintedLockedShares = (lockedTokens > 0) ? totalLockedShares.mul(amount).div(lockedTokens) : amount.mul(_initialSharesPerToken);
+290	 UnlockSchedule memory schedule;
+291	 schedule.initialLockedShares = mintedLockedShares;
+292	 schedule.lastUnlockTimestampSec = now;
+293	 schedule.endAtSec = now.add(durationSec);
+294	 schedule.durationSec = durationSec;
+295	 unlockSchedules.push(schedule);
+296	 totalLockedShares = totalLockedShares.add(mintedLockedShares);
+297	 require(_lockedPool.token().transferFrom(msg.sender, address(_lockedPool), amount), 'TokenGeyser: transfer into locked pool failed');
+298	 emit TokensLocked(amount, durationSec, totalLocked());
+299	 }
+300	 function unlockTokens() public returns (uint256) {
+301	 uint256 unlockedTokens = 0;
+302	 uint256 lockedTokens = totalLocked();
+303	 if (totalLockedShares == 0) {
+304	 unlockedTokens = lockedTokens;
+305	 }
+306	 else {
+307	 uint256 unlockedShares = 0;
+308	 for (uint256 s = 0; s < unlockSchedules.length; s++) {
+309	 unlockedShares = unlockedShares.add(unlockScheduleShares(s));
+310	 }
+311	 unlockedTokens = unlockedShares.mul(lockedTokens).div(totalLockedShares);
+312	 totalLockedShares = totalLockedShares.sub(unlockedShares);
+313	 }
+314	 if (unlockedTokens > 0) {
+315	 require(_lockedPool.transfer(address(_unlockedPool), unlockedTokens), 'TokenGeyser: transfer out of locked pool failed');
+316	 emit TokensUnlocked(unlockedTokens, totalLocked());
+317	 }
+318	 return unlockedTokens;
+319	 }
+320	 function unlockScheduleShares(uint256 s) private returns (uint256) {
+321	 UnlockSchedule storage schedule = unlockSchedules[s];
+322	 if(schedule.unlockedShares >= schedule.initialLockedShares) {
+323	 return 0;
+324	 }
+325	 uint256 sharesToUnlock = 0;
+326	 if (now >= schedule.endAtSec) {
+327	 sharesToUnlock = (schedule.initialLockedShares.sub(schedule.unlockedShares));
+328	 schedule.lastUnlockTimestampSec = schedule.endAtSec;
+329	 }
+330	 else {
+331	 sharesToUnlock = now.sub(schedule.lastUnlockTimestampSec) .mul(schedule.initialLockedShares) .div(schedule.durationSec);
+332	 schedule.lastUnlockTimestampSec = now;
+333	 }
+334	 schedule.unlockedShares = schedule.unlockedShares.add(sharesToUnlock);
+335	 return sharesToUnlock;
+336	 }
+337	 function rescueFundsFromStakingPool(address tokenToRescue, address to, uint256 amount) public onlyOwner returns (bool) {
+338	 return _stakingPool.rescueFunds(tokenToRescue, to, amount);
+339	 }
+340	 }

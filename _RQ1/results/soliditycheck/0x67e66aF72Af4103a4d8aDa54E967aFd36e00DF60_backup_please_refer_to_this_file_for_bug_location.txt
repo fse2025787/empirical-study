@@ -1,0 +1,808 @@
+row number 
+1	  pragma experimental ABIEncoderV2;
+2	 pragma solidity ^0.7.0;
+3	 contract Ownable {
+4	 address public owner;
+5	 event OwnershipTransferred( address indexed previousOwner, address indexed newOwner );
+6	 constructor() {
+7	 owner = msg.sender;
+8	 }
+9	 modifier onlyOwner() {
+10	 require(msg.sender == owner, "UNAUTHORIZED");
+11	 _;
+12	 }
+13	 function transferOwnership( address newOwner ) public virtual onlyOwner {
+14	 require(newOwner != address(0), "ZERO_ADDRESS");
+15	 emit OwnershipTransferred(owner, newOwner);
+16	 owner = newOwner;
+17	 }
+18	 function renounceOwnership() public onlyOwner {
+19	 emit OwnershipTransferred(owner, address(0));
+20	 owner = address(0);
+21	 }
+22	 }
+23	 contract Claimable is Ownable {
+24	 address public pendingOwner;
+25	 modifier onlyPendingOwner() {
+26	 require(msg.sender == pendingOwner, "UNAUTHORIZED");
+27	 _;
+28	 }
+29	 function transferOwnership( address newOwner ) public override onlyOwner {
+30	 require(newOwner != address(0) && newOwner != owner, "INVALID_ADDRESS");
+31	 pendingOwner = newOwner;
+32	 }
+33	 function claimOwnership() public onlyPendingOwner {
+34	 emit OwnershipTransferred(owner, pendingOwner);
+35	 owner = pendingOwner;
+36	 pendingOwner = address(0);
+37	 }
+38	 }
+39	 interface IAgent{
+40	 }
+41	 abstract contract IAgentRegistry {
+42	 function isAgent( address owner, address agent ) external virtual view returns (bool);
+43	 function isAgent( address[] calldata owners, address agent ) external virtual view returns (bool);
+44	 function isUniversalAgent(address agent) public virtual view returns (bool);
+45	 }
+46	 abstract contract IBlockVerifier is Claimable {
+47	 event CircuitRegistered( uint8 indexed blockType, uint16 blockSize, uint8 blockVersion );
+48	 event CircuitDisabled( uint8 indexed blockType, uint16 blockSize, uint8 blockVersion );
+49	 function registerCircuit( uint8 blockType, uint16 blockSize, uint8 blockVersion, uint[18] calldata vk ) external virtual;
+50	 function disableCircuit( uint8 blockType, uint16 blockSize, uint8 blockVersion ) external virtual;
+51	 function verifyProofs( uint8 blockType, uint16 blockSize, uint8 blockVersion, uint[] calldata publicInputs, uint[] calldata proofs ) external virtual view returns (bool);
+52	 function isCircuitRegistered( uint8 blockType, uint16 blockSize, uint8 blockVersion ) external virtual view returns (bool);
+53	 function isCircuitEnabled( uint8 blockType, uint16 blockSize, uint8 blockVersion ) external virtual view returns (bool);
+54	 }
+55	 interface IDepositContract {
+56	 function isTokenSupported(address token) external view returns (bool);
+57	 function deposit( address from, address token, uint96 amount, bytes calldata extraData ) external payable returns (uint96 amountReceived);
+58	 function withdraw( address from, address to, address token, uint amount, bytes calldata extraData ) external payable;
+59	 function transfer( address from, address to, address token, uint amount ) external payable;
+60	 function isETH(address addr) external view returns (bool);
+61	 }
+62	 abstract contract ILoopringV3 is Claimable {
+63	 event ExchangeStakeDeposited(address exchangeAddr, uint amount);
+64	 event ExchangeStakeWithdrawn(address exchangeAddr, uint amount);
+65	 event ExchangeStakeBurned(address exchangeAddr, uint amount);
+66	 event SettingsUpdated(uint time);
+67	 mapping (address => uint) internal exchangeStake;
+68	 uint public totalStake;
+69	 address public blockVerifierAddress;
+70	 uint public forcedWithdrawalFee;
+71	 uint public tokenRegistrationFeeLRCBase;
+72	 uint public tokenRegistrationFeeLRCDelta;
+73	 uint8 public protocolTakerFeeBips;
+74	 uint8 public protocolMakerFeeBips;
+75	 address payable public protocolFeeVault;
+76	 function lrcAddress() external view virtual returns (address);
+77	 function updateSettings( address payable _protocolFeeVault, address _blockVerifierAddress, uint _forcedWithdrawalFee ) external virtual;
+78	 function updateProtocolFeeSettings( uint8 _protocolTakerFeeBips, uint8 _protocolMakerFeeBips ) external virtual;
+79	 function getExchangeStake( address exchangeAddr ) public virtual view returns (uint stakedLRC);
+80	 function burnExchangeStake( uint amount ) external virtual returns (uint burnedLRC);
+81	 function depositExchangeStake( address exchangeAddr, uint amountLRC ) external virtual returns (uint stakedLRC);
+82	 function withdrawExchangeStake( address recipient, uint requestedAmount ) external virtual returns (uint amountLRC);
+83	 function getProtocolFeeValues( ) public virtual view returns ( uint8 takerFeeBips, uint8 makerFeeBips );
+84	 }
+85	 library ExchangeData {
+86	 enum TransactionType {
+87	 NOOP, DEPOSIT, WITHDRAWAL, TRANSFER, SPOT_TRADE, ACCOUNT_UPDATE, AMM_UPDATE, SIGNATURE_VERIFICATION }
+88	 struct Token {
+89	 address token;
+90	 }
+91	 struct ProtocolFeeData {
+92	 uint32 syncedAt;
+93	 uint8 takerFeeBips;
+94	 uint8 makerFeeBips;
+95	 uint8 previousTakerFeeBips;
+96	 uint8 previousMakerFeeBips;
+97	 }
+98	 struct AuxiliaryData {
+99	 uint txIndex;
+100	 bool approved;
+101	 bytes data;
+102	 }
+103	 struct Block {
+104	 uint8 blockType;
+105	 uint16 blockSize;
+106	 uint8 blockVersion;
+107	 bytes data;
+108	 uint256[8] proof;
+109	 bool storeBlockInfoOnchain;
+110	 bytes auxiliaryData;
+111	 bytes offchainData;
+112	 }
+113	 struct BlockInfo {
+114	 uint32 timestamp;
+115	 bytes28 blockDataHash;
+116	 }
+117	 struct Deposit {
+118	 uint96 amount;
+119	 uint64 timestamp;
+120	 }
+121	 struct ForcedWithdrawal {
+122	 address owner;
+123	 uint64 timestamp;
+124	 }
+125	 struct Constants {
+126	 uint SNARK_SCALAR_FIELD;
+127	 uint MAX_OPEN_FORCED_REQUESTS;
+128	 uint MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE;
+129	 uint TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS;
+130	 uint MAX_NUM_ACCOUNTS;
+131	 uint MAX_NUM_TOKENS;
+132	 uint MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED;
+133	 uint MIN_TIME_IN_SHUTDOWN;
+134	 uint TX_DATA_AVAILABILITY_SIZE;
+135	 uint MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND;
+136	 }
+137	 uint public constant SNARK_SCALAR_FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+138	 uint public constant MAX_OPEN_FORCED_REQUESTS = 4096;
+139	 uint public constant MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE = 15 days;
+140	 uint public constant TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS = 7 days;
+141	 uint public constant MAX_NUM_ACCOUNTS = 2 ** 32;
+142	 uint public constant MAX_NUM_TOKENS = 2 ** 16;
+143	 uint public constant MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED = 7 days;
+144	 uint public constant MIN_TIME_IN_SHUTDOWN = 30 days;
+145	 uint32 public constant MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND = 15 days;
+146	 uint32 public constant ACCOUNTID_PROTOCOLFEE = 0;
+147	 uint public constant TX_DATA_AVAILABILITY_SIZE = 68;
+148	 uint public constant TX_DATA_AVAILABILITY_SIZE_PART_1 = 29;
+149	 uint public constant TX_DATA_AVAILABILITY_SIZE_PART_2 = 39;
+150	 struct AccountLeaf {
+151	 uint32 accountID;
+152	 address owner;
+153	 uint pubKeyX;
+154	 uint pubKeyY;
+155	 uint32 nonce;
+156	 uint feeBipsAMM;
+157	 }
+158	 struct BalanceLeaf {
+159	 uint16 tokenID;
+160	 uint96 balance;
+161	 uint96 weightAMM;
+162	 uint storageRoot;
+163	 }
+164	 struct MerkleProof {
+165	 ExchangeData.AccountLeaf accountLeaf;
+166	 ExchangeData.BalanceLeaf balanceLeaf;
+167	 uint[48] accountMerkleProof;
+168	 uint[24] balanceMerkleProof;
+169	 }
+170	 struct BlockContext {
+171	 bytes32 DOMAIN_SEPARATOR;
+172	 uint32 timestamp;
+173	 }
+174	 struct State {
+175	 uint32 maxAgeDepositUntilWithdrawable;
+176	 bytes32 DOMAIN_SEPARATOR;
+177	 ILoopringV3 loopring;
+178	 IBlockVerifier blockVerifier;
+179	 IAgentRegistry agentRegistry;
+180	 IDepositContract depositContract;
+181	 bytes32 merkleRoot;
+182	 mapping(uint => BlockInfo) blocks;
+183	 uint numBlocks;
+184	 Token[] tokens;
+185	 mapping (address => uint16) tokenToTokenId;
+186	 mapping (uint32 => mapping (uint16 => bool)) withdrawnInWithdrawMode;
+187	 mapping (address => mapping (uint16 => uint)) amountWithdrawable;
+188	 mapping (uint32 => mapping (uint16 => ForcedWithdrawal)) pendingForcedWithdrawals;
+189	 mapping (address => mapping (uint16 => Deposit)) pendingDeposits;
+190	 mapping (address => mapping (bytes32 => bool)) approvedTx;
+191	 mapping (address => mapping (address => mapping (uint16 => mapping (uint => mapping (uint32 => address))))) withdrawalRecipient;
+192	 uint32 numPendingForcedTransactions;
+193	 ProtocolFeeData protocolFeeData;
+194	 uint shutdownModeStartTime;
+195	 uint withdrawalModeStartTime;
+196	 mapping (address => uint) protocolFeeLastWithdrawnTime;
+197	 }
+198	 }
+199	 abstract contract IExchangeV3 is Claimable {
+200	 event ExchangeCloned( address exchangeAddress, address owner, bytes32 genesisMerkleRoot );
+201	 event TokenRegistered( address token, uint16 tokenId );
+202	 event Shutdown( uint timestamp );
+203	 event WithdrawalModeActivated( uint timestamp );
+204	 event BlockSubmitted( uint indexed blockIdx, bytes32 merkleRoot, bytes32 publicDataHash );
+205	 event DepositRequested( address from, address to, address token, uint16 tokenId, uint96 amount );
+206	 event ForcedWithdrawalRequested( address owner, address token, uint32 accountID );
+207	 event WithdrawalCompleted( uint8 category, address from, address to, address token, uint amount );
+208	 event WithdrawalFailed( uint8 category, address from, address to, address token, uint amount );
+209	 event ProtocolFeesUpdated( uint8 takerFeeBips, uint8 makerFeeBips, uint8 previousTakerFeeBips, uint8 previousMakerFeeBips );
+210	 event TransactionApproved( address owner, bytes32 transactionHash );
+211	 function initialize( address loopring, address owner, bytes32 genesisMerkleRoot ) virtual external;
+212	 function setAgentRegistry(address agentRegistry) external virtual;
+213	 function getAgentRegistry() external virtual view returns (IAgentRegistry);
+214	 function setDepositContract(address depositContract) external virtual;
+215	 function refreshBlockVerifier() external virtual;
+216	 function getDepositContract() external virtual view returns (IDepositContract);
+217	 function withdrawExchangeFees( address token, address feeRecipient ) external virtual;
+218	 function getConstants() external virtual pure returns(ExchangeData.Constants memory);
+219	 function isInWithdrawalMode() external virtual view returns (bool);
+220	 function isShutdown() external virtual view returns (bool);
+221	 function registerToken( address tokenAddress ) external virtual returns (uint16 tokenID);
+222	 function getTokenID( address tokenAddress ) external virtual view returns (uint16 tokenID);
+223	 function getTokenAddress( uint16 tokenID ) external virtual view returns (address tokenAddress);
+224	 function getExchangeStake() external virtual view returns (uint);
+225	 function withdrawExchangeStake( address recipient ) external virtual returns (uint amountLRC);
+226	 function burnExchangeStake() external virtual;
+227	 function getMerkleRoot() external virtual view returns (bytes32);
+228	 function getBlockHeight() external virtual view returns (uint);
+229	 function getBlockInfo(uint blockIdx) external virtual view returns (ExchangeData.BlockInfo memory);
+230	 function submitBlocks(ExchangeData.Block[] calldata blocks) external virtual;
+231	 function getNumAvailableForcedSlots() external virtual view returns (uint);
+232	 function deposit( address from, address to, address tokenAddress, uint96 amount, bytes calldata auxiliaryData ) external virtual payable;
+233	 function getPendingDepositAmount( address owner, address tokenAddress ) external virtual view returns (uint96);
+234	 function forceWithdraw( address owner, address tokenAddress, uint32 accountID ) external virtual payable;
+235	 function isForcedWithdrawalPending( uint32 accountID, address token ) external virtual view returns (bool);
+236	 function withdrawProtocolFees( address tokenAddress ) external virtual payable;
+237	 function getProtocolFeeLastWithdrawnTime( address tokenAddress ) external virtual view returns (uint);
+238	 function withdrawFromMerkleTree( ExchangeData.MerkleProof calldata merkleProof ) external virtual;
+239	 function isWithdrawnInWithdrawalMode( uint32 accountID, address token ) external virtual view returns (bool);
+240	 function withdrawFromDepositRequest( address owner, address token ) external virtual;
+241	 function withdrawFromApprovedWithdrawals( address[] calldata owners, address[] calldata tokens ) external virtual;
+242	 function getAmountWithdrawable( address owner, address token ) external virtual view returns (uint);
+243	 function notifyForcedRequestTooOld( uint32 accountID, address token ) external virtual;
+244	 function setWithdrawalRecipient( address from, address to, address token, uint96 amount, uint32 storageID, address newRecipient ) external virtual;
+245	 function getWithdrawalRecipient( address from, address to, address token, uint96 amount, uint32 storageID ) external virtual view returns (address);
+246	 function onchainTransferFrom( address from, address to, address token, uint amount ) external virtual;
+247	 function approveTransaction( address owner, bytes32 txHash ) external virtual;
+248	 function approveTransactions( address[] calldata owners, bytes32[] calldata txHashes ) external virtual;
+249	 function isTransactionApproved( address owner, bytes32 txHash ) external virtual view returns (bool);
+250	 function setMaxAgeDepositUntilWithdrawable( uint32 newValue ) external virtual returns (uint32);
+251	 function getMaxAgeDepositUntilWithdrawable() external virtual view returns (uint32);
+252	 function shutdown() external virtual returns (bool success);
+253	 function getProtocolFeeValues() external virtual view returns ( uint32 syncedAt, uint8 takerFeeBips, uint8 makerFeeBips, uint8 previousTakerFeeBips, uint8 previousMakerFeeBips );
+254	 function getDomainSeparator() external virtual view returns (bytes32);
+255	 function setAmmFeeBips(uint8 _feeBips) external virtual;
+256	 function getAmmFeeBips() external virtual view returns (uint8);
+257	 }
+258	 library EIP712 {
+259	 struct Domain {
+260	 string name;
+261	 string version;
+262	 address verifyingContract;
+263	 }
+264	 bytes32 constant internal EIP712_DOMAIN_TYPEHASH = keccak256( "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)" );
+265	 string constant internal EIP191_HEADER = "\x19\x01";
+266	 function hash(Domain memory domain) internal pure returns (bytes32) {
+267	 uint _chainid;
+268	 assembly {
+269	 _chainid := chainid() }
+270	 return keccak256( abi.encode( EIP712_DOMAIN_TYPEHASH, keccak256(bytes(domain.name)), keccak256(bytes(domain.version)), _chainid, domain.verifyingContract ) );
+271	 }
+272	 function hashPacked( bytes32 domainHash, bytes32 dataHash ) internal pure returns (bytes32) {
+273	 return keccak256( abi.encodePacked( EIP191_HEADER, domainHash, dataHash ) );
+274	 }
+275	 }
+276	 abstract contract ERC20 {
+277	 function totalSupply() public virtual view returns (uint);
+278	 function balanceOf( address who ) public virtual view returns (uint);
+279	 function allowance( address owner, address spender ) public virtual view returns (uint);
+280	 function transfer( address to, uint value ) public virtual returns (bool);
+281	 function transferFrom( address from, address to, uint value ) public virtual returns (bool);
+282	 function approve( address spender, uint value ) public virtual returns (bool);
+283	 }
+284	 library MathUint {
+285	 using MathUint for uint;
+286	 function mul( uint a, uint b ) internal pure returns (uint c) {
+287	 c = a * b;
+288	 require(a == 0 || c / a == b, "MUL_OVERFLOW");
+289	 }
+290	 function sub( uint a, uint b ) internal pure returns (uint) {
+291	 require(b <= a, "SUB_UNDERFLOW");
+292	 return a - b;
+293	 }
+294	 function add( uint a, uint b ) internal pure returns (uint c) {
+295	 c = a + b;
+296	 require(c >= a, "ADD_OVERFLOW");
+297	 }
+298	 function add64( uint64 a, uint64 b ) internal pure returns (uint64 c) {
+299	 c = a + b;
+300	 require(c >= a, "ADD_OVERFLOW");
+301	 }
+302	 }
+303	 library MathUint96 {
+304	 function add( uint96 a, uint96 b ) internal pure returns (uint96 c) {
+305	 c = a + b;
+306	 require(c >= a, "ADD_OVERFLOW");
+307	 }
+308	 function sub( uint96 a, uint96 b ) internal pure returns (uint96 c) {
+309	 require(b <= a, "SUB_UNDERFLOW");
+310	 return a - b;
+311	 }
+312	 }
+313	 library BytesUtil {
+314	 function concat( bytes memory _preBytes, bytes memory _postBytes ) internal pure returns (bytes memory) {
+315	 bytes memory tempBytes;
+316	 assembly {
+317	 tempBytes := mload(0x40) let length := mload(_preBytes) mstore(tempBytes, length) let mc := add(tempBytes, 0x20) let end := add(mc, length) for {
+318	 let cc := add(_preBytes, 0x20) }
+319	 lt(mc, end) {
+320	 mc := add(mc, 0x20) cc := add(cc, 0x20) }
+321	 {
+322	 mstore(mc, mload(cc)) }
+323	 length := mload(_postBytes) mstore(tempBytes, add(length, mload(tempBytes))) mc := end end := add(mc, length) for {
+324	 let cc := add(_postBytes, 0x20) }
+325	 lt(mc, end) {
+326	 mc := add(mc, 0x20) cc := add(cc, 0x20) }
+327	 {
+328	 mstore(mc, mload(cc)) }
+329	 mstore(0x40, and( add(add(end, iszero(add(length, mload(_preBytes)))), 31), not(31) )) }
+330	 return tempBytes;
+331	 }
+332	 function slice( bytes memory _bytes, uint _start, uint _length ) internal pure returns (bytes memory) {
+333	 require(_bytes.length >= (_start + _length));
+334	 bytes memory tempBytes;
+335	 assembly {
+336	 switch iszero(_length) case 0 {
+337	 tempBytes := mload(0x40) let lengthmod := and(_length, 31) let mc := add(add(tempBytes, lengthmod), mul(0x20, iszero(lengthmod))) let end := add(mc, _length) for {
+338	 let cc := add(add(add(_bytes, lengthmod), mul(0x20, iszero(lengthmod))), _start) }
+339	 lt(mc, end) {
+340	 mc := add(mc, 0x20) cc := add(cc, 0x20) }
+341	 {
+342	 mstore(mc, mload(cc)) }
+343	 mstore(tempBytes, _length) mstore(0x40, and(add(mc, 31), not(31))) }
+344	 default {
+345	 tempBytes := mload(0x40) mstore(0x40, add(tempBytes, 0x20)) }
+346	 }
+347	 return tempBytes;
+348	 }
+349	 function toAddress(bytes memory _bytes, uint _start) internal pure returns (address) {
+350	 require(_bytes.length >= (_start + 20));
+351	 address tempAddress;
+352	 assembly {
+353	 tempAddress := div(mload(add(add(_bytes, 0x20), _start)), 0x1000000000000000000000000) }
+354	 return tempAddress;
+355	 }
+356	 function toUint8(bytes memory _bytes, uint _start) internal pure returns (uint8) {
+357	 require(_bytes.length >= (_start + 1));
+358	 uint8 tempUint;
+359	 assembly {
+360	 tempUint := mload(add(add(_bytes, 0x1), _start)) }
+361	 return tempUint;
+362	 }
+363	 function toUint16(bytes memory _bytes, uint _start) internal pure returns (uint16) {
+364	 require(_bytes.length >= (_start + 2));
+365	 uint16 tempUint;
+366	 assembly {
+367	 tempUint := mload(add(add(_bytes, 0x2), _start)) }
+368	 return tempUint;
+369	 }
+370	 function toUint24(bytes memory _bytes, uint _start) internal pure returns (uint24) {
+371	 require(_bytes.length >= (_start + 3));
+372	 uint24 tempUint;
+373	 assembly {
+374	 tempUint := mload(add(add(_bytes, 0x3), _start)) }
+375	 return tempUint;
+376	 }
+377	 function toUint32(bytes memory _bytes, uint _start) internal pure returns (uint32) {
+378	 require(_bytes.length >= (_start + 4));
+379	 uint32 tempUint;
+380	 assembly {
+381	 tempUint := mload(add(add(_bytes, 0x4), _start)) }
+382	 return tempUint;
+383	 }
+384	 function toUint64(bytes memory _bytes, uint _start) internal pure returns (uint64) {
+385	 require(_bytes.length >= (_start + 8));
+386	 uint64 tempUint;
+387	 assembly {
+388	 tempUint := mload(add(add(_bytes, 0x8), _start)) }
+389	 return tempUint;
+390	 }
+391	 function toUint96(bytes memory _bytes, uint _start) internal pure returns (uint96) {
+392	 require(_bytes.length >= (_start + 12));
+393	 uint96 tempUint;
+394	 assembly {
+395	 tempUint := mload(add(add(_bytes, 0xc), _start)) }
+396	 return tempUint;
+397	 }
+398	 function toUint128(bytes memory _bytes, uint _start) internal pure returns (uint128) {
+399	 require(_bytes.length >= (_start + 16));
+400	 uint128 tempUint;
+401	 assembly {
+402	 tempUint := mload(add(add(_bytes, 0x10), _start)) }
+403	 return tempUint;
+404	 }
+405	 function toUint(bytes memory _bytes, uint _start) internal pure returns (uint256) {
+406	 require(_bytes.length >= (_start + 32));
+407	 uint256 tempUint;
+408	 assembly {
+409	 tempUint := mload(add(add(_bytes, 0x20), _start)) }
+410	 return tempUint;
+411	 }
+412	 function toBytes4(bytes memory _bytes, uint _start) internal pure returns (bytes4) {
+413	 require(_bytes.length >= (_start + 4));
+414	 bytes4 tempBytes4;
+415	 assembly {
+416	 tempBytes4 := mload(add(add(_bytes, 0x20), _start)) }
+417	 return tempBytes4;
+418	 }
+419	 function toBytes20(bytes memory _bytes, uint _start) internal pure returns (bytes20) {
+420	 require(_bytes.length >= (_start + 20));
+421	 bytes20 tempBytes20;
+422	 assembly {
+423	 tempBytes20 := mload(add(add(_bytes, 0x20), _start)) }
+424	 return tempBytes20;
+425	 }
+426	 function toBytes32(bytes memory _bytes, uint _start) internal pure returns (bytes32) {
+427	 require(_bytes.length >= (_start + 32));
+428	 bytes32 tempBytes32;
+429	 assembly {
+430	 tempBytes32 := mload(add(add(_bytes, 0x20), _start)) }
+431	 return tempBytes32;
+432	 }
+433	 function toAddressUnsafe(bytes memory _bytes, uint _start) internal pure returns (address) {
+434	 address tempAddress;
+435	 assembly {
+436	 tempAddress := div(mload(add(add(_bytes, 0x20), _start)), 0x1000000000000000000000000) }
+437	 return tempAddress;
+438	 }
+439	 function toUint8Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint8) {
+440	 uint8 tempUint;
+441	 assembly {
+442	 tempUint := mload(add(add(_bytes, 0x1), _start)) }
+443	 return tempUint;
+444	 }
+445	 function toUint16Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint16) {
+446	 uint16 tempUint;
+447	 assembly {
+448	 tempUint := mload(add(add(_bytes, 0x2), _start)) }
+449	 return tempUint;
+450	 }
+451	 function toUint24Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint24) {
+452	 uint24 tempUint;
+453	 assembly {
+454	 tempUint := mload(add(add(_bytes, 0x3), _start)) }
+455	 return tempUint;
+456	 }
+457	 function toUint32Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint32) {
+458	 uint32 tempUint;
+459	 assembly {
+460	 tempUint := mload(add(add(_bytes, 0x4), _start)) }
+461	 return tempUint;
+462	 }
+463	 function toUint64Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint64) {
+464	 uint64 tempUint;
+465	 assembly {
+466	 tempUint := mload(add(add(_bytes, 0x8), _start)) }
+467	 return tempUint;
+468	 }
+469	 function toUint96Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint96) {
+470	 uint96 tempUint;
+471	 assembly {
+472	 tempUint := mload(add(add(_bytes, 0xc), _start)) }
+473	 return tempUint;
+474	 }
+475	 function toUint128Unsafe(bytes memory _bytes, uint _start) internal pure returns (uint128) {
+476	 uint128 tempUint;
+477	 assembly {
+478	 tempUint := mload(add(add(_bytes, 0x10), _start)) }
+479	 return tempUint;
+480	 }
+481	 function toUintUnsafe(bytes memory _bytes, uint _start) internal pure returns (uint256) {
+482	 uint256 tempUint;
+483	 assembly {
+484	 tempUint := mload(add(add(_bytes, 0x20), _start)) }
+485	 return tempUint;
+486	 }
+487	 function toBytes4Unsafe(bytes memory _bytes, uint _start) internal pure returns (bytes4) {
+488	 bytes4 tempBytes4;
+489	 assembly {
+490	 tempBytes4 := mload(add(add(_bytes, 0x20), _start)) }
+491	 return tempBytes4;
+492	 }
+493	 function toBytes20Unsafe(bytes memory _bytes, uint _start) internal pure returns (bytes20) {
+494	 bytes20 tempBytes20;
+495	 assembly {
+496	 tempBytes20 := mload(add(add(_bytes, 0x20), _start)) }
+497	 return tempBytes20;
+498	 }
+499	 function toBytes32Unsafe(bytes memory _bytes, uint _start) internal pure returns (bytes32) {
+500	 bytes32 tempBytes32;
+501	 assembly {
+502	 tempBytes32 := mload(add(add(_bytes, 0x20), _start)) }
+503	 return tempBytes32;
+504	 }
+505	 function fastSHA256( bytes memory data ) internal view returns (bytes32) {
+506	 bytes32[] memory result = new bytes32[](1);
+507	 bool success;
+508	 assembly {
+509	 let ptr := add(data, 32) success := staticcall(sub(gas(), 2000), 2, ptr, mload(data), add(result, 32), 32) }
+510	 require(success, "SHA256_FAILED");
+511	 return result[0];
+512	 }
+513	 }
+514	 library AddressUtil {
+515	 using AddressUtil for *;
+516	 function isContract( address addr ) internal view returns (bool) {
+517	 bytes32 codehash;
+518	 assembly {
+519	 codehash := extcodehash(addr) }
+520	 return (codehash != 0x0 && codehash != 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470);
+521	 }
+522	 function toPayable( address addr ) internal pure returns (address payable) {
+523	 return payable(addr);
+524	 }
+525	 function sendETH( address to, uint amount, uint gasLimit ) internal returns (bool success) {
+526	 if (amount == 0) {
+527	 return true;
+528	 }
+529	 address payable recipient = to.toPayable();
+530	 (success, ) = recipient.call{
+531	 value: amount, gas: gasLimit}
+532	 ("");
+533	 }
+534	 function sendETHAndVerify( address to, uint amount, uint gasLimit ) internal returns (bool success) {
+535	 success = to.sendETH(amount, gasLimit);
+536	 require(success, "TRANSFER_FAILURE");
+537	 }
+538	 function fastCall( address to, uint gasLimit, uint value, bytes memory data ) internal returns (bool success, bytes memory returnData) {
+539	 if (to != address(0)) {
+540	 assembly {
+541	 success := call(gasLimit, to, value, add(data, 32), mload(data), 0, 0) let size := returndatasize() returnData := mload(0x40) mstore(returnData, size) returndatacopy(add(returnData, 32), 0, size) mstore(0x40, add(returnData, add(32, size))) }
+542	 }
+543	 }
+544	 function fastCallAndVerify( address to, uint gasLimit, uint value, bytes memory data ) internal returns (bytes memory returnData) {
+545	 bool success;
+546	 (success, returnData) = fastCall(to, gasLimit, value, data);
+547	 if (!success) {
+548	 assembly {
+549	 revert(add(returnData, 32), mload(returnData)) }
+550	 }
+551	 }
+552	 }
+553	 abstract contract ERC1271 {
+554	 bytes4 constant internal ERC1271_MAGICVALUE = 0x1626ba7e;
+555	 function isValidSignature( bytes32 _hash, bytes memory _signature) public view virtual returns (bytes4 magicValueB32);
+556	 }
+557	 library SignatureUtil {
+558	 using BytesUtil for bytes;
+559	 using MathUint for uint;
+560	 using AddressUtil for address;
+561	 enum SignatureType {
+562	 ILLEGAL, INVALID, EIP_712, ETH_SIGN, WALLET }
+563	 bytes4 constant internal ERC1271_MAGICVALUE = 0x1626ba7e;
+564	 function verifySignatures( bytes32 signHash, address[] memory signers, bytes[] memory signatures ) internal view returns (bool) {
+565	 require(signers.length == signatures.length, "BAD_SIGNATURE_DATA");
+566	 address lastSigner;
+567	 for (uint i = 0; i < signers.length; i++) {
+568	 require(signers[i] > lastSigner, "INVALID_SIGNERS_ORDER");
+569	 lastSigner = signers[i];
+570	 if (!verifySignature(signHash, signers[i], signatures[i])) {
+571	 return false;
+572	 }
+573	 }
+574	 return true;
+575	 }
+576	 function verifySignature( bytes32 signHash, address signer, bytes memory signature ) internal view returns (bool) {
+577	 if (signer == address(0)) {
+578	 return false;
+579	 }
+580	 return signer.isContract()? verifyERC1271Signature(signHash, signer, signature): verifyEOASignature(signHash, signer, signature);
+581	 }
+582	 function recoverECDSASigner( bytes32 signHash, bytes memory signature ) internal pure returns (address) {
+583	 if (signature.length != 65) {
+584	 return address(0);
+585	 }
+586	 bytes32 r;
+587	 bytes32 s;
+588	 uint8 v;
+589	 assembly {
+590	 r := mload(add(signature, 0x20)) s := mload(add(signature, 0x40)) v := and(mload(add(signature, 0x41)), 0xff) }
+591	 if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+592	 return address(0);
+593	 }
+594	 if (v == 27 || v == 28) {
+595	 return ecrecover(signHash, v, r, s);
+596	 }
+597	 else {
+598	 return address(0);
+599	 }
+600	 }
+601	 function verifyEOASignature( bytes32 signHash, address signer, bytes memory signature ) private pure returns (bool success) {
+602	 if (signer == address(0)) {
+603	 return false;
+604	 }
+605	 uint signatureTypeOffset = signature.length.sub(1);
+606	 SignatureType signatureType = SignatureType(signature.toUint8(signatureTypeOffset));
+607	 assembly {
+608	 mstore(signature, signatureTypeOffset) }
+609	 if (signatureType == SignatureType.EIP_712) {
+610	 success = (signer == recoverECDSASigner(signHash, signature));
+611	 }
+612	 else if (signatureType == SignatureType.ETH_SIGN) {
+613	 bytes32 hash = keccak256( abi.encodePacked("\x19Ethereum Signed Message:\n32", signHash) );
+614	 success = (signer == recoverECDSASigner(hash, signature));
+615	 }
+616	 else {
+617	 success = false;
+618	 }
+619	 assembly {
+620	 mstore(signature, add(signatureTypeOffset, 1)) }
+621	 return success;
+622	 }
+623	 function verifyERC1271Signature( bytes32 signHash, address signer, bytes memory signature ) private view returns (bool) {
+624	 bytes memory callData = abi.encodeWithSelector( ERC1271.isValidSignature.selector, signHash, signature );
+625	 (bool success, bytes memory result) = signer.staticcall(callData);
+626	 return ( success && result.length == 32 && result.toBytes4(0) == ERC1271_MAGICVALUE );
+627	 }
+628	 }
+629	 interface IAmmSharedConfig {
+630	 function maxForcedExitAge() external view returns (uint);
+631	 function maxForcedExitCount() external view returns (uint);
+632	 function forcedExitFee() external view returns (uint);
+633	 }
+634	 library AmmData {
+635	 uint public constant POOL_TOKEN_BASE = 100 * (10 ** 8);
+636	 uint public constant POOL_TOKEN_MINTED_SUPPLY = uint96(-1);
+637	 enum PoolTxType {
+638	 NOOP, JOIN, EXIT }
+639	 struct PoolConfig {
+640	 address sharedConfig;
+641	 address exchange;
+642	 string poolName;
+643	 uint32 accountID;
+644	 address[] tokens;
+645	 uint96[] weights;
+646	 uint8 feeBips;
+647	 string tokenSymbol;
+648	 }
+649	 struct PoolJoin {
+650	 address owner;
+651	 uint96[] joinAmounts;
+652	 uint32[] joinStorageIDs;
+653	 uint96 mintMinAmount;
+654	 uint96 fee;
+655	 uint32 validUntil;
+656	 }
+657	 struct PoolExit {
+658	 address owner;
+659	 uint96 burnAmount;
+660	 uint32 burnStorageID;
+661	 uint96[] exitMinAmounts;
+662	 uint96 fee;
+663	 uint32 validUntil;
+664	 }
+665	 struct PoolTx {
+666	 PoolTxType txType;
+667	 bytes data;
+668	 bytes signature;
+669	 }
+670	 struct Token {
+671	 address addr;
+672	 uint96 weight;
+673	 uint16 tokenID;
+674	 }
+675	 struct Context {
+676	 uint txIdx;
+677	 bytes32 domainSeparator;
+678	 uint32 accountID;
+679	 uint16 poolTokenID;
+680	 uint8 feeBips;
+681	 uint totalSupply;
+682	 Token[] tokens;
+683	 uint96[] tokenBalancesL2;
+684	 }
+685	 struct State {
+686	 string poolName;
+687	 string symbol;
+688	 uint _totalSupply;
+689	 mapping(address => uint) balanceOf;
+690	 mapping(address => mapping(address => uint)) allowance;
+691	 mapping(address => uint) nonces;
+692	 IAmmSharedConfig sharedConfig;
+693	 Token[] tokens;
+694	 bytes32 exchangeDomainSeparator;
+695	 bytes32 domainSeparator;
+696	 IExchangeV3 exchange;
+697	 uint32 accountID;
+698	 uint16 poolTokenID;
+699	 uint8 feeBips;
+700	 address exchangeOwner;
+701	 uint64 shutdownTimestamp;
+702	 uint16 forcedExitCount;
+703	 mapping (address => PoolExit) forcedExit;
+704	 mapping (bytes32 => bool) approvedTx;
+705	 }
+706	 }
+707	 library AmmPoolToken {
+708	 using MathUint for uint;
+709	 using MathUint96 for uint96;
+710	 using SignatureUtil for bytes32;
+711	 event Approval(address indexed owner, address indexed spender, uint value);
+712	 event Transfer(address indexed from, address indexed to, uint value);
+713	 bytes32 public constant PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+714	 function totalSupply( AmmData.State storage S ) internal view returns (uint) {
+715	 return S._totalSupply;
+716	 }
+717	 function approve( AmmData.State storage S, address spender, uint value ) internal returns (bool) {
+718	 _approve(S, msg.sender, spender, value);
+719	 return true;
+720	 }
+721	 function transfer( AmmData.State storage S, address to, uint value ) internal returns (bool) {
+722	 _transfer(S, msg.sender, to, value);
+723	 return true;
+724	 }
+725	 function transferFrom( AmmData.State storage S, address from, address to, uint value ) internal returns (bool) {
+726	 if (msg.sender != address(this) && S.allowance[from][msg.sender] != uint(-1)) {
+727	 S.allowance[from][msg.sender] = S.allowance[from][msg.sender].sub(value);
+728	 }
+729	 _transfer(S, from, to, value);
+730	 return true;
+731	 }
+732	 function permit( AmmData.State storage S, address owner, address spender, uint256 value, uint256 deadline, bytes calldata signature ) internal {
+733	 require(deadline >= block.timestamp, 'EXPIRED');
+734	 bytes32 hash = EIP712.hashPacked( S.domainSeparator, keccak256( abi.encode( PERMIT_TYPEHASH, owner, spender, value, S.nonces[owner]++, deadline ) ) );
+735	 require(hash.verifySignature(owner, signature), 'INVALID_SIGNATURE');
+736	 _approve(S, owner, spender, value);
+737	 }
+738	 function _approve( AmmData.State storage S, address owner, address spender, uint value ) private {
+739	 if (spender != address(this)) {
+740	 S.allowance[owner][spender] = value;
+741	 emit Approval(owner, spender, value);
+742	 }
+743	 }
+744	 function _transfer( AmmData.State storage S, address from, address to, uint value ) private {
+745	 S.balanceOf[from] = S.balanceOf[from].sub(value);
+746	 S.balanceOf[to] = S.balanceOf[to].add(value);
+747	 emit Transfer(from, to, value);
+748	 }
+749	 }
+750	 library AmmStatus {
+751	 using AmmPoolToken for AmmData.State;
+752	 using MathUint for uint;
+753	 using MathUint96 for uint96;
+754	 using SignatureUtil for bytes32;
+755	 event Shutdown(uint timestamp);
+756	 function isOnline(AmmData.State storage S) internal view returns (bool) {
+757	 return S.shutdownTimestamp == 0;
+758	 }
+759	 function setupPool( AmmData.State storage S, AmmData.PoolConfig calldata config ) public {
+760	 require( bytes(config.poolName).length > 0 && bytes(config.tokenSymbol).length > 0, "INVALID_NAME_OR_SYMBOL" );
+761	 require(config.sharedConfig != address(0), "INVALID_SHARED_CONFIG");
+762	 require(config.tokens.length == config.weights.length, "INVALID_DATA");
+763	 require(config.tokens.length >= 2, "INVALID_DATA");
+764	 require(config.exchange != address(0), "INVALID_EXCHANGE");
+765	 require(config.accountID != 0, "INVALID_ACCOUNT_ID");
+766	 require(S.tokens.length == 0, "ALREADY_INITIALIZED");
+767	 S.sharedConfig = IAmmSharedConfig(config.sharedConfig);
+768	 IExchangeV3 exchange = IExchangeV3(config.exchange);
+769	 S.exchange = exchange;
+770	 S.exchangeOwner = exchange.owner();
+771	 S.exchangeDomainSeparator = exchange.getDomainSeparator();
+772	 S.accountID = config.accountID;
+773	 S.poolTokenID = exchange.getTokenID(address(this));
+774	 S.feeBips = config.feeBips;
+775	 S.domainSeparator = EIP712.hash(EIP712.Domain(config.poolName, "1.0.0", address(this)));
+776	 S.poolName = config.poolName;
+777	 S.symbol = config.tokenSymbol;
+778	 for (uint i = 0; i < config.tokens.length; i++) {
+779	 require(config.weights[i] > 0, "INVALID_TOKEN_WEIGHT");
+780	 address token = config.tokens[i];
+781	 S.tokens.push(AmmData.Token({
+782	 addr: token, tokenID: exchange.getTokenID(token), weight: config.weights[i] }
+783	 ));
+784	 }
+785	 S.balanceOf[address(this)] = AmmData.POOL_TOKEN_MINTED_SUPPLY;
+786	 S.allowance[address(this)][address(exchange.getDepositContract())] = uint(-1);
+787	 exchange.deposit( address(this), address(this), address(this), uint96(AmmData.POOL_TOKEN_MINTED_SUPPLY), new bytes(0) );
+788	 }
+789	 function shutdown( AmmData.State storage S, address exitOwner ) public {
+790	 if (!S.exchange.isInWithdrawalMode()) {
+791	 uint64 validUntil = S.forcedExit[exitOwner].validUntil;
+792	 require(validUntil > 0 && validUntil < block.timestamp, "INVALID_CHALLENGE");
+793	 uint size = S.tokens.length;
+794	 for (uint i = 0; i < size; i++) {
+795	 S.exchange.forceWithdraw{
+796	 value: msg.value / size}
+797	 ( address(this), S.tokens[i].addr, S.accountID );
+798	 }
+799	 }
+800	 S.shutdownTimestamp = uint64(block.timestamp);
+801	 emit Shutdown(block.timestamp);
+802	 }
+803	 function updateExchangeOwnerAndFeeBips(AmmData.State storage S) public {
+804	 S.exchangeOwner = S.exchange.owner();
+805	 S.feeBips = S.exchange.getAmmFeeBips();
+806	 }
+807	 }

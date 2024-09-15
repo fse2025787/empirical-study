@@ -1,0 +1,361 @@
+row number 
+1	   pragma solidity ^0.4.24;
+2	 interface ERC721 {
+3	 event Transfer(address indexed _from, address indexed _to, uint256 indexed _tokenId);
+4	 event Approval(address indexed _owner, address indexed _approved, uint256 indexed _tokenId);
+5	 event ApprovalForAll(address indexed _owner, address indexed _operator, bool _approved);
+6	 function balanceOf(address _owner) external view returns (uint256);
+7	 function ownerOf(uint256 _tokenId) external view returns (address);
+8	 function safeTransferFrom(address _from, address _to, uint256 _tokenId, bytes data) external;
+9	 function safeTransferFrom(address _from, address _to, uint256 _tokenId) external;
+10	 function transferFrom(address _from, address _to, uint256 _tokenId) external;
+11	 function approve(address _approved, uint256 _tokenId) external;
+12	 function setApprovalForAll(address _operator, bool _approved) external;
+13	 function getApproved(uint256 _tokenId) external view returns (address);
+14	 function isApprovedForAll(address _owner, address _operator) external view returns (bool);
+15	 }
+16	 interface ERC165 {
+17	 function supportsInterface(bytes4 interfaceID) external view returns (bool);
+18	 }
+19	 interface ERC721Enumerable {
+20	 function totalSupply() external view returns (uint256);
+21	 function tokenByIndex(uint256 _index) external view returns (uint256);
+22	 function tokenOfOwnerByIndex(address _owner, uint256 _index) external view returns (uint256);
+23	 }
+24	 interface ERC721Metadata {
+25	 function name() external view returns (string _name);
+26	 function symbol() external view returns (string _symbol);
+27	 function tokenURI(uint256 _tokenId) external view returns (string);
+28	 }
+29	 interface ERC721TokenReceiver {
+30	 function onERC721Received(address _operator, address _from, uint256 _tokenId, bytes _data) external returns(bytes4);
+31	 }
+32	 contract SupportsInterface {
+33	 mapping(bytes4 => bool) internal supportedInterfaces;
+34	 constructor() public {
+35	 supportedInterfaces[0x01ffc9a7] = true;
+36	 }
+37	 function supportsInterface( bytes4 _interfaceID ) external view returns (bool) {
+38	 return supportedInterfaces[_interfaceID];
+39	 }
+40	 }
+41	 library AddressUtils {
+42	 function isContract( address _addr ) internal view returns (bool) {
+43	 uint256 size;
+44	 assembly {
+45	 size := extcodesize(_addr) }
+46	 return size > 0;
+47	 }
+48	 }
+49	 contract NFToken is ERC721, SupportsInterface, ERC721Metadata, ERC721Enumerable {
+50	 using AddressUtils for address;
+51	 bytes4 constant MAGIC_ON_ERC721_RECEIVED = 0x150b7a02;
+52	 event Transfer(address indexed _from, address indexed _to, uint256 indexed _tokenId);
+53	 event Approval(address indexed _owner, address indexed _approved, uint256 indexed _tokenId);
+54	 event ApprovalForAll(address indexed _owner, address indexed _operator, bool _approved);
+55	 modifier canOperate(uint256 _tokenId) {
+56	 address tokenOwner = nft[_tokenId].owner;
+57	 require(tokenOwner == msg.sender || ownerToOperators[tokenOwner][msg.sender], "Sender is not an authorized operator of this token");
+58	 _;
+59	 }
+60	 modifier canTransfer(uint256 _tokenId) {
+61	 address tokenOwner = nft[_tokenId].owner;
+62	 require( tokenOwner == msg.sender || getApproved(_tokenId) == msg.sender || ownerToOperators[tokenOwner][msg.sender], "Sender does not have permission to transfer this Token");
+63	 _;
+64	 }
+65	 modifier onlyNonZeroAddress(address toTest) {
+66	 require(toTest != address(0), "Address must be non zero address");
+67	 _;
+68	 }
+69	 modifier noOwnerExists(uint256 nftId) {
+70	 require(nft[nftId].owner == address(0), "Owner must not exist for this token");
+71	 _;
+72	 }
+73	 modifier ownerExists(uint256 nftId) {
+74	 require(nft[nftId].owner != address(0), "Owner must exist for this token");
+75	 _;
+76	 }
+77	 string nftName = "WeTrust Nifty";
+78	 string nftSymbol = "SPRN";
+79	 string public hostname = "https: mapping (uint256 => NFT) public nft;
+80	 uint256[] nftList;
+81	 mapping (address => uint256[]) internal ownerToTokenList;
+82	 mapping (address => mapping (address => bool)) internal ownerToOperators;
+83	 struct NFT {
+84	 address owner;
+85	 address approval;
+86	 bytes32 traits;
+87	 uint16 edition;
+88	 bytes4 nftType;
+89	 bytes32 recipientId;
+90	 uint256 createdAt;
+91	 }
+92	 constructor() public {
+93	 supportedInterfaces[0x780e9d63] = true;
+94	 supportedInterfaces[0x5b5e139f] = true;
+95	 supportedInterfaces[0x80ac58cd] = true;
+96	 }
+97	 function balanceOf(address _owner) onlyNonZeroAddress(_owner) public view returns (uint256) {
+98	 return ownerToTokenList[_owner].length;
+99	 }
+100	 function ownerOf(uint256 _tokenId) ownerExists(_tokenId) external view returns (address _owner) {
+101	 return nft[_tokenId].owner;
+102	 }
+103	 function safeTransferFrom(address _from, address _to, uint256 _tokenId, bytes _data) external {
+104	 _safeTransferFrom(_from, _to, _tokenId, _data);
+105	 }
+106	 function safeTransferFrom(address _from, address _to, uint256 _tokenId) external {
+107	 _safeTransferFrom(_from, _to, _tokenId, "");
+108	 }
+109	 function transferFrom(address _from, address _to, uint256 _tokenId) onlyNonZeroAddress(_to) canTransfer(_tokenId) ownerExists(_tokenId) external {
+110	 address tokenOwner = nft[_tokenId].owner;
+111	 require(tokenOwner == _from, "from address must be owner of tokenId");
+112	 _transfer(_to, _tokenId);
+113	 }
+114	 function approve(address _approved, uint256 _tokenId) canOperate(_tokenId) ownerExists(_tokenId) external {
+115	 address tokenOwner = nft[_tokenId].owner;
+116	 require(_approved != tokenOwner, "approved address cannot be owner of the token");
+117	 nft[_tokenId].approval = _approved;
+118	 emit Approval(tokenOwner, _approved, _tokenId);
+119	 }
+120	 function setApprovalForAll(address _operator, bool _approved) onlyNonZeroAddress(_operator) external {
+121	 ownerToOperators[msg.sender][_operator] = _approved;
+122	 emit ApprovalForAll(msg.sender, _operator, _approved);
+123	 }
+124	 function getApproved(uint256 _tokenId) ownerExists(_tokenId) public view returns (address) {
+125	 return nft[_tokenId].approval;
+126	 }
+127	 function isApprovedForAll(address _owner, address _operator) onlyNonZeroAddress(_owner) onlyNonZeroAddress(_operator) external view returns (bool) {
+128	 return ownerToOperators[_owner][_operator];
+129	 }
+130	 function getOwnedTokenList(address owner) view public returns(uint256[] tokenList) {
+131	 return ownerToTokenList[owner];
+132	 }
+133	 function name() external view returns (string _name) {
+134	 return nftName;
+135	 }
+136	 function symbol() external view returns (string _symbol) {
+137	 return nftSymbol;
+138	 }
+139	 function tokenURI(uint256 _tokenId) external view returns (string) {
+140	 return appendUintToString(hostname, _tokenId);
+141	 }
+142	 function totalSupply() external view returns (uint256) {
+143	 return nftList.length;
+144	 }
+145	 function tokenByIndex(uint256 _index) external view returns (uint256) {
+146	 require(_index < nftList.length, "index out of range");
+147	 return nftList[_index];
+148	 }
+149	 function tokenOfOwnerByIndex(address _owner, uint256 _index) external view returns (uint256) {
+150	 require(_index < balanceOf(_owner), "index out of range");
+151	 return ownerToTokenList[_owner][_index];
+152	 }
+153	 function appendUintToString(string inStr, uint v) pure internal returns (string str) {
+154	 uint maxlength = 100;
+155	 bytes memory reversed = new bytes(maxlength);
+156	 uint i = 0;
+157	 while (v != 0) {
+158	 uint remainder = v % 10;
+159	 v = v / 10;
+160	 reversed[i++] = byte(48 + remainder);
+161	 }
+162	 bytes memory inStrb = bytes(inStr);
+163	 bytes memory s = new bytes(inStrb.length + i);
+164	 uint j;
+165	 for (j = 0; j < inStrb.length; j++) {
+166	 s[j] = inStrb[j];
+167	 }
+168	 for (j = 0; j < i; j++) {
+169	 s[j + inStrb.length] = reversed[i - 1 - j];
+170	 }
+171	 str = string(s);
+172	 }
+173	 function _transfer(address _to, uint256 _tokenId) private {
+174	 address from = nft[_tokenId].owner;
+175	 clearApproval(_tokenId);
+176	 removeNFToken(from, _tokenId);
+177	 addNFToken(_to, _tokenId);
+178	 emit Transfer(from, _to, _tokenId);
+179	 }
+180	 function _safeTransferFrom(address _from, address _to, uint256 _tokenId, bytes _data) onlyNonZeroAddress(_to) canTransfer(_tokenId) ownerExists(_tokenId) internal {
+181	 address tokenOwner = nft[_tokenId].owner;
+182	 require(tokenOwner == _from, "from address must be owner of tokenId");
+183	 _transfer(_to, _tokenId);
+184	 if (_to.isContract()) {
+185	 bytes4 retval = ERC721TokenReceiver(_to).onERC721Received(msg.sender, _from, _tokenId, _data);
+186	 require(retval == MAGIC_ON_ERC721_RECEIVED, "reciever contract did not return the correct return value");
+187	 }
+188	 }
+189	 function clearApproval(uint256 _tokenId) private {
+190	 if(nft[_tokenId].approval != address(0)) {
+191	 delete nft[_tokenId].approval;
+192	 }
+193	 }
+194	 function removeNFToken(address _from, uint256 _tokenId) internal {
+195	 require(nft[_tokenId].owner == _from, "from address must be owner of tokenId");
+196	 uint256[] storage tokenList = ownerToTokenList[_from];
+197	 assert(tokenList.length > 0);
+198	 for (uint256 i = 0; i < tokenList.length; i++) {
+199	 if (tokenList[i] == _tokenId) {
+200	 tokenList[i] = tokenList[tokenList.length - 1];
+201	 delete tokenList[tokenList.length - 1];
+202	 tokenList.length--;
+203	 break;
+204	 }
+205	 }
+206	 delete nft[_tokenId].owner;
+207	 }
+208	 function addNFToken(address _to, uint256 _tokenId) noOwnerExists(_tokenId) internal {
+209	 nft[_tokenId].owner = _to;
+210	 ownerToTokenList[_to].push(_tokenId);
+211	 }
+212	 }
+213	 contract SpringNFT is NFToken{
+214	 event RecipientUpdate(bytes32 indexed recipientId, bytes32 updateId);
+215	 modifier recipientExists(bytes32 id) {
+216	 require(recipients[id].exists, "Recipient Must exist");
+217	 _;
+218	 }
+219	 modifier recipientDoesNotExists(bytes32 id) {
+220	 require(!recipients[id].exists, "Recipient Must not exists");
+221	 _;
+222	 }
+223	 modifier onlyByWeTrustSigner() {
+224	 require(msg.sender == wetrustSigner, "sender must be from WeTrust Signer Address");
+225	 _;
+226	 }
+227	 modifier onlyByWeTrustManager() {
+228	 require(msg.sender == wetrustManager, "sender must be from WeTrust Manager Address");
+229	 _;
+230	 }
+231	 modifier onlyByWeTrustOrRecipient(bytes32 id) {
+232	 require(msg.sender == wetrustSigner || msg.sender == recipients[id].owner, "sender must be from WeTrust or Recipient's owner address");
+233	 _;
+234	 }
+235	 modifier onlyWhenNotPaused() {
+236	 require(!paused, "contract is currently in paused state");
+237	 _;
+238	 }
+239	 address public wetrustSigner;
+240	 address public wetrustManager;
+241	 bool public paused;
+242	 mapping(bytes32 => Recipient) public recipients;
+243	 mapping(bytes32 => Update[]) public recipientUpdates;
+244	 mapping (uint256 => bytes) public nftArtistSignature;
+245	 struct Update {
+246	 bytes32 id;
+247	 uint256 createdAt;
+248	 }
+249	 struct Recipient {
+250	 string name;
+251	 string url;
+252	 address owner;
+253	 uint256 nftCount;
+254	 bool exists;
+255	 }
+256	 constructor (address signer, address manager) NFToken() public {
+257	 wetrustSigner = signer;
+258	 wetrustManager = manager;
+259	 }
+260	 function createNFT( uint256 tokenId, address receiver, bytes32 recipientId, bytes32 traits, bytes4 nftType) noOwnerExists(tokenId) onlyByWeTrustSigner onlyWhenNotPaused public {
+261	 mint(tokenId, receiver, recipientId, traits, nftType);
+262	 }
+263	 function redeemToken(bytes signedMessage) onlyWhenNotPaused public {
+264	 address to;
+265	 uint256 tokenId;
+266	 bytes4 nftType;
+267	 bytes32 traits;
+268	 bytes32 recipientId;
+269	 bytes32 r;
+270	 bytes32 s;
+271	 byte vInByte;
+272	 uint8 v;
+273	 string memory prefix = "\x19Ethereum Signed Message:\n32";
+274	 assembly {
+275	 to := mload(add(signedMessage, 32)) tokenId := mload(add(signedMessage, 64)) nftType := mload(add(signedMessage, 96)) traits := mload(add(signedMessage, 100)) recipientId := mload(add(signedMessage, 132)) r := mload(add(signedMessage, 164)) s := mload(add(signedMessage, 196)) vInByte := mload(add(signedMessage, 228)) }
+276	 require(to == address(this), "This signed Message is not meant for this smart contract");
+277	 v = uint8(vInByte);
+278	 if (v < 27) {
+279	 v += 27;
+280	 }
+281	 require(nft[tokenId].owner == address(0), "This token has been redeemed already");
+282	 bytes32 msgHash = createRedeemMessageHash(tokenId, nftType, traits, recipientId);
+283	 bytes32 preFixedMsgHash = keccak256( abi.encodePacked( prefix, msgHash ));
+284	 address signer = ecrecover(preFixedMsgHash, v, r, s);
+285	 require(signer == wetrustSigner, "WeTrust did not authorized this redeem script");
+286	 return mint(tokenId, msg.sender, recipientId, traits, nftType);
+287	 }
+288	 function addRecipient(bytes32 recipientId, string name, string url, address owner) onlyByWeTrustSigner onlyWhenNotPaused recipientDoesNotExists(recipientId) public {
+289	 require(bytes(name).length > 0, "name must not be empty string");
+290	 recipients[recipientId].name = name;
+291	 recipients[recipientId].url = url;
+292	 recipients[recipientId].owner = owner;
+293	 recipients[recipientId].exists = true;
+294	 }
+295	 function addRecipientUpdate(bytes32 recipientId, bytes32 updateId) onlyWhenNotPaused recipientExists(recipientId) onlyByWeTrustOrRecipient(recipientId) public {
+296	 recipientUpdates[recipientId].push(Update(updateId, now));
+297	 emit RecipientUpdate(recipientId, updateId);
+298	 }
+299	 function updateRecipientInfo(bytes32 recipientId, string name, string url, address owner) onlyByWeTrustSigner onlyWhenNotPaused recipientExists(recipientId) public {
+300	 require(bytes(name).length > 0, "name must not be empty string");
+301	 recipients[recipientId].name = name;
+302	 recipients[recipientId].url = url;
+303	 recipients[recipientId].owner = owner;
+304	 }
+305	 function addArtistSignature(uint256 nftId, bytes artistSignature) onlyByWeTrustSigner onlyWhenNotPaused public {
+306	 require(nftArtistSignature[nftId].length == 0, "Artist Signature already exist for this token");
+307	 nftArtistSignature[nftId] = artistSignature;
+308	 }
+309	 function setPaused(bool _paused) onlyByWeTrustManager public {
+310	 paused = _paused;
+311	 }
+312	 function changeWeTrustSigner(address newAddress) onlyWhenNotPaused onlyByWeTrustManager public {
+313	 wetrustSigner = newAddress;
+314	 }
+315	 function getUpdateCount(bytes32 recipientId) view public returns(uint256 count) {
+316	 return recipientUpdates[recipientId].length;
+317	 }
+318	 function createRedeemMessageHash( uint256 tokenId, bytes4 nftType, bytes32 traits, bytes32 recipientId) view public returns(bytes32 msgHash) {
+319	 return keccak256( abi.encodePacked( address(this), tokenId, nftType, traits, recipientId ));
+320	 }
+321	 function determineEdition(uint256 nextNFTcount) pure public returns (uint16 edition) {
+322	 uint256 output;
+323	 uint256 valueWhenXisSixteen = 37601;
+324	 if (nextNFTcount < valueWhenXisSixteen) {
+325	 output = (sqrt(2500 + (600 * (nextNFTcount - 1))) + 50) / 300;
+326	 }
+327	 else {
+328	 output = ((nextNFTcount - valueWhenXisSixteen) / 5000) + 16;
+329	 }
+330	 if (output > 5000) {
+331	 output = 5000;
+332	 }
+333	 edition = uint16(output);
+334	 }
+335	 function setNFTContractInfo(string newHostName, string newName, string newSymbol) onlyByWeTrustManager external {
+336	 hostname = newHostName;
+337	 nftName = newName;
+338	 nftSymbol = newSymbol;
+339	 }
+340	 function sqrt(uint x) pure internal returns (uint y) {
+341	 uint z = (x + 1) / 2;
+342	 y = x;
+343	 while (z < y) {
+344	 y = z;
+345	 z = (x / z + z) / 2;
+346	 }
+347	 }
+348	 function mint(uint256 tokenId, address receiver, bytes32 recipientId, bytes32 traits, bytes4 nftType) recipientExists(recipientId) internal {
+349	 nft[tokenId].owner = receiver;
+350	 nft[tokenId].traits = traits;
+351	 nft[tokenId].recipientId = recipientId;
+352	 nft[tokenId].nftType = nftType;
+353	 nft[tokenId].createdAt = now;
+354	 nft[tokenId].edition = determineEdition(recipients[recipientId].nftCount + 1);
+355	 recipients[recipientId].nftCount++;
+356	 ownerToTokenList[receiver].push(tokenId);
+357	 nftList.push(tokenId);
+358	 emit Transfer(address(0), receiver, tokenId);
+359	 }
+360	 }

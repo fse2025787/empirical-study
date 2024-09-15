@@ -1,0 +1,166 @@
+row number 
+1	   pragma solidity ^0.4.21;
+2	 contract Ownable {
+3	 address public owner;
+4	 event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+5	 constructor() public {
+6	 owner = msg.sender;
+7	 }
+8	 modifier onlyOwner() {
+9	 require(msg.sender == owner);
+10	 _;
+11	 }
+12	 function transferOwnership(address newOwner) public onlyOwner {
+13	 require(newOwner != address(0));
+14	 emit OwnershipTransferred(owner, newOwner);
+15	 owner = newOwner;
+16	 }
+17	 }
+18	 contract Claimable is Ownable {
+19	 address public pendingOwner;
+20	 modifier onlyPendingOwner() {
+21	 require(msg.sender == pendingOwner);
+22	 _;
+23	 }
+24	 function transferOwnership(address newOwner) onlyOwner public {
+25	 pendingOwner = newOwner;
+26	 }
+27	 function claimOwnership() onlyPendingOwner public {
+28	 emit OwnershipTransferred(owner, pendingOwner);
+29	 owner = pendingOwner;
+30	 pendingOwner = address(0);
+31	 }
+32	 }
+33	 contract KYCWhitelist is Claimable {
+34	 mapping(address => bool) public whitelist;
+35	 modifier isWhitelisted(address _beneficiary) {
+36	 require(whitelist[_beneficiary]);
+37	 _;
+38	 }
+39	 function validateWhitelisted(address _beneficiary) internal view {
+40	 require(whitelist[_beneficiary]);
+41	 }
+42	 function addToWhitelist(address _beneficiary) external onlyOwner {
+43	 whitelist[_beneficiary] = true;
+44	 }
+45	 function addManyToWhitelist(address[] _beneficiaries) external onlyOwner {
+46	 for (uint256 i = 0; i < _beneficiaries.length; i++) {
+47	 whitelist[_beneficiaries[i]] = true;
+48	 }
+49	 }
+50	 function removeFromWhitelist(address _beneficiary) external onlyOwner {
+51	 whitelist[_beneficiary] = false;
+52	 }
+53	 }
+54	 contract Pausable is Claimable {
+55	 event Pause();
+56	 event Unpause();
+57	 bool public paused = false;
+58	 modifier whenNotPaused() {
+59	 require(!paused);
+60	 _;
+61	 }
+62	 modifier whenPaused() {
+63	 require(paused);
+64	 _;
+65	 }
+66	 function pause() onlyOwner whenNotPaused public {
+67	 paused = true;
+68	 emit Pause();
+69	 }
+70	 function unpause() onlyOwner whenPaused public {
+71	 paused = false;
+72	 emit Unpause();
+73	 }
+74	 }
+75	 library SafeMath {
+76	 function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+77	 if (a == 0) {
+78	 return 0;
+79	 }
+80	 uint256 c = a * b;
+81	 assert(c / a == b);
+82	 return c;
+83	 }
+84	 function div(uint256 a, uint256 b) internal pure returns (uint256) {
+85	 uint256 c = a / b;
+86	 return c;
+87	 }
+88	 function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+89	 assert(b <= a);
+90	 return a - b;
+91	 }
+92	 function add(uint256 a, uint256 b) internal pure returns (uint256) {
+93	 uint256 c = a + b;
+94	 assert(c >= a);
+95	 return c;
+96	 }
+97	 }
+98	 contract ERC20Basic {
+99	 function totalSupply() public view returns (uint256);
+100	 function balanceOf(address who) public view returns (uint256);
+101	 function transfer(address to, uint256 value) public returns (bool);
+102	 event Transfer(address indexed from, address indexed to, uint256 value);
+103	 }
+104	 contract ERC20 is ERC20Basic {
+105	 function allowance(address owner, address spender) public view returns (uint256);
+106	 function transferFrom(address from, address to, uint256 value) public returns (bool);
+107	 function approve(address spender, uint256 value) public returns (bool);
+108	 event Approval(address indexed owner, address indexed spender, uint256 value);
+109	 }
+110	 contract PrivatePreSale is Claimable, KYCWhitelist, Pausable {
+111	 using SafeMath for uint256;
+112	 address public constant FUNDS_WALLET = 0xDc17D222Bc3f28ecE7FCef42EDe0037C739cf28f;
+113	 address public constant TOKEN_WALLET = 0x1EF91464240BB6E0FdE7a73E0a6f3843D3E07601;
+114	 address public constant TOKEN_ADDRESS = 0x14121EEe7995FFDF47ED23cfFD0B5da49cbD6EB3;
+115	 address public constant LOCKUP_WALLET = 0xaB18B66F75D13a38158f9946662646105C3bC45D;
+116	 ERC20 public constant TOKEN = ERC20(TOKEN_ADDRESS);
+117	 uint256 public constant TOKENS_PER_ETH = 4970;
+118	 uint256 public constant MAX_TOKENS = 20000000 * (10**18) - 119545639989300000000000;
+119	 uint256 public constant MIN_TOKEN_INVEST = 4970 * (10**18);
+120	 uint256 public START_DATE = 1531915200;
+121	 uint256 public weiRaised;
+122	 uint256 public tokensIssued;
+123	 bool public closed;
+124	 event TokenPurchase(address indexed purchaser, address indexed beneficiary, uint256 value, uint256 amount);
+125	 constructor() public {
+126	 require(TOKENS_PER_ETH > 0);
+127	 require(FUNDS_WALLET != address(0));
+128	 require(TOKEN_WALLET != address(0));
+129	 require(TOKEN_ADDRESS != address(0));
+130	 require(MAX_TOKENS > 0);
+131	 require(MIN_TOKEN_INVEST >= 0);
+132	 }
+133	 function capReached() public view returns (bool) {
+134	 return tokensIssued >= MAX_TOKENS;
+135	 }
+136	 function closeSale() public onlyOwner {
+137	 require(!closed);
+138	 closed = true;
+139	 }
+140	 function getTokenAmount(uint256 _weiAmount) public pure returns (uint256) {
+141	 return _weiAmount.mul(TOKENS_PER_ETH);
+142	 }
+143	 function () external payable {
+144	 buyTokens(msg.sender);
+145	 }
+146	 function buyTokens(address _beneficiary) internal whenNotPaused {
+147	 uint256 weiAmount = msg.value;
+148	 uint256 tokenAmount = getTokenAmount(weiAmount);
+149	 preValidateChecks(_beneficiary, weiAmount, tokenAmount);
+150	 tokensIssued = tokensIssued.add(tokenAmount);
+151	 weiRaised = weiRaised.add(weiAmount);
+152	 TOKEN.transferFrom(TOKEN_WALLET, LOCKUP_WALLET, tokenAmount);
+153	 FUNDS_WALLET.transfer(msg.value);
+154	 emit TokenPurchase(msg.sender, _beneficiary, weiAmount, tokenAmount);
+155	 }
+156	 function preValidateChecks(address _beneficiary, uint256 _weiAmount, uint256 _tokenAmount) internal view {
+157	 require(_beneficiary != address(0));
+158	 require(_weiAmount != 0);
+159	 require(now >= START_DATE);
+160	 require(!closed);
+161	 validateWhitelisted(_beneficiary);
+162	 require(_tokenAmount >= MIN_TOKEN_INVEST);
+163	 require(tokensIssued.add(_tokenAmount) <= MAX_TOKENS);
+164	 }
+165	 }

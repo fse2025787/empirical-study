@@ -1,0 +1,102 @@
+row number 
+1	                 pragma solidity >=0.6.0 <0.8.0;
+2	 interface IERC20 {
+3	 function totalSupply() external view returns (uint256);
+4	 function balanceOf(address account) external view returns (uint256);
+5	 function transfer(address recipient, uint256 amount) external returns (bool);
+6	 function allowance(address owner, address spender) external view returns (uint256);
+7	 function approve(address spender, uint256 amount) external returns (bool);
+8	 function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+9	 event Transfer(address indexed from, address indexed to, uint256 value);
+10	 event Approval(address indexed owner, address indexed spender, uint256 value);
+11	 }
+12	 pragma solidity ^0.6.0;
+13	 library MerkleProof {
+14	 function verify(bytes32[] memory proof, bytes32 root, bytes32 leaf) internal pure returns (bool) {
+15	 bytes32 computedHash = leaf;
+16	 for (uint256 i = 0; i < proof.length; i++) {
+17	 bytes32 proofElement = proof[i];
+18	 if (computedHash <= proofElement) {
+19	 computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
+20	 }
+21	 else {
+22	 computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
+23	 }
+24	 }
+25	 return computedHash == root;
+26	 }
+27	 }
+28	 pragma solidity >=0.5.0;
+29	 interface IMerkleDistributor {
+30	 function token() external view returns (address);
+31	 function merkleRoot() external view returns (bytes32);
+32	 function isClaimed(uint256 index) external view returns (bool);
+33	 function claim(uint256 index, address account, uint256 amount, bytes32[] calldata merkleProof) external;
+34	 event Claimed(uint256 index, address account, uint256 amount);
+35	 }
+36	 pragma solidity =0.6.12;
+37	 contract MerkleDistributor is IMerkleDistributor {
+38	 address public immutable override token;
+39	 bytes32 public immutable override merkleRoot;
+40	 mapping(uint256 => uint256) private claimedBitMap;
+41	 uint256 public distributeDate;
+42	 address public governance;
+43	 address public pendingGovernance;
+44	 bool public pause;
+45	 event PendingGovernanceUpdated( address pendingGovernance );
+46	 event GovernanceUpdated( address governance );
+47	 event RewardClaimed(address indexed user, uint256 amount);
+48	 constructor(address token_, bytes32 merkleRoot_, uint256 distributeDate_, address governance_) public {
+49	 require(governance_ != address(0), "MerkleDistributor: governance address cannot be 0x0");
+50	 governance = governance_;
+51	 pause = true;
+52	 token = token_;
+53	 merkleRoot = merkleRoot_;
+54	 distributeDate = distributeDate_;
+55	 }
+56	 modifier onlyGovernance() {
+57	 require(msg.sender == governance, "MerkleDistributor: only governance");
+58	 _;
+59	 }
+60	 function setPendingGovernance(address _pendingGovernance) external onlyGovernance {
+61	 require(_pendingGovernance != address(0), "MerkleDistributor: pending governance address cannot be 0x0");
+62	 pendingGovernance = _pendingGovernance;
+63	 emit PendingGovernanceUpdated(_pendingGovernance);
+64	 }
+65	 function acceptGovernance() external {
+66	 require(msg.sender == pendingGovernance, "MerkleDistributor: only pending governance");
+67	 address _pendingGovernance = pendingGovernance;
+68	 governance = _pendingGovernance;
+69	 emit GovernanceUpdated(_pendingGovernance);
+70	 }
+71	 function setPause(bool _pause) external onlyGovernance {
+72	 pause = _pause;
+73	 }
+74	 function emergencyWithdraw(address transferTo) external onlyGovernance {
+75	 require(pause == true, "MerkleDistributor: not paused");
+76	 uint256 rewardAmount = IERC20(token).balanceOf(address(this));
+77	 IERC20(token).transfer(transferTo, rewardAmount);
+78	 }
+79	 function isClaimed(uint256 index) public view override returns (bool) {
+80	 uint256 claimedWordIndex = index / 256;
+81	 uint256 claimedBitIndex = index % 256;
+82	 uint256 claimedWord = claimedBitMap[claimedWordIndex];
+83	 uint256 mask = (1 << claimedBitIndex);
+84	 return claimedWord & mask == mask;
+85	 }
+86	 function _setClaimed(uint256 index) private {
+87	 uint256 claimedWordIndex = index / 256;
+88	 uint256 claimedBitIndex = index % 256;
+89	 claimedBitMap[claimedWordIndex] = claimedBitMap[claimedWordIndex] | (1 << claimedBitIndex);
+90	 }
+91	 function claim(uint256 index, address account, uint256 amount, bytes32[] calldata merkleProof) external override {
+92	 require(!isClaimed(index), 'MerkleDistributor: Drop already claimed.');
+93	 require( pause == false, "MerkleDistributor: withdraw paused" );
+94	 require( block.timestamp >= distributeDate, "MerkleDistributor: not start yet" );
+95	 bytes32 node = keccak256(abi.encodePacked(index, account, amount));
+96	 require(MerkleProof.verify(merkleProof, merkleRoot, node), 'MerkleDistributor: Invalid proof.');
+97	 _setClaimed(index);
+98	 require(IERC20(token).transfer(account, amount), 'MerkleDistributor: Transfer failed.');
+99	 emit Claimed(index, account, amount);
+100	 }
+101	 }
