@@ -1,0 +1,567 @@
+// SPDX-License-Identifier: BUSL-1.1
+
+
+// 
+pragma solidity 0.8.6;
+
+
+
+
+
+
+
+
+contract LadleStorage {
+    event JoinAdded(bytes6 indexed assetId, address indexed join);
+    event PoolAdded(bytes6 indexed seriesId, address indexed pool);
+    event ModuleAdded(address indexed module, bool indexed set);
+    event IntegrationAdded(address indexed integration, bool indexed set);
+    event TokenAdded(address indexed token, bool indexed set);
+    event FeeSet(uint256 fee);
+
+    ICauldron public immutable cauldron;
+    Router public immutable router;
+    IWETH9 public immutable weth;
+    uint256 public borrowingFee;
+    bytes12 cachedVaultId;
+
+    mapping (bytes6 => IJoin)                   public joins;            // Join contracts available to manage assets. The same Join can serve multiple assets (ETH-A, ETH-B, etc...)
+    mapping (bytes6 => IPool)                   public pools;            // Pool contracts available to manage series. 12 bytes still free.
+    mapping (address => bool)                   public modules;          // Trusted contracts to delegatecall anything on.
+    mapping (address => bool)                   public integrations;     // Trusted contracts to call anything on.
+    mapping (address => bool)                   public tokens;           // Trusted contracts to call `transfer` or `permit` on.
+
+    constructor (ICauldron cauldron_, IWETH9 weth_) {
+        cauldron = cauldron_;
+        router = new Router();
+        weth = weth_;
+    }
+}
+
+// 
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC20 standard as defined in the EIP.
+ */
+interface IERC20 {
+    /**
+     * @dev Returns the amount of tokens in existence.
+     */
+    function totalSupply() external view returns (uint256);
+
+    /**
+     * @dev Returns the amount of tokens owned by `account`.
+     */
+    function balanceOf(address account) external view returns (uint256);
+
+    /**
+     * @dev Moves `amount` tokens from the caller's account to `recipient`.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Returns the remaining number of tokens that `spender` will be
+     * allowed to spend on behalf of `owner` through {transferFrom}. This is
+     * zero by default.
+     *
+     * This value changes when {approve} or {transferFrom} are called.
+     */
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * IMPORTANT: Beware that changing an allowance with this method brings the risk
+     * that someone may use both the old and the new allowance by unfortunate
+     * transaction ordering. One possible solution to mitigate this race
+     * condition is to first reduce the spender's allowance to 0 and set the
+     * desired value afterwards:
+     * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+     *
+     * Emits an {Approval} event.
+     */
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Moves `amount` tokens from `sender` to `recipient` using the
+     * allowance mechanism. `amount` is then deducted from the caller's
+     * allowance.
+     *
+     * Returns a boolean value indicating whether the operation succeeded.
+     *
+     * Emits a {Transfer} event.
+     */
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    /**
+     * @dev Emitted when `value` tokens are moved from one account (`from`) to
+     * another (`to`).
+     *
+     * Note that `value` may be zero.
+     */
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    /**
+     * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+     * a call to {approve}. `value` is the new allowance.
+     */
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+// 
+// Code adapted from https://github.com/OpenZeppelin/openzeppelin-contracts/pull/2237/
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC2612 standard as defined in the EIP.
+ *
+ * Adds the {permit} method, which can be used to change one's
+ * {IERC20-allowance} without having to send a transaction, by signing a
+ * message. This allows users to spend tokens without having to hold Ether.
+ *
+ * See https://eips.ethereum.org/EIPS/eip-2612.
+ */
+interface IERC2612 {
+    /**
+     * @dev Sets `amount` as the allowance of `spender` over `owner`'s tokens,
+     * given `owner`'s signed approval.
+     *
+     * IMPORTANT: The same issues {IERC20-approve} has related to transaction
+     * ordering also apply here.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `owner` cannot be the zero address.
+     * - `spender` cannot be the zero address.
+     * - `deadline` must be a timestamp in the future.
+     * - `v`, `r` and `s` must be a valid `secp256k1` signature from `owner`
+     * over the EIP712-formatted function arguments.
+     * - the signature must use ``owner``'s current nonce (see {nonces}).
+     *
+     * For more information on the signature format, see the
+     * https://eips.ethereum.org/EIPS/eip-2612#specification[relevant EIP
+     * section].
+     */
+    function permit(address owner, address spender, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+
+    /**
+     * @dev Returns the current ERC2612 nonce for `owner`. This value must be
+     * included whenever a signature is generated for {permit}.
+     *
+     * Every successful call to {permit} increases ``owner``'s nonce by one. This
+     * prevents a signature from being used multiple times.
+     */
+    function nonces(address owner) external view returns (uint256);
+}
+// 
+pragma solidity 0.8.6;
+
+
+
+
+
+
+contract ConvexModule is LadleStorage {
+    constructor(ICauldron cauldron_, IWETH9 weth_) LadleStorage(cauldron_, weth_) {}
+
+    
+    
+    
+    function addVault(IConvexJoin convexJoin, bytes12 vaultId) external {
+        if (vaultId == bytes12(0)) {
+            convexJoin.addVault(cachedVaultId);
+        } else {
+            convexJoin.addVault(vaultId);
+        }
+    }
+
+    
+    
+    
+    
+    function removeVault(
+        IConvexJoin convexJoin,
+        bytes12 vaultId,
+        address account
+    ) external {
+        if (vaultId == bytes12(0)) {
+            convexJoin.removeVault(cachedVaultId, account);
+        } else {
+            convexJoin.removeVault(vaultId, account);
+        }
+    }
+}
+
+// 
+pragma solidity ^0.8.0;
+
+
+
+
+interface ICauldron {
+    
+    function lendingOracles(bytes6 baseId) external view returns (IOracle);
+
+    
+    function vaults(bytes12 vault)
+        external
+        view
+        returns (DataTypes.Vault memory);
+
+    
+    function series(bytes6 seriesId)
+        external
+        view
+        returns (DataTypes.Series memory);
+
+    
+    function assets(bytes6 assetsId) external view returns (address);
+
+    
+    function balances(bytes12 vault)
+        external
+        view
+        returns (DataTypes.Balances memory);
+
+    
+    function debt(bytes6 baseId, bytes6 ilkId)
+        external
+        view
+        returns (DataTypes.Debt memory);
+
+    // @dev Spot price oracle addresses and collateralization ratios
+    function spotOracles(bytes6 baseId, bytes6 ilkId)
+        external
+        returns (DataTypes.SpotOracle memory);
+
+    
+    function build(
+        address owner,
+        bytes12 vaultId,
+        bytes6 seriesId,
+        bytes6 ilkId
+    ) external returns (DataTypes.Vault memory);
+
+    
+    function destroy(bytes12 vault) external;
+
+    
+    function tweak(
+        bytes12 vaultId,
+        bytes6 seriesId,
+        bytes6 ilkId
+    ) external returns (DataTypes.Vault memory);
+
+    
+    function give(bytes12 vaultId, address receiver)
+        external
+        returns (DataTypes.Vault memory);
+
+    
+    function stir(
+        bytes12 from,
+        bytes12 to,
+        uint128 ink,
+        uint128 art
+    ) external returns (DataTypes.Balances memory, DataTypes.Balances memory);
+
+    
+    function pour(
+        bytes12 vaultId,
+        int128 ink,
+        int128 art
+    ) external returns (DataTypes.Balances memory);
+
+    
+    /// The module calling this function also needs to buy underlying in the pool for the new series, and sell it in pool for the old series.
+    function roll(
+        bytes12 vaultId,
+        bytes6 seriesId,
+        int128 art
+    ) external returns (DataTypes.Vault memory, DataTypes.Balances memory);
+
+    
+    function slurp(
+        bytes12 vaultId,
+        uint128 ink,
+        uint128 art
+    ) external returns (DataTypes.Balances memory);
+
+    // ==== Helpers ====
+
+    
+    
+    function debtFromBase(bytes6 seriesId, uint128 base)
+        external
+        returns (uint128 art);
+
+    
+    function debtToBase(bytes6 seriesId, uint128 art)
+        external
+        returns (uint128 base);
+
+    // ==== Accounting ====
+
+    
+    function mature(bytes6 seriesId) external;
+
+    
+    function accrual(bytes6 seriesId) external returns (uint256);
+
+    
+    function level(bytes12 vaultId) external returns (int256);
+}
+
+// 
+pragma solidity 0.8.6;
+
+interface IConvexJoin {
+    function addVault(bytes12 vault_) external;
+
+    function removeVault(bytes12 vaultId_, address account_) external;
+}
+
+// 
+pragma solidity ^0.8.0;
+
+
+
+interface IFYToken is IERC20 {
+    
+    function underlying() external view returns (address);
+
+    
+    function join() external view returns (IJoin);
+
+    
+    function maturity() external view returns (uint256);
+
+    
+    function mature() external;
+
+    
+    function mintWithUnderlying(address to, uint256 amount) external;
+
+    
+    function redeem(address to, uint256 amount) external returns (uint256);
+
+    
+    /// This function can only be called by other Yield contracts, not users directly.
+    
+    
+    function mint(address to, uint256 fyTokenAmount) external;
+
+    
+    /// This function can only be called by other Yield contracts, not users directly.
+    
+    
+    function burn(address from, uint256 fyTokenAmount) external;
+}
+
+// 
+pragma solidity ^0.8.0;
+
+interface IOracle {
+    /**
+     * @notice Doesn't refresh the price, but returns the latest value available without doing any transactional operations:
+     * @return value in wei
+     */
+    function peek(
+        bytes32 base,
+        bytes32 quote,
+        uint256 amount
+    ) external view returns (uint256 value, uint256 updateTime);
+
+    /**
+     * @notice Does whatever work or queries will yield the most up-to-date price, and returns it.
+     * @return value in wei
+     */
+    function get(
+        bytes32 base,
+        bytes32 quote,
+        uint256 amount
+    ) external returns (uint256 value, uint256 updateTime);
+}
+
+// 
+pragma solidity ^0.8.0;
+
+
+
+library DataTypes {
+    struct Series {
+        IFYToken fyToken; // Redeemable token for the series.
+        bytes6 baseId; // Asset received on redemption.
+        uint32 maturity; // Unix time at which redemption becomes possible.
+        // bytes2 free
+    }
+
+    struct Debt {
+        uint96 max; // Maximum debt accepted for a given underlying, across all series
+        uint24 min; // Minimum debt accepted for a given underlying, across all series
+        uint8 dec; // Multiplying factor (10**dec) for max and min
+        uint128 sum; // Current debt for a given underlying, across all series
+    }
+
+    struct SpotOracle {
+        IOracle oracle; // Address for the spot price oracle
+        uint32 ratio; // Collateralization ratio to multiply the price for
+        // bytes8 free
+    }
+
+    struct Vault {
+        address owner;
+        bytes6 seriesId; // Each vault is related to only one series, which also determines the underlying.
+        bytes6 ilkId; // Asset accepted as collateral
+    }
+
+    struct Balances {
+        uint128 art; // Debt amount
+        uint128 ink; // Collateral amount
+    }
+}
+
+// 
+pragma solidity ^0.8.0;
+
+
+interface IJoin {
+    
+    function asset() external view returns (address);
+
+    
+    function join(address user, uint128 wad) external returns (uint128);
+
+    
+    function exit(address user, uint128 wad) external returns (uint128);
+}
+
+// 
+pragma solidity >= 0.8.0;
+
+
+
+
+
+interface IPool is IERC20, IERC2612 {
+    function ts() external view returns(int128);
+    function g1() external view returns(int128);
+    function g2() external view returns(int128);
+    function maturity() external view returns(uint32);
+    function scaleFactor() external view returns(uint96);
+    function getCache() external view returns (uint112, uint112, uint32);
+    function base() external view returns(IERC20);
+    function fyToken() external view returns(IFYToken);
+    function getBaseBalance() external view returns(uint112);
+    function getFYTokenBalance() external view returns(uint112);
+    function retrieveBase(address to) external returns(uint128 retrieved);
+    function retrieveFYToken(address to) external returns(uint128 retrieved);
+    function sellBase(address to, uint128 min) external returns(uint128);
+    function buyBase(address to, uint128 baseOut, uint128 max) external returns(uint128);
+    function sellFYToken(address to, uint128 min) external returns(uint128);
+    function buyFYToken(address to, uint128 fyTokenOut, uint128 max) external returns(uint128);
+    function sellBasePreview(uint128 baseIn) external view returns(uint128);
+    function buyBasePreview(uint128 baseOut) external view returns(uint128);
+    function sellFYTokenPreview(uint128 fyTokenIn) external view returns(uint128);
+    function buyFYTokenPreview(uint128 fyTokenOut) external view returns(uint128);
+    function mint(address to, address remainder, uint256 minRatio, uint256 maxRatio) external returns (uint256, uint256, uint256);
+    function mintWithBase(address to, address remainder, uint256 fyTokenToBuy, uint256 minRatio, uint256 maxRatio) external returns (uint256, uint256, uint256);
+    function burn(address baseTo, address fyTokenTo, uint256 minRatio, uint256 maxRatio) external returns (uint256, uint256, uint256);
+    function burnForBase(address to, uint256 minRatio, uint256 maxRatio) external returns (uint256, uint256);
+    function cumulativeBalancesRatio() external view returns (uint256);
+}
+
+// 
+
+
+pragma solidity ^0.8.0;
+
+
+interface IWETH9 is IERC20 {
+    event  Deposit(address indexed dst, uint wad);
+    event  Withdrawal(address indexed src, uint wad);
+
+    function deposit() external payable;
+    function withdraw(uint wad) external;
+}
+
+// 
+pragma solidity 0.8.6;
+
+
+
+
+
+/// given to the original caller are stripped from the call.
+/// This is useful when implementing generic call routing functions on contracts
+/// that might have ERC20 approvals or AccessControl authorizations.
+contract Router {
+    using IsContract for address;
+
+    address immutable public owner;
+
+    constructor () {
+        owner = msg.sender;
+    }
+
+    
+    function route(address target, bytes calldata data)
+        external payable
+        returns (bytes memory result)
+    {
+        require(msg.sender == owner, "Only owner");
+        require(target.isContract(), "Target is not a contract");
+        bool success;
+        (success, result) = target.call(data);
+        if (!success) revert(RevertMsgExtractor.getRevertMsg(result));
+    }
+}
+
+// 
+// Taken from https://github.com/sushiswap/BoringSolidity/blob/441e51c0544cf2451e6116fe00515e71d7c42e2c/contracts/BoringBatchable.sol
+
+pragma solidity >=0.6.0;
+
+
+library RevertMsgExtractor {
+    
+    /// If the returned data is malformed or not correctly abi encoded then this call can fail itself.
+    function getRevertMsg(bytes memory returnData)
+        internal pure
+        returns (string memory)
+    {
+        // If the _res length is less than 68, then the transaction failed silently (without a revert message)
+        if (returnData.length < 68) return "Transaction reverted silently";
+
+        assembly {
+            // Slice the sighash.
+            returnData := add(returnData, 0x04)
+        }
+        return abi.decode(returnData, (string)); // All that remains is the revert string
+    }
+}
+
+// 
+// Taken from Address.sol from OpenZeppelin.
+pragma solidity ^0.8.0;
+
+
+library IsContract {
+  
+  function isContract(address account) internal view returns (bool) {
+      // This method relies on extcodesize, which returns 0 for contracts in
+      // construction, since the code is only stored at the end of the
+      // constructor execution.
+      return account.code.length > 0;
+  }
+}

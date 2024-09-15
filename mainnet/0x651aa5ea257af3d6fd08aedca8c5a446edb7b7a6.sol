@@ -1,0 +1,776 @@
+
+/*
+
+  Copyright 2018 Ethfinex Inc
+
+  This is a derivative work based on software developed by ZeroEx Intl
+  This and the original are licensed under Apache License, Version 2.0
+
+  Original attribution:
+
+  Copyright 2017 ZeroEx Intl.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+*/
+
+pragma solidity 0.4.19;
+
+interface Token {
+
+    
+    
+    
+    
+    function transfer(address _to, uint _value) public returns (bool);
+
+    
+    
+    
+    
+    
+    function transferFrom(address _from, address _to, uint _value) public returns (bool);
+
+    
+    
+    
+    
+    function approve(address _spender, uint _value) public returns (bool);
+
+    
+    
+    function balanceOf(address _owner) public view returns (uint);
+
+    
+    
+    
+    function allowance(address _owner, address _spender) public view returns (uint);
+
+    event Transfer(address indexed _from, address indexed _to, uint _value); // solhint-disable-line
+    event Approval(address indexed _owner, address indexed _spender, uint _value);
+}
+
+
+//solhint-disable-next-line
+
+
+contract TokenTransferProxy {
+
+    modifier onlyExchange {
+        require(msg.sender == exchangeAddress);
+        _;
+    }
+
+    address public exchangeAddress;
+
+
+    event LogAuthorizedAddressAdded(address indexed target, address indexed caller);
+
+    function TokenTransferProxy() public {
+        setExchange(msg.sender);
+    }
+    /*
+     * Public functions
+     */
+
+    
+    
+    
+    
+    
+    
+    function transferFrom(
+        address token,
+        address from,
+        address to,
+        uint value)
+        public
+        onlyExchange
+        returns (bool)
+    {
+        return Token(token).transferFrom(from, to, value);
+    }
+
+    
+    
+    function setExchange(address _exchange) internal {
+        require(exchangeAddress == address(0));
+        exchangeAddress = _exchange;
+    }
+}
+
+contract SafeMath {
+    function safeMul(uint a, uint b)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint c = a * b;
+        assert(a == 0 || c / a == b);
+        return c;
+    }
+
+    function safeDiv(uint a, uint b)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint c = a / b;
+        return c;
+    }
+
+    function safeSub(uint a, uint b)
+        internal
+        pure
+        returns (uint256)
+    {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function safeAdd(uint a, uint b)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint c = a + b;
+        assert(c >= a);
+        return c;
+    }
+
+    function max64(uint64 a, uint64 b)
+        internal
+        pure
+        returns (uint256)
+    {
+        return a >= b ? a : b;
+    }
+
+    function min64(uint64 a, uint64 b)
+        internal
+        pure
+        returns (uint256)
+    {
+        return a < b ? a : b;
+    }
+
+    function max256(uint256 a, uint256 b)
+        internal
+        pure
+        returns (uint256)
+    {
+        return a >= b ? a : b;
+    }
+
+    function min256(uint256 a, uint256 b)
+        internal
+        pure
+        returns (uint256)
+    {
+        return a < b ? a : b;
+    }
+}
+
+
+
+
+// Modified by Ahmed Ali <<a href=/cdn-cgi/l/email-protection class=__cf_email__ data-cfemail=85c4ede8e0e1c5e7ecf1e3ecebe0fdabe6eae8>[email&#160;protected]</a>>
+contract Exchange is SafeMath {
+
+    // Error Codes
+    enum Errors {
+        ORDER_EXPIRED,                    // Order has already expired
+        ORDER_FULLY_FILLED_OR_CANCELLED,  // Order has already been fully filled or cancelled
+        ROUNDING_ERROR_TOO_LARGE,         // Rounding error too large
+        INSUFFICIENT_BALANCE_OR_ALLOWANCE // Insufficient balance or allowance for token transfer
+    }
+
+    string constant public VERSION = "ETHFX.0.0";
+    uint16 constant public EXTERNAL_QUERY_GAS_LIMIT = 4999;    // Changes to state require at least 5000 gas
+    uint constant public ETHFINEX_FEE = 400; // Amount - (Amount/fee) is what gets send to user
+
+    // address public ZRX_TOKEN_CONTRACT;
+    address public TOKEN_TRANSFER_PROXY_CONTRACT;
+
+    // Mappings of orderHash => amounts of takerTokenAmount filled or cancelled.
+    mapping (bytes32 => uint) public filled;
+    mapping (bytes32 => uint) public cancelled;
+
+    event LogFill(
+        address indexed maker,
+        address taker,
+        address indexed feeRecipient,
+        address makerToken,
+        address takerToken,
+        uint filledMakerTokenAmount,
+        uint filledTakerTokenAmount,
+        uint paidMakerFee,
+        uint paidTakerFee,
+        bytes32 indexed tokens, // keccak256(makerToken, takerToken), allows subscribing to a token pair
+        bytes32 orderHash
+    );
+
+    event LogCancel(
+        address indexed maker,
+        address indexed feeRecipient,
+        address makerToken,
+        address takerToken,
+        uint cancelledMakerTokenAmount,
+        uint cancelledTakerTokenAmount,
+        bytes32 indexed tokens,
+        bytes32 orderHash
+    );
+
+    event LogError(uint8 indexed errorId, bytes32 indexed orderHash);
+
+    struct Order {
+        address maker;
+        address taker;
+        address makerToken;
+        address takerToken;
+        address feeRecipient;
+        uint makerTokenAmount;
+        uint takerTokenAmount;
+        uint makerFee;
+        uint takerFee;
+        uint expirationTimestampInSec;
+        bytes32 orderHash;
+    }
+
+    // MODIFIED CODE, constructor changed
+    function Exchange() public {
+        // ZRX_TOKEN_CONTRACT = _zrxToken;
+        TOKEN_TRANSFER_PROXY_CONTRACT = address(new TokenTransferProxy());
+    }
+
+    /*
+    * Core exchange functions
+    */
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    function fillOrder(
+          address[5] orderAddresses,
+          uint[6] orderValues,
+          uint fillTakerTokenAmount,
+          bool shouldThrowOnInsufficientBalanceOrAllowance,
+          uint8 v,
+          bytes32 r,
+          bytes32 s)
+          public
+          returns (uint filledTakerTokenAmount)
+    {
+        Order memory order = Order({
+            maker: orderAddresses[0],
+            taker: orderAddresses[1],
+            makerToken: orderAddresses[2],
+            takerToken: orderAddresses[3],
+            feeRecipient: orderAddresses[4],
+            makerTokenAmount: orderValues[0],
+            takerTokenAmount: orderValues[1],
+            makerFee: orderValues[2],
+            takerFee: orderValues[3],
+            expirationTimestampInSec: orderValues[4],
+            orderHash: getOrderHash(orderAddresses, orderValues)
+        });
+
+        require(order.taker == address(0) || order.taker == msg.sender);
+        require(order.makerTokenAmount > 0 && order.takerTokenAmount > 0 && fillTakerTokenAmount > 0);
+        require(isValidSignature(
+            order.maker,
+            order.orderHash,
+            v,
+            r,
+            s
+        ));
+
+        if (block.timestamp >= order.expirationTimestampInSec) {
+            LogError(uint8(Errors.ORDER_EXPIRED), order.orderHash);
+            return 0;
+        }
+
+        uint remainingTakerTokenAmount = safeSub(order.takerTokenAmount, getUnavailableTakerTokenAmount(order.orderHash));
+        filledTakerTokenAmount = min256(fillTakerTokenAmount, remainingTakerTokenAmount);
+        if (filledTakerTokenAmount == 0) {
+            LogError(uint8(Errors.ORDER_FULLY_FILLED_OR_CANCELLED), order.orderHash);
+            return 0;
+        }
+
+        if (isRoundingError(filledTakerTokenAmount, order.takerTokenAmount, order.makerTokenAmount)) {
+            LogError(uint8(Errors.ROUNDING_ERROR_TOO_LARGE), order.orderHash);
+            return 0;
+        }
+
+        if (!shouldThrowOnInsufficientBalanceOrAllowance && !isTransferable(order, filledTakerTokenAmount)) {
+            LogError(uint8(Errors.INSUFFICIENT_BALANCE_OR_ALLOWANCE), order.orderHash);
+            return 0;
+        }
+
+        /////////////// modified code /////////////////
+        uint filledMakerTokenAmount = getPartialAmount(filledTakerTokenAmount, order.takerTokenAmount, order.makerTokenAmount);
+        ///////////// modified code ///////////
+
+        uint paidMakerFee;
+        uint paidTakerFee;
+        filled[order.orderHash] = safeAdd(filled[order.orderHash], filledTakerTokenAmount);
+        require(transferViaTokenTransferProxy(
+            order.makerToken,
+            order.maker,
+            msg.sender,
+            filledMakerTokenAmount
+        ));
+        require(transferViaTokenTransferProxy(
+            order.takerToken,
+            msg.sender,
+            order.maker,
+            filledTakerTokenAmount - safeDiv(filledTakerTokenAmount, ETHFINEX_FEE)
+        ));
+        // if (order.feeRecipient != address(0)) {
+        //     if (order.makerFee > 0) {
+        //         paidMakerFee = getPartialAmount(filledTakerTokenAmount, order.takerTokenAmount, order.makerFee);
+        //         require(transferViaTokenTransferProxy(
+        //             ZRX_TOKEN_CONTRACT,
+        //             order.maker,
+        //             order.feeRecipient,
+        //             paidMakerFee
+        //         ));
+        //     }
+        //     if (order.takerFee > 0) {
+        //         paidTakerFee = getPartialAmount(filledTakerTokenAmount, order.takerTokenAmount, order.takerFee);
+        //         require(transferViaTokenTransferProxy(
+        //             ZRX_TOKEN_CONTRACT,
+        //             msg.sender,
+        //             order.feeRecipient,
+        //             paidTakerFee
+        //         ));
+        //     }
+        // }
+
+        LogFill(
+            order.maker,
+            msg.sender,
+            order.feeRecipient,
+            order.makerToken,
+            order.takerToken,
+            filledMakerTokenAmount,
+            filledTakerTokenAmount,
+            paidMakerFee,
+            paidTakerFee,
+            keccak256(order.makerToken, order.takerToken),
+            order.orderHash
+        );
+        return filledTakerTokenAmount;
+    }
+
+    
+    
+    
+    
+    
+    // function cancelOrder(
+    //     address[5] orderAddresses,
+    //     uint[6] orderValues,
+    //     uint cancelTakerTokenAmount)
+    //     public
+    //     returns (uint)
+    // {
+    //     Order memory order = Order({
+    //         maker: orderAddresses[0],
+    //         taker: orderAddresses[1],
+    //         makerToken: orderAddresses[2],
+    //         takerToken: orderAddresses[3],
+    //         feeRecipient: orderAddresses[4],
+    //         makerTokenAmount: orderValues[0],
+    //         takerTokenAmount: orderValues[1],
+    //         makerFee: orderValues[2],
+    //         takerFee: orderValues[3],
+    //         expirationTimestampInSec: orderValues[4],
+    //         orderHash: getOrderHash(orderAddresses, orderValues)
+    //     });
+
+    //     require(order.maker == msg.sender);
+    //     require(order.makerTokenAmount > 0 && order.takerTokenAmount > 0 && cancelTakerTokenAmount > 0);
+
+    //     if (block.timestamp >= order.expirationTimestampInSec) {
+    //         LogError(uint8(Errors.ORDER_EXPIRED), order.orderHash);
+    //         return 0;
+    //     }
+
+    //     uint remainingTakerTokenAmount = safeSub(order.takerTokenAmount, getUnavailableTakerTokenAmount(order.orderHash));
+    //     uint cancelledTakerTokenAmount = min256(cancelTakerTokenAmount, remainingTakerTokenAmount);
+    //     if (cancelledTakerTokenAmount == 0) {
+    //         LogError(uint8(Errors.ORDER_FULLY_FILLED_OR_CANCELLED), order.orderHash);
+    //         return 0;
+    //     }
+
+    //     cancelled[order.orderHash] = safeAdd(cancelled[order.orderHash], cancelledTakerTokenAmount);
+
+    //     LogCancel(
+    //         order.maker,
+    //         order.feeRecipient,
+    //         order.makerToken,
+    //         order.takerToken,
+    //         getPartialAmount(cancelledTakerTokenAmount, order.takerTokenAmount, order.makerTokenAmount),
+    //         cancelledTakerTokenAmount,
+    //         keccak256(order.makerToken, order.takerToken),
+    //         order.orderHash
+    //     );
+    //     return cancelledTakerTokenAmount;
+    // }
+
+    /*
+    * Wrapper functions
+    */
+
+    
+    
+    
+    
+    
+    
+    
+    function fillOrKillOrder(
+        address[5] orderAddresses,
+        uint[6] orderValues,
+        uint fillTakerTokenAmount,
+        uint8 v,
+        bytes32 r,
+        bytes32 s)
+        public
+    {
+        require(fillOrder(
+            orderAddresses,
+            orderValues,
+            fillTakerTokenAmount,
+            false,
+            v,
+            r,
+            s
+        ) == fillTakerTokenAmount);
+    }
+
+    
+    
+    
+    
+    
+    
+    
+    
+    function batchFillOrders(
+        address[5][] orderAddresses,
+        uint[6][] orderValues,
+        uint[] fillTakerTokenAmounts,
+        bool shouldThrowOnInsufficientBalanceOrAllowance,
+        uint8[] v,
+        bytes32[] r,
+        bytes32[] s)
+        public
+    {
+        for (uint i = 0; i < orderAddresses.length; i++) {
+            fillOrder(
+                orderAddresses[i],
+                orderValues[i],
+                fillTakerTokenAmounts[i],
+                shouldThrowOnInsufficientBalanceOrAllowance,
+                v[i],
+                r[i],
+                s[i]
+            );
+        }
+    }
+
+    
+    
+    
+    
+    
+    
+    
+    function batchFillOrKillOrders(
+        address[5][] orderAddresses,
+        uint[6][] orderValues,
+        uint[] fillTakerTokenAmounts,
+        uint8[] v,
+        bytes32[] r,
+        bytes32[] s)
+        public
+    {
+        for (uint i = 0; i < orderAddresses.length; i++) {
+            fillOrKillOrder(
+                orderAddresses[i],
+                orderValues[i],
+                fillTakerTokenAmounts[i],
+                v[i],
+                r[i],
+                s[i]
+            );
+        }
+    }
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    function fillOrdersUpTo(
+        address[5][] orderAddresses,
+        uint[6][] orderValues,
+        uint fillTakerTokenAmount,
+        bool shouldThrowOnInsufficientBalanceOrAllowance,
+        uint8[] v,
+        bytes32[] r,
+        bytes32[] s)
+        public
+        returns (uint)
+    {
+        uint filledTakerTokenAmount = 0;
+        for (uint i = 0; i < orderAddresses.length; i++) {
+            require(orderAddresses[i][3] == orderAddresses[0][3]); // takerToken must be the same for each order
+            filledTakerTokenAmount = safeAdd(filledTakerTokenAmount, fillOrder(
+                orderAddresses[i],
+                orderValues[i],
+                safeSub(fillTakerTokenAmount, filledTakerTokenAmount),
+                shouldThrowOnInsufficientBalanceOrAllowance,
+                v[i],
+                r[i],
+                s[i]
+            ));
+            if (filledTakerTokenAmount == fillTakerTokenAmount) break;
+        }
+        return filledTakerTokenAmount;
+    }
+
+    
+    
+    
+    
+    // function batchCancelOrders(
+    //     address[5][] orderAddresses,
+    //     uint[6][] orderValues,
+    //     uint[] cancelTakerTokenAmounts)
+    //     public
+    // {
+    //     for (uint i = 0; i < orderAddresses.length; i++) {
+    //         cancelOrder(
+    //             orderAddresses[i],
+    //             orderValues[i],
+    //             cancelTakerTokenAmounts[i]
+    //         );
+    //     }
+    // }
+
+    /*
+    * Constant public functions
+    */
+
+    
+    
+    
+    
+    function getOrderHash(address[5] orderAddresses, uint[6] orderValues)
+        public
+        constant
+        returns (bytes32)
+    {
+        return keccak256(
+            address(this),
+            orderAddresses[0], // maker
+            orderAddresses[1], // taker
+            orderAddresses[2], // makerToken
+            orderAddresses[3], // takerToken
+            orderAddresses[4], // feeRecipient
+            orderValues[0],    // makerTokenAmount
+            orderValues[1],    // takerTokenAmount
+            orderValues[2],    // makerFee
+            orderValues[3],    // takerFee
+            orderValues[4],    // expirationTimestampInSec
+            orderValues[5]     // salt
+        );
+    }
+
+    
+    
+    
+    
+    
+    
+    
+    function isValidSignature(
+        address signer,
+        bytes32 hash,
+        uint8 v,
+        bytes32 r,
+        bytes32 s)
+        public
+        pure
+        returns (bool)
+    {
+        return signer == ecrecover(
+            keccak256("\x19Ethereum Signed Message:\n32", hash),
+            v,
+            r,
+            s
+        );
+    }
+
+    
+    
+    
+    
+    
+    function isRoundingError(uint numerator, uint denominator, uint target)
+        public
+        pure
+        returns (bool)
+    {
+        uint remainder = mulmod(target, numerator, denominator);
+        if (remainder == 0) return false; // No rounding error.
+
+        uint errPercentageTimes1000000 = safeDiv(
+            safeMul(remainder, 1000000),
+            safeMul(numerator, target)
+        );
+        return errPercentageTimes1000000 > 1000;
+    }
+
+    
+    
+    
+    
+    
+    function getPartialAmount(uint numerator, uint denominator, uint target)
+        public
+        pure
+        returns (uint)
+    {
+        return safeDiv(safeMul(numerator, target), denominator);
+    }
+
+    
+    
+    
+    function getUnavailableTakerTokenAmount(bytes32 orderHash)
+        public
+        constant
+        returns (uint)
+    {
+        return safeAdd(filled[orderHash], cancelled[orderHash]);
+    }
+
+
+    /*
+    * Internal functions
+    */
+
+    
+    
+    
+    
+    
+    
+    function transferViaTokenTransferProxy(
+        address token,
+        address from,
+        address to,
+        uint value)
+        internal
+        returns (bool)
+    {
+        return TokenTransferProxy(TOKEN_TRANSFER_PROXY_CONTRACT).transferFrom(token, from, to, value);
+    }
+
+    
+    
+    
+    
+    function isTransferable(Order order, uint fillTakerTokenAmount)
+        internal
+        constant  // The called token contracts may attempt to change state, but will not be able to due to gas limits on getBalance and getAllowance.
+        returns (bool)
+    {
+        address taker = msg.sender;
+        uint fillMakerTokenAmount = getPartialAmount(fillTakerTokenAmount, order.takerTokenAmount, order.makerTokenAmount);
+
+        // if (order.feeRecipient != address(0)) {
+        //     bool isMakerTokenZRX = order.makerToken == ZRX_TOKEN_CONTRACT;
+        //     bool isTakerTokenZRX = order.takerToken == ZRX_TOKEN_CONTRACT;
+        //     uint paidMakerFee = getPartialAmount(fillTakerTokenAmount, order.takerTokenAmount, order.makerFee);
+        //     uint paidTakerFee = getPartialAmount(fillTakerTokenAmount, order.takerTokenAmount, order.takerFee);
+        //     uint requiredMakerZRX = isMakerTokenZRX ? safeAdd(fillMakerTokenAmount, paidMakerFee) : paidMakerFee;
+        //     uint requiredTakerZRX = isTakerTokenZRX ? safeAdd(fillTakerTokenAmount, paidTakerFee) : paidTakerFee;
+
+        //     if (   getBalance(ZRX_TOKEN_CONTRACT, order.maker) < requiredMakerZRX
+        //         || getAllowance(ZRX_TOKEN_CONTRACT, order.maker) < requiredMakerZRX
+        //         || getBalance(ZRX_TOKEN_CONTRACT, taker) < requiredTakerZRX
+        //         || getAllowance(ZRX_TOKEN_CONTRACT, taker) < requiredTakerZRX
+        //     ) return false;
+
+        //     if (!isMakerTokenZRX && (   getBalance(order.makerToken, order.maker) < fillMakerTokenAmount // Don't double check makerToken if ZRX
+        //                              || getAllowance(order.makerToken, order.maker) < fillMakerTokenAmount)
+        //     ) return false;
+        //     if (!isTakerTokenZRX && (   getBalance(order.takerToken, taker) < fillTakerTokenAmount // Don't double check takerToken if ZRX
+        //                              || getAllowance(order.takerToken, taker) < fillTakerTokenAmount)
+        //     ) return false;
+        // } else if (   getBalance(order.makerToken, order.maker) < fillMakerTokenAmount
+        //            || getAllowance(order.makerToken, order.maker) < fillMakerTokenAmount
+        //            || getBalance(order.takerToken, taker) < fillTakerTokenAmount
+        //            || getAllowance(order.takerToken, taker) < fillTakerTokenAmount
+        // ) return false;
+
+        ///////// added code, copied from above ///////
+
+        if (   getBalance(order.makerToken, order.maker) < fillMakerTokenAmount
+                   || getAllowance(order.makerToken, order.maker) < fillMakerTokenAmount
+                   || getBalance(order.takerToken, taker) < fillTakerTokenAmount
+                   || getAllowance(order.takerToken, taker) < fillTakerTokenAmount
+        ) return false;
+
+        return true;
+    }
+
+    
+    
+    
+    
+    function getBalance(address token, address owner)
+        internal
+        constant  // The called token contract may attempt to change state, but will not be able to due to an added gas limit.
+        returns (uint)
+    {
+        return Token(token).balanceOf.gas(EXTERNAL_QUERY_GAS_LIMIT)(owner); // Limit gas to prevent reentrancy
+    }
+
+    
+    
+    
+    
+    function getAllowance(address token, address owner)
+        internal
+        constant  // The called token contract may attempt to change state, but will not be able to due to an added gas limit.
+        returns (uint)
+    {
+        return Token(token).allowance.gas(EXTERNAL_QUERY_GAS_LIMIT)(owner, TOKEN_TRANSFER_PROXY_CONTRACT); // Limit gas to prevent reentrancy
+    }
+}

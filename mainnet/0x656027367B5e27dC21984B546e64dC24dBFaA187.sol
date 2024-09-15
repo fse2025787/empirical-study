@@ -1,0 +1,985 @@
+// SPDX-License-Identifier: MIT
+
+
+// 
+// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+
+// 
+// OpenZeppelin Contracts v4.4.1 (security/Pausable.sol)
+
+pragma solidity ^0.8.0;
+
+
+
+/**
+ * @dev Contract module which allows children to implement an emergency stop
+ * mechanism that can be triggered by an authorized account.
+ *
+ * This module is used through inheritance. It will make available the
+ * modifiers `whenNotPaused` and `whenPaused`, which can be applied to
+ * the functions of your contract. Note that they will not be pausable by
+ * simply including this module, only once the modifiers are put in place.
+ */
+abstract contract Pausable is Context {
+    /**
+     * @dev Emitted when the pause is triggered by `account`.
+     */
+    event Paused(address account);
+
+    /**
+     * @dev Emitted when the pause is lifted by `account`.
+     */
+    event Unpaused(address account);
+
+    bool private _paused;
+
+    /**
+     * @dev Initializes the contract in unpaused state.
+     */
+    constructor() {
+        _paused = false;
+    }
+
+    /**
+     * @dev Returns true if the contract is paused, and false otherwise.
+     */
+    function paused() public view virtual returns (bool) {
+        return _paused;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is not paused.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    modifier whenNotPaused() {
+        require(!paused(), "Pausable: paused");
+        _;
+    }
+
+    /**
+     * @dev Modifier to make a function callable only when the contract is paused.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    modifier whenPaused() {
+        require(paused(), "Pausable: not paused");
+        _;
+    }
+
+    /**
+     * @dev Triggers stopped state.
+     *
+     * Requirements:
+     *
+     * - The contract must not be paused.
+     */
+    function _pause() internal virtual whenNotPaused {
+        _paused = true;
+        emit Paused(_msgSender());
+    }
+
+    /**
+     * @dev Returns to normal state.
+     *
+     * Requirements:
+     *
+     * - The contract must be paused.
+     */
+    function _unpause() internal virtual whenPaused {
+        _paused = false;
+        emit Unpaused(_msgSender());
+    }
+}
+
+// 
+
+pragma solidity >=0.8.13;
+
+
+
+
+
+
+
+interface IPhutureJob {
+    
+    function pause() external;
+
+    
+    function unpause() external;
+
+    
+    
+    function setMinAmountOfSigners(uint256 _minAmountOfSigners) external;
+
+    
+    
+    
+    function internalSwap(ValidatorLibrary.Sign[] calldata _signs, IOrdererV2.InternalSwapV2 calldata _info) external;
+
+    
+    
+    
+    function externalSwap(ValidatorLibrary.Sign[] calldata _signs, IOrdererV2.ExternalSwapV2 calldata _info) external;
+
+    
+    
+    
+    function internalSwapManual(ValidatorLibrary.Sign[] calldata _signs, IOrdererV2.InternalSwapV2 calldata _info)
+        external;
+
+    
+    
+    
+    function externalSwapManual(ValidatorLibrary.Sign[] calldata _signs, IOrdererV2.ExternalSwapV2 calldata _info)
+        external;
+
+    
+    
+    function registry() external view returns (address);
+
+    
+    
+    function keep3r() external view returns (address);
+
+    
+    
+    function nonce() external view returns (uint256);
+
+    
+    
+    function minAmountOfSigners() external view returns (uint256);
+}
+// 
+
+pragma solidity 0.8.13;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+contract PhutureJob is IPhutureJob, Pausable {
+    using ERC165Checker for address;
+    using Counters for Counters.Counter;
+    using ValidatorLibrary for ValidatorLibrary.Sign;
+
+    
+    bytes32 internal immutable VALIDATOR_ROLE;
+    
+    bytes32 internal immutable ORDER_EXECUTOR_ROLE;
+    
+    bytes32 internal immutable ORDERING_MANAGER_ROLE;
+
+    
+    Counters.Counter internal _nonce;
+
+    address public immutable override keep3r;
+    
+    address public immutable override registry;
+
+    
+    uint256 public override minAmountOfSigners = 1;
+
+    
+    modifier onlyRole(bytes32 role) {
+        require(IAccessControl(registry).hasRole(role, msg.sender), "PhutureJob: FORBIDDEN");
+        _;
+    }
+
+    
+    modifier payKeeper(address _keeper) {
+        require(IKeep3r(keep3r).isKeeper(_keeper), "PhutureJob: !KEEP3R");
+        _;
+        IKeep3r(keep3r).worked(_keeper);
+    }
+
+    constructor(address _keep3r, address _registry) {
+        bytes4[] memory interfaceIds = new bytes4[](2);
+        interfaceIds[0] = type(IAccessControl).interfaceId;
+        interfaceIds[1] = type(IIndexRegistry).interfaceId;
+        require(_registry.supportsAllInterfaces(interfaceIds), "PhutureJob: INTERFACE");
+
+        VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+        ORDER_EXECUTOR_ROLE = keccak256("ORDER_EXECUTOR_ROLE");
+        ORDERING_MANAGER_ROLE = keccak256("ORDERING_MANAGER_ROLE");
+
+        keep3r = _keep3r;
+        registry = _registry;
+
+        _pause();
+    }
+
+    
+    function setMinAmountOfSigners(uint256 _minAmountOfSigners) external override onlyRole(ORDERING_MANAGER_ROLE) {
+        require(_minAmountOfSigners != 0, "PhutureJob: INVALID");
+
+        minAmountOfSigners = _minAmountOfSigners;
+    }
+
+    
+    function pause() external override onlyRole(ORDERING_MANAGER_ROLE) {
+        _pause();
+    }
+
+    
+    function unpause() external override onlyRole(ORDERING_MANAGER_ROLE) {
+        _unpause();
+    }
+
+    
+    function internalSwap(ValidatorLibrary.Sign[] calldata _signs, IOrdererV2.InternalSwapV2 calldata _info)
+        external
+        override
+        whenNotPaused
+        payKeeper(msg.sender)
+    {
+        IOrdererV2 orderer = IOrdererV2(IIndexRegistry(registry).orderer());
+        _validate(_signs, abi.encodeWithSelector(orderer.internalSwap.selector, _info));
+        orderer.internalSwap(_info);
+    }
+
+    
+    function externalSwap(ValidatorLibrary.Sign[] calldata _signs, IOrdererV2.ExternalSwapV2 calldata _info)
+        external
+        override
+        whenNotPaused
+        payKeeper(msg.sender)
+    {
+        IOrdererV2 orderer = IOrdererV2(IIndexRegistry(registry).orderer());
+        _validate(_signs, abi.encodeWithSelector(orderer.externalSwap.selector, _info));
+        orderer.externalSwap(_info);
+    }
+
+    
+    function internalSwapManual(ValidatorLibrary.Sign[] calldata _signs, IOrdererV2.InternalSwapV2 calldata _info)
+        external
+        override
+        onlyRole(ORDER_EXECUTOR_ROLE)
+    {
+        IOrdererV2 orderer = IOrdererV2(IIndexRegistry(registry).orderer());
+        _validate(_signs, abi.encodeWithSelector(orderer.internalSwap.selector, _info));
+        orderer.internalSwap(_info);
+    }
+
+    
+    function externalSwapManual(ValidatorLibrary.Sign[] calldata _signs, IOrdererV2.ExternalSwapV2 calldata _info)
+        external
+        override
+        onlyRole(ORDER_EXECUTOR_ROLE)
+    {
+        IOrdererV2 orderer = IOrdererV2(IIndexRegistry(registry).orderer());
+        _validate(_signs, abi.encodeWithSelector(orderer.externalSwap.selector, _info));
+        orderer.externalSwap(_info);
+    }
+
+    
+    function nonce() external view override returns (uint256) {
+        return _nonce.current();
+    }
+
+    
+    
+    
+    function _validate(ValidatorLibrary.Sign[] calldata _signs, bytes memory _data) internal {
+        uint signsCount = _signs.length;
+        require(signsCount >= minAmountOfSigners, "PhutureJob: !ENOUGH_SIGNERS");
+
+        address lastAddress = address(0);
+        for (uint i; i < signsCount; ) {
+            address signer = _signs[i].signer;
+            require(uint160(signer) > uint160(lastAddress), "PhutureJob: UNSORTED");
+            require(
+                _signs[i].verify(_data, _useNonce()) && IAccessControl(registry).hasRole(VALIDATOR_ROLE, signer),
+                string.concat("PhutureJob: SIGN ", Strings.toHexString(uint160(signer), 20))
+            );
+
+            lastAddress = signer;
+
+            unchecked {
+                i = i + 1;
+            }
+        }
+    }
+
+    
+    
+    function _useNonce() internal virtual returns (uint256 current) {
+        current = _nonce.current();
+        _nonce.increment();
+    }
+}
+
+// 
+// OpenZeppelin Contracts v4.4.1 (utils/Strings.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev String operations.
+ */
+library Strings {
+    bytes16 private constant _HEX_SYMBOLS = "0123456789abcdef";
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` decimal representation.
+     */
+    function toString(uint256 value) internal pure returns (string memory) {
+        // Inspired by OraclizeAPI's implementation - MIT licence
+        // https://github.com/oraclize/ethereum-api/blob/b42146b063c7d6ee1358846c198246239e9360e8/oraclizeAPI_0.4.25.sol
+
+        if (value == 0) {
+            return "0";
+        }
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        return string(buffer);
+    }
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation.
+     */
+    function toHexString(uint256 value) internal pure returns (string memory) {
+        if (value == 0) {
+            return "0x00";
+        }
+        uint256 temp = value;
+        uint256 length = 0;
+        while (temp != 0) {
+            length++;
+            temp >>= 8;
+        }
+        return toHexString(value, length);
+    }
+
+    /**
+     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation with fixed length.
+     */
+    function toHexString(uint256 value, uint256 length) internal pure returns (string memory) {
+        bytes memory buffer = new bytes(2 * length + 2);
+        buffer[0] = "0";
+        buffer[1] = "x";
+        for (uint256 i = 2 * length + 1; i > 1; --i) {
+            buffer[i] = _HEX_SYMBOLS[value & 0xf];
+            value >>= 4;
+        }
+        require(value == 0, "Strings: hex length insufficient");
+        return string(buffer);
+    }
+}
+
+// 
+// OpenZeppelin Contracts v4.4.1 (utils/Counters.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @title Counters
+ * @author Matt Condon (@shrugs)
+ * @dev Provides counters that can only be incremented, decremented or reset. This can be used e.g. to track the number
+ * of elements in a mapping, issuing ERC721 ids, or counting request ids.
+ *
+ * Include with `using Counters for Counters.Counter;`
+ */
+library Counters {
+    struct Counter {
+        // This variable should never be directly accessed by users of the library: interactions must be restricted to
+        // the library's function. As of Solidity v0.5.2, this cannot be enforced, though there is a proposal to add
+        // this feature: see https://github.com/ethereum/solidity/issues/4637
+        uint256 _value; // default: 0
+    }
+
+    function current(Counter storage counter) internal view returns (uint256) {
+        return counter._value;
+    }
+
+    function increment(Counter storage counter) internal {
+        unchecked {
+            counter._value += 1;
+        }
+    }
+
+    function decrement(Counter storage counter) internal {
+        uint256 value = counter._value;
+        require(value > 0, "Counter: decrement overflow");
+        unchecked {
+            counter._value = value - 1;
+        }
+    }
+
+    function reset(Counter storage counter) internal {
+        counter._value = 0;
+    }
+}
+
+// 
+// OpenZeppelin Contracts v4.4.1 (access/IAccessControl.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev External interface of AccessControl declared to support ERC165 detection.
+ */
+interface IAccessControl {
+    /**
+     * @dev Emitted when `newAdminRole` is set as ``role``'s admin role, replacing `previousAdminRole`
+     *
+     * `DEFAULT_ADMIN_ROLE` is the starting admin for all roles, despite
+     * {RoleAdminChanged} not being emitted signaling this.
+     *
+     * _Available since v3.1._
+     */
+    event RoleAdminChanged(bytes32 indexed role, bytes32 indexed previousAdminRole, bytes32 indexed newAdminRole);
+
+    /**
+     * @dev Emitted when `account` is granted `role`.
+     *
+     * `sender` is the account that originated the contract call, an admin role
+     * bearer except when using {AccessControl-_setupRole}.
+     */
+    event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
+
+    /**
+     * @dev Emitted when `account` is revoked `role`.
+     *
+     * `sender` is the account that originated the contract call:
+     *   - if using `revokeRole`, it is the admin role bearer
+     *   - if using `renounceRole`, it is the role bearer (i.e. `account`)
+     */
+    event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+
+    /**
+     * @dev Returns `true` if `account` has been granted `role`.
+     */
+    function hasRole(bytes32 role, address account) external view returns (bool);
+
+    /**
+     * @dev Returns the admin role that controls `role`. See {grantRole} and
+     * {revokeRole}.
+     *
+     * To change a role's admin, use {AccessControl-_setRoleAdmin}.
+     */
+    function getRoleAdmin(bytes32 role) external view returns (bytes32);
+
+    /**
+     * @dev Grants `role` to `account`.
+     *
+     * If `account` had not been already granted `role`, emits a {RoleGranted}
+     * event.
+     *
+     * Requirements:
+     *
+     * - the caller must have ``role``'s admin role.
+     */
+    function grantRole(bytes32 role, address account) external;
+
+    /**
+     * @dev Revokes `role` from `account`.
+     *
+     * If `account` had been granted `role`, emits a {RoleRevoked} event.
+     *
+     * Requirements:
+     *
+     * - the caller must have ``role``'s admin role.
+     */
+    function revokeRole(bytes32 role, address account) external;
+
+    /**
+     * @dev Revokes `role` from the calling account.
+     *
+     * Roles are often managed via {grantRole} and {revokeRole}: this function's
+     * purpose is to provide a mechanism for accounts to lose their privileges
+     * if they are compromised (such as when a trusted device is misplaced).
+     *
+     * If the calling account had been granted `role`, emits a {RoleRevoked}
+     * event.
+     *
+     * Requirements:
+     *
+     * - the caller must be `account`.
+     */
+    function renounceRole(bytes32 role, address account) external;
+}
+
+// 
+// OpenZeppelin Contracts v4.4.1 (utils/introspection/ERC165Checker.sol)
+
+pragma solidity ^0.8.0;
+
+
+
+/**
+ * @dev Library used to query support of an interface declared via {IERC165}.
+ *
+ * Note that these functions return the actual result of the query: they do not
+ * `revert` if an interface is not supported. It is up to the caller to decide
+ * what to do in these cases.
+ */
+library ERC165Checker {
+    // As per the EIP-165 spec, no interface should ever match 0xffffffff
+    bytes4 private constant _INTERFACE_ID_INVALID = 0xffffffff;
+
+    /**
+     * @dev Returns true if `account` supports the {IERC165} interface,
+     */
+    function supportsERC165(address account) internal view returns (bool) {
+        // Any contract that implements ERC165 must explicitly indicate support of
+        // InterfaceId_ERC165 and explicitly indicate non-support of InterfaceId_Invalid
+        return
+            _supportsERC165Interface(account, type(IERC165).interfaceId) &&
+            !_supportsERC165Interface(account, _INTERFACE_ID_INVALID);
+    }
+
+    /**
+     * @dev Returns true if `account` supports the interface defined by
+     * `interfaceId`. Support for {IERC165} itself is queried automatically.
+     *
+     * See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(address account, bytes4 interfaceId) internal view returns (bool) {
+        // query support of both ERC165 as per the spec and support of _interfaceId
+        return supportsERC165(account) && _supportsERC165Interface(account, interfaceId);
+    }
+
+    /**
+     * @dev Returns a boolean array where each value corresponds to the
+     * interfaces passed in and whether they're supported or not. This allows
+     * you to batch check interfaces for a contract where your expectation
+     * is that some interfaces may not be supported.
+     *
+     * See {IERC165-supportsInterface}.
+     *
+     * _Available since v3.4._
+     */
+    function getSupportedInterfaces(address account, bytes4[] memory interfaceIds)
+        internal
+        view
+        returns (bool[] memory)
+    {
+        // an array of booleans corresponding to interfaceIds and whether they're supported or not
+        bool[] memory interfaceIdsSupported = new bool[](interfaceIds.length);
+
+        // query support of ERC165 itself
+        if (supportsERC165(account)) {
+            // query support of each interface in interfaceIds
+            for (uint256 i = 0; i < interfaceIds.length; i++) {
+                interfaceIdsSupported[i] = _supportsERC165Interface(account, interfaceIds[i]);
+            }
+        }
+
+        return interfaceIdsSupported;
+    }
+
+    /**
+     * @dev Returns true if `account` supports all the interfaces defined in
+     * `interfaceIds`. Support for {IERC165} itself is queried automatically.
+     *
+     * Batch-querying can lead to gas savings by skipping repeated checks for
+     * {IERC165} support.
+     *
+     * See {IERC165-supportsInterface}.
+     */
+    function supportsAllInterfaces(address account, bytes4[] memory interfaceIds) internal view returns (bool) {
+        // query support of ERC165 itself
+        if (!supportsERC165(account)) {
+            return false;
+        }
+
+        // query support of each interface in _interfaceIds
+        for (uint256 i = 0; i < interfaceIds.length; i++) {
+            if (!_supportsERC165Interface(account, interfaceIds[i])) {
+                return false;
+            }
+        }
+
+        // all interfaces supported
+        return true;
+    }
+
+    /**
+     * @notice Query if a contract implements an interface, does not check ERC165 support
+     * @param account The address of the contract to query for support of an interface
+     * @param interfaceId The interface identifier, as specified in ERC-165
+     * @return true if the contract at account indicates support of the interface with
+     * identifier interfaceId, false otherwise
+     * @dev Assumes that account contains a contract that supports ERC165, otherwise
+     * the behavior of this method is undefined. This precondition can be checked
+     * with {supportsERC165}.
+     * Interface identification is specified in ERC-165.
+     */
+    function _supportsERC165Interface(address account, bytes4 interfaceId) private view returns (bool) {
+        bytes memory encodedParams = abi.encodeWithSelector(IERC165.supportsInterface.selector, interfaceId);
+        (bool success, bytes memory result) = account.staticcall{gas: 30000}(encodedParams);
+        if (result.length < 32) return false;
+        return success && abi.decode(result, (bool));
+    }
+}
+
+// 
+
+pragma solidity 0.8.13;
+
+
+
+library ValidatorLibrary {
+    struct Sign {
+        uint8 v;
+        bytes32 r;
+        bytes32 s;
+        address signer;
+        uint deadline;
+    }
+
+    
+    
+    
+    function verify(
+        Sign calldata self,
+        bytes memory _data,
+        uint _nonce
+    ) internal view returns (bool) {
+        require(block.timestamp <= self.deadline, "ValidatorLibrary: EXPIRED");
+
+        bytes32 eip712DomainHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract,uint256 nonce,uint256 deadline)"
+                ),
+                keccak256(bytes("PhutureJob")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(this),
+                _nonce,
+                self.deadline
+            )
+        );
+
+        return
+            self.signer ==
+            ecrecover(
+                keccak256(abi.encodePacked("\x19\x01", eip712DomainHash, keccak256(_data))),
+                self.v,
+                self.r,
+                self.s
+            );
+    }
+}
+
+// 
+
+pragma solidity >=0.8.13;
+
+
+
+interface IOrdererV2 {
+    struct InternalSwapV2 {
+        address sellAccount;
+        address buyAccount;
+        address sellAsset;
+        address buyAsset;
+        uint maxSellShares;
+    }
+
+    struct ExternalSwapV2 {
+        address account;
+        address sellAsset;
+        address buyAsset;
+        uint sellShares;
+        address swapTarget;
+        bytes swapData;
+    }
+
+    
+    
+    
+    
+    function initialize(
+        address _registry,
+        uint64 _orderLifetime,
+        uint16 _maxSlippageInBP
+    ) external;
+
+    
+    
+    function setMaxSlippageInBP(uint16 _maxSlippageInBP) external;
+
+    
+    
+    function internalSwap(InternalSwapV2 calldata _info) external;
+
+    
+    
+    function externalSwap(ExternalSwapV2 calldata _info) external;
+
+    
+    
+    function maxSlippageInBP() external view returns (uint16);
+}
+
+// 
+
+pragma solidity >=0.8.13;
+
+
+
+
+
+interface IIndexRegistry {
+    event SetIndexLogic(address indexed account, address indexLogic);
+    event SetMaxComponents(address indexed account, uint maxComponents);
+    event UpdateAsset(address indexed asset, uint marketCap);
+    event SetOrderer(address indexed account, address orderer);
+    event SetFeePool(address indexed account, address feePool);
+    event SetPriceOracle(address indexed account, address priceOracle);
+
+    
+    
+    
+    function initialize(address _indexLogic, uint _maxComponents) external;
+
+    
+    
+    function setMaxComponents(uint _maxComponents) external;
+
+    
+    
+    function indexLogic() external returns (address);
+
+    
+    
+    function setIndexLogic(address _indexLogic) external;
+
+    
+    
+    
+    function setRoleAdmin(bytes32 _role, bytes32 _adminRole) external;
+
+    
+    
+    
+    function registerIndex(address _index, IIndexFactory.NameDetails calldata _nameDetails) external;
+
+    
+    
+    
+    function addAsset(address _asset, uint _marketCap) external;
+
+    
+    
+    function removeAsset(address _asset) external;
+
+    
+    
+    
+    function updateAssetMarketCap(address _asset, uint _marketCap) external;
+
+    
+    
+    function setPriceOracle(address _priceOracle) external;
+
+    
+    
+    function setOrderer(address _orderer) external;
+
+    
+    
+    function setFeePool(address _feePool) external;
+
+    
+    
+    function maxComponents() external view returns (uint);
+
+    
+    
+    function marketCapOf(address _asset) external view returns (uint);
+
+    
+    
+    
+    
+    function marketCapsOf(address[] calldata _assets)
+        external
+        view
+        returns (uint[] memory _marketCaps, uint _totalMarketCap);
+
+    
+    
+    function totalMarketCap() external view returns (uint);
+
+    
+    
+    function priceOracle() external view returns (address);
+
+    
+    
+    function orderer() external view returns (address);
+
+    
+    
+    function feePool() external view returns (address);
+}
+
+// 
+
+pragma solidity >=0.8.13;
+
+interface IKeep3r {
+    function isKeeper(address _keeper) external returns (bool _isKeeper);
+
+    function worked(address _keeper) external;
+}
+
+// 
+// OpenZeppelin Contracts v4.4.1 (utils/introspection/IERC165.sol)
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC165 standard, as defined in the
+ * https://eips.ethereum.org/EIPS/eip-165[EIP].
+ *
+ * Implementers can declare support of contract interfaces, which can then be
+ * queried by others ({ERC165Checker}).
+ *
+ * For an implementation, see {ERC165}.
+ */
+interface IERC165 {
+    /**
+     * @dev Returns true if this contract implements the interface defined by
+     * `interfaceId`. See the corresponding
+     * https://eips.ethereum.org/EIPS/eip-165#how-interfaces-are-identified[EIP section]
+     * to learn more about how these ids are created.
+     *
+     * This function call must use less than 30 000 gas.
+     */
+    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+}
+
+// 
+
+pragma solidity >=0.8.13;
+
+
+
+interface IIndexFactory {
+    struct NameDetails {
+        string name;
+        string symbol;
+    }
+
+    event SetVTokenFactory(address vTokenFactory);
+    event SetDefaultMintingFeeInBP(address indexed account, uint16 mintingFeeInBP);
+    event SetDefaultBurningFeeInBP(address indexed account, uint16 burningFeeInBP);
+    event SetDefaultAUMScaledPerSecondsRate(address indexed account, uint AUMScaledPerSecondsRate);
+
+    
+    
+    
+    function setDefaultMintingFeeInBP(uint16 _mintingFeeInBP) external;
+
+    
+    
+    
+    function setDefaultBurningFeeInBP(uint16 _burningFeeInBP) external;
+
+    
+    
+    function setReweightingLogic(address _reweightingLogic) external;
+
+    
+    /**
+        @dev Will be set in FeePool on index creation.
+        Effective management fee rate (annual, in percent, after dilution) is calculated by the given formula:
+        fee = (rpow(scaledPerSecondRate, numberOfSeconds, 10*27) - 10**27) * totalSupply / 10**27, where:
+
+        totalSupply - total index supply;
+        numberOfSeconds - delta time for calculation period;
+        scaledPerSecondRate - scaled rate, calculated off chain by the given formula:
+
+        scaledPerSecondRate = ((1 + k) ** (1 / 365 days)) * AUMCalculationLibrary.RATE_SCALE_BASE, where:
+        k = (aumFeeInBP / BP) / (1 - aumFeeInBP / BP);
+
+        Note: rpow and RATE_SCALE_BASE are provided by AUMCalculationLibrary
+        More info: https://docs.enzyme.finance/fee-formulas/management-fee
+
+        After value calculated off chain, scaledPerSecondRate is set to setDefaultAUMScaledPerSecondsRate
+    */
+    
+    function setDefaultAUMScaledPerSecondsRate(uint _AUMScaledPerSecondsRate) external;
+
+    
+    
+    function withdrawToFeePool(address _index) external;
+
+    
+    
+    function registry() external view returns (address);
+
+    
+    
+    function vTokenFactory() external view returns (address);
+
+    
+    
+    function defaultMintingFeeInBP() external view returns (uint16);
+
+    
+    
+    function defaultBurningFeeInBP() external view returns (uint16);
+
+    
+    ///         See setDefaultAUMScaledPerSecondsRate method description for more details.
+    
+    function defaultAUMScaledPerSecondsRate() external view returns (uint);
+
+    
+    
+    function reweightingLogic() external view returns (address);
+}

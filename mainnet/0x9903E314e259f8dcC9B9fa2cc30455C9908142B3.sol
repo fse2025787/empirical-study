@@ -1,0 +1,958 @@
+// SPDX-License-Identifier: Apache-2.0
+pragma experimental ABIEncoderV2;
+
+
+// 
+/*
+
+  Copyright 2020 ZeroEx Intl.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+*/
+
+pragma solidity ^0.6.5;
+
+
+interface IOwnableV06 {
+
+    
+    
+    
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    
+    
+    function transferOwnership(address newOwner) external;
+
+    
+    
+    function owner() external view returns (address ownerAddress);
+}
+
+// 
+/*
+
+  Copyright 2020 ZeroEx Intl.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+*/
+
+pragma solidity ^0.6.5;
+
+
+
+
+interface IAuthorizableV06 is
+    IOwnableV06
+{
+    // Event logged when a new address is authorized.
+    event AuthorizedAddressAdded(
+        address indexed target,
+        address indexed caller
+    );
+
+    // Event logged when a currently authorized address is unauthorized.
+    event AuthorizedAddressRemoved(
+        address indexed target,
+        address indexed caller
+    );
+
+    
+    
+    function addAuthorizedAddress(address target)
+        external;
+
+    
+    
+    function removeAuthorizedAddress(address target)
+        external;
+
+    
+    
+    
+    function removeAuthorizedAddressAtIndex(
+        address target,
+        uint256 index
+    )
+        external;
+
+    
+    
+    function getAuthorizedAddresses()
+        external
+        view
+        returns (address[] memory authorizedAddresses);
+
+    
+    
+    
+    function authorized(address addr) external view returns (bool isAuthorized);
+
+    
+    
+    
+    function authorities(uint256 idx) external view returns (address addr);
+
+}
+
+// 
+/*
+
+  Copyright 2019 ZeroEx Intl.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+*/
+
+pragma solidity ^0.6.5;
+
+
+
+
+
+
+contract OwnableV06 is
+    IOwnableV06
+{
+    
+    
+    address public override owner;
+
+    constructor() public {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        _assertSenderIsOwner();
+        _;
+    }
+
+    
+    
+    function transferOwnership(address newOwner)
+        public
+        override
+        onlyOwner
+    {
+        if (newOwner == address(0)) {
+            LibRichErrorsV06.rrevert(LibOwnableRichErrorsV06.TransferOwnerToZeroError());
+        } else {
+            owner = newOwner;
+            emit OwnershipTransferred(msg.sender, newOwner);
+        }
+    }
+
+    function _assertSenderIsOwner()
+        internal
+        view
+    {
+        if (msg.sender != owner) {
+            LibRichErrorsV06.rrevert(LibOwnableRichErrorsV06.OnlyOwnerError(
+                msg.sender,
+                owner
+            ));
+        }
+    }
+}
+
+// 
+/*
+
+  Copyright 2020 ZeroEx Intl.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+*/
+
+pragma solidity ^0.6.5;
+
+
+
+
+
+
+
+// solhint-disable no-empty-blocks
+contract AuthorizableV06 is
+    OwnableV06,
+    IAuthorizableV06
+{
+    
+    modifier onlyAuthorized {
+        _assertSenderIsAuthorized();
+        _;
+    }
+
+    // @dev Whether an address is authorized to call privileged functions.
+    // @param 0 Address to query.
+    // @return 0 Whether the address is authorized.
+    mapping (address => bool) public override authorized;
+    // @dev Whether an address is authorized to call privileged functions.
+    // @param 0 Index of authorized address.
+    // @return 0 Authorized address.
+    address[] public override authorities;
+
+    
+    constructor()
+        public
+        OwnableV06()
+    {}
+
+    
+    
+    function addAuthorizedAddress(address target)
+        external
+        override
+        onlyOwner
+    {
+        _addAuthorizedAddress(target);
+    }
+
+    
+    
+    function removeAuthorizedAddress(address target)
+        external
+        override
+        onlyOwner
+    {
+        if (!authorized[target]) {
+            LibRichErrorsV06.rrevert(LibAuthorizableRichErrorsV06.TargetNotAuthorizedError(target));
+        }
+        for (uint256 i = 0; i < authorities.length; i++) {
+            if (authorities[i] == target) {
+                _removeAuthorizedAddressAtIndex(target, i);
+                break;
+            }
+        }
+    }
+
+    
+    
+    
+    function removeAuthorizedAddressAtIndex(
+        address target,
+        uint256 index
+    )
+        external
+        override
+        onlyOwner
+    {
+        _removeAuthorizedAddressAtIndex(target, index);
+    }
+
+    
+    
+    function getAuthorizedAddresses()
+        external
+        override
+        view
+        returns (address[] memory)
+    {
+        return authorities;
+    }
+
+    
+    function _assertSenderIsAuthorized()
+        internal
+        view
+    {
+        if (!authorized[msg.sender]) {
+            LibRichErrorsV06.rrevert(LibAuthorizableRichErrorsV06.SenderNotAuthorizedError(msg.sender));
+        }
+    }
+
+    
+    
+    function _addAuthorizedAddress(address target)
+        internal
+    {
+        // Ensure that the target is not the zero address.
+        if (target == address(0)) {
+            LibRichErrorsV06.rrevert(LibAuthorizableRichErrorsV06.ZeroCantBeAuthorizedError());
+        }
+
+        // Ensure that the target is not already authorized.
+        if (authorized[target]) {
+            LibRichErrorsV06.rrevert(LibAuthorizableRichErrorsV06.TargetAlreadyAuthorizedError(target));
+        }
+
+        authorized[target] = true;
+        authorities.push(target);
+        emit AuthorizedAddressAdded(target, msg.sender);
+    }
+
+    
+    
+    
+    function _removeAuthorizedAddressAtIndex(
+        address target,
+        uint256 index
+    )
+        internal
+    {
+        if (!authorized[target]) {
+            LibRichErrorsV06.rrevert(LibAuthorizableRichErrorsV06.TargetNotAuthorizedError(target));
+        }
+        if (index >= authorities.length) {
+            LibRichErrorsV06.rrevert(LibAuthorizableRichErrorsV06.IndexOutOfBoundsError(
+                index,
+                authorities.length
+            ));
+        }
+        if (authorities[index] != target) {
+            LibRichErrorsV06.rrevert(LibAuthorizableRichErrorsV06.AuthorizedAddressMismatchError(
+                authorities[index],
+                target
+            ));
+        }
+
+        delete authorized[target];
+        authorities[index] = authorities[authorities.length - 1];
+        authorities.pop();
+        emit AuthorizedAddressRemoved(target, msg.sender);
+    }
+}
+
+// 
+/*
+
+  Copyright 2020 ZeroEx Intl.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+*/
+
+pragma solidity ^0.6.5;
+
+
+interface IERC20TokenV06 {
+
+    // solhint-disable no-simple-event-func-name
+    event Transfer(
+        address indexed from,
+        address indexed to,
+        uint256 value
+    );
+
+    event Approval(
+        address indexed owner,
+        address indexed spender,
+        uint256 value
+    );
+
+    
+    
+    
+    
+    function transfer(address to, uint256 value)
+        external
+        returns (bool);
+
+    
+    
+    
+    
+    
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    )
+        external
+        returns (bool);
+
+    
+    
+    
+    
+    function approve(address spender, uint256 value)
+        external
+        returns (bool);
+
+    
+    
+    function totalSupply()
+        external
+        view
+        returns (uint256);
+
+    
+    
+    
+    function balanceOf(address owner)
+        external
+        view
+        returns (uint256);
+
+    
+    
+    
+    
+    function allowance(address owner, address spender)
+        external
+        view
+        returns (uint256);
+
+    
+    function decimals()
+        external
+        view
+        returns (uint8);
+}
+// 
+
+/*
+    Copyright 2022 0xPlasma Alliance
+*/
+
+/***
+ *      ______             _______   __                                             
+ *     /      \           |       \ |  \                                            
+ *    |  $$$$$$\ __    __ | $$$$$$$\| $$  ______    _______  ______ ____    ______  
+ *    | $$$\| $$|  \  /  \| $$__/ $$| $$ |      \  /       \|      \    \  |      \ 
+ *    | $$$$\ $$ \$$\/  $$| $$    $$| $$  \$$$$$$\|  $$$$$$$| $$$$$$\$$$$\  \$$$$$$\
+ *    | $$\$$\$$  >$$  $$ | $$$$$$$ | $$ /      $$ \$$    \ | $$ | $$ | $$ /      $$
+ *    | $$_\$$$$ /  $$$$\ | $$      | $$|  $$$$$$$ _\$$$$$$\| $$ | $$ | $$|  $$$$$$$
+ *     \$$  \$$$|  $$ \$$\| $$      | $$ \$$    $$|       $$| $$ | $$ | $$ \$$    $$
+ *      \$$$$$$  \$$   \$$ \$$       \$$  \$$$$$$$ \$$$$$$$  \$$  \$$  \$$  \$$$$$$$
+ *                                                                                  
+ *                                                                                  
+ *                                                                                  
+ */
+ 
+
+pragma solidity ^0.6.5;
+
+
+
+
+
+
+
+
+
+contract FeeCollectorController {
+
+    
+    bytes32 public immutable FEE_COLLECTOR_INIT_CODE_HASH;
+    
+    IEtherTokenV06 private immutable WETH;
+    
+    IStaking private immutable STAKING;
+
+    constructor(
+        IEtherTokenV06 weth,
+        IStaking staking
+    )
+        public
+    {
+        FEE_COLLECTOR_INIT_CODE_HASH = keccak256(type(FeeCollector).creationCode);
+        WETH = weth;
+        STAKING = staking;
+    }
+
+    
+    ///      and wrap its ETH into WETH. Anyone may call this.
+    
+    
+    function prepareFeeCollectorToPayFees(bytes32 poolId)
+        external
+        returns (FeeCollector feeCollector)
+    {
+        feeCollector = getFeeCollector(poolId);
+        uint256 codeSize;
+        assembly {
+            codeSize := extcodesize(feeCollector)
+        }
+
+        if (codeSize == 0) {
+            // Create and initialize the contract if necessary.
+            new FeeCollector{salt: bytes32(poolId)}();
+            feeCollector.initialize(WETH, STAKING, poolId);
+        }
+
+        if (address(feeCollector).balance > 1) {
+            feeCollector.convertToWeth(WETH);
+        }
+
+        return feeCollector;
+    }
+
+    
+    ///      will not actually exist until `prepareFeeCollectorToPayFees()`
+    ///      has been called once.
+    
+    
+    function getFeeCollector(bytes32 poolId)
+        public
+        view
+        returns (FeeCollector feeCollector)
+    {
+        return FeeCollector(LibFeeCollector.getFeeCollectorAddress(
+            address(this),
+            FEE_COLLECTOR_INIT_CODE_HASH,
+            poolId
+        ));
+    }
+}
+
+// 
+/*
+
+  Copyright 2020 ZeroEx Intl.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+*/
+
+pragma solidity ^0.6.5;
+
+
+library LibRichErrorsV06 {
+
+    // bytes4(keccak256("Error(string)"))
+    bytes4 internal constant STANDARD_ERROR_SELECTOR = 0x08c379a0;
+
+    // solhint-disable func-name-mixedcase
+    
+    ///      This is the same payload that would be included by a `revert(string)`
+    ///      solidity statement. It has the function signature `Error(string)`.
+    
+    
+    function StandardError(string memory message)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeWithSelector(
+            STANDARD_ERROR_SELECTOR,
+            bytes(message)
+        );
+    }
+    // solhint-enable func-name-mixedcase
+
+    
+    
+    function rrevert(bytes memory errorData)
+        internal
+        pure
+    {
+        assembly {
+            revert(add(errorData, 0x20), mload(errorData))
+        }
+    }
+}
+
+// 
+/*
+
+  Copyright 2020 ZeroEx Intl.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+*/
+pragma solidity ^0.6.5;
+
+
+library LibOwnableRichErrorsV06 {
+
+    // bytes4(keccak256("OnlyOwnerError(address,address)"))
+    bytes4 internal constant ONLY_OWNER_ERROR_SELECTOR =
+        0x1de45ad1;
+
+    // bytes4(keccak256("TransferOwnerToZeroError()"))
+    bytes internal constant TRANSFER_OWNER_TO_ZERO_ERROR_BYTES =
+        hex"e69edc3e";
+
+    // solhint-disable func-name-mixedcase
+    function OnlyOwnerError(
+        address sender,
+        address owner
+    )
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeWithSelector(
+            ONLY_OWNER_ERROR_SELECTOR,
+            sender,
+            owner
+        );
+    }
+
+    function TransferOwnerToZeroError()
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return TRANSFER_OWNER_TO_ZERO_ERROR_BYTES;
+    }
+}
+
+// 
+/*
+
+  Copyright 2020 ZeroEx Intl.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+*/
+
+pragma solidity ^0.6.5;
+
+
+library LibAuthorizableRichErrorsV06 {
+
+    // bytes4(keccak256("AuthorizedAddressMismatchError(address,address)"))
+    bytes4 internal constant AUTHORIZED_ADDRESS_MISMATCH_ERROR_SELECTOR =
+        0x140a84db;
+
+    // bytes4(keccak256("IndexOutOfBoundsError(uint256,uint256)"))
+    bytes4 internal constant INDEX_OUT_OF_BOUNDS_ERROR_SELECTOR =
+        0xe9f83771;
+
+    // bytes4(keccak256("SenderNotAuthorizedError(address)"))
+    bytes4 internal constant SENDER_NOT_AUTHORIZED_ERROR_SELECTOR =
+        0xb65a25b9;
+
+    // bytes4(keccak256("TargetAlreadyAuthorizedError(address)"))
+    bytes4 internal constant TARGET_ALREADY_AUTHORIZED_ERROR_SELECTOR =
+        0xde16f1a0;
+
+    // bytes4(keccak256("TargetNotAuthorizedError(address)"))
+    bytes4 internal constant TARGET_NOT_AUTHORIZED_ERROR_SELECTOR =
+        0xeb5108a2;
+
+    // bytes4(keccak256("ZeroCantBeAuthorizedError()"))
+    bytes internal constant ZERO_CANT_BE_AUTHORIZED_ERROR_BYTES =
+        hex"57654fe4";
+
+    // solhint-disable func-name-mixedcase
+    function AuthorizedAddressMismatchError(
+        address authorized,
+        address target
+    )
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeWithSelector(
+            AUTHORIZED_ADDRESS_MISMATCH_ERROR_SELECTOR,
+            authorized,
+            target
+        );
+    }
+
+    function IndexOutOfBoundsError(
+        uint256 index,
+        uint256 length
+    )
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeWithSelector(
+            INDEX_OUT_OF_BOUNDS_ERROR_SELECTOR,
+            index,
+            length
+        );
+    }
+
+    function SenderNotAuthorizedError(address sender)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeWithSelector(
+            SENDER_NOT_AUTHORIZED_ERROR_SELECTOR,
+            sender
+        );
+    }
+
+    function TargetAlreadyAuthorizedError(address target)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeWithSelector(
+            TARGET_ALREADY_AUTHORIZED_ERROR_SELECTOR,
+            target
+        );
+    }
+
+    function TargetNotAuthorizedError(address target)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeWithSelector(
+            TARGET_NOT_AUTHORIZED_ERROR_SELECTOR,
+            target
+        );
+    }
+
+    function ZeroCantBeAuthorizedError()
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return ZERO_CANT_BE_AUTHORIZED_ERROR_BYTES;
+    }
+}
+
+// 
+/*
+
+  Copyright 2020 ZeroEx Intl.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+*/
+
+pragma solidity ^0.6.5;
+
+
+
+
+interface IEtherTokenV06 is
+    IERC20TokenV06
+{
+    
+    function deposit() external payable;
+
+    
+    function withdraw(uint256 amount) external;
+}
+
+// 
+
+/***
+ *      ______             _______   __                                             
+ *     /      \           |       \ |  \                                            
+ *    |  $$$$$$\ __    __ | $$$$$$$\| $$  ______    _______  ______ ____    ______  
+ *    | $$$\| $$|  \  /  \| $$__/ $$| $$ |      \  /       \|      \    \  |      \ 
+ *    | $$$$\ $$ \$$\/  $$| $$    $$| $$  \$$$$$$\|  $$$$$$$| $$$$$$\$$$$\  \$$$$$$\
+ *    | $$\$$\$$  >$$  $$ | $$$$$$$ | $$ /      $$ \$$    \ | $$ | $$ | $$ /      $$
+ *    | $$_\$$$$ /  $$$$\ | $$      | $$|  $$$$$$$ _\$$$$$$\| $$ | $$ | $$|  $$$$$$$
+ *     \$$  \$$$|  $$ \$$\| $$      | $$ \$$    $$|       $$| $$ | $$ | $$ \$$    $$
+ *      \$$$$$$  \$$   \$$ \$$       \$$  \$$$$$$$ \$$$$$$$  \$$  \$$  \$$  \$$$$$$$
+ *                                                                                  
+ *                                                                                  
+ *                                                                                  
+ */
+ 
+
+pragma solidity ^0.6.5;
+
+interface IStaking {
+    function joinStakingPoolAsMaker(bytes32) external;
+    function payProtocolFee(address, address, uint256) external payable;
+}
+
+// 
+
+/*
+    Copyright 2022 0xPlasma Alliance
+*/
+
+/***
+ *      ______             _______   __                                             
+ *     /      \           |       \ |  \                                            
+ *    |  $$$$$$\ __    __ | $$$$$$$\| $$  ______    _______  ______ ____    ______  
+ *    | $$$\| $$|  \  /  \| $$__/ $$| $$ |      \  /       \|      \    \  |      \ 
+ *    | $$$$\ $$ \$$\/  $$| $$    $$| $$  \$$$$$$\|  $$$$$$$| $$$$$$\$$$$\  \$$$$$$\
+ *    | $$\$$\$$  >$$  $$ | $$$$$$$ | $$ /      $$ \$$    \ | $$ | $$ | $$ /      $$
+ *    | $$_\$$$$ /  $$$$\ | $$      | $$|  $$$$$$$ _\$$$$$$\| $$ | $$ | $$|  $$$$$$$
+ *     \$$  \$$$|  $$ \$$\| $$      | $$ \$$    $$|       $$| $$ | $$ | $$ \$$    $$
+ *      \$$$$$$  \$$   \$$ \$$       \$$  \$$$$$$$ \$$$$$$$  \$$  \$$  \$$  \$$$$$$$
+ *                                                                                  
+ *                                                                                  
+ *                                                                                  
+ */
+ 
+
+pragma solidity ^0.6.5;
+
+
+
+
+library LibFeeCollector {
+
+    
+    
+    
+    
+    function getFeeCollectorAddress(address controller, bytes32 initCodeHash, bytes32 poolId)
+        internal
+        pure
+        returns (address payable feeCollectorAddress)
+    {
+        // Compute the CREATE2 address for the fee collector.
+        return address(uint256(keccak256(abi.encodePacked(
+            byte(0xff),
+            controller,
+            poolId, // pool ID is salt
+            initCodeHash
+        ))));
+    }
+}
+
+// 
+
+/*
+    Copyright 2022 0xPlasma Alliance
+*/
+
+/***
+ *      ______             _______   __                                             
+ *     /      \           |       \ |  \                                            
+ *    |  $$$$$$\ __    __ | $$$$$$$\| $$  ______    _______  ______ ____    ______  
+ *    | $$$\| $$|  \  /  \| $$__/ $$| $$ |      \  /       \|      \    \  |      \ 
+ *    | $$$$\ $$ \$$\/  $$| $$    $$| $$  \$$$$$$\|  $$$$$$$| $$$$$$\$$$$\  \$$$$$$\
+ *    | $$\$$\$$  >$$  $$ | $$$$$$$ | $$ /      $$ \$$    \ | $$ | $$ | $$ /      $$
+ *    | $$_\$$$$ /  $$$$\ | $$      | $$|  $$$$$$$ _\$$$$$$\| $$ | $$ | $$|  $$$$$$$
+ *     \$$  \$$$|  $$ \$$\| $$      | $$ \$$    $$|       $$| $$ | $$ | $$ \$$    $$
+ *      \$$$$$$  \$$   \$$ \$$       \$$  \$$$$$$$ \$$$$$$$  \$$  \$$  \$$  \$$$$$$$
+ *                                                                                  
+ *                                                                                  
+ *                                                                                  
+ */
+ 
+pragma solidity ^0.6.5;
+
+
+
+
+
+
+
+contract FeeCollector is AuthorizableV06 {
+    
+    receive() external payable { }
+
+    constructor() public {
+        _addAuthorizedAddress(msg.sender);
+    }
+
+    
+    ///        can call this.
+    
+    
+    
+    function initialize(
+        IEtherTokenV06 weth,
+        IStaking staking,
+        bytes32 poolId
+    )
+        external
+        onlyAuthorized
+    {
+        weth.approve(address(staking), type(uint256).max);
+        staking.joinStakingPoolAsMaker(poolId);
+    }
+
+    
+    
+    function convertToWeth(
+        IEtherTokenV06 weth
+    )
+        external
+        onlyAuthorized
+    {
+        if (address(this).balance > 0) {
+            weth.deposit{value: address(this).balance}();
+        }
+    }
+}

@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: MIT
+
+/**
+ *Submitted for verification at Etherscan.io on 2022-08-29
+*/
+
+//
+pragma solidity 0.8.15;
+
+contract factory {
+
+
+    function getTime()
+    external view returns(uint256){
+        return block.timestamp;
+    }
+}

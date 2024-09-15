@@ -1,0 +1,770 @@
+
+pragma solidity ^0.4.15;
+
+
+
+/// and the implementation of "user permissions".
+contract Ownable {
+    address public owner;
+    address public newOwnerCandidate;
+
+    event OwnershipRequested(address indexed _by, address indexed _to);
+    event OwnershipTransferred(address indexed _from, address indexed _to);
+
+    
+    /// account.
+    function Ownable() {
+        owner = msg.sender;
+    }
+
+    
+    modifier onlyOwner() {
+        if (msg.sender != owner) {
+            revert();
+        }
+
+        _;
+    }
+
+    modifier onlyOwnerCandidate() {
+        if (msg.sender != newOwnerCandidate) {
+            revert();
+        }
+
+        _;
+    }
+
+    
+    
+    function requestOwnershipTransfer(address _newOwnerCandidate) external onlyOwner {
+        require(_newOwnerCandidate != address(0));
+
+        newOwnerCandidate = _newOwnerCandidate;
+
+        OwnershipRequested(msg.sender, newOwnerCandidate);
+    }
+
+    
+    function acceptOwnership() external onlyOwnerCandidate {
+        address previousOwner = owner;
+
+        owner = newOwnerCandidate;
+        newOwnerCandidate = address(0);
+
+        OwnershipTransferred(previousOwner, owner);
+    }
+}
+
+
+library SafeMath {
+    function mul(uint256 a, uint256 b) internal returns (uint256) {
+        uint256 c = a * b;
+        assert(a == 0 || c / a == b);
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal returns (uint256) {
+        // assert(b > 0); // Solidity automatically throws when dividing by 0
+        uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal returns (uint256) {
+        assert(b <= a);
+        return a - b;
+    }
+
+    function add(uint256 a, uint256 b) internal returns (uint256) {
+        uint256 c = a + b;
+        assert(c >= a);
+        return c;
+    }
+
+    function max64(uint64 a, uint64 b) internal constant returns (uint64) {
+        return a >= b ? a : b;
+    }
+
+    function min64(uint64 a, uint64 b) internal constant returns (uint64) {
+        return a < b ? a : b;
+    }
+
+    function max256(uint256 a, uint256 b) internal constant returns (uint256) {
+        return a >= b ? a : b;
+    }
+
+    function min256(uint256 a, uint256 b) internal constant returns (uint256) {
+        return a < b ? a : b;
+    }
+}
+
+
+contract ERC20 {
+    uint256 public totalSupply;
+    function balanceOf(address _owner) constant returns (uint256 balance);
+    function transfer(address _to, uint256 _value) returns (bool success);
+    function transferFrom(address _from, address _to, uint256 _value) returns (bool success);
+    function approve(address _spender, uint256 _value) returns (bool success);
+    function allowance(address _owner, address _spender) constant returns (uint256 remaining);
+    event Transfer(address indexed _from, address indexed _to, uint256 _value);
+    event Approval(address indexed _owner, address indexed _spender, uint256 _value);
+}
+
+
+
+
+contract BasicToken is ERC20 {
+    using SafeMath for uint256;
+
+    uint256 public totalSupply;
+    mapping (address => mapping (address => uint256)) allowed;
+    mapping (address => uint256) balances;
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    
+    
+    
+    function approve(address _spender, uint256 _value) public returns (bool) {
+        // https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+        if ((_value != 0) && (allowed[msg.sender][_spender] != 0)) {
+            revert();
+        }
+
+        allowed[msg.sender][_spender] = _value;
+
+        Approval(msg.sender, _spender, _value);
+
+        return true;
+    }
+
+    
+    
+    
+    
+    function allowance(address _owner, address _spender) constant returns (uint256 remaining) {
+        return allowed[_owner][_spender];
+    }
+
+
+    
+    
+    
+    function balanceOf(address _owner) constant returns (uint256 balance) {
+        return balances[_owner];
+    }
+
+    
+    
+    
+    function transfer(address _to, uint256 _value) public returns (bool) {
+        balances[msg.sender] = balances[msg.sender].sub(_value);
+        balances[_to] = balances[_to].add(_value);
+
+        Transfer(msg.sender, _to, _value);
+
+        return true;
+    }
+
+    
+    
+    
+    
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+        uint256 _allowance = allowed[_from][msg.sender];
+
+        balances[_from] = balances[_from].sub(_value);
+        balances[_to] = balances[_to].add(_value);
+
+        allowed[_from][msg.sender] = _allowance.sub(_value);
+
+        Transfer(_from, _to, _value);
+
+        return true;
+    }
+}
+
+
+
+contract TokenHolder is Ownable {
+    
+    
+    
+    function transferAnyERC20Token(address _tokenAddress, uint256 _amount) onlyOwner returns (bool success) {
+        return ERC20(_tokenAddress).transfer(owner, _amount);
+    }
+}
+
+
+
+contract KinToken is Ownable, BasicToken, TokenHolder {
+    using SafeMath for uint256;
+
+    string public constant name = "Kin";
+    string public constant symbol = "KIN";
+
+    // Using same decimal value as ETH (makes ETH-KIN conversion much easier).
+    uint8 public constant decimals = 18;
+
+    // States whether creating more tokens is allowed or not.
+    // Used during token sale.
+    bool public isMinting = true;
+
+    event MintingEnded();
+
+    modifier onlyDuringMinting() {
+        require(isMinting);
+
+        _;
+    }
+
+    modifier onlyAfterMinting() {
+        require(!isMinting);
+
+        _;
+    }
+
+    
+    
+    
+    function mint(address _to, uint256 _amount) external onlyOwner onlyDuringMinting {
+        totalSupply = totalSupply.add(_amount);
+        balances[_to] = balances[_to].add(_amount);
+
+        Transfer(0x0, _to, _amount);
+    }
+
+    
+    function endMinting() external onlyOwner {
+        if (isMinting == false) {
+            return;
+        }
+
+        isMinting = false;
+
+        MintingEnded();
+    }
+
+    
+    
+    
+    function approve(address _spender, uint256 _value) public onlyAfterMinting returns (bool) {
+        return super.approve(_spender, _value);
+    }
+
+    
+    
+    
+    function transfer(address _to, uint256 _value) public onlyAfterMinting returns (bool) {
+        return super.transfer(_to, _value);
+    }
+
+    
+    
+    
+    
+    function transferFrom(address _from, address _to, uint256 _value) public onlyAfterMinting returns (bool) {
+        return super.transferFrom(_from, _to, _value);
+    }
+}
+
+
+
+contract VestingTrustee is Ownable {
+    using SafeMath for uint256;
+
+    // Kin token contract.
+    KinToken public kin;
+
+    // Vesting grant for a speicifc holder.
+    struct Grant {
+        uint256 value;
+        uint256 start;
+        uint256 cliff;
+        uint256 end;
+        uint256 installmentLength; // In seconds.
+        uint256 transferred;
+        bool revokable;
+    }
+
+    // Holder to grant information mapping.
+    mapping (address => Grant) public grants;
+
+    // Total tokens available for vesting.
+    uint256 public totalVesting;
+
+    event NewGrant(address indexed _from, address indexed _to, uint256 _value);
+    event TokensUnlocked(address indexed _to, uint256 _value);
+    event GrantRevoked(address indexed _holder, uint256 _refund);
+
+    
+    
+    function VestingTrustee(KinToken _kin) {
+        require(_kin != address(0));
+
+        kin = _kin;
+    }
+
+    
+    /// accomodate the new grant. Otherwise, the call with fail.
+    
+    
+    
+    
+    
+    
+    
+    function grant(address _to, uint256 _value, uint256 _start, uint256 _cliff, uint256 _end,
+        uint256 _installmentLength, bool _revokable)
+        external onlyOwner {
+
+        require(_to != address(0));
+        require(_to != address(this)); // Protect this contract from receiving a grant.
+        require(_value > 0);
+
+        // Require that every holder can be granted tokens only once.
+        require(grants[_to].value == 0);
+
+        // Require for time ranges to be consistent and valid.
+        require(_start <= _cliff && _cliff <= _end);
+
+        // Require installment length to be valid and no longer than (end - start).
+        require(_installmentLength > 0 && _installmentLength <= _end.sub(_start));
+
+        // Grant must not exceed the total amount of tokens currently available for vesting.
+        require(totalVesting.add(_value) <= kin.balanceOf(address(this)));
+
+        // Assign a new grant.
+        grants[_to] = Grant({
+            value: _value,
+            start: _start,
+            cliff: _cliff,
+            end: _end,
+            installmentLength: _installmentLength,
+            transferred: 0,
+            revokable: _revokable
+        });
+
+        // Since tokens have been granted, reduce the total amount available for vesting.
+        totalVesting = totalVesting.add(_value);
+
+        NewGrant(msg.sender, _to, _value);
+    }
+
+    
+    
+    function revoke(address _holder) public onlyOwner {
+        Grant memory grant = grants[_holder];
+
+        // Grant must be revokable.
+        require(grant.revokable);
+
+        // Calculate amount of remaining tokens that can still be returned.
+        uint256 refund = grant.value.sub(grant.transferred);
+
+        // Remove the grant.
+        delete grants[_holder];
+
+        // Update total vesting amount and transfer previously calculated tokens to owner.
+        totalVesting = totalVesting.sub(refund);
+        kin.transfer(msg.sender, refund);
+
+        GrantRevoked(_holder, refund);
+    }
+
+    
+    
+    
+    
+    function vestedTokens(address _holder, uint256 _time) external constant returns (uint256) {
+        Grant memory grant = grants[_holder];
+        if (grant.value == 0) {
+            return 0;
+        }
+
+        return calculateVestedTokens(grant, _time);
+    }
+
+    
+    
+    
+    
+    function calculateVestedTokens(Grant _grant, uint256 _time) private constant returns (uint256) {
+        // If we're before the cliff, then nothing is vested.
+        if (_time < _grant.cliff) {
+            return 0;
+        }
+
+        // If we're after the end of the vesting period - everything is vested;
+        if (_time >= _grant.end) {
+            return _grant.value;
+        }
+
+        // Calculate amount of installments past until now.
+        //
+        // NOTE result gets floored because of integer division.
+        uint256 installmentsPast = _time.sub(_grant.start).div(_grant.installmentLength);
+
+        // Calculate amount of days in entire vesting period.
+        uint256 vestingDays = _grant.end.sub(_grant.start);
+
+        // Calculate and return the number of tokens according to vesting days that have passed.
+        return _grant.value.mul(installmentsPast.mul(_grant.installmentLength)).div(vestingDays);
+    }
+
+    
+    function unlockVestedTokens() external {
+        Grant storage grant = grants[msg.sender];
+
+        // Make sure the grant has tokens available.
+        require(grant.value != 0);
+
+        // Get the total amount of vested tokens, acccording to grant.
+        uint256 vested = calculateVestedTokens(grant, now);
+        if (vested == 0) {
+            return;
+        }
+
+        // Make sure the holder doesn't transfer more than what he already has.
+        uint256 transferable = vested.sub(grant.transferred);
+        if (transferable == 0) {
+            return;
+        }
+
+        // Update transferred and total vesting amount, then transfer remaining vested funds to holder.
+        grant.transferred = grant.transferred.add(transferable);
+        totalVesting = totalVesting.sub(transferable);
+        kin.transfer(msg.sender, transferable);
+
+        TokensUnlocked(msg.sender, transferable);
+    }
+}
+
+
+
+contract KinTokenSale is Ownable, TokenHolder {
+    using SafeMath for uint256;
+
+    // External parties:
+
+    // KIN token contract.
+    KinToken public kin;
+
+    // Vesting contract for pre-sale participants.
+    VestingTrustee public trustee;
+
+    // Received funds are forwarded to this address.
+    address public fundingRecipient;
+
+    // Kin token unit.
+    // Using same decimal value as ETH (makes ETH-KIN conversion much easier).
+    // This is the same as in Kin token contract.
+    uint256 public constant TOKEN_UNIT = 10 ** 18;
+
+    // Maximum number of tokens in circulation: 10 trillion.
+    uint256 public constant MAX_TOKENS = 10 ** 13 * TOKEN_UNIT;
+
+    // Maximum tokens offered in the sale.
+    uint256 public constant MAX_TOKENS_SOLD = 512195121951 * TOKEN_UNIT;
+
+    // Wei to 1 USD ratio.
+    uint256 public constant WEI_PER_USD = uint256(1 ether) / 289;
+
+    // KIN to 1 USD ratio,
+    // such that MAX_TOKENS_SOLD / KIN_PER_USD is the $75M cap.
+    uint256 public constant KIN_PER_USD = 6829 * TOKEN_UNIT;
+
+    // KIN to 1 wei ratio.
+    uint256 public constant KIN_PER_WEI = KIN_PER_USD / WEI_PER_USD;
+
+    // Sale start and end timestamps.
+    uint256 public constant SALE_DURATION = 14 days;
+    uint256 public startTime;
+    uint256 public endTime;
+
+    // Amount of tokens sold until now in the sale.
+    uint256 public tokensSold = 0;
+
+    // Participation caps, according to KYC tiers.
+    uint256 public constant TIER_1_CAP = 100000 * WEI_PER_USD;
+    uint256 public constant TIER_2_CAP = uint256(-1); // Maximum uint256 value
+
+    // Accumulated amount each participant has contributed so far.
+    mapping (address => uint256) public participationHistory;
+
+    // Maximum amount that each participant is allowed to contribute (in WEI).
+    mapping (address => uint256) public participationCaps;
+
+    // Maximum amount ANYBODY is currently allowed to contribute.
+    uint256 public hardParticipationCap = 4393 * WEI_PER_USD;
+
+    // Vesting information for special addresses:
+    struct TokenGrant {
+        uint256 value;
+        uint256 startOffset;
+        uint256 cliffOffset;
+        uint256 endOffset;
+        uint256 installmentLength;
+        uint8 percentVested;
+    }
+
+    address[] public tokenGrantees;
+    mapping (address => TokenGrant) public tokenGrants;
+    uint256 public lastGrantedIndex = 0;
+    uint256 public constant MAX_TOKEN_GRANTEES = 100;
+    uint256 public constant GRANT_BATCH_SIZE = 10;
+
+    // Post-TDE multisig addresses.
+    address public constant KIN_FOUNDATION_ADDRESS = 0x56aE76573EC54754bC5B6A8cBF04bBd7Dc86b0A0;
+    address public constant KIK_ADDRESS = 0x3bf4BbE253153678E9E8E540395C22BFf7fCa87d;
+
+    event TokensIssued(address indexed _to, uint256 _tokens);
+
+    
+    modifier onlyDuringSale() {
+        require(!saleEnded() && now >= startTime);
+
+        _;
+    }
+
+    
+    modifier onlyAfterSale() {
+        require(saleEnded());
+
+        _;
+    }
+
+    
+    
+    
+    function KinTokenSale(address _fundingRecipient, uint256 _startTime) {
+        require(_fundingRecipient != address(0));
+        require(_startTime > now);
+
+        // Deploy new KinToken contract.
+        kin = new KinToken();
+
+        // Deploy new VestingTrustee contract.
+        trustee = new VestingTrustee(kin);
+
+        fundingRecipient = _fundingRecipient;
+        startTime = _startTime;
+        endTime = startTime + SALE_DURATION;
+
+        // Initialize special vesting grants.
+        initTokenGrants();
+    }
+
+    
+    function initTokenGrants() private onlyOwner {
+        // Issue the remaining 60% to Kin Foundation's multisig wallet. In a few days, after the token sale is
+        // finalized, these tokens will be loaded into the KinVestingTrustee smart contract, according to the white
+        // paper. Please note, that this is implied by setting a 0% vesting percent.
+        tokenGrantees.push(KIN_FOUNDATION_ADDRESS);
+        tokenGrants[KIN_FOUNDATION_ADDRESS] = TokenGrant(MAX_TOKENS.mul(60).div(100), 0, 0, 3 years, 1 days, 0);
+
+        // Kik, 30%
+        tokenGrantees.push(KIK_ADDRESS);
+        tokenGrants[KIK_ADDRESS] = TokenGrant(MAX_TOKENS.mul(30).div(100), 0, 0, 120 weeks, 12 weeks, 100);
+    }
+
+    
+    
+    
+    function addTokenGrant(address _grantee, uint256 _value) external onlyOwner {
+        require(_grantee != address(0));
+        require(_value > 0);
+        require(tokenGrantees.length + 1 <= MAX_TOKEN_GRANTEES);
+
+        // Verify the grant doesn't already exist.
+        require(tokenGrants[_grantee].value == 0);
+        for (uint i = 0; i < tokenGrantees.length; i++) {
+            require(tokenGrantees[i] != _grantee);
+        }
+
+        // Add grant and add to grantee list.
+        tokenGrantees.push(_grantee);
+        tokenGrants[_grantee] = TokenGrant(_value, 0, 1 years, 1 years, 1 days, 50);
+    }
+
+    
+    
+    function deleteTokenGrant(address _grantee) external onlyOwner {
+        require(_grantee != address(0));
+
+        // Delete the grant from the keys array.
+        for (uint i = 0; i < tokenGrantees.length; i++) {
+            if (tokenGrantees[i] == _grantee) {
+                delete tokenGrantees[i];
+
+                break;
+            }
+        }
+
+        // Delete the grant from the mapping.
+        delete tokenGrants[_grantee];
+    }
+
+    
+    
+    
+    function setParticipationCap(address[] _participants, uint256 _cap) private onlyOwner {
+        for (uint i = 0; i < _participants.length; i++) {
+            participationCaps[_participants[i]] = _cap;
+        }
+    }
+
+    
+    
+    function setTier1Participants(address[] _participants) external onlyOwner {
+        setParticipationCap(_participants, TIER_1_CAP);
+    }
+
+    
+    
+    function setTier2Participants(address[] _participants) external onlyOwner {
+        setParticipationCap(_participants, TIER_2_CAP);
+    }
+
+    
+    
+    function setHardParticipationCap(uint256 _cap) external onlyOwner {
+        require(_cap > 0);
+
+        hardParticipationCap = _cap;
+    }
+
+    
+    function () external payable onlyDuringSale {
+        create(msg.sender);
+    }
+
+    
+    
+    function create(address _recipient) public payable onlyDuringSale {
+        require(_recipient != address(0));
+
+        // Enforce participation cap (in Wei received).
+        uint256 weiAlreadyParticipated = participationHistory[msg.sender];
+        uint256 participationCap = SafeMath.min256(participationCaps[msg.sender], hardParticipationCap);
+        uint256 cappedWeiReceived = SafeMath.min256(msg.value, participationCap.sub(weiAlreadyParticipated));
+        require(cappedWeiReceived > 0);
+
+        // Accept funds and transfer to funding recipient.
+        uint256 weiLeftInSale = MAX_TOKENS_SOLD.sub(tokensSold).div(KIN_PER_WEI);
+        uint256 weiToParticipate = SafeMath.min256(cappedWeiReceived, weiLeftInSale);
+        participationHistory[msg.sender] = weiAlreadyParticipated.add(weiToParticipate);
+        fundingRecipient.transfer(weiToParticipate);
+
+        // Issue tokens and transfer to recipient.
+        uint256 tokensLeftInSale = MAX_TOKENS_SOLD.sub(tokensSold);
+        uint256 tokensToIssue = weiToParticipate.mul(KIN_PER_WEI);
+        if (tokensLeftInSale.sub(tokensToIssue) < KIN_PER_WEI) {
+            // If purchase would cause less than KIN_PER_WEI tokens left then nobody could ever buy them.
+            // So, gift them to the last buyer.
+            tokensToIssue = tokensLeftInSale;
+        }
+        tokensSold = tokensSold.add(tokensToIssue);
+        issueTokens(_recipient, tokensToIssue);
+
+        // Partial refund if full participation not possible
+        // e.g. due to cap being reached.
+        uint256 refund = msg.value.sub(weiToParticipate);
+        if (refund > 0) {
+            msg.sender.transfer(refund);
+        }
+    }
+
+    
+    function finalize() external onlyAfterSale onlyOwner {
+        if (!kin.isMinting()) {
+            revert();
+        }
+
+        require(lastGrantedIndex == tokenGrantees.length);
+
+        // Finish minting.
+        kin.endMinting();
+    }
+
+    
+    /// from its previous run, and will finish either after granting GRANT_BATCH_SIZE grants or finishing the whole list
+    /// of grants.
+    function grantTokens() external onlyAfterSale onlyOwner {
+        uint endIndex = SafeMath.min256(tokenGrantees.length, lastGrantedIndex + GRANT_BATCH_SIZE);
+        for (uint i = lastGrantedIndex; i < endIndex; i++) {
+            address grantee = tokenGrantees[i];
+
+            // Calculate how many tokens have been granted, vested, and issued such that: granted = vested + issued.
+            TokenGrant memory tokenGrant = tokenGrants[grantee];
+            uint256 tokensGranted = tokenGrant.value.mul(tokensSold).div(MAX_TOKENS_SOLD);
+            uint256 tokensVesting = tokensGranted.mul(tokenGrant.percentVested).div(100);
+            uint256 tokensIssued = tokensGranted.sub(tokensVesting);
+
+            // Transfer issued tokens that have yet to be transferred to grantee.
+            if (tokensIssued > 0) {
+                issueTokens(grantee, tokensIssued);
+            }
+
+            // Transfer vested tokens that have yet to be transferred to vesting trustee, and initialize grant.
+            if (tokensVesting > 0) {
+                issueTokens(trustee, tokensVesting);
+                trustee.grant(grantee, tokensVesting, now.add(tokenGrant.startOffset), now.add(tokenGrant.cliffOffset),
+                    now.add(tokenGrant.endOffset), tokenGrant.installmentLength, true);
+            }
+
+            lastGrantedIndex++;
+        }
+    }
+
+    
+    
+    
+    function issueTokens(address _recipient, uint256 _tokens) private {
+        // Request Kin token contract to mint the requested tokens for the buyer.
+        kin.mint(_recipient, _tokens);
+
+        TokensIssued(_recipient, _tokens);
+    }
+
+    
+    
+    function saleEnded() private constant returns (bool) {
+        return tokensSold >= MAX_TOKENS_SOLD || now >= endTime;
+    }
+
+    
+    
+    ///
+    /// NOTE:
+    ///   1. The new owner will need to call Kin token contract's acceptOwnership directly in order to accept the ownership.
+    ///   2. Calling this method during the token sale will prevent the token sale to continue, since only the owner of
+    ///      the Kin token contract can issue new tokens.
+    function requestKinTokenOwnershipTransfer(address _newOwnerCandidate) external onlyOwner {
+        kin.requestOwnershipTransfer(_newOwnerCandidate);
+    }
+
+    
+    // This can be used by the sale contract itself to claim back ownership of the Kin token contract.
+    function acceptKinTokenOwnership() external onlyOwner {
+        kin.acceptOwnership();
+    }
+
+    
+    
+    ///
+    /// NOTE:
+    ///   1. The new owner will need to call VestingTrustee's acceptOwnership directly in order to accept the ownership.
+    ///   2. Calling this method during the token sale will prevent the token sale from finalizaing, since only the owner
+    ///      of the VestingTrustee contract can issue new token grants.
+    function requestVestingTrusteeOwnershipTransfer(address _newOwnerCandidate) external onlyOwner {
+        trustee.requestOwnershipTransfer(_newOwnerCandidate);
+    }
+
+    
+    /// This can be used by the token sale contract itself to claim back ownership of the VestingTrustee contract.
+    function acceptVestingTrusteeOwnership() external onlyOwner {
+        trustee.acceptOwnership();
+    }
+}

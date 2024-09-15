@@ -1,0 +1,635 @@
+// SPDX-License-Identifier: GNU-GPL v3.0 or later
+
+
+// 
+
+pragma solidity ^0.8.0;
+
+
+
+
+
+interface IRegistryProvider {
+    function setAddressRegistry(address revest) external;
+
+    function getAddressRegistry() external view returns (address);
+}
+
+// 
+
+pragma solidity ^0.8.0;
+
+/**
+ * @dev Interface of the ERC165 standard, as defined in the
+ * https://eips.ethereum.org/EIPS/eip-165[EIP].
+ *
+ * Implementers can declare support of contract interfaces, which can then be
+ * queried by others ({ERC165Checker}).
+ *
+ * For an implementation, see {ERC165}.
+ */
+interface IERC165 {
+    /**
+     * @dev Returns true if this contract implements the interface defined by
+     * `interfaceId`. See the corresponding
+     * https://eips.ethereum.org/EIPS/eip-165#how-interfaces-are-identified[EIP section]
+     * to learn more about how these ids are created.
+     *
+     * This function call must use less than 30 000 gas.
+     */
+    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+}
+
+// 
+
+pragma solidity ^0.8.0;
+
+/*
+ * @dev Provides information about the current execution context, including the
+ * sender of the transaction and its data. While these are generally available
+ * via msg.sender and msg.data, they should not be accessed in such a direct
+ * manner, since when dealing with meta-transactions the account sending and
+ * paying for execution may not be the actual sender (as far as an application
+ * is concerned).
+ *
+ * This contract is only required for intermediate, library-like contracts.
+ */
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        return msg.data;
+    }
+}
+// 
+
+pragma solidity >=0.8.0;
+
+
+
+
+/**
+ * @title Provider interface for Revest FNFTs
+ * @dev Address locks MUST be non-upgradeable to be considered for trusted status
+ * @author Revest
+ */
+interface IAddressLock is IRegistryProvider, IERC165{
+
+    /// Creates a lock to the specified lockID
+    
+    
+    
+    
+    ///      of a contract implementing this interface is passed in as the "trigger" address for minting an address lock. The bytes
+    ///      representing any parameters this lock requires are passed through to this method, where abi.decode must be call on them
+    function createLock(uint fnftId, uint lockId, bytes memory arguments) external;
+
+    /// Updates a lock at the specified lockId
+    
+    
+    
+    
+    ///      can further accept and decode parameters to use in modifying the lock's config or triggering other actions
+    ///      such as triggering an on-chain oracle to update
+    function updateLock(uint fnftId, uint lockId, bytes memory arguments) external;
+
+    /// Whether or not the lock can be unlocked
+    
+    
+    
+    ///      if this method is returning true and someone attempts to unlock or withdraw from an FNFT attached to the requested lock, the request will succeed
+    
+    function isUnlockable(uint fnftId, uint lockId) external view returns (bool);
+
+    /// Provides an encoded bytes arary that represents values this lock wants to display on the info screen
+    /// Info to decode these values is provided in the metadata file
+    
+    
+    
+    
+    function getDisplayValues(uint fnftId, uint lockId) external view returns (bytes memory);
+
+    /// Maps to a URL, typically IPFS-based, that contains information on how to encode and decode paramters sent to and from this lock
+    /// Please see additional documentation for JSON config info
+    
+    
+    function getMetadata() external view returns (string memory);
+
+    /// Whether or not this lock will need updates and should display the option for them
+    
+    
+    function needsUpdate() external view returns (bool);
+}
+
+// 
+
+pragma solidity ^0.8.0;
+
+
+
+/**
+ * @dev Contract module which provides a basic access control mechanism, where
+ * there is an account (an owner) that can be granted exclusive access to
+ * specific functions.
+ *
+ * By default, the owner account will be the one that deploys the contract. This
+ * can later be changed with {transferOwnership}.
+ *
+ * This module is used through inheritance. It will make available the modifier
+ * `onlyOwner`, which can be applied to your functions to restrict their use to
+ * the owner.
+ */
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @dev Initializes the contract setting the deployer as the initial owner.
+     */
+    constructor() {
+        _setOwner(_msgSender());
+    }
+
+    /**
+     * @dev Returns the address of the current owner.
+     */
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    /**
+     * @dev Throws if called by any account other than the owner.
+     */
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+
+    /**
+     * @dev Leaves the contract without owner. It will not be possible to call
+     * `onlyOwner` functions anymore. Can only be called by the current owner.
+     *
+     * NOTE: Renouncing ownership will leave the contract without an owner,
+     * thereby removing any functionality that is only available to the owner.
+     */
+    function renounceOwnership() public virtual onlyOwner {
+        _setOwner(address(0));
+    }
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Can only be called by the current owner.
+     */
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _setOwner(newOwner);
+    }
+
+    function _setOwner(address newOwner) private {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+// 
+
+pragma solidity ^0.8.0;
+
+
+
+/**
+ * @dev Implementation of the {IERC165} interface.
+ *
+ * Contracts that want to implement ERC165 should inherit from this contract and override {supportsInterface} to check
+ * for the additional interface id that will be supported. For example:
+ *
+ * ```solidity
+ * function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+ *     return interfaceId == type(MyInterface).interfaceId || super.supportsInterface(interfaceId);
+ * }
+ * ```
+ *
+ * Alternatively, {ERC165Storage} provides an easier to use but more expensive implementation.
+ */
+abstract contract ERC165 is IERC165 {
+    /**
+     * @dev See {IERC165-supportsInterface}.
+     */
+    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {
+        return interfaceId == type(IERC165).interfaceId;
+    }
+}
+
+// 
+
+pragma solidity ^0.8.0;
+
+
+
+
+abstract contract SecuredAddressLock is IAddressLock, Ownable {
+
+    IAddressRegistry public addressesProvider;
+
+    constructor(address provider) Ownable() {
+        addressesProvider = IAddressRegistry(provider);
+    }
+
+    function setAddressRegistry(address registry) external override onlyOwner {
+        addressesProvider = IAddressRegistry(registry);
+    }
+
+    function getAddressRegistry() external view override returns (address) {
+        return address(addressesProvider);
+    }
+
+
+    modifier onlyLockManager() {
+        require(_msgSender() != address(0), "E004");
+        require(_msgSender() == addressesProvider.getLockManager(), 'E074');
+        _;
+    }
+
+    modifier onlyRevestController() {
+        require(_msgSender() != address(0), "E004");
+        require(_msgSender() == addressesProvider.getRevest(), "E017");
+        _;
+    }
+
+}
+// 
+
+pragma solidity ^0.8.0;
+
+
+
+
+
+
+
+
+contract LoveLock is SecuredAddressLock, ERC165  {
+
+    address private registryAddress;
+    mapping(uint => string) public locks;
+
+    constructor(address reg_) SecuredAddressLock(reg_) {}
+
+    function supportsInterface(bytes4 interfaceId) public view override(ERC165, IERC165) returns (bool) {
+        return interfaceId == type(IAddressLock).interfaceId
+            || super.supportsInterface(interfaceId);
+    }
+
+    function isUnlockable(uint, uint) public pure override returns (bool) {
+        return false;
+    }
+
+    function createLock(uint, uint lockId, bytes memory arguments) external override onlyRevestController {
+        require(bytes(locks[lockId]).length == 0, 'E077');
+        string memory message;
+        (message) = abi.decode(arguments, (string));
+        locks[lockId] = message;
+    }
+
+    function updateLock(uint fnftId, uint lockId, bytes memory arguments) external override {}
+
+    function needsUpdate() external pure override returns (bool) {
+        return false;
+    }
+
+    function getRevest() private view returns (IRevest) {
+        return IRevest(getRegistry().getRevest());
+    }
+
+    function getRegistry() public view returns (IAddressRegistry) {
+        return IAddressRegistry(registryAddress);
+    }
+
+    function getMetadata() external pure override returns (string memory) {
+        return "https://revest.mypinata.cloud/ipfs/QmV51sTPtGxmbE3PLY6rWMQp9GeatmfSJeefjhEw2hDiQ4";
+    }
+
+    function getDisplayValues(uint, uint lockId) external view override returns (bytes memory) {
+        return abi.encode(locks[lockId]);
+    }
+}
+
+// 
+
+pragma solidity >=0.8.0;
+
+/**
+ * @title Provider interface for Revest FNFTs
+ * @dev
+ *
+ */
+interface IAddressRegistry {
+
+    function initialize(
+        address lock_manager_,
+        address liquidity_,
+        address revest_token_,
+        address token_vault_,
+        address revest_,
+        address fnft_,
+        address metadata_,
+        address admin_,
+        address rewards_
+    ) external;
+
+    function getAdmin() external view returns (address);
+
+    function setAdmin(address admin) external;
+
+    function getLockManager() external view returns (address);
+
+    function setLockManager(address manager) external;
+
+    function getTokenVault() external view returns (address);
+
+    function setTokenVault(address vault) external;
+
+    function getRevestFNFT() external view returns (address);
+
+    function setRevestFNFT(address fnft) external;
+
+    function getMetadataHandler() external view returns (address);
+
+    function setMetadataHandler(address metadata) external;
+
+    function getRevest() external view returns (address);
+
+    function setRevest(address revest) external;
+
+    function getDEX(uint index) external view returns (address);
+
+    function setDex(address dex) external;
+
+    function getRevestToken() external view returns (address);
+
+    function setRevestToken(address token) external;
+
+    function getRewardsHandler() external view returns(address);
+
+    function setRewardsHandler(address esc) external;
+
+    function getAddress(bytes32 id) external view returns (address);
+
+    function getLPs() external view returns (address);
+
+    function setLPs(address liquidToken) external;
+
+}
+
+// 
+
+pragma solidity >=0.8.0;
+
+interface IRevest {
+    event FNFTTimeLockMinted(
+        address indexed asset,
+        address indexed from,
+        uint indexed fnftId,
+        uint endTime,
+        uint[] quantities,
+        FNFTConfig fnftConfig
+    );
+
+    event FNFTValueLockMinted(
+        address indexed asset,
+        address indexed from,
+        uint indexed fnftId,
+        address compareTo,
+        address oracleDispatch,
+        uint[] quantities,
+        FNFTConfig fnftConfig
+    );
+
+    event FNFTAddressLockMinted(
+        address indexed asset,
+        address indexed from,
+        uint indexed fnftId,
+        address trigger,
+        uint[] quantities,
+        FNFTConfig fnftConfig
+    );
+
+    event FNFTWithdrawn(
+        address indexed from,
+        uint indexed fnftId,
+        uint indexed quantity
+    );
+
+    event FNFTSplit(
+        address indexed from,
+        uint[] indexed newFNFTId,
+        uint[] indexed proportions,
+        uint quantity
+    );
+
+    event FNFTUnlocked(
+        address indexed from,
+        uint indexed fnftId
+    );
+
+    event FNFTMaturityExtended(
+        address indexed from,
+        uint indexed fnftId,
+        uint indexed newExtendedTime
+    );
+
+    event FNFTAddionalDeposited(
+        address indexed from,
+        uint indexed newFNFTId,
+        uint indexed quantity,
+        uint amount
+    );
+
+    struct FNFTConfig {
+        address asset; // The token being stored
+        address pipeToContract; // Indicates if FNFT will pipe to another contract
+        uint depositAmount; // How many tokens
+        uint depositMul; // Deposit multiplier
+        uint split; // Number of splits remaining
+        uint depositStopTime; //
+        bool maturityExtension; // Maturity extensions remaining
+        bool isMulti; //
+        bool nontransferrable; // False by default (transferrable) //
+    }
+
+    // Refers to the global balance for an ERC20, encompassing possibly many FNFTs
+    struct TokenTracker {
+        uint lastBalance;
+        uint lastMul;
+    }
+
+    enum LockType {
+        DoesNotExist,
+        TimeLock,
+        ValueLock,
+        AddressLock
+    }
+
+    struct LockParam {
+        address addressLock;
+        uint timeLockExpiry;
+        LockType lockType;
+        ValueLock valueLock;
+    }
+
+    struct Lock {
+        address addressLock;
+        LockType lockType;
+        ValueLock valueLock;
+        uint timeLockExpiry;
+        uint creationTime;
+        bool unlocked;
+    }
+
+    struct ValueLock {
+        address asset;
+        address compareTo;
+        address oracle;
+        uint unlockValue;
+        bool unlockRisingEdge;
+    }
+
+    function mintTimeLock(
+        uint endTime,
+        address[] memory recipients,
+        uint[] memory quantities,
+        IRevest.FNFTConfig memory fnftConfig
+    ) external payable returns (uint);
+
+    function mintValueLock(
+        address primaryAsset,
+        address compareTo,
+        uint unlockValue,
+        bool unlockRisingEdge,
+        address oracleDispatch,
+        address[] memory recipients,
+        uint[] memory quantities,
+        IRevest.FNFTConfig memory fnftConfig
+    ) external payable returns (uint);
+
+    function mintAddressLock(
+        address trigger,
+        bytes memory arguments,
+        address[] memory recipients,
+        uint[] memory quantities,
+        IRevest.FNFTConfig memory fnftConfig
+    ) external payable returns (uint);
+
+    function withdrawFNFT(uint tokenUID, uint quantity) external;
+
+    function unlockFNFT(uint tokenUID) external;
+
+    function splitFNFT(
+        uint fnftId,
+        uint[] memory proportions,
+        uint quantity
+    ) external returns (uint[] memory newFNFTIds);
+
+    function depositAdditionalToFNFT(
+        uint fnftId,
+        uint amount,
+        uint quantity
+    ) external returns (uint);
+
+    function extendFNFTMaturity(
+        uint fnftId,
+        uint endTime
+    ) external returns (uint);
+
+    function setFlatWeiFee(uint wethFee) external;
+
+    function setERC20Fee(uint erc20) external;
+
+    function getFlatWeiFee() external view returns (uint);
+
+    function getERC20Fee() external view returns (uint);
+
+
+}
+
+// 
+
+pragma solidity >=0.8.0;
+
+
+
+interface ITokenVault {
+
+    function createFNFT(
+        uint fnftId,
+        IRevest.FNFTConfig memory fnftConfig,
+        uint quantity,
+        address from
+    ) external;
+
+    function withdrawToken(
+        uint fnftId,
+        uint quantity,
+        address user
+    ) external;
+
+    function depositToken(
+        uint fnftId,
+        uint amount,
+        uint quantity
+    ) external;
+
+    function cloneFNFTConfig(IRevest.FNFTConfig memory old) external returns (IRevest.FNFTConfig memory);
+
+    function mapFNFTToToken(
+        uint fnftId,
+        IRevest.FNFTConfig memory fnftConfig
+    ) external;
+
+    function handleMultipleDeposits(
+        uint fnftId,
+        uint newFNFTId,
+        uint amount
+    ) external;
+
+    function splitFNFT(
+        uint fnftId,
+        uint[] memory newFNFTIds,
+        uint[] memory proportions,
+        uint quantity
+    ) external;
+
+    function getFNFT(uint fnftId) external view returns (IRevest.FNFTConfig memory);
+    function getFNFTCurrentValue(uint fnftId) external view returns (uint);
+    function getNontransferable(uint fnftId) external view returns (bool);
+    function getSplitsRemaining(uint fnftId) external view returns (uint);
+}
+
+// 
+
+pragma solidity >=0.8.0;
+
+
+
+interface ILockManager {
+
+    function createLock(uint fnftId, IRevest.LockParam memory lock) external returns (uint);
+
+    function getLock(uint lockId) external view returns (IRevest.Lock memory);
+
+    function fnftIdToLockId(uint fnftId) external view returns (uint);
+
+    function fnftIdToLock(uint fnftId) external view returns (IRevest.Lock memory);
+
+    function pointFNFTToLock(uint fnftId, uint lockId) external;
+
+    function lockTypes(uint tokenId) external view returns (IRevest.LockType);
+
+    function unlockFNFT(uint fnftId, address sender) external returns (bool);
+
+    function getLockMaturity(uint fnftId) external view returns (bool);
+}

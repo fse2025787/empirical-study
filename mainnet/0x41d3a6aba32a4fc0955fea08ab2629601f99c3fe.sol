@@ -1,0 +1,5 @@
+
+contract Empty{
+   
+    function Empty(){}
+}
