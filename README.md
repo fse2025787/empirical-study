@@ -1,4 +1,4 @@
-# Are Static Analysis Tools StillWorking during the Evolution of Smart Contracts? A Comprehensive Empirical Study
+# Are Static Analysis Tools Still Working during the Evolution of Smart Contracts? A Comprehensive Empirical Study
 
 ## RQ1: Compatibility of Static Tools
 
